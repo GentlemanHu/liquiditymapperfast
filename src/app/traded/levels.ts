@@ -103,3 +103,38 @@ export function candleLevels(bars: readonly CandleRow[], from: number, to: numbe
   const expected = Math.max(0, Math.floor((end - from) / barMs));
   return { levels: levelsOf(rows, step, share), covered: expected > 0 ? Math.min(1, n / expected) : 0 };
 }
+
+/** How far before the chart's right edge the column looks for a window: a session on weekdays only is three days back over a weekend. */
+const COLUMN_LOOKBACK_MS = 8 * 86_400_000;
+
+/**
+ * The window the traded column adds up when the settings pick days, weeks or sessions: the newest one that has begun by the chart's right edge
+ * (`t1`, or now when that is earlier), which is the last of the windows the lines are drawn for; of the sessions, one that is under way before
+ * one that has ended. Null for what is on the chart, and when no window of the period began in the eight days before (no session is on): the
+ * column then follows the chart. It looks back from the right edge, not from the chart's left one, so a chart too short to hold a window
+ * still has one.
+ */
+export function columnWindow(s: TradedSettings, pageZone: 'local' | 'utc', t1: number, now: number): ProfileWindow | null {
+  const end = Math.min(t1, now), found = linesWindows({ ...s, count: 1 }, pageZone, end - COLUMN_LOOKBACK_MS, end, now);
+  for (let i = found.length - 1; i >= 0; i--) if (found[i]!.to > end) return found[i]!;
+  return found[found.length - 1] ?? null;
+}
+
+/** The zone a window's dates are read in: a session's own (its start is a date there), else the zone days and weeks start in. */
+export function windowZone(w: ProfileWindow, s: TradedSettings, pageZone: 'local' | 'utc'): string {
+  if (w.key.startsWith('session|')) {
+    const def = s.sessions.find(x => x.id === w.key.split('|')[1]);
+    if (def) return resolveZone(def.zone, pageZone);
+  }
+  return resolveZone(s.zone, pageZone);
+}
+
+/**
+ * What the column's header calls its window: a session by its name and date, a week by "Week" and the date of its first day, a day by its date.
+ * `date` writes a time as a date in the window's zone; `week` is the word for a week.
+ */
+export function windowLabel(w: ProfileWindow, date: (t: number) => string, week: string): string {
+  const kind = w.key.slice(0, w.key.indexOf('|'));
+  if (kind === 'session') return w.name ? `${w.name} ${date(w.from)}` : date(w.from);
+  return kind === 'week' ? `${week} ${date(w.from)}` : date(w.from);
+}

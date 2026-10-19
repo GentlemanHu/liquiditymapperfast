@@ -7,7 +7,9 @@ import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from
 import { FAR_STALE_MS, FarPoller, farSource, freshFar, type FarBook } from '../../shared/far-book.ts';
 import { OiSampler, oiHistoryWriter } from './oi-sampler.mts';
 import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-short.ts';
-import { webGet } from '../../shared/history.ts';
+import { webGet, type Fetcher } from '../../shared/history.ts';
+import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing } from '../../shared/price-history.ts';
+import { BTC } from '../../shared/coins.ts';
 import { TOUCH_HINT_MS } from '../../shared/levels.ts';
 import { COLUMNS_PER_REQUEST } from '../../shared/columns.ts';
 import { DepthRecorder, COLUMN_MS, HOT_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
@@ -16,6 +18,7 @@ import { encodeColumns, encodeLevels, encodeTape } from './wire.mts';
 import { TAPE_BATCH_MAX, packTape } from '../../shared/tape.ts';
 import type { MarketOrder } from '../../shared/orders.ts';
 import { FootprintRecorder } from './footprint.mts';
+import { inverseOiId, oiInstrument, oiProfileOf, type OiSeries } from '../../shared/oi-profile.ts';
 import { MAX_CUT_USD, MAX_CUTS, MAX_PROFILE_INSTRUMENTS, MAX_RANGE_INSTRUMENTS, MAX_SIZES_MINUTES, MAX_SIZES_WINDOWS, MAX_VALUE_AREA_SPAN_MS, MAX_VALUE_AREA_WINDOWS, parseCuts, type TradeLike } from '../../shared/footprint.ts';
 import { RecordedBefore } from '../../shared/restart.ts';
 import { MAX_COVERAGE_INSTRUMENTS, MAX_COVERAGE_SPAN_MS, TradeCoverage, coverageWindow, depthAnswer, recordedMinutes, tradeAnswer, type CoverageMetric } from './coverage.mts';
@@ -29,11 +32,12 @@ import { AbsorptionRecorder, GROUP_FLOOR_USD, GROUPS_PER_MINUTE, ABSORPTION_WIND
 import { ExtraVenues, RECOMMENDED_EXTRA_VENUES } from './venues.mts';
 import { CoinList } from './coin-list.mts';
 import { guardRequest, guardUpgrade } from '../request-guard.mts';
+import { sendVerdict, type FrameKind } from './backpressure.mts';
 import { TIMEFRAMES, aggregateCandles, aggregateOi, quoteRows, timeframeMs, withLiveOi, type CandleRow, type OiRow } from './series.mts';
 
 type App = ReturnType<typeof createLocalServer>;
 /** `oiSampling`: read the open interest of the venues the feed manager does not (oi-sampler.mts); a live server only, never a test. */
-export interface V2Options { dataDir: string; liveMs?: number; persist?: boolean; heartbeatMs?: number; oiSampling?: boolean }
+export interface V2Options { dataDir: string; liveMs?: number; persist?: boolean; heartbeatMs?: number; oiSampling?: boolean; priceHistoryGet?: Fetcher }
 export interface V2Handle {
   recorder: DepthRecorder; footprint: FootprintRecorder; prints: PrintStream; liquidations: LiquidationStream; flow: FlowRecorder; absorption: AbsorptionRecorder; extra: ExtraVenues; close(): void; handle(req: IncomingMessage, res: ServerResponse): boolean;
   /** Venues (the part of an instrument id before the colon) whose book is being left off the map, with the reason. */
@@ -49,10 +53,6 @@ const MAX_FLOW_SPAN_MS = 36 * 3_600_000, MAX_FLOW_INSTRUMENTS = 40;
 const MAX_FLOW_MINUTES_SPAN_MS = 8 * 24 * 3_600_000;
 /** The most instruments one sizes question may name: it is answered whole, never in parts (the minutes two parts saw could not be told apart), and the flow recorder keeps at most 48. */
 const MAX_SIZES_INSTRUMENTS = 96;
-/** A client whose unsent backlog passes this is dropped rather than buffered without bound; levels frames are skipped past a lower mark. */
-const MAX_CLIENT_BACKLOG_BYTES = 16_000_000, LEVELS_SKIP_BYTES = 4_000_000;
-/** A client behind by this much skips trade-dust batches (drawing only: a skipped one leaves a short gap in the dust, nothing else). */
-const TAPE_SKIP_BYTES = 2_000_000;
 /** The live socket says something at least this often, so a client can tell a quiet server from a dead connection. */
 const HEARTBEAT_MS = 5_000;
 /** Books with at least this many raw levels are re-valued no more often than the interval below. */
@@ -88,7 +88,7 @@ const BAD_CUTS = (floor: number): string => `cuts must be up to ${MAX_CUTS} size
 const BAD_SERIES = 'inst and a supported tf are required';
 
 /** Attach the v2 data plane (depth recorder, live WebSocket, series endpoints) to a running local server. */
-export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, heartbeatMs = HEARTBEAT_MS, oiSampling = false }: V2Options): V2Handle {
+export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, heartbeatMs = HEARTBEAT_MS, oiSampling = false, priceHistoryGet = webGet }: V2Options): V2Handle {
   let store: SqliteColumnStore | null = null;
   if (persist) { fs.mkdirSync(dataDir, { recursive: true }); store = new SqliteColumnStore(path.join(dataDir, 'depth-v2.sqlite')); }
   // A day of columns in memory; older ones are read back from the store when a question reaches them.
@@ -245,12 +245,12 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     for (const [id, rows] of Object.entries(app.state.candles ?? {})) { const row = rows[rows.length - 1]; if (row) out[id] = [row.start, row.open, row.high, row.low, row.close, row.volume ?? 0]; }
     return out;
   };
-  /** Send to every open client; one that has fallen too far behind is dropped, and one that is merely slow skips the frame when `skipAbove` is set. */
-  const broadcast = (message: string | Buffer, options?: { binary: boolean }, skipAbove = Infinity): void => {
+  /** Send to every open client by the kind of frame (`sendVerdict`): one that has fallen too far behind is dropped, a slow one skips a snapshot. */
+  const broadcast = (message: string | Buffer, options?: { binary: boolean }, kind: FrameKind = 'event'): void => {
     for (const client of wss.clients) {
       if (client.readyState !== WebSocket.OPEN) continue;
-      if (client.bufferedAmount > MAX_CLIENT_BACKLOG_BYTES) { client.terminate(); continue; }
-      if (client.bufferedAmount < skipAbove) client.send(message, options);
+      const verdict = sendVerdict(kind, client.bufferedAmount);
+      if (verdict === 'drop') client.terminate(); else if (verdict === 'send') client.send(message, options);
     }
   };
   const tick = (): void => {
@@ -303,13 +303,16 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       tapeSeq++;
       let encoded: Buffer | null = null;
       for (const client of wss.clients) {
-        if (client.readyState !== WebSocket.OPEN || !tapeClients.has(client) || client.bufferedAmount >= TAPE_SKIP_BYTES) continue;
+        if (client.readyState !== WebSocket.OPEN || !tapeClients.has(client)) continue;
+        // An event, never skipped for a backlog: a batch is about 1 KB beside the levels' 430 KB, and a skipped one is a hole in the dust.
+        const verdict = sendVerdict('event', client.bufferedAmount);
+        if (verdict === 'drop') { client.terminate(); continue; }
         encoded ??= encodeTape(packTape(tape, tapeSeq)); client.send(encoded, { binary: true });
       }
     }
     if (levelsDirty) {
       levelsDirty = false;
-      broadcast(encodeLevels(books, now), { binary: true }, LEVELS_SKIP_BYTES);
+      broadcast(encodeLevels(books, now), { binary: true }, 'snapshot');
     }
     const tick = JSON.stringify({ t: 'tick', price: app.state.markPrice, instrumentId: app.state.markInstrumentId, asOf: app.state.asOf, candles: lastCandles() });
     if (tick !== lastTick) { lastTick = tick; broadcast(tick); }
@@ -382,18 +385,47 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const id = url.searchParams.get('inst') ?? ''; const tf = url.searchParams.get('tf') ?? '1h'; const tfMs = timeframeMs(tf);
     if (!id || !tfMs) return sendJson(res, { error: BAD_SERIES }, 400);
     const span = windowOf(url, Date.now() + tfMs, 400 * tfMs); if (!span) return sendJson(res, { error: BAD_WINDOW }, 400);
-    const { from, to } = span;
     // `usd=1`: an inverse market's own USD (the readings that kept one) in place of its coins.
     const usd = url.searchParams.get('usd') === '1';
+    sendJson(res, { instrumentId: id, tf, ...(usd ? { usd } : {}), bars: oiBarsOf(id, tfMs, span.from, span.to, usd) });
+  };
+  /** One market's open interest in bars of `tfMs` over [from, to): the stored history and the live samples (`usd`: an inverse market's own USD). */
+  const oiBarsOf = (id: string, tfMs: number, from: number, to: number, usd: boolean) => {
     const stored = app.history.listOi(id, { from, to, limit: 300_000 }) as OiRow[];
     // The live samples are held to the same window as the stored bars: one past `to` would put a bar outside what was asked for.
     const at = (s: { observationTimestamp?: unknown; sourceTimestamp?: unknown; receivedAt?: unknown }): number => Number(s.observationTimestamp ?? s.sourceTimestamp ?? s.receivedAt);
     const live = (app.state.oi ?? []).filter(s => s.instrumentId === id && at(s) >= from && at(s) < to) as OiRow[];
-    sendJson(res, { instrumentId: id, tf, ...(usd ? { usd } : {}), bars: aggregateOi(usd ? withLiveOi(quoteRows(stored), quoteRows(live)) : withLiveOi(stored, live), tfMs) });
+    return aggregateOi(usd ? withLiveOi(quoteRows(stored), quoteRows(live)) : withLiveOi(stored, live), tfMs);
+  };
+  /**
+   * The change in open interest by price (shared/oi-profile.ts) of the perpetuals among `inst` over [from, to), at most eight days, on rows
+   * of `step`: each market's one-minute bars from two minutes before, so the change into the first minute is known.
+   */
+  const oiProfileRoute = (url: URL, res: ServerResponse) => {
+    const asked = [...new Set((url.searchParams.get('inst') ?? '').split(',').filter(Boolean))];
+    if (!asked.length || asked.length > MAX_PROFILE_INSTRUMENTS) return sendJson(res, { error: `inst must name 1 to ${MAX_PROFILE_INSTRUMENTS} instruments` }, 400);
+    const span = windowOf(url, Date.now() + 60_000, 3_600_000); if (!span) return sendJson(res, { error: BAD_WINDOW }, 400);
+    if (span.to - span.from > MAX_COLUMN_SPAN_MS) return sendJson(res, { error: 'the window may be at most eight days' }, 400);
+    const step = Number(url.searchParams.get('step'));
+    if (!(step > 0) || !Number.isFinite(step)) return sendJson(res, { error: 'step must be a positive number' }, 400);
+    const series = asked.filter(oiInstrument).map((id): OiSeries => {
+      const coins = !inverseOiId(id);
+      return { id, coins, price: lastPrice.get(id)?.price ?? 0, bars: oiBarsOf(id, 60_000, span.from - 120_000, span.to, !coins) };
+    });
+    sendJson(res, oiProfileOf(footprint, series, span.from, span.to, step));
   };
   // Long/short ratios as the venues publish them, read when asked for and kept in memory only (shared/long-short.ts): nothing of the
   // history store's budget, and nothing new asked while no page shows the pane (a read already under way finishes).
   const longShort = new LongShortCache(webGet, false);
+  const priceHistory = new PriceHistoryCache(priceHistoryGet);
+  const priceHistoryRoute = (url: URL, res: ServerResponse) => {
+    const id = url.searchParams.get('inst') ?? '', tfMs = timeframeMs(url.searchParams.get('tf'));
+    const target = priceListing(BTC, id);
+    if (!target || target.id !== id || !tfMs) return sendJson(res, { error: BAD_SERIES }, 400);
+    const span = windowOf(url, Date.now() + 1, 500 * tfMs);
+    if (!span || span.to - span.from > PRICE_QUERY_BARS * tfMs) return sendJson(res, { error: BAD_WINDOW }, 400);
+    priceHistory.series(target, tfMs, span.from, span.to).then(answer => sendJson(res, answer), () => sendJson(res, { error: 'price history could not be read' }, 502));
+  };
   const longShortRoute = (url: URL, res: ServerResponse) => {
     const id = url.searchParams.get('inst') ?? '', tf = url.searchParams.get('tf') ?? '1h', tfMs = timeframeMs(tf), metric = url.searchParams.get('metric') ?? 'accounts';
     if (!id || !tfMs) return sendJson(res, { error: BAD_SERIES }, 400);
@@ -491,7 +523,10 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (span.to - span.from > MAX_COLUMN_SPAN_MS) return sendJson(res, { error: 'the window may be at most eight days' }, 400);
     const step = Number(url.searchParams.get('step'));
     if (!(step > 0) || !Number.isFinite(step)) return sendJson(res, { error: 'step must be a positive number' }, 400);
-    sendJson(res, footprint.profile(ids, span.from, span.to, step));
+    // Read a few hours of a market at a time with the event loop let go between: a week of every market held the thread for seconds.
+    footprint.profileYielding(ids, span.from, span.to, step).then(
+      answer => sendJson(res, answer),
+      error => { console.error('v2 /api/v2/profile failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); else res.end(); });
   };
   /** When instruments were recorded, per minute (shared/coverage.ts): `metric` trades (the coverage record and the footprint's minutes) or depth (the columns' samples). */
   const coverageRoute = (url: URL, res: ServerResponse) => {
@@ -603,6 +638,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
           case '/api/v2/state': bootstrap(res); return true;
           case '/api/v2/columns': columns(url, res); return true;
           case '/api/v2/candles': candles(url, res); return true;
+          case '/api/v2/price-history': priceHistoryRoute(url, res); return true;
           case '/api/v2/oi': oi(url, res); return true;
           case '/api/v2/long-short': longShortRoute(url, res); return true;
           case '/api/v2/footprint': footprintRoute(url, res); return true;
@@ -613,6 +649,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
           case '/api/v2/flow-minutes': flowMinutesRoute(url, res); return true;
           case '/api/v2/sizes': sizesRoute(url, res); return true;
           case '/api/v2/profile': profileRoute(url, res); return true;
+          case '/api/v2/oi-profile': oiProfileRoute(url, res); return true;
           case '/api/v2/range': rangeRoute(url, res); return true;
           case '/api/v2/value-areas': valueAreasRoute(url, res); return true;
           case '/api/v2/absorption': absorptionRoute(url, res); return true;

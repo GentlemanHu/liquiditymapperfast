@@ -14,18 +14,23 @@ import { atOnePrice, inverseOi, oiSumOf, type OiPart } from './oi-change.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
-import { MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
+import { MAX_PROFILE_INSTRUMENTS, MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
+import { oiInstrument } from '../shared/oi-profile.ts';
 import { AbsorptionBook } from './absorption.ts';
 import { ABSORPTION_RETENTION_MS, MAX_ABSORPTION_INSTRUMENTS } from '../shared/absorption.ts';
+import { absorptionAnswer, liquidationAnswer, type MetricFlags, type ProfileMetric } from './traded/metrics.ts';
 import { PRINTS_PER_ANSWER } from '../shared/prints.ts';
 import { webGet } from '../shared/history.ts';
 import { KeyLevelHistory } from './keylevels/history.ts';
 import { TapeRing, tapeCapacity } from './tape/ring.ts';
 import { isPhone } from './device.ts';
 import type { SumRow } from '../shared/print-sums.ts';
+import { ChartPriceHistory } from './price-history.ts';
 
 export const TIMEFRAMES: Readonly<Record<string, number>> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 };
 const MINUTE = 60_000;
+/** The most absorption groups one question asks of each instrument (the largest). */
+const ABSORPTION_PER_INSTRUMENT = 4_000;
 /**
  * A window of recorded columns is complete once its last minute has ended and the recorder has taken that minute's last sample (seconds
  * later); this much room also covers a source whose clock is a little off.
@@ -65,6 +70,7 @@ export function defaultMarket(markets: readonly { instrumentId?: string; venue?:
 }
 
 export class Hub {
+  readonly priceHistory: ChartPriceHistory;
   readonly worker: Worker;
   #ready: Promise<void>;
   #rasterId = 0;
@@ -230,8 +236,11 @@ export class Hub {
    * `cover`, which a full book narrows when it lets claimed groups the view no longer needs go.
    */
   #absorptionCover: { key: string; minutesFrom: number } | null = null;
-  /** The traded-volume column's last answer, the row step it was asked on, and whether the source can answer at all. */
-  traded: { step: number; answer: ProfileAnswer } | null = null;
+  /**
+   * The traded-volume column's last answer, the row step it was asked on and the `tag` of the window it was asked for (the day, week or session
+   * it adds up; empty for what is on the chart), so the column can tell it from another window's that began at the same time.
+   */
+  traded: { step: number; answer: ProfileAnswer; tag: string } | null = null;
   /**
    * Value areas of days, weeks and sessions by window (`valueAreaKey`), with when each was answered (`at`), the source's clock then (`asOf`:
    * what it reaches), and whether it can no longer change (`final`: answered a while after it ended), so it is not asked again (`ensureValueAreas`).
@@ -243,8 +252,19 @@ export class Hub {
   /** Called when the traded-volume column has a new answer (or the source said it has none). */
   onTraded: () => void = () => {};
   #tradedLoading = false; #tradedAsked = ''; #tradedAt = 0; #tradedRetryAt = 0;
+  /**
+   * How long the last traded-volume answer took (ms). A server answers on its only thread: a week of rows took 7 to 9 s on a live recording of
+   * 27 markets (2026-10-18), during which it answered nothing else, so a slow answer is asked for again that much less often.
+   */
+  #tradedMs = 0;
+  /** Whether the last question was asked for a window already over (see `ensureTraded`'s `settled`). */
+  #tradedSettled = false;
   /** Counts the traded-volume questions, so an answer can tell whether it is still the one wanted. */
   #tradedGen = 0;
+  /** The column's last answer for a measure other than traded volume (`ensureMetricProfile`), what it leaves out, and whether the source can answer. */
+  metricProfile: { metric: ProfileMetric; step: number; answer: ProfileAnswer; flags: MetricFlags } | null = null;
+  metricState: 'ready' | 'unavailable' = 'ready';
+  #metricLoading = false; #metricAsked = ''; #metricAt = 0; #metricRetryAt = 0; #metricMs = 0; #metricGen = 0;
   /** Oldest recorded depth minute across instruments (ms), or 0 when nothing is recorded. */
   recordedSince = 0;
   /** Instrument with candle history to fall back to when the selected market has none. */
@@ -253,6 +273,10 @@ export class Hub {
   #oiReferences: string[] = [];
 
   constructor(readonly store: Store, readonly source: DataSource) {
+    this.priceHistory = new ChartPriceHistory((id, tf, from, to, signal) => {
+      if (!source.priceHistory) return Promise.reject(new Error('Price history is unavailable'));
+      return source.priceHistory(id, tf, from, to, signal);
+    });
     this.worker = new Worker(new URL('./worker/raster.worker.ts', import.meta.url), { type: 'module' });
     this.#ready = new Promise(resolve => {
       this.worker.onmessage = (event: MessageEvent<WorkerOut>) => {
@@ -526,7 +550,7 @@ export class Hub {
     const since = have && have.minutesFrom <= need ? Math.max(need, now - 3 * MIN) : need;
     const connection = this.#connection;
     this.#absorptionLoading = true;
-    this.source.absorption([...ids], mins, from, to, 4_000, since).then(
+    this.source.absorption([...ids], mins, from, to, ABSORPTION_PER_INSTRUMENT, since).then(
       answer => {
         // The answer covers its window for the connection it was asked on (one that reached the live edge is kept current by the stream), and
         // the book takes what it claims with its groups.
@@ -583,23 +607,63 @@ export class Hub {
 
   /**
    * Make sure the traded-volume column has an answer for these instruments, this window (whole minutes) and this row step. Safe to call
-   * every frame: one request at a time, a new one when the question changes, and every five seconds while the map follows the live edge (the
-   * open minute keeps trading). A source that cannot answer (an older server) is asked again a minute later.
+   * every frame: one request at a time, a new one when the question changes, and every five seconds while the window is open (`live`: the
+   * map follows the live edge, or the day, week or session it adds up is under way; the open minute keeps trading), no oftener than twenty
+   * times the last answer took and at most five minutes apart. A window that was open when it was last asked and is over now (`settled`: a
+   * session that has ended) is asked once more, so the answer that stays holds all of it. A source that cannot answer (an older server) is
+   * asked again a minute later. `tag` names the window for the answer held (`traded`).
    */
-  ensureTraded(ids: readonly string[], from: number, to: number, step: number, live: boolean): void {
+  ensureTraded(ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }): void {
     // No instruments left: nothing has traded on the map, and an answer still on its way for the last ones must not draw them back.
     if (!ids.length) { if (this.traded || this.#tradedAsked) { this.traded = null; this.#tradedAsked = ''; this.#tradedGen++; this.onTraded(); } return; }
     if (this.#tradedLoading || !(to > from) || !(step > 0)) return;
     const now = Date.now();
     if (this.tradedState === 'unavailable' && now < this.#tradedRetryAt) return;
-    const key = `${ids.join(',')}|${step}|${from}|${to}`;
-    if (key === this.#tradedAsked && !(live && now - this.#tradedAt >= 5_000)) return;
-    this.#tradedLoading = true; this.#tradedAsked = key; this.#tradedAt = now;
-    const generation = ++this.#tradedGen;
+    // The window's tag is part of the question: a day and the session that covers the same hours have the same bounds and another answer's name.
+    const key = `${ids.join(',')}|${step}|${from}|${to}|${period.tag}`;
+    if (key === this.#tradedAsked && !(live && now - this.#tradedAt >= Math.min(300_000, Math.max(5_000, 20 * this.#tradedMs))) && !(period.settled && !this.#tradedSettled)) return;
+    this.#tradedLoading = true; this.#tradedAsked = key; this.#tradedAt = now; this.#tradedSettled = period.settled;
+    const generation = ++this.#tradedGen, started = performance.now();
     this.source.profile([...ids], from, to, step).then(
-      answer => { if (generation !== this.#tradedGen) return; this.traded = { step, answer }; this.tradedState = 'ready'; this.onTraded(); },
+      answer => { if (generation !== this.#tradedGen) return; this.#tradedMs = performance.now() - started; this.traded = { step, answer, tag: period.tag }; this.tradedState = 'ready'; this.onTraded(); },
       () => { if (generation !== this.#tradedGen) return; this.tradedState = 'unavailable'; this.#tradedRetryAt = Date.now() + 60_000; this.#tradedAsked = ''; this.onTraded(); },
     ).finally(() => { this.#tradedLoading = false; });
+  }
+
+  /**
+   * Make sure the column has an answer for a measure other than traded volume (traded/metrics.ts) over this window, as `ensureTraded` does
+   * for volume: the change in open interest of the perpetuals among `ids` (shared/oi-profile.ts), liquidations from the source's record
+   * (its largest 5,000 when more match), absorption groups at each instrument's threshold
+   * (`thresholds`; one with none yet has nothing marked). Asked again every five seconds while the map follows the live edge, no oftener
+   * than ten times the last answer took (an absorption question reads a server's store).
+   */
+  ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, thresholds: ReadonlyMap<string, number | null> = new Map()): void {
+    if (this.#metricLoading || !(to > from) || !(step > 0)) return;
+    const now = Date.now();
+    if (this.metricState === 'unavailable' && now < this.#metricRetryAt) return;
+    const judged = metric === 'absorption' ? ids.filter(id => typeof thresholds.get(id) === 'number').slice(0, MAX_ABSORPTION_INSTRUMENTS)
+      : metric === 'oi' ? ids.filter(oiInstrument).slice(0, MAX_PROFILE_INSTRUMENTS) : [...ids];
+    const key = `${metric}|${judged.map(id => metric === 'absorption' ? `${id}:${thresholds.get(id)}` : id).join(',')}|${step}|${from}|${to}`;
+    if (key === this.#metricAsked && !(live && now - this.#metricAt >= Math.max(5_000, 10 * this.#metricMs))) return;
+    this.#metricLoading = true; this.#metricAsked = key; this.#metricAt = now;
+    const generation = ++this.#metricGen, started = performance.now(), source = this.source, none = { cut: false, incomplete: false };
+    const work: Promise<{ answer: ProfileAnswer; flags: MetricFlags }> = metric === 'oi'
+      ? (!judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
+        : (source.oiProfile ? source.oiProfile(judged, from, to, step) : Promise.reject(new Error('no open-interest profile from this source')))
+          .then(answer => ({ answer, flags: { ...none, unplaced: answer.unplaced } })))
+      : metric === 'liquidations'
+      ? (source.liquidations ? source.liquidations(from, to) : Promise.reject(new Error('no liquidations from this source')))
+        .then(rows => ({ answer: liquidationAnswer(rows, judged, from, to, step), flags: { cut: rows.length >= LIQUIDATIONS_PER_ANSWER, incomplete: false } }))
+      : !judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
+      // `since` at the window's end: the groups are wanted, not the minutes.
+      : source.absorption(judged, judged.map(id => thresholds.get(id)!), from, to, ABSORPTION_PER_INSTRUMENT, to).then(a => ({
+        answer: absorptionAnswer(a.groups, thresholds, from, to, step),
+        flags: { cut: a.capped.length > 0, incomplete: judged.some(id => (a.floors[id] ?? 0) > thresholds.get(id)!) },
+      }));
+    work.then(
+      ({ answer, flags }) => { if (generation !== this.#metricGen) return; this.#metricMs = performance.now() - started; this.metricProfile = { metric, step, answer, flags }; this.metricState = 'ready'; this.onTraded(); },
+      () => { if (generation !== this.#metricGen) return; this.metricState = 'unavailable'; this.#metricRetryAt = Date.now() + 60_000; this.#metricAsked = ''; this.onTraded(); },
+    ).finally(() => { this.#metricLoading = false; });
   }
 
   /**

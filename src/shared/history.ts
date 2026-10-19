@@ -12,7 +12,7 @@ import { BTC, type CoinVenue, type Listing } from './coins.ts';
  * WebSocket: `init.body` is sent as the first message and the first reply is the answer (Deribit's candle endpoint sends no CORS
  * headers, so a page cannot read it over HTTP, but its JSON-RPC socket serves the same method).
  */
-export type Fetcher = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<unknown>;
+export type Fetcher = (url: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<unknown>;
 
 /** One request and its first reply over a WebSocket (see `Fetcher`). */
 function socketRequest(url: string, body: string, timeoutMs: number): Promise<unknown> {
@@ -30,7 +30,8 @@ function socketRequest(url: string, body: string, timeoutMs: number): Promise<un
 /** The fetcher a page or a worker uses: HTTP with a 15 s limit, and a `wss://` URL as one request over a socket. */
 export const webGet: Fetcher = async (url, init) => {
   if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', 15_000);
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+  const timeout = AbortSignal.timeout(15_000);
+  const response = await fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 };
@@ -46,7 +47,7 @@ interface CandleSpec {
   intervals: Readonly<Record<number, string>>;
   limit: number;
   /** `symbol` is the market's own name for the coin. */
-  page(interval: string, intervalMs: number, endMs: number, get: Fetcher, symbol: string): Promise<CandleRow[]>;
+  page(interval: string, intervalMs: number, endMs: number, get: Fetcher, symbol: string, limit?: number): Promise<CandleRow[]>;
 }
 
 const row = (start: unknown, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown): CandleRow => ({ start: num(start), open: num(open), high: num(high), low: num(low), close: num(close), volume: num(volume) });
@@ -55,51 +56,51 @@ const binanceRows = (json: unknown): CandleRow[] => list(json).map(r => row(at(r
 const BINANCE = { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1h', 14_400_000: '4h', 86_400_000: '1d' } as const;
 
 const SPECS: Readonly<Record<string, CandleSpec>> = {
-  binance: { intervals: BINANCE, limit: 1500, page: async (i, _ms, end, get, symbol) => binanceRows(await get(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${i}&endTime=${end}&limit=1500`)) },
-  binancespot: { intervals: BINANCE, limit: 1000, page: async (i, _ms, end, get, symbol) => binanceRows(await get(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${i}&endTime=${end}&limit=1000`)) },
+  binance: { intervals: BINANCE, limit: 1500, page: async (i, _ms, end, get, symbol, limit = 1500) => binanceRows(await get(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${i}&endTime=${end}&limit=${limit}`)) },
+  binancespot: { intervals: BINANCE, limit: 1000, page: async (i, _ms, end, get, symbol, limit = 1000) => binanceRows(await get(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${i}&endTime=${end}&limit=${limit}`)) },
   bybit: {
     intervals: { 60_000: '1', 300_000: '5', 900_000: '15', 1_800_000: '30', 3_600_000: '60', 14_400_000: '240', 86_400_000: 'D' }, limit: 1000,
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${i}&end=${end}&limit=1000`), 'result', 'list')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
+    page: async (i, _ms, end, get, symbol, limit = 1000) => list(at(await get(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${i}&end=${end}&limit=${limit}`), 'result', 'list')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
   },
   bybitspot: {
     intervals: { 60_000: '1', 300_000: '5', 900_000: '15', 1_800_000: '30', 3_600_000: '60', 14_400_000: '240', 86_400_000: 'D' }, limit: 1000,
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${i}&end=${end}&limit=1000`), 'result', 'list')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
+    page: async (i, _ms, end, get, symbol, limit = 1000) => list(at(await get(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${i}&end=${end}&limit=${limit}`), 'result', 'list')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
   },
   okx: {
-    intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1H', 14_400_000: '4H', 86_400_000: '1Dutc' }, limit: 300,
+    intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1H', 14_400_000: '4H', 86_400_000: '1Dutc' }, limit: 100,
     // volCcy (column 6) is in coin; the plain volume is in contracts.
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://www.okx.com/api/v5/market/history-candles?instId=${symbol}&bar=${i}&after=${end + 1}&limit=100`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 6))),
+    page: async (i, _ms, end, get, symbol, limit = 100) => list(at(await get(`https://www.okx.com/api/v5/market/history-candles?instId=${symbol}&bar=${i}&after=${end + 1}&limit=${limit}`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 6))),
   },
   okxspot: {
-    intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1H', 14_400_000: '4H', 86_400_000: '1Dutc' }, limit: 300,
+    intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1H', 14_400_000: '4H', 86_400_000: '1Dutc' }, limit: 100,
     // On spot the plain volume (column 5) is in coin; volCcy is in USDT.
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://www.okx.com/api/v5/market/history-candles?instId=${symbol}&bar=${i}&after=${end + 1}&limit=100`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
+    page: async (i, _ms, end, get, symbol, limit = 100) => list(at(await get(`https://www.okx.com/api/v5/market/history-candles?instId=${symbol}&bar=${i}&after=${end + 1}&limit=${limit}`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
   },
   bitget: {
     intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1H', 14_400_000: '4H', 86_400_000: '1Dutc' }, limit: 1000,
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://api.bitget.com/api/v2/mix/market/candles?symbol=${symbol}&productType=usdt-futures&granularity=${i}&endTime=${end}&limit=1000`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
+    page: async (i, _ms, end, get, symbol, limit = 1000) => list(at(await get(`https://api.bitget.com/api/v2/mix/market/candles?symbol=${symbol}&productType=usdt-futures&granularity=${i}&endTime=${end}&limit=${limit}`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
   },
   bitgetspot: {
     // Spot names its intervals unlike futures (1min, not 1m).
     intervals: { 60_000: '1min', 300_000: '5min', 900_000: '15min', 1_800_000: '30min', 3_600_000: '1h', 14_400_000: '4h', 86_400_000: '1Dutc' }, limit: 1000,
-    page: async (i, _ms, end, get, symbol) => list(at(await get(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${i}&endTime=${end}&limit=1000`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
+    page: async (i, _ms, end, get, symbol, limit = 1000) => list(at(await get(`https://api.bitget.com/api/v2/spot/market/candles?symbol=${symbol}&granularity=${i}&endTime=${end}&limit=${limit}`), 'data')).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5))),
   },
   coinbase: {
     intervals: { 60_000: '60', 300_000: '300', 900_000: '900', 3_600_000: '3600', 21_600_000: '21600', 86_400_000: '86400' }, limit: 300,
     // [time in seconds, low, high, open, close, volume]
-    page: async (i, ms, end, get, symbol) => list(await get(`https://api.exchange.coinbase.com/products/${symbol}/candles?granularity=${i}&start=${new Date(end - 299 * ms).toISOString()}&end=${new Date(end).toISOString()}`)).map(r => row(num(at(r, 0)) * 1000, at(r, 3), at(r, 2), at(r, 1), at(r, 4), at(r, 5))),
+    page: async (i, ms, end, get, symbol, limit = 300) => list(await get(`https://api.exchange.coinbase.com/products/${symbol}/candles?granularity=${i}&start=${new Date(end - Math.max(1, limit - 1) * ms).toISOString()}&end=${new Date(end).toISOString()}`)).map(r => row(num(at(r, 0)) * 1000, at(r, 3), at(r, 2), at(r, 1), at(r, 4), at(r, 5))),
   },
   deribit: {
     intervals: { 60_000: '1', 300_000: '5', 900_000: '15', 1_800_000: '30', 3_600_000: '60', 86_400_000: '1D' }, limit: 1000,
-    page: async (i, ms, end, get, symbol) => {
-      const request = { jsonrpc: '2.0', id: 1, method: 'public/get_tradingview_chart_data', params: { instrument_name: symbol, resolution: i, start_timestamp: end - 999 * ms, end_timestamp: end } };
+    page: async (i, ms, end, get, symbol, limit = 1000) => {
+      const request = { jsonrpc: '2.0', id: 1, method: 'public/get_tradingview_chart_data', params: { instrument_name: symbol, resolution: i, start_timestamp: end - (limit - 1) * ms, end_timestamp: end } };
       const d = at(await get('wss://www.deribit.com/ws/api/v2', { method: 'RPC', headers: {}, body: JSON.stringify(request) }), 'result');
       return list(at(d, 'ticks')).map((t, k) => row(t, at(d, 'open', k), at(d, 'high', k), at(d, 'low', k), at(d, 'close', k), at(d, 'volume', k)));
     },
   },
   hyperliquid: {
     intervals: { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1h', 14_400_000: '4h', 86_400_000: '1d' }, limit: 1000,
-    page: async (i, ms, end, get, symbol) => list(await get('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin: symbol, interval: i, startTime: end - 999 * ms, endTime: end } }) }))
+    page: async (i, ms, end, get, symbol, limit = 1000) => list(await get('https://api.hyperliquid.xyz/info', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'candleSnapshot', req: { coin: symbol, interval: i, startTime: end - (limit - 1) * ms, endTime: end } }) }))
       .map(r => row(at(r, 't'), at(r, 'o'), at(r, 'h'), at(r, 'l'), at(r, 'c'), at(r, 'v'))),
   },
 };
@@ -123,7 +124,7 @@ export function nativeInterval(spec: Pick<CandleSpec, 'intervals'>, tfMs: number
  * Candles for `instrumentId` at `tfMs` over [from, to], oldest first, built from the venue's native bars (a coarser timeframe is
  * aggregated from a finer one) by walking back page by page from `to`. Returns [] for a venue it does not know.
  */
-export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12): Promise<Candle[]> {
+export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12, options?: { pageSize?: number; strict?: boolean }): Promise<Candle[]> {
   const spec = SPECS[venueOf(instrumentId)], market = listingOf(venueOf(instrumentId), listing);
   const native = spec ? nativeInterval(spec, tfMs) : null;
   if (!spec || !market || native === null) return [];
@@ -132,7 +133,11 @@ export async function fetchCandles(instrumentId: string, tfMs: number, from: num
   let end = to;
   // Enough pages for the window, with a ceiling so a misbehaving endpoint cannot loop.
   for (let pages = 0; pages < maxPages && end > from; pages++) {
-    const got = (await spec.page(interval, native, end, get, market.symbol)).filter(r => Number.isFinite(r.start) && Number.isFinite(r.open) && Number.isFinite(r.close));
+    // Price context and VWAP/levels ask only for the bars they need, including small tail refreshes.
+    const limit = options?.pageSize === undefined ? undefined : Math.max(1, Math.min(spec.limit, options.pageSize, Math.ceil((end - from) / native) + 2));
+    const received = await spec.page(interval, native, end, get, market.symbol, limit);
+    if (options?.strict && received.some(r => ![r.start, r.open, r.high, r.low, r.close, r.volume].every(Number.isFinite) || !Number.isSafeInteger(r.start) || r.start < 0 || r.start % native !== 0 || !(r.low > 0) || r.high < Math.max(r.open, r.close) || r.low > Math.min(r.open, r.close) || !(r.volume! >= 0))) throw new Error('Invalid candle page');
+    const got = received.filter(r => Number.isFinite(r.start) && Number.isFinite(r.open) && Number.isFinite(r.close));
     if (!got.length) break;
     let oldest = Infinity;
     for (const r of got) { rows.set(r.start, r); oldest = Math.min(oldest, r.start); }

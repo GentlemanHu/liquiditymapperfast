@@ -239,3 +239,23 @@ test('the history is asked once, then further back when the chart needs it, its 
   h.ensure(historyTarget('bybit:BTCUSDT', BTC), now - DAY, HOUR, () => {});
   assert.equal(h.bars.length, 0, 'another market starts again'); assert.equal(h.id, 'bybit:BTCUSDT');
 });
+
+test('VWAP history refresh asks for a few original-resolution bars and preserves the settled prefix', async () => {
+  let now = D0 + 10 * DAY + HOUR / 2;
+  const urls: URL[] = [], target = historyTarget('binance:BTCUSDT', BTC)!;
+  const get = async (raw: string): Promise<unknown> => {
+    const url = new URL(raw); urls.push(url);
+    const limit = Number(url.searchParams.get('limit')), end = Math.floor(Number(url.searchParams.get('endTime')) / HOUR) * HOUR;
+    return Array.from({ length: limit }, (_, i) => [end - (limit - i - 1) * HOUR, '100', '110', '90', '101', '2']);
+  };
+  const h = new KeyLevelHistory(get, () => now, 60_000), done = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+  h.ensure(target, now - 20 * DAY, HOUR, () => {}); await done(); await done();
+  const first = h.bars[0]!, count = h.bars.length;
+  assert.ok(count > 400);
+  now += 61_000; h.ensure(target, now - 20 * DAY, HOUR, () => {}); await done(); await done();
+  assert.equal(urls.length, 2);
+  assert.ok(Number(urls[1]!.searchParams.get('limit')) <= 5, 'tail refresh requests a handful of bars instead of 1,500');
+  assert.equal(urls[1]!.searchParams.get('interval'), '1h', 'VWAP keeps the original calculation interval');
+  assert.deepEqual(h.bars[0], first, 'closed history is cached'); assert.equal(h.bars.length, count);
+  h.ensure(target, now - 20 * DAY, HOUR, () => {}); await done(); assert.equal(urls.length, 2, 'a repeated window asks nothing');
+});

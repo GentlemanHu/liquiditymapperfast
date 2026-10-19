@@ -1,6 +1,7 @@
 /**
- * Forced closes of leveraged positions, as the exchanges that publish them report them: Binance (at most one per market a second, its
- * largest, so a cascade is undercounted), Bybit, OKX and Deribit (flagged fills). Hyperliquid, Coinbase and the other venues publish none.
+ * Forced closes of leveraged positions, as the exchanges that publish them report them: Binance (at most one per market a second, the
+ * latest of that second as its documentation says, so a cascade is undercounted), Bybit, OKX and Deribit (flagged fills). Hyperliquid,
+ * Coinbase and the other venues publish none.
  *
  * A venue reports one of two prices. Binance, OKX and Deribit give a price at the market, where the forced order went (OKX names its
  * price the bankruptcy price, but measured on 2026-10-09 it sat within a few basis points of the mark: in one calm half hour, BTC and ETH
@@ -49,9 +50,9 @@ export function fromWire(row: unknown): Liquidation | null {
 }
 
 /** The content a liquidation is known by: the venues give them no id, and a feed can send one again after a reconnect. */
-const keyOf = (l: { id: string; t: number; side: string; reported: number; usd: number }): string => `${l.id}|${l.t}|${l.side}|${l.reported}|${Math.round(l.usd * 100)}`;
+export const liquidationKey = (l: { id: string; t: number; side: string; reported: number; usd: number }): string => `${l.id}|${l.t}|${l.side}|${l.reported}|${Math.round(l.usd * 100)}`;
 
-/** Where liquidations outlive the process (SQLite on the server; the browser keeps them in memory). */
+/** Where liquidations outlive the process (SQLite on the server, IndexedDB in the browser). */
 export interface LiquidationStore {
   /** The newest `limit` since `since`, oldest first. */
   load(since: number, limit: number): Liquidation[];
@@ -84,7 +85,7 @@ export class LiquidationStream {
 
   constructor(store: LiquidationStore | null = null, protected now: () => number = Date.now, retentionMs: number = RETENTION_MS, floorUsd: number = LIQUIDATION_FLOOR_USD) {
     this.#store = store; this.#retentionMs = retentionMs; this.floorUsd = floorUsd;
-    if (store) for (const row of store.load(now() - retentionMs, MEMORY_MAX)) { this.#recent.push(row); this.#seen.add(keyOf(row)); }
+    if (store) for (const row of store.load(now() - retentionMs, MEMORY_MAX)) { this.#recent.push(row); this.#seen.add(liquidationKey(row)); }
   }
 
   /** Take liquidation events; returns the ones that are new and large enough, oldest first. */
@@ -96,7 +97,7 @@ export class LiquidationStream {
       const market = e.kind === 'bankruptcy' ? marketPrice(e.instrumentId) : null;
       const price = market && market.price > 0 && Math.abs(e.t - market.at) <= PRICE_FRESH_MS ? market.price : e.price;
       const row: Liquidation = { t: e.t, id: e.instrumentId, side: e.side, price, usd: e.notionalUsd, reported: e.price, kind: e.kind };
-      const key = keyOf(row);
+      const key = liquidationKey(row);
       if (this.#seen.has(key)) continue;
       this.#seen.add(key);
       if (this.#seen.size > SEEN_MAX) { const keep = [...this.#seen].slice(-SEEN_MAX / 2); this.#seen.clear(); for (const k of keep) this.#seen.add(k); }
@@ -120,8 +121,8 @@ export class LiquidationStream {
     if (this.#store?.query && from <= memoryStart) {
       // As with the prints: the store is asked through the millisecond memory begins at, and what memory holds of it is left out of its answer.
       const kept = new Set<string>();
-      for (const l of this.#recent) { if (l.t > memoryStart) break; kept.add(keyOf(l)); }
-      for (const l of this.#store.query(from, Math.min(to, memoryStart + 1), minUsd, limit)) if (!kept.has(keyOf(l))) out.push(l);
+      for (const l of this.#recent) { if (l.t > memoryStart) break; kept.add(liquidationKey(l)); }
+      for (const l of this.#store.query(from, Math.min(to, memoryStart + 1), minUsd, limit)) if (!kept.has(liquidationKey(l))) out.push(l);
     }
     for (const l of this.#recent) if (l.t >= from && l.t < to && l.usd >= minUsd) out.push(l);
     return largestLiquidations(out, limit);

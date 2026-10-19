@@ -104,7 +104,7 @@ export class TapeRing {
     const last = this.segments[this.segments.length - 1];
     if (n) {
       if (!last || gap) this.segments.push({ from: lo, to: hi });
-      else last.to = Math.max(last.to, hi);
+      else { last.to = Math.max(last.to, hi); last.from = Math.min(last.from, lo); }
     }
     if (this.segments.length > 64) this.segments.splice(0, this.segments.length - 64);
     this.arrivals.push({ at: arrived, from, to: this.written });

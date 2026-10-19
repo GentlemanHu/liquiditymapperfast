@@ -121,6 +121,46 @@ test('the hub asks one question at a time, again only when it changes or every f
   } finally { Date.now = realNow; }
 });
 
+test('an answer says which window it was asked for, and a window that ended after it was last asked is asked once more', async () => {
+  class FakeWorker { onmessage: ((event: { data: unknown }) => void) | null = null; postMessage(): void {} }
+  (globalThis as { Worker?: unknown }).Worker = FakeWorker;
+  const asked: { settle: () => void }[] = [];
+  const source = { profile: (_ids: string[], from: number, to: number) => new Promise<ProfileAnswer>(resolve => { asked.push({ settle: () => resolve({ from, to, instruments: [] }) }); }) };
+  const hub = new Hub(new Store(initialState()), source as never);
+  const realNow = Date.now; let clock = T0; Date.now = () => clock;
+  try {
+    const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+    const open = { tag: 'session|s1|1', settled: false }, over = { tag: 'session|s1|1', settled: true };
+    // The session is under way: asked, and its answer is the session's (a day that began at the same time has another tag).
+    hub.ensureTraded(['a:BTC'], T0, T0 + 8 * MIN, 5, true, open);
+    asked[0]!.settle(); await turn();
+    assert.equal(hub.traded!.tag, 'session|s1|1');
+    // It ends: its end is the question's end already, so nothing in the question changed, but what was held was read while it was open.
+    clock += 2_000; hub.ensureTraded(['a:BTC'], T0, T0 + 8 * MIN, 5, false, over);
+    assert.equal(asked.length, 2, 'one last question once it is over');
+    asked[1]!.settle(); await turn();
+    clock += 600_000; hub.ensureTraded(['a:BTC'], T0, T0 + 8 * MIN, 5, false, over);
+    assert.equal(asked.length, 2, 'and no more');
+    // A window that was over when it was first asked is asked once.
+    hub.ensureTraded(['a:BTC'], T0 - 86_400_000, T0 - 86_400_000 + 8 * MIN, 5, false, { tag: 'day|UTC|1', settled: true });
+    asked[2]!.settle(); await turn();
+    hub.ensureTraded(['a:BTC'], T0 - 86_400_000, T0 - 86_400_000 + 8 * MIN, 5, false, { tag: 'day|UTC|1', settled: true });
+    assert.equal(asked.length, 3);
+    assert.equal(hub.traded!.tag, 'day|UTC|1');
+    // The session that covers the same hours has the same bounds and its own tag: a new question, or the column would wait for an answer that never comes.
+    hub.ensureTraded(['a:BTC'], T0 - 86_400_000, T0 - 86_400_000 + 8 * MIN, 5, false, { tag: 'session|utc|1', settled: true });
+    assert.equal(asked.length, 4);
+    asked[3]!.settle(); await turn();
+    assert.equal(hub.traded!.tag, 'session|utc|1');
+    // What is on the chart has no tag, and moving off the live edge never asks for a last time.
+    hub.ensureTraded(['a:BTC'], T0, T0 + MIN, 5, true);
+    asked[4]!.settle(); await turn();
+    assert.equal(hub.traded!.tag, '');
+    clock += 600_000; hub.ensureTraded(['a:BTC'], T0, T0 + MIN, 5, false);
+    assert.equal(asked.length, 5);
+  } finally { Date.now = realNow; }
+});
+
 test('an empty selection clears the traded column, and an answer still on its way for the last one is not drawn', async () => {
   class FakeWorker { onmessage: ((event: { data: unknown }) => void) | null = null; postMessage(): void {} }
   (globalThis as { Worker?: unknown }).Worker = FakeWorker;

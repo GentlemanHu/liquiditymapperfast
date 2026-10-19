@@ -27,9 +27,6 @@ function frameOf(books: readonly ValuedBook[], asOf: number): LevelsFrame {
   return { asOf, books: books.map(b => ({ id: b.instrumentId, venue: b.venue, timestamp: b.timestamp, coarse: b.coarse, bids: side(b.bids), asks: side(b.asks), ...(b.touch ? { touch: b.touch } : {}) })) };
 }
 
-const withTimeout = <T>(work: Promise<T>, ms: number, what: string): Promise<T> =>
-  Promise.race([work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what} took longer than ${ms} ms`)), ms))]);
-
 let engine: Engine | null = null;
 let recordings: Recordings | null = null;
 /** Whether this tab holds the role of writing recordings. */
@@ -64,7 +61,16 @@ function stopRecording(): void {
 
 async function init(selected: string[] | null, known: string[] | null, persist: boolean, coin: Coin, tier: number, database: string, lock: string): Promise<void> {
   if (persist && typeof indexedDB !== 'undefined') {
-    try { recordings = await withTimeout(openRecordings(database, Date.now() - BROWSER_RETENTION_MS, () => recording, error => { console.warn('recordings are no longer being saved:', error); stopRecording(); }), 5_000, 'opening the recordings'); }
+    // A write that fails is tried again (the status bar says so meanwhile); only a newer page taking the database over ends the saving here.
+    let failing = false;
+    const events = {
+      failed: (error: unknown, fatal: boolean): void => {
+        if (fatal) { console.warn('recordings are no longer being saved:', error); stopRecording(); return; }
+        if (!failing) { failing = true; console.warn('a recording could not be saved; trying again:', error); post({ type: 'recording', recording, failed: true }); }
+      },
+      recovered: (): void => { failing = false; console.info('recordings are being saved again'); post({ type: 'recording', recording }); },
+    };
+    try { recordings = await openRecordings(database, Date.now() - BROWSER_RETENTION_MS, () => recording, events); }
     catch (error) { console.warn('recordings are not kept this session:', error); }
     if (recordings) {
       // Ask the browser not to evict the recordings when disk is short (it may decline, and some browsers ask the person).
@@ -73,7 +79,7 @@ async function init(selected: string[] | null, known: string[] | null, persist: 
     }
   }
   const venues = browserVenues(coin);
-  const next = new Engine({ coin, tier, venues, columns: recordings?.columns ?? null, footprint: recordings?.footprint ?? null, prints: recordings?.prints ?? null, flow: recordings?.flow ?? null, absorption: recordings?.absorption ?? null, coverage: recordings?.coverage ?? null });
+  const next = new Engine({ coin, tier, venues, columns: recordings?.columns ?? null, footprint: recordings?.footprint ?? null, prints: recordings?.prints ?? null, flow: recordings?.flow ?? null, absorption: recordings?.absorption ?? null, coverage: recordings?.coverage ?? null, liquidations: recordings?.liquidations ?? null });
   next.onLevels = (books, asOf) => post({ type: 'levels', frame: frameOf(books, asOf) });
   next.onTick = tick => post({ type: 'tick', tick });
   next.onPrints = (items: Print[]) => post({ type: 'prints', items });
@@ -106,6 +112,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
     }
     case 'sizes': return { result: run.sizes(call.ids, call.windows, call.cuts ?? []), transfer: [] };
     case 'profile': return { result: run.profile(call.ids, call.from, call.to, call.rowStep), transfer: [] };
+    case 'oiProfile': return { result: await run.oiProfile(call.ids, call.from, call.to, call.rowStep), transfer: [] };
     case 'range': return { result: run.range(call.ids, call.from, call.to, call.band, call.rowStep), transfer: [] };
     case 'valueAreas': return { result: run.valueAreas(call.ids, call.windows, call.rowStep, call.share), transfer: [] };
     case 'absorption': return { result: await run.absorptionHistory(call.ids, call.mins, call.from, call.to, call.limit, call.since), transfer: [] };

@@ -65,6 +65,10 @@ test('the source says what becomes of the recordings of this tab: not known yet,
   assert.equal(source.saving(later), 'here');
   say(worker, { type: 'recording', recording: false });
   assert.equal(source.saving(later), 'other', 'the role was handed to another tab');
+  say(worker, { type: 'recording', recording: true, failed: true });
+  assert.equal(source.saving(later), 'failed', 'a write failed and is being tried again');
+  say(worker, { type: 'recording', recording: true });
+  assert.equal(source.saving(later), 'here', 'a write went through again: saving works, as it did before the failure');
   say(worker, { type: 'recording', recording: false, failed: true });
   assert.equal(source.saving(later), 'failed', 'its storage stopped, which is not another tab having the role');
   const memory = make();

@@ -7,18 +7,22 @@ import { TIMEFRAMES, valueAreaKey, type Hub, type RasterResult } from '../hub.ts
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
 import type { ValueLevels } from '../../shared/profile.ts';
-import { DRAWN_SHARE, answerLevels, candleBarMs, candleLevels, linesWindows, recordedShare, recordedWindows, requestStep, touchedAt } from '../traded/levels.ts';
+import { DRAWN_SHARE, answerLevels, candleBarMs, candleLevels, columnWindow, linesWindows, recordedShare, recordedWindows, requestStep, touchedAt, windowLabel, windowZone } from '../traded/levels.ts';
+import { LabelBoard } from '../labels.ts';
 import type { ProfileWindow } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, rgb, textOn, type Palette } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
-import { clock, dayOfMonth, price as fmtPrice, tickLabel, usd, zoneName, zoneOffsetMs } from '../format.ts';
+import { clock, price as fmtPrice, usd, zoneName } from '../format.ts';
+import { timeAxis } from '../time-axis.ts';
+export { timeTicks } from '../time-axis.ts';
 import type { Store, AppState, CandleRow } from '../store.ts';
 import { cumulative, groupLevels, type Grouped } from './levels-data.ts';
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf } from '../scope.ts';
 import { fitText } from '../text-fit.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
 import { tradedHeader, tradedLines, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
+import { metricHeader, metricWords } from '../traded/metrics.ts';
 import { flowIds, flowLoadIds, mapVenues } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
@@ -41,7 +45,7 @@ import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { MAX_BACK_MS, barMsFor, keyLines, neededFrom, type KeyLine } from '../keylevels/levels.ts';
 import { anyLine } from '../keylevels/settings.ts';
 import { historyTarget, profileTarget, type HistoryTarget } from '../keylevels/history.ts';
-import { paintKeyLevels, paintKeyTags, placeKeyTags, underTag, type KeyTag } from '../keylevels/paint.ts';
+import { paintKeyLevels, paintKeyTags, periodDate, placeKeyTags, underTag, type KeyTag } from '../keylevels/paint.ts';
 import { sessionsOf, vwapBarMs, vwapSeries, whaleSeries } from '../vwap/vwap.ts';
 import { anchorsOf } from '../vwap/settings.ts';
 import { FootprintMarks } from '../footprint/marks.ts';
@@ -55,8 +59,10 @@ import { paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { countdown, lineSide } from '../price-line.ts';
 import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../replay/clock.ts';
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
-import { TraceIndex, secondsPath } from '../tape/trace.ts';
+import { TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../tape/trace.ts';
 import { curveColors } from './ladder-curves.ts';
+import { priceInstrument, priceTarget, type PriceHistoryAnswer, type PriceTarget } from '../../shared/price-history.ts';
+import { priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindow, type PricePoint, type PriceWindow } from '../price-history.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -114,16 +120,6 @@ const NARROW_PLOT = 420;
 /** A map pane narrower than this gets the narrow price axis and profile column. */
 const COMPACT_PANE = 520;
 
-const TIME_STEPS = [60e3, 300e3, 900e3, 1800e3, 3600e3, 7200e3, 14400e3, 43200e3, 86400e3, 172800e3, 604800e3];
-
-export function timeTicks(t0: number, t1: number, widthPx: number, minPx = 96): number[] {
-  const want = (t1 - t0) * minPx / Math.max(1, widthPx);
-  const step = TIME_STEPS.find(s => s >= want) ?? TIME_STEPS[TIME_STEPS.length - 1]!;
-  const offset = -zoneOffsetMs(t0);
-  const out: number[] = [];
-  for (let t = Math.ceil((t0 - offset) / step) * step + offset; t <= t1; t += step) out.push(t);
-  return out;
-}
 export function gutter(state: AppState): number { return AXIS_W + (state.show.profile ? PROFILE_W : 0) + (tradedShown(state) ? TRADED_W : 0); }
 
 /** Rolling volume baseline for a candle array, keyed by the sensitivity it was computed with. */
@@ -155,6 +151,12 @@ export class HeatPane {
   #dirty = true; #frame = 0;
   /** When the map was last drawn: the countdown redraws it once a second only when nothing else has (a quiet market). */
   #lastRender = 0;
+  #overview = false;
+  #overviewTarget: PriceTarget | null = null;
+  #overviewContext: { key: string; candles: readonly CandleRow[]; window: PriceWindow | null } | null = null;
+  #overviewPoints: { answer: PriceHistoryAnswer; cut: number; runs: PricePoint[][] } | null = null;
+  /** A Go to needing price history may fit it on arrival, only while time and price stay where that action put them. */
+  #priceFit: Bounds | null = null;
   #dataVersion = 0; #rasteredVersion = -1; #rasteredKey = ''; #lastRasterAt = 0;
   #liveMargin = 0;
   #palette = PALETTES.light!;
@@ -177,6 +179,10 @@ export class HeatPane {
   #vaWindows: { key: string; windows: ProfileWindow[] } | null = null;
   /** Levels of days, weeks or sessions worked out from candles, by window, bar size, rows and share; a window under way with the candles' version. */
   readonly #candleLevels = new Map<string, ValueLevels | null>();
+  /** The names put at the lines' right ends this frame (Volume profile, key levels, VWAP). */
+  readonly #labels = new LabelBoard();
+  /** The day, week or session the traded column adds up (null: what is on the chart), and what it was worked out for. */
+  #columnPeriod: { key: string; window: ProfileWindow | null } | null = null;
   /** The key levels' market and zone, how far back their candles are needed, and their lines, each kept until what it depends on changes. */
   #keyContext: { key: string; target: HistoryTarget | null; zone: string; barMs: number } | null = null;
   #keyFrom: { key: string; from: number } | null = null;
@@ -255,6 +261,7 @@ export class HeatPane {
     this.hub.onColumns = () => { this.#dataVersion++; this.invalidate(); };
     this.#bindInput();
     window.setInterval(() => { this.hub.invalidateColumns(); this.invalidate(); }, 30_000);
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.hub.priceHistory.stop(); else this.invalidate(); });
   }
 
   get plotW(): number { return Math.max(1, this.#w - gutter(this.store.state)); }
@@ -285,6 +292,7 @@ export class HeatPane {
   setSuspended(on: boolean): void {
     if (on === this.#suspended) return;
     this.#suspended = on;
+    if (on) this.hub.priceHistory.stop();
     if (on && this.#pulseFrame) { cancelAnimationFrame(this.#pulseFrame); this.#pulseFrame = 0; }
     if (!on) this.invalidate();
   }
@@ -460,10 +468,12 @@ export class HeatPane {
   goTo(t: number): void {
     const v = this.view, span = v.t1 - v.t0, t0 = t - span / 2, t1 = t + span / 2;
     let lo = Infinity, hi = -Infinity;
-    const tf = TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000;
-    for (const c of this.store.state.candles) if (c[0] + tf > t0 && c[0] < t1) { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); }
+    const state = this.store.state, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    const own = state.seriesInstrument === state.marketId ? state.candles : [];
+    for (const c of own) if (c[0] + tf > t0 && c[0] < t1) { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); }
     const pad = (hi - lo) * 0.18;
     v.set({ t0, t1, p0: hi > lo ? lo - pad : v.p0, p1: hi > lo ? hi + pad : v.p1 });
+    this.#priceFit = priceOverviewNeeded(own, tf, v, this.plotW, Date.now()) ? v.clone() : null;
     this.store.set({ followLive: false }); this.#liveMargin = v.t1 - pageNow(); this.#rasteredKey = ''; this.onView(); this.invalidate();
   }
 
@@ -503,6 +513,7 @@ export class HeatPane {
       if (mark && (mark < p0 + span * 0.1 || mark > p1 - span * 0.1)) { const mid = mark - span / 2; this.view.p0 = mid; this.view.p1 = mid + span; this.#rasteredKey = ''; }
     }
     this.#positionGl();
+    this.#ensureOverview(state);
     const gutterCss = `${gutter(state)}px`;
     if (this.#gutterCss !== gutterCss) { this.#gutterCss = gutterCss; this.root.style.setProperty('--gutter', gutterCss); }
     this.#manageRaster();
@@ -510,8 +521,15 @@ export class HeatPane {
     if (state.liquidations.on) this.hub.ensureLiquidations(this.view, scaledUsd(state.liquidations.minUsd));
     if (state.keyLevels.on && anyLine(state.keyLevels)) this.#ensureKeyLevels(state);
     if (state.vwap.on) this.#ensureVwap(state);
-    if (state.show.traded) { this.#ensureTraded(state); this.#ensureValueAreas(state); }
-    if (state.absorption.on) { const { ids, thresholds } = this.#absorptionContext(state); this.hub.ensureAbsorption(ids, ids.map(id => thresholds.get(id) ?? null), this.view, state.absorption.sdMinutes); }
+    if (state.show.traded) {
+      // What is on the chart draws its lines from the column's answer; a day, week or session draws them from the value areas, so on a map with no
+      // room for the column (a phone) its whole-period profile would be read for nothing. Another measure than traded volume draws its lines
+      // from the column's answer whatever the period, so it is always asked.
+      if (tradedShown(state) || state.traded.period === 'view' || state.traded.metric !== 'volume') this.#ensureTraded(state);
+      this.#ensureValueAreas(state);
+    }
+    // The column's absorption measure judges groups at the thresholds the marks use, which need the recent minutes the marks load.
+    if (state.absorption.on || (state.show.traded && state.traded.metric === 'absorption')) { const { ids, thresholds } = this.#absorptionContext(state); this.hub.ensureAbsorption(ids, ids.map(id => thresholds.get(id) ?? null), this.view, state.absorption.sdMinutes); }
     this.#stepFootprint(state);
     // Under a dominant footprint the heatmap is gone altogether, so there is nothing to draw.
     if (state.layer === 'liquidity' && this.#lodFrame.heatmapOpacity > 0.003) this.gl.draw(this.view, this.#style(), this.#placeholder()); else this.gl.clear();
@@ -585,7 +603,7 @@ export class HeatPane {
     const pStep = niceStep(v.p1 - v.p0, ph / 46);
     ctx.globalAlpha = 0.6; ctx.beginPath();
     for (let q = Math.ceil(v.p0 / pStep) * pStep; q <= v.p1; q += pStep) { const y = Math.round(v.yOf(q, ph)) + 0.5; ctx.moveTo(0, y); ctx.lineTo(pw, y); }
-    const ticks = timeTicks(v.t0, v.t1, pw);
+    const { ticks, labels: timeLabels } = timeAxis(v.t0, v.t1, pw, text => ctx.measureText(text).width);
     for (const t of ticks) { const x = Math.round(v.xOf(t, pw)) + 0.5; ctx.moveTo(x, 0); ctx.lineTo(x, ph); }
     ctx.stroke(); ctx.globalAlpha = 1;
     const market = state.markets.find(m => (m.instrumentId ?? m.id) === state.marketId);
@@ -606,15 +624,18 @@ export class HeatPane {
       paintFootprint(ctx, this.#footprint, this.#lodFrame, state.timeframe, v, pw, ph, p, this.#trapMarks(), { marks, settings: fp, ...(replaying() ? { until: pageNow() } : {}) });
     }
     this.#startPulse();
+    if (state.show.candles) this.#paintOverview(ctx, state, pw, ph);
     if (state.show.candles) this.#paintCandles(ctx, state, pw, ph, this.#lodFrame.narrowing);
     if (state.show.candles) this.#paintDivergences(ctx, state, pw, ph); // joined swings need the candles they join
     this.#paintTrace(ctx, state, pw, ph); // over the candles (hollow while the dust shows), under the bubbles
     this.#paintBubbles(ctx, state, pw, ph); // above the candles, so a large trade is never hidden behind one
     this.#paintLiquidations(ctx, state, pw, ph); // above the bubbles: a forced order is one of the market orders, marked as forced
     this.#paintAbsorption(ctx, state, pw, ph);
+    // The Volume profile's, the key levels' and the VWAP's names at the lines' right ends share one board, so none is printed over another.
+    this.#labels.clear();
     this.#paintValueLines(ctx, state, pw, ph);
-    this.#keyTags = state.keyLevels.on ? paintKeyLevels(ctx, this.#keyLevelLines(state), v, pw, ph, p, state.keyLevels, pageNow(), this.#keyLevelContext(state).zone) : [];
-    this.#vwapTags = state.vwap.on ? paintVwap(ctx, this.#vwapLines(state), v, pw, ph, p, state.vwap) : [];
+    this.#keyTags = state.keyLevels.on ? paintKeyLevels(ctx, this.#keyLevelLines(state), v, pw, ph, p, state.keyLevels, pageNow(), this.#keyLevelContext(state).zone, this.#labels) : [];
+    this.#vwapTags = state.vwap.on ? paintVwap(ctx, this.#vwapLines(state), v, pw, ph, p, state.vwap, this.#labels) : [];
     // Replay: nothing after its moment is shown (the heatmap under this canvas included), and a line marks it.
     if (replaying()) {
       const x = Math.max(0, Math.min(pw, v.xOf(pageNow(), pw)));
@@ -657,14 +678,8 @@ export class HeatPane {
     }
     // time axis
     ctx.fillStyle = p.panel; ctx.fillRect(0, ph, w, TIME_H);
-    ctx.fillStyle = p.muted; ctx.textAlign = 'center';
-    let lastDay = -1;
-    for (const t of ticks) {
-      const x = v.xOf(t, pw); if (x < 24 || x > pw - 24) continue;
-      const day = dayOfMonth(t);
-      ctx.fillText(tickLabel(t, day !== lastDay && (ticks.length < 3 || lastDay === -1)), x, ph + TIME_H / 2);
-      lastDay = day;
-    }
+    ctx.fillStyle = p.muted; ctx.textAlign = 'center'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+    for (const label of timeLabels) ctx.fillText(label.text, label.x, ph + TIME_H / 2);
     // Which clock the labels are on, under the price axis where no tick label goes (a screenshot says it too).
     ctx.textAlign = 'right'; ctx.fillText(zoneName(), w - 6, ph + TIME_H / 2); ctx.textAlign = 'center';
     this.#paintLegend(ctx, state);
@@ -742,7 +757,8 @@ export class HeatPane {
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     const wide = (text: string): number => ctx.measureText(text).width, tailW = tail ? wide(tail) + 10 : 0;
     detail = fitText(wide, detail, room);
-    const note = fitText(wide, phone && borrowed ? borrowed.replace(/^\s*·\s*/, '') : '', room), noteW = note ? wide(note) : 0, detailW = detail ? wide(detail) : 0;
+    const extra = [phone && borrowed ? borrowed.replace(/^\s*·\s*/, '') : '', this.#overviewLegend(state)].filter(Boolean).join('  ·  ');
+    const note = fitText(wide, extra, room), noteW = note ? wide(note) : 0, detailW = detail ? wide(detail) : 0;
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     const shownTitle = fitText(wide, phone ? `${name}  ${state.timeframe}` : title, room - tailW), titleW = wide(shownTitle);
     const plateW = Math.max(titleW + tailW, detailW, noteW) + 14, plateH = (detail ? 36 : 22) + (note ? 14 : 0);
@@ -754,6 +770,77 @@ export class HeatPane {
     if (tail) { ctx.fillStyle = p.muted; ctx.fillText(tail, 12 + titleW + 10, 16); }
     if (detail) { ctx.fillStyle = up ? p.candleUp : p.candleDown; ctx.fillText(detail, 12, 32); }
     if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, 46); }
+  }
+
+  /** Plan only when the data or a whole minute of the view changes; pointer redraws never scan coverage or start a read. */
+  #ensureOverview(state: AppState): void {
+    if (!state.show.candles || this.#suspended || this.root.hidden || document.hidden) { this.#overview = false; this.hub.priceHistory.stop(); return; }
+    const v = this.view, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, now = Date.now(), history = this.hub.priceHistory;
+    const key = `${state.marketId}|${state.seriesInstrument}|${tf}|${Math.floor(v.t0 / 60_000)}|${Math.ceil(v.t1 / 60_000)}|${Math.floor(now / 60_000)}|${this.plotW}|${history.answer?.tfMs ?? 0}`;
+    let context = this.#overviewContext;
+    if (!context || context.key !== key || context.candles !== state.candles) {
+      const own = state.seriesInstrument === state.marketId ? state.candles : [];
+      const wanted = priceOverviewNeeded(own, tf, v, this.plotW, now);
+      this.#overviewTarget = wanted ? priceTarget(currentCoin(), state.marketId, kindOf(state.markets, state.marketId) ?? 'perp') : null;
+      const window = wanted && this.#overviewTarget ? priceWindow(v, this.plotW, now, history.answer?.tfMs, tf) : null;
+      context = this.#overviewContext = { key, candles: state.candles, window };
+    }
+    this.#overview = context.window !== null && this.#overviewTarget !== null;
+    if (this.#overview && context.window && this.#overviewTarget) history.ensure(this.#overviewTarget, context.window, () => { this.#fitOverview(); this.invalidate(); });
+    else history.stop();
+    if (this.#overview) this.#fitOverview();
+  }
+
+  #overviewRuns(): PricePoint[][] {
+    const answer = this.hub.priceHistory.answer; if (!this.#overview || !answer) return [];
+    const at = pageNow(), cut = replaying() || answer.asOf > at ? Math.floor(at / 1000) : 0;
+    if (!this.#overviewPoints || this.#overviewPoints.answer !== answer || this.#overviewPoints.cut !== cut) this.#overviewPoints = { answer, cut, runs: pricePoints(answer, at, replaying()) };
+    return this.#overviewPoints.runs;
+  }
+
+  #fitOverview(): void {
+    const pending = this.#priceFit, v = this.view, answer = this.hub.priceHistory.answer;
+    if (!pending || !answer || !this.#overviewTarget) return;
+    if (v.t0 !== pending.t0 || v.t1 !== pending.t1 || v.p0 !== pending.p0 || v.p1 !== pending.p1) { this.#priceFit = null; return; }
+    const bounds = priceBounds(answer, this.#overviewTarget.id, v, pageNow(), replaying());
+    if (!bounds) return;
+    const { lo, hi } = bounds;
+    const pad = (hi - lo) * 0.18; v.p0 = lo - pad; v.p1 = hi + pad; this.#priceFit = null; this.#rasteredKey = '';
+  }
+
+  #overviewLegend(state: AppState): string {
+    if (!this.#overview) return '';
+    const h = this.hub.priceHistory, a = h.answer, target = this.#overviewTarget;
+    let text = '';
+    if (a?.candles.length && target) {
+      const tf = Object.entries(TIMEFRAMES).find(([, ms]) => ms === a.tfMs)?.[0] ?? '';
+      const market = `${venueLabel(a.instrumentId)} ${target.listing.symbol} ${target.kind === 'spot' ? t('Spot') : t('Perp')}`;
+      text = t('Price · {market} · {timeframe}', { market, timeframe: tf });
+      const point = pricePointAt(this.#overviewRuns(), state.hover?.t ?? Math.min(pageNow(), this.view.t1), a.tfMs);
+      if (point) text += `  ${fmtPrice(point.price)}`;
+    }
+    const status = h.status === 'stale' ? t('Price history is stale; trying again in a minute.') : h.status === 'failed' ? t('Price history could not be loaded; trying again in a minute.') : h.status === 'empty' ? t('No price history for this time.') : !a?.candles.length ? t('Reading price history…') : '';
+    return [text, status].filter(Boolean).join('  ·  ');
+  }
+
+  /** A true price series; separate paths preserve exchange gaps and never splice a reference market into the selected market's live trades. */
+  #paintOverview(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    const answer = this.hub.priceHistory.answer; if (!this.#overview || !answer) return;
+    const runs = this.#overviewRuns(), v = this.view, p = this.#palette;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip(); ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.9 * (1 - 0.85 * this.#lodFrame.barAlpha);
+    if (priceInstrument(state.marketId) !== answer.instrumentId) ctx.setLineDash([5, 3]);
+    ctx.beginPath();
+    for (const run of runs) {
+      let started = false;
+      for (const point of run) {
+        if (point.t < v.t0 - answer.tfMs || point.t > v.t1 + answer.tfMs) continue;
+        const x = v.xOf(point.t, pw), y = v.yOf(point.price, ph);
+        if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; }
+      }
+    }
+    ctx.lineWidth = 3.5; ctx.strokeStyle = p.dark ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.85)'; ctx.stroke();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = p.dark ? '#ffffff' : '#111318'; ctx.stroke(); ctx.restore();
   }
 
   /**
@@ -782,7 +869,7 @@ export class HeatPane {
   #paintTrace(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const tape = this.hub.tape;
     if (!this.#dustOn(state) || !tape) return;
-    const v = this.view, p = this.#palette, ms = (v.t1 - v.t0) / pw, c0 = Math.floor(v.t0 / ms), c1 = Math.ceil(v.t1 / ms), gap = Math.max(3, Math.ceil(10_000 / ms));
+    const v = this.view, p = this.#palette, ms = (v.t1 - v.t0) / pw, c0 = Math.floor(v.t0 / ms), c1 = Math.ceil(v.t1 / ms), gap = traceGapColumns(ms);
     const fade = 1 - 0.85 * this.#lodFrame.barAlpha;
     if (fade <= 0.02) return;
     const stroke = (runs: number[][], color: string, width: number, alpha: number): void => {
@@ -812,12 +899,12 @@ export class HeatPane {
     ctx.restore();
   }
 
-  /** Where the live trades begin (the page opened, or the ring let the oldest go), and each gap after: a dotted line and a short note. */
+  /** Where the live trades begin (the page opened, or the ring let the oldest go), and each gap after the price line breaks at: a dotted line and a short note. */
   #paintTapeStart(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, p: Palette): void {
     const tape = this.hub.tape, v = this.view;
     if (!this.#dustOn(state) || !tape || !tape.segments.length) return;
     const from = Math.max(tape.segments[0]!.from, tape.heldFrom), marks = [{ t: from, label: t('live trades from {time}', { time: clock(from) }) }];
-    for (const s of tape.segments.slice(1)) if (s.from > from) marks.push({ t: s.from, label: t('gap in live trades') });
+    for (const at of gapMarks(tape.segments, from, (v.t1 - v.t0) / pw)) marks.push({ t: at, label: t('gap in live trades') });
     ctx.save(); ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
     for (const m of marks) {
       if (!(m.t > v.t0 && m.t < v.t1)) continue;
@@ -1036,35 +1123,87 @@ export class HeatPane {
   /** The rows the traded column draws: the profile's step, so the two columns share their rows. */
   #tradedStep(): number { const v = this.view; return niceStep(v.p1 - v.p0, this.plotH / 3); }
 
-  /** The window the traded column adds up: the whole minutes on the map, up to the one that is open. */
+  /**
+   * The day, week or session the traded column adds up when the settings pick one (`Worked out over`): the newest at the chart's right edge,
+   * the last of those the lines are drawn for. Null for what is on the chart. Worked out again when the settings, the zone or the minute of
+   * the right edge or of the clock change, never per frame.
+   */
+  #tradedPeriod(): ProfileWindow | null {
+    const state = this.store.state, s = state.traded;
+    if (s.period === 'view') return null;
+    const v = this.view, MIN = 60_000, now = pageNow();
+    // The right edge counts by its minute, and only while it is behind the clock: at the live edge it moves every frame and the answer does not.
+    const key = `${s.period}|${s.zone}|${JSON.stringify(s.sessions)}|${state.timeZone}|${Math.min(Math.ceil(v.t1 / MIN), Math.floor(now / MIN))}|${Math.floor(now / MIN)}`;
+    if (this.#columnPeriod?.key !== key) this.#columnPeriod = { key, window: columnWindow(s, state.timeZone, v.t1, now) };
+    return this.#columnPeriod.window;
+  }
+  /** What the column's header calls its day, week or session; empty for what is on the chart. */
+  #tradedLabel(): string {
+    const w = this.#tradedPeriod(), state = this.store.state;
+    if (!w) return '';
+    const zone = windowZone(w, state.traded, state.timeZone);
+    return windowLabel(w, at => periodDate(at, 'day', zone), t('Week'));
+  }
+  /**
+   * The window the traded column adds up: the day, week or session the settings pick, else the whole minutes on the map, up to the one that
+   * is open (in a replay, up to the moment shown).
+   */
   #tradedWindow(): { from: number; to: number } {
-    const v = this.view, MIN = 60_000, replay = replayView();
-    if (replay) { const q = MIN * Math.max(1, Math.round(replay.speed / 60)); return { from: Math.floor(v.t0 / MIN) * MIN, to: Math.min(Math.ceil(v.t1 / MIN) * MIN, Math.floor(pageNow() / q) * q) }; }
-    return { from: Math.floor(v.t0 / MIN) * MIN, to: Math.min(Math.ceil(v.t1 / MIN), Math.floor(pageNow() / MIN) + 1) * MIN };
+    const v = this.view, MIN = 60_000, replay = replayView(), w = this.#tradedPeriod();
+    const q = replay ? MIN * Math.max(1, Math.round(replay.speed / 60)) : MIN;
+    const open = replay ? Math.floor(pageNow() / q) * q : (Math.floor(pageNow() / MIN) + 1) * MIN;
+    return { from: Math.floor((w ? w.from : v.t0) / MIN) * MIN, to: Math.min(Math.ceil((w ? w.to : v.t1) / MIN) * MIN, open) };
   }
   /** The map's grid step at the current price. */
   #gridStep(): number { const m = this.store.state.mark.price; return gridStepFor(m > 0 ? m : Math.max(1e-9, (this.view.p0 + this.view.p1) / 2)); }
   /** The rows the point of control and the value area are read from: the grid step times the setting, never the column's rows, which follow the zoom. */
   #levelStep(): number { return this.#gridStep() * this.store.state.traded.rows; }
+  /**
+   * The column's answer, when it is for the window the column adds up: after the choice of a day, week or session changes, the answer held is
+   * still the last window's until the new one comes (two windows can begin together, a day and the week it is the first of), and its total
+   * would be read under the new name; each answer says which window it was asked for (the period's key, empty for what is on the chart). What
+   * is on the chart keeps drawing the last answer while a new one loads, as it always did.
+   */
+  #heldTraded(): Hub['traded'] {
+    const held = this.hub.traded;
+    return held && held.tag === (this.#tradedPeriod()?.key ?? '') ? held : null;
+  }
   /** The point of control and the value area of what is on the chart, read from the column's answer over every price (kept until either changes). */
   #viewLevels(): ValueLevels | null {
-    const held = this.hub.traded; if (!held) return null;
+    const answer = this.#columnAnswer(); if (!answer) return null;
     const step = this.#levelStep(), share = this.store.state.traded.share / 100, m = this.#levelsMemo;
-    if (m && m.answer === held.answer && m.step === step && m.share === share) return m.levels;
-    const levels = answerLevels(held.answer, step, share);
-    this.#levelsMemo = { answer: held.answer, step, share, levels };
+    if (m && m.answer === answer && m.step === step && m.share === share) return m.levels;
+    const levels = answerLevels(answer, step, share);
+    this.#levelsMemo = { answer, step, share, levels };
     return levels;
+  }
+  /**
+   * What the column draws: traded volume's answer, or the answer of the measure it is set to once that one is held (traded/metrics.ts), each
+   * only when it is for the window the column adds up (`#heldTraded`).
+   */
+  #columnAnswer(): ProfileAnswer | null {
+    const metric = this.store.state.traded.metric;
+    if (metric === 'volume') return this.#heldTraded()?.answer ?? null;
+    const held = this.hub.metricProfile;
+    return held && held.metric === metric && held.tag === (this.#tradedPeriod()?.key ?? '') ? held.answer : null;
   }
 
   /**
-   * Ask for the traded volume of the window on the map (whole minutes, up to the one that is open), on the instruments the flow column counts,
-   * on rows that both the column's rows and the level rows divide (see `requestStep`).
+   * Ask for what the column adds up over the window on the map (whole minutes, up to the one that is open), on the instruments the flow
+   * column counts, on rows that both the column's rows and the level rows divide (see `requestStep`): traded volume, or another measure.
    */
   #ensureTraded(state: AppState): void {
     const v = this.view;
     if (!(v.t1 > v.t0) || !(v.p1 > v.p0)) return;
-    const { from, to } = this.#tradedWindow();
-    this.hub.ensureTraded(flowIds(state, this.hub.flow.ids), from, to, requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), state.followLive && !replaying());
+    const { from, to } = this.#tradedWindow(), period = this.#tradedPeriod(), underWay = period !== null && period.to > pageNow();
+    // A day, week or session still under way keeps trading wherever the chart is looking; what is on the chart does only while it follows the live edge.
+    const open = underWay && !replaying(), live = period ? open : state.followLive && !replaying();
+    // An open period is asked for whole: its end is fixed, so the question does not change with every minute (the minutes not recorded yet are
+    // empty), and a week is read again only as often as the hub's refresh allows; once it is over, the hub asks one last time (`settled`).
+    const ids = flowIds(state, this.hub.flow.ids), metric = state.traded.metric, end = open ? Math.ceil(period.to / 60_000) * 60_000 : to;
+    const step = requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), asked = { tag: period?.key ?? '', settled: period !== null && !underWay };
+    if (metric === 'volume') this.hub.ensureTraded(ids, from, end, step, live, asked);
+    else this.hub.ensureMetricProfile(metric, ids, from, end, step, live, asked, metric === 'absorption' ? this.#absorptionContext(state).thresholds : undefined);
   }
 
   /**
@@ -1222,7 +1361,7 @@ export class HeatPane {
   /** Ask for what the lines of the days, weeks or sessions are worked out from: the recording's value areas, or the candles. */
   #ensureValueAreas(state: AppState): void {
     const s = state.traded;
-    if (s.period === 'view' || (!s.poc && !s.va)) return;
+    if (s.period === 'view' || s.metric !== 'volume' || (!s.poc && !s.va)) return;
     const windows = this.#linesWindows(state);
     if (!windows.length) return;
     if (s.source === 'recorded') { this.hub.ensureValueAreas(flowIds(state, this.hub.flow.ids), windows, this.#levelStep(), s.share / 100); return; }
@@ -1266,9 +1405,11 @@ export class HeatPane {
     if (!state.show.traded || (!s.poc && !s.va)) return;
     const v = this.view, p = this.#palette, now = pageNow(), step = this.#levelStep();
     const segments: { x0: number; x1: number; levels: ValueLevels; name: string; naked: number | null }[] = [];
-    if (s.period === 'view') {
-      const levels = this.#viewLevels();
-      if (levels) segments.push({ x0: 0, x1: pw, levels, name: '', naked: null });
+    // Another measure than traded volume draws its own levels, over the window its column adds up (what is on the chart, or the day, week
+    // or session under way): past days, weeks and sessions are traded volume's.
+    if (s.period === 'view' || s.metric !== 'volume') {
+      const levels = this.#viewLevels(), w = s.period === 'view' ? null : this.#tradedPeriod();
+      if (levels) segments.push(w ? { x0: v.xOf(w.from, pw), x1: v.xOf(Math.min(w.to, now), pw), levels, name: w.name, naked: null } : { x0: 0, x1: pw, levels, name: '', naked: null });
     } else {
       const ids = flowIds(state, this.hub.flow.ids), share = s.share / 100, windows = this.#linesWindows(state);
       for (const w of windows) {
@@ -1316,11 +1457,9 @@ export class HeatPane {
       }
     }
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    const placed: { x0: number; x1: number; y0: number; y1: number }[] = [];
     for (const l of labels.sort((a, b) => a.rank - b.rank)) {
       const w = ctx.measureText(l.text).width + 8, right = Math.min(pw - 2, l.x - 2), box = { x0: right - w, x1: right, y0: l.y - 7, y1: l.y + 7 };
-      if (placed.some(b => b.x0 < box.x1 && box.x0 < b.x1 && b.y0 < box.y1 && box.y0 < b.y1)) continue;
-      placed.push(box);
+      if (!this.#labels.claim(box)) continue;
       ctx.globalAlpha = l.alpha * 0.85; ctx.fillStyle = p.panel; ctx.fillRect(box.x0, box.y0, w, 14);
       ctx.globalAlpha = l.alpha; ctx.fillStyle = p.poc; ctx.fillText(l.text, right - 4, l.y);
     }
@@ -1341,8 +1480,8 @@ export class HeatPane {
    */
   #paintTraded(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const x0 = this.#tradedX(); if (x0 === null) return;
-    const p = this.#palette, v = this.view, W = TRADED_W, held = this.hub.traded;
-    const rows: TradedRows | null = held ? tradedRows(held.answer, this.#tradedStep(), v.p0, v.p1) : null;
+    const p = this.#palette, v = this.view, W = TRADED_W, answer = this.#columnAnswer();
+    const rows: TradedRows | null = answer ? tradedRows(answer, this.#tradedStep(), v.p0, v.p1) : null;
     const s = state.traded, levels = this.#viewLevels();
     ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
     ctx.fillStyle = p.panel; ctx.fillRect(x0, 0, W, ph);
@@ -1390,16 +1529,27 @@ export class HeatPane {
       const low = (rows.bin0 + hoverRow) * rows.step, y0 = v.yOf(low + rows.step, ph), y1 = v.yOf(low, ph);
       ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.globalAlpha = 0.9; ctx.strokeRect(x0 + 0.5, Math.round(y0) + 0.5, W - 1, Math.max(1, Math.round(y1 - y0))); ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, 28); ctx.globalAlpha = 1;
+    // A day, week or session names itself between the total and the line under it, so what the column adds up can be read at a glance.
+    const label = this.#tradedLabel();
+    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, label ? 40 : 28); ctx.globalAlpha = 1;
     ctx.fillStyle = p.muted; ctx.font = `${pw < NARROW_PLOT ? 9.5 : 10}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    const [head, sub] = this.hub.tradedState === 'unavailable' && !rows ? [t('TRADED'), t('not on this server')] : tradedHeader(rows);
-    // A window that reaches back before the recording says so in the dot rows' amber.
-    ctx.fillText(head, x0 + 4, 4); if (sub) { if (rows?.partial) ctx.fillStyle = '#e6a700'; ctx.fillText(sub, x0 + 4, 16); }
+    const metric = s.metric, held = this.hub.metricProfile, flags = held?.metric === metric && answer ? held.flags : { cut: false, incomplete: false };
+    const measured = metric === 'volume' ? null : metricHeader(metric, rows, flags);
+    const [head, sub] = metric === 'volume'
+      ? (this.hub.tradedState === 'unavailable' && !rows ? [t('TRADED'), t('not on this server')] : tradedHeader(rows))
+      : this.hub.metricState === 'unavailable' && !rows ? [measured!.head, t('not on this server')]
+      : [measured!.head, measured!.sub];
+    ctx.fillText(head, x0 + 4, 4);
+    let lineY = 16;
+    if (label) { ctx.fillStyle = p.text; ctx.fillText(label, x0 + 4, lineY, W - 8); ctx.fillStyle = p.muted; lineY += 12; }
+    // A window that reaches back before the recording, or a measure whose record is cut, says so in the dot rows' amber.
+    const warn = metric === 'volume' ? rows?.partial === true : measured!.warn;
+    if (sub) { if (warn) ctx.fillStyle = '#e6a700'; ctx.fillText(sub, x0 + 4, lineY); }
     ctx.restore(); ctx.textBaseline = 'middle';
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
     if (rows && hover && hoverRow >= 0) {
       // The box stands to the left of the column, over the map, like the profile's comparison.
-      paintInfoBox(ctx, tradedLines(rows, hoverRow, levels), x0, hover.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'center' });
+      paintInfoBox(ctx, tradedLines(rows, hoverRow, levels, metricWords(metric)), x0, hover.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'center' });
       ctx.textBaseline = 'middle';
     }
   }

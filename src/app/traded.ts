@@ -62,18 +62,25 @@ export function tradedHeader(rows: TradedRows | null): [string, string] {
 }
 
 /**
+ * What a row's two sides, their difference and its share are called: traded volume's by default, another measure's for the column's other
+ * measures (traded/metrics.ts), whose two sides take the same places (bid colour, then ask colour).
+ */
+export interface ColumnWords { buy: string; sell: string; net: string; share: string; none: string }
+export const VOLUME_WORDS: ColumnWords = { buy: t('Bought at market'), sell: t('Sold at market'), net: t('Delta'), share: t('Share of volume'), none: t('Nothing traded at these prices in this window.') };
+
+/**
  * What the pointer is told on one row: its prices, buys, sells and the difference, its share of the window, the market orders that began at
  * these prices, where the row stands against the point of control and the value area (`levels`), and how far back the recording goes.
  */
-export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null): InfoLine[] {
+export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
   const low = (rows.bin0 + index) * rows.step, b = rows.buy[index] ?? 0, s = rows.sell[index] ?? 0, v = b + s;
   const lines: InfoLine[] = [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(low + rows.step, rows.step)}`, bold: true }];
-  if (!(v > 0)) lines.push({ text: t('Nothing traded at these prices in this window.'), color: 'muted', wrap: true });
+  if (!(v > 0)) lines.push({ text: words.none, color: 'muted', wrap: true });
   else {
-    lines.push({ label: t('Bought at market'), text: `$${usd(b)}`, color: 'buy' }, { label: t('Sold at market'), text: `$${usd(s)}`, color: 'sell' });
+    lines.push({ label: words.buy, text: `$${usd(b)}`, color: 'buy' }, { label: words.sell, text: `$${usd(s)}`, color: 'sell' });
     const net = b - s;
-    lines.push({ label: t('Delta'), text: `${net > 0 ? '+' : net < 0 ? '−' : ''}$${usd(Math.abs(net))}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
-    if (rows.total > 0) lines.push({ label: t('Share of volume'), text: `${(v / rows.total * 100).toFixed(1)} %` });
+    lines.push({ label: words.net, text: `${net > 0 ? '+' : net < 0 ? '−' : ''}$${usd(Math.abs(net))}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+    if (rows.total > 0) lines.push({ label: words.share, text: `${(v / rows.total * 100).toFixed(1)} %` });
     if (rows.buyN && rows.sellN && rows.counted > 0) {
       lines.push({ label: t('Orders begun here'), text: t('{buys} buys · {sells} sells', { buys: (rows.buyN[index] ?? 0).toLocaleString('en-US'), sells: (rows.sellN[index] ?? 0).toLocaleString('en-US') }) });
       if (rows.counted < rows.minutes) lines.push({ text: t('Orders are counted for {n} of the {total} minutes.', { n: rows.counted, total: rows.minutes }), color: 'muted', wrap: true });

@@ -1,5 +1,6 @@
 import { t } from '../i18n.ts';
 import { knownZone, localZone, minutesOf, type SessionDef } from './sessions.ts';
+import { PROFILE_METRICS, type ProfileMetric } from './metrics.ts';
 
 /**
  * The Traded feature's settings (the column itself is switched on and off with `show.traded`):
@@ -12,6 +13,8 @@ import { knownZone, localZone, minutesOf, type SessionDef } from './sessions.ts'
  *   point of control nobody has traded through since (a naked one) runs on to the right.
  */
 export interface TradedSettings {
+  /** What the column adds up by price: traded volume, absorption or liquidations (traded/metrics.ts). */
+  metric: ProfileMetric;
   bars: 'split' | 'delta';
   valueArea: boolean;
   /** The value area's share of the volume, in percent. */
@@ -72,7 +75,7 @@ export const SESSION_PRESETS: readonly Omit<SessionDef, 'id' | 'on'>[] = [
 const preset = (i: number, id: string): SessionDef => ({ ...SESSION_PRESETS[i]!, id, on: true });
 
 export const TRADED_DEFAULTS: Readonly<TradedSettings> = {
-  bars: 'split', valueArea: true, share: 70, rows: 1, poc: true, va: true, labels: true,
+  metric: 'volume', bars: 'split', valueArea: true, share: 70, rows: 1, poc: true, va: true, labels: true,
   period: 'view', source: 'recorded', zone: 'page', count: 5, naked: true,
   sessions: [preset(0, 's1'), preset(1, 's2'), preset(2, 's3')],
 };
@@ -106,6 +109,7 @@ export function readTraded(saved: unknown): TradedSettings {
   const seen = new Set<string>();
   for (const x of sessions) { while (seen.has(x.id)) x.id = `${x.id}x`.slice(-24); seen.add(x.id); }
   return {
+    metric: oneOf(PROFILE_METRICS, s.metric, d.metric),
     bars: oneOf(['split', 'delta'] as const, s.bars, d.bars),
     valueArea: flag(s.valueArea, d.valueArea), share: oneOf(SHARES, s.share, d.share), rows: oneOf(ROW_MULTIPLES, s.rows, d.rows),
     poc: flag(s.poc, d.poc), va: flag(s.va, d.va), labels: flag(s.labels, d.labels),

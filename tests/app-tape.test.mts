@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { TAPE_BATCH_MAX, checkTape, packTape, type TapeBatch } from '../src/shared/tape.ts';
 import type { MarketOrder } from '../src/shared/orders.ts';
 import { BLOCK, STRIDE, TapeRing } from '../src/app/tape/ring.ts';
-import { TraceIndex, secondsPath } from '../src/app/tape/trace.ts';
+import { TRACE_GAP_MS, TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../src/app/tape/trace.ts';
 import { readBubbles } from '../src/app/prints.ts';
 
 const T0 = 1_800_000_000_000;
@@ -80,6 +80,49 @@ test('a reconnect, a skipped batch or a trimmed one starts a new segment: the du
   ring.add({ ...batch(10, T0 + 4_000, 2), dropped: 5 }, 2, 0);
   assert.equal(ring.segments.length, 4, 'a trimmed batch');
   assert.equal(ring.segments[3]!.from, T0 + 4_000);
+});
+
+test('the map marks only the gaps the price line breaks at: a skipped batch is a new segment but no hole', () => {
+  const seg = (from: number, to: number) => ({ from, to });
+  assert.equal(TRACE_GAP_MS, 10_000);
+  assert.deepEqual([traceGapColumns(100), traceGapColumns(1_000), traceGapColumns(5_000)], [100, 10, 3], 'ten seconds, never fewer than three columns');
+  // A page that was skipped for a pass or two: segments a fraction of a second apart.
+  const skipped = [seg(T0, T0 + 60_000), seg(T0 + 60_300, T0 + 120_000), seg(T0 + 120_900, T0 + 180_000)];
+  assert.deepEqual(gapMarks(skipped, T0, 1_000), [], 'holes of under a second are not marked at any zoom');
+  assert.deepEqual(gapMarks(skipped, T0, 0.1), [], 'nor zoomed far in');
+  // A reconnect that took a minute, and one that took 12 seconds.
+  const outage = [seg(T0, T0 + 60_000), seg(T0 + 120_000, T0 + 180_000), seg(T0 + 192_000, T0 + 200_000)];
+  assert.deepEqual(gapMarks(outage, T0, 100), [T0 + 120_000, T0 + 192_000]);
+  assert.deepEqual(gapMarks(outage, T0, 5_000), [T0 + 120_000], 'at 5 s a pixel the 12 s hole is under four columns');
+  assert.deepEqual(gapMarks(outage, T0, 30_000), [], 'at half a minute a pixel the one-minute hole is too');
+  assert.deepEqual(gapMarks(outage, T0 + 150_000, 100), [T0 + 192_000], 'nothing at or before the start the ring still holds');
+  // The line breaks across `gap` empty columns, so orders `gap + 1` columns apart: at 1 s a column, 11 s.
+  assert.deepEqual(gapMarks([seg(T0, T0 + 1_000), seg(T0 + 12_000, T0 + 13_000)], T0, 1_000), [T0 + 12_000]);
+  assert.deepEqual(gapMarks([seg(T0, T0 + 1_000), seg(T0 + 11_999, T0 + 13_000)], T0, 1_000), [], 'a millisecond short');
+  assert.deepEqual(gapMarks([seg(T0, T0 + 5_000), seg(T0 + 4_000, T0 + 9_000)], T0, 1), [], 'a source whose clock runs back leaves no hole');
+  for (const ms of [0, -1, Number.NaN, Infinity]) assert.deepEqual(gapMarks(outage, T0, ms), [], `a view with ${ms} ms a pixel marks nothing`);
+  assert.deepEqual(gapMarks([], T0, 1), []); assert.deepEqual(gapMarks([seg(T0, T0 + 1)], T0, 1), []);
+  // Segments overlap or come out of order (orders are stamped by their exchanges): their ranges merge before a hole is measured.
+  assert.deepEqual(gapMarks([seg(T0, T0 + 60_000), seg(T0 + 50_000, T0 + 51_000), seg(T0 + 65_000, T0 + 66_000)], T0, 1_000), [], 'the order at 60 s keeps the line joined to 65 s');
+  assert.deepEqual(gapMarks([seg(T0, T0 + 10_000), seg(T0 + 100_000, T0 + 110_000), seg(T0 + 20_000, T0 + 30_000)], T0, 1_000), [T0 + 100_000], 'a later segment inside the hole narrows it');
+});
+
+test('a marked gap is a break in the price line, and a hole the line bridges is not marked', () => {
+  const ms = 1_000, c = Math.floor(T0 / ms);
+  const rings = [12_000, 10_500].map(later => {
+    const ring = new TapeRing(BLOCK), trace = new TraceIndex();
+    ring.add(batch(1, T0, 2), 1, 0); ring.add(batch(2, T0 + later, 2), 2, 0);   // a new connection, `later` ms on
+    trace.update(ring, T0, T0 + 20_000, ms);
+    return { marks: gapMarks(ring.segments, T0, ms), runs: trace.path(0, c, c + 19, traceGapColumns(ms)).length };
+  });
+  assert.deepEqual(rings[0], { marks: [T0 + 12_000], runs: 2 });
+  assert.deepEqual(rings[1], { marks: [], runs: 1 }, 'nine empty columns do not break it');
+});
+
+test('a segment keeps the earliest and the latest order it holds, whatever order the batches stamp them', () => {
+  const ring = new TapeRing(BLOCK);
+  ring.add(batch(1, T0 + 5_000, 2), 1, 0); ring.add(batch(2, T0 + 1_000, 2), 1, 0);
+  assert.deepEqual(ring.segments, [{ from: T0 + 1_000, to: T0 + 5_001 }]);
 });
 
 test('the time base moves forward before offsets outgrow a float32, without moving any order', () => {

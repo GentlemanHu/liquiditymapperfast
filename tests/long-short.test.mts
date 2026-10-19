@@ -185,13 +185,15 @@ test('a refresh that fails after a good answer says so, with the readings held f
 });
 
 test('a long window on a fine chart takes a coarser period: one question reaches across it and the series keeps all of it', async () => {
-  const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '30min' ? 30 * M : 5 * M;
+  const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1d' ? 24 * H : url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '30min' ? 30 * M : 5 * M;
     return { retCode: 0, result: { list: Array.from({ length: 500 }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / p) * p - (i + 1) * p) })) } }; };
   const get = fake({ 'https://api.bybit.com/': full });
   const cache = new LongShortCache(get, false, () => NOW);
   const month = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
-  assert.deepEqual([month.status, month.periodMs], ['ok', 30 * M], 'forty days: half-hourly (1,920 readings), the shortest period at or above 40 days / 2,000');
-  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 30 * M && month.points.length >= 1_900, 'the whole window, oldest included');
+  assert.deepEqual([month.status, month.periodMs], ['ok', 24 * H], 'forty days use daily readings instead of 1,920 half-hourly readings');
+  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 24 * H && month.points.length >= 40 && month.points.length <= 42, 'the whole daily window, oldest included');
+  assert.equal(get.asked.length, 1, 'the history arrives in one page');
+  assert.ok(Number(new URL(get.asked[0]!).searchParams.get('limit')) <= 42, 'only the daily readings needed are requested');
   const asked = get.asked.length;
   await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
   assert.equal(get.asked.length, asked, 'asked again at once: nothing more to read');

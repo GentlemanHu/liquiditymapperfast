@@ -5,16 +5,18 @@ import type { FlowMinuteRow, FlowStore } from '../../shared/flow.ts';
 import { fullerColumn, fullerFlowMinute, fullerFootprintMinute } from '../../shared/recording-merge.ts';
 import { peakOf, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from '../../shared/absorption.ts';
 import type { CoverageRow, CoverageStore } from '../../shared/coverage.ts';
+import { largestLiquidations, liquidationKey, type Liquidation, type LiquidationStore } from '../../shared/liquidations.ts';
 
 /**
  * Recordings kept in this browser (IndexedDB): the same four stores the server keeps in SQLite. The recorders read everything they
  * need once at start (`load` is synchronous), so the database is read before the engine is built, and writes are queued and applied in
- * one transaction every half second or so. A write that fails turns writing off for the session rather than disturbing the live view.
+ * one transaction every half second or so. A write that fails is let go and writing is tried again after a growing pause (the connection
+ * opened again if the browser closed it), so a page open for days keeps saving; only a newer page taking the database over ends it.
  */
 
-const VERSION = 4, WRITE_DELAY_MS = 500;
-type Name = 'columns' | 'footprint' | 'prints' | 'flow' | 'absorption' | 'absorptionMinutes' | 'coverage';
-const STORES: Name[] = ['columns', 'footprint', 'prints', 'flow', 'absorption', 'absorptionMinutes', 'coverage'];
+const VERSION = 5, WRITE_DELAY_MS = 500;
+type Name = 'columns' | 'footprint' | 'prints' | 'flow' | 'absorption' | 'absorptionMinutes' | 'coverage' | 'liquidations';
+const STORES: Name[] = ['columns', 'footprint', 'prints', 'flow', 'absorption', 'absorptionMinutes', 'coverage', 'liquidations'];
 /** Absorption groups held in memory by the recorder (older ones are read on demand). */
 const ABSORPTION_MEMORY_MS = 2 * 3_600_000;
 interface AbsorptionRow { inst: string; t0: number; side: 'buy' | 'sell'; price: number; peak: number; steps: AbsorptionGroup['steps'] }
@@ -22,6 +24,7 @@ interface AbsorptionMinuteRow { inst: string; t: number; n: number; mean: number
 /** `lt`/`ltN`: the Liquidity Tracker kept with the minute (`Column.lt`), absent in rows written before it was kept. */
 interface ColumnRow { inst: string; t: number; step: number; n: number; bins: Int32Array; bid: Float32Array; ask: Float32Array; lt?: Float32Array; ltN?: number }
 interface PrintRow extends Print { k: string }
+interface LiquidationRow extends Liquidation { k: string }
 /** A stretch of the coverage record, with its end as `t` (the time index every store prunes by). */
 interface CoverRow extends CoverageRow { t: number }
 
@@ -31,7 +34,8 @@ function openDatabase(name: string): Promise<IDBDatabase> {
     const request = indexedDB.open(name, VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      // Version 2 added the flow store, version 3 the absorption stores, version 4 the coverage record: an older database keeps what it has and gains only those.
+      // Version 2 added the flow store, version 3 the absorption stores, version 4 the coverage record, version 5 the liquidations: an older
+      // database keeps what it has and gains only those.
       if (!db.objectStoreNames.contains('columns')) db.createObjectStore('columns', { keyPath: ['inst', 't'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('footprint')) db.createObjectStore('footprint', { keyPath: ['inst', 't'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('prints')) db.createObjectStore('prints', { keyPath: 'k' }).createIndex('t', 't');
@@ -39,6 +43,7 @@ function openDatabase(name: string): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('absorption')) db.createObjectStore('absorption', { keyPath: ['inst', 't0', 'side', 'price'] }).createIndex('t', 't0');
       if (!db.objectStoreNames.contains('absorptionMinutes')) db.createObjectStore('absorptionMinutes', { keyPath: ['inst', 't'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('coverage')) db.createObjectStore('coverage', { keyPath: ['inst', 'metric', 'from'] }).createIndex('t', 't');
+      if (!db.objectStoreNames.contains('liquidations')) db.createObjectStore('liquidations', { keyPath: 'k' }).createIndex('t', 't');
     };
     request.onsuccess = () => {
       const db = request.result;
@@ -47,15 +52,35 @@ function openDatabase(name: string): Promise<IDBDatabase> {
       resolve(db);
     };
     request.onerror = () => reject(request.error ?? new Error('IndexedDB could not be opened'));
-    request.onblocked = () => reject(new Error('IndexedDB is blocked by another tab'));
+    // An older page holds the database open at its version: the request waits, and succeeds once that page lets go (each page closes its
+    // connection when asked, `onversionchange` above). Giving up here kept the recordings from this page even when it let go a moment later.
+    request.onblocked = () => console.warn('the recordings wait for another tab of this page to let go of them');
   });
 }
 
-/** Every row of a store whose time is at or after `since`, oldest first. */
+/** `work`, or `late` once it has taken `ms`. */
+const withTimeout = <T>(work: Promise<T>, ms: number, late: Error): Promise<T> =>
+  Promise.race([work, new Promise<never>((_, reject) => setTimeout(() => reject(late), ms))]);
+/** How long the database may take to open: a tab that never lets go of it would otherwise keep this page without recordings and without a word. */
+const OPEN_TIMEOUT_MS = 10_000;
+/** After a failed write the next waits twice as long each time, up to this. */
+const RETRY_MAX_MS = 60_000;
+
+/**
+ * What becomes of the writing: `failed` after a write that did not go through (`fatal`: a newer page took the database over, and this one
+ * writes no more), `recovered` when a write goes through again after failures.
+ */
+export interface RecordingEvents { failed?: (error: unknown, fatal: boolean) => void; recovered?: () => void }
+
+/**
+ * Every row of a store whose time is at or after `since`, oldest first: one request for all of them. A cursor walked them one round trip a
+ * row, and a day of the default venues' minutes read that way outlasted the time the page gave the recordings to open, so the page started
+ * with none and saved none (2026-10-19).
+ */
 function readSince<T>(db: IDBDatabase, name: Name, since: number): Promise<T[]> {
   return new Promise((resolve, reject) => {
-    const out: T[] = [], request = db.transaction(name, 'readonly').objectStore(name).index('t').openCursor(IDBKeyRange.lowerBound(since));
-    request.onsuccess = () => { const cursor = request.result; if (cursor) { out.push(cursor.value as T); cursor.continue(); } else resolve(out); };
+    const request = db.transaction(name, 'readonly').objectStore(name).index('t').getAll(IDBKeyRange.lowerBound(since));
+    request.onsuccess = () => resolve(request.result as T[]);
     request.onerror = () => reject(request.error);
   });
 }
@@ -64,7 +89,7 @@ function readSince<T>(db: IDBDatabase, name: Name, since: number): Promise<T[]> 
 const own = <A extends Int32Array | Float32Array>(array: A): A => array.byteLength === array.buffer.byteLength ? array : array.slice() as A;
 
 export interface Recordings {
-  columns: ColumnStore; footprint: FootprintStore; prints: PrintStore; flow: FlowStore; absorption: AbsorptionStore; coverage: CoverageStore;
+  columns: ColumnStore; footprint: FootprintStore; prints: PrintStore; flow: FlowStore; absorption: AbsorptionStore; coverage: CoverageStore; liquidations: LiquidationStore;
   /** Apply what is queued now instead of at the next half second. */
   flush(): Promise<void>;
   close(): void;
@@ -74,12 +99,20 @@ export interface Recordings {
  * Open the database, read what is still inside the retention window, and return stores for the recorders. `canWrite` says whether this
  * tab is the one allowed to write (only one tab records, so two open pages do not write the same minutes twice).
  */
-export async function openRecordings(name: string, since: number, canWrite: () => boolean, onError: (error: unknown) => void = () => {}): Promise<Recordings> {
-  const db = await openDatabase(name);
-  const absorptionSince = Math.max(since, Date.now() - ABSORPTION_MEMORY_MS);
-  const [columnRows, footprintRows, printRows, flowRows, absorptionRows, absorptionMinuteRows, coverRows] = await Promise.all([readSince<ColumnRow>(db, 'columns', since), readSince<FootprintMinuteRow>(db, 'footprint', since), readSince<PrintRow>(db, 'prints', since), readSince<FlowMinuteRow>(db, 'flow', since),
-    readSince<AbsorptionRow>(db, 'absorption', absorptionSince), readSince<AbsorptionMinuteRow>(db, 'absorptionMinutes', absorptionSince), readSince<CoverRow>(db, 'coverage', since)]);
-  let queue: ((tx: IDBTransaction) => void)[] = [], timer: ReturnType<typeof setTimeout> | null = null, failed = false, closed = false;
+export async function openRecordings(name: string, since: number, canWrite: () => boolean, events: RecordingEvents = {}): Promise<Recordings> {
+  // Only the opening is timed: reading a day back takes as long as it takes (it is what the page is for), and a page that gave up on it
+  // started with nothing and saved nothing.
+  let db = await withTimeout(openDatabase(name), OPEN_TIMEOUT_MS, new Error(`opening the recordings took longer than ${OPEN_TIMEOUT_MS} ms`));
+  /** The connection was closed under this page (by the browser, or for a newer page): it is opened again before the next write. */
+  let lost = false;
+  const watch = (connection: IDBDatabase): void => { connection.onclose = () => { lost = true; }; };
+  watch(db);
+  const absorptionSince = Math.max(since, Date.now() - ABSORPTION_MEMORY_MS), started = performance.now();
+  const [columnRows, footprintRows, printRows, flowRows, absorptionRows, absorptionMinuteRows, coverRows, liquidationRows] = await Promise.all([readSince<ColumnRow>(db, 'columns', since), readSince<FootprintMinuteRow>(db, 'footprint', since), readSince<PrintRow>(db, 'prints', since), readSince<FlowMinuteRow>(db, 'flow', since),
+    readSince<AbsorptionRow>(db, 'absorption', absorptionSince), readSince<AbsorptionMinuteRow>(db, 'absorptionMinutes', absorptionSince), readSince<CoverRow>(db, 'coverage', since), readSince<LiquidationRow>(db, 'liquidations', since)]);
+  console.info(`recordings read back in ${Math.round(performance.now() - started)} ms: ${columnRows.length} map minutes, ${footprintRows.length} footprint minutes, ${printRows.length} trades, ${liquidationRows.length} liquidations`);
+  let queue: ((tx: IDBTransaction) => void)[] = [], timer: ReturnType<typeof setTimeout> | null = null, failed = false, closed = false, failures = 0;
+  const schedule = (): void => { if (!timer) timer = setTimeout(() => { void write(); }, failures ? Math.min(RETRY_MAX_MS, WRITE_DELAY_MS * 2 ** failures) : WRITE_DELAY_MS); };
 
   const prune = (tx: IDBTransaction, name: Name, before: number): void => {
     const store = tx.objectStore(name), request = store.index('t').openKeyCursor(IDBKeyRange.upperBound(before, true));
@@ -90,10 +123,27 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     const ops = queue; queue = [];
     if (!ops.length || failed || closed) return;
     try {
+      if (lost) {
+        try { db = await withTimeout(openDatabase(name), OPEN_TIMEOUT_MS, new Error(`opening the recordings again took longer than ${OPEN_TIMEOUT_MS} ms`)); }
+        catch (error) {
+          // A newer page has moved the database to its version: that page records now, and this one lets go for good.
+          if (error instanceof DOMException && error.name === 'VersionError') { failed = true; events.failed?.(error, true); return; }
+          throw error;
+        }
+        lost = false; watch(db);
+      }
       const tx = db.transaction(STORES, 'readwrite');
       for (const op of ops) op(tx);
       await new Promise<void>((resolve, reject) => { tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
-    } catch (error) { failed = true; onError(error); }
+      if (failures) { failures = 0; events.recovered?.(); }
+    } catch (error) {
+      // The batch is let go (what it held stays on screen, and a minute that changes again is written again) and writing goes on after a
+      // pause that grows. One failed write used to end saving for the session, so a page left open for days could reload to nothing.
+      if (error instanceof DOMException && error.name === 'InvalidStateError') lost = true;
+      failures++;
+      events.failed?.(error, false);
+      if (queue.length) schedule();
+    }
   };
   /**
    * Store `row` under `key` unless the row already there is the fuller one. Another tab may have been writing the same minutes (this one
@@ -107,7 +157,7 @@ export async function openRecordings(name: string, since: number, canWrite: () =
   const enqueue = (op: (tx: IDBTransaction) => void): void => {
     if (failed || closed || !canWrite()) return;
     queue.push(op);
-    if (!timer) timer = setTimeout(() => { void write(); }, WRITE_DELAY_MS);
+    schedule();
   };
 
   const columns: ColumnStore = {
@@ -192,8 +242,27 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     save: (rows, expireBefore) => enqueue(tx => { const store = tx.objectStore('coverage'); for (const row of rows) store.put({ ...row, t: row.to } satisfies CoverRow); prune(tx, 'coverage', expireBefore); }),
     close: () => {},
   };
+  // Liquidations, kept as the prints are: every one inside the retention, by the content it is known by (shared/liquidations.ts). They are
+  // few (BTC on the server: 900 to 3,500 a day across the venues, 2026-10-12 to 19), so a day of them is a small part of what is kept.
+  const toLiquidation = ({ k: _k, ...row }: LiquidationRow): Liquidation => row;
+  const everyLiquidation = new Map<string, LiquidationRow>(liquidationRows.map(row => [row.k, row]));
+  const liquidations: LiquidationStore = {
+    load: (_since, limit) => liquidationRows.slice(-limit).map(toLiquidation),
+    query: (from, to, minUsd, limit) => {
+      const out: Liquidation[] = [];
+      for (const row of everyLiquidation.values()) if (row.t >= from && row.t < to && row.usd >= minUsd) out.push(toLiquidation(row));
+      out.sort((a, b) => a.t - b.t);
+      return largestLiquidations(out, limit);
+    },
+    save: (rows, expireBefore) => {
+      for (const row of rows) everyLiquidation.set(liquidationKey(row), { ...row, k: liquidationKey(row) });
+      for (const [key, row] of everyLiquidation) if (row.t < expireBefore) everyLiquidation.delete(key);
+      enqueue(tx => { const store = tx.objectStore('liquidations'); for (const row of rows) store.put({ ...row, k: liquidationKey(row) } satisfies LiquidationRow); prune(tx, 'liquidations', expireBefore); });
+    },
+    close: () => {},
+  };
   return {
-    columns, footprint, prints, flow, absorption, coverage,
+    columns, footprint, prints, flow, absorption, coverage, liquidations,
     flush() { if (timer) clearTimeout(timer); return write(); },
     close() { if (timer) clearTimeout(timer); void write().finally(() => { closed = true; db.close(); }); },
   };

@@ -126,6 +126,8 @@ export async function fetchLongShort(venue: string, symbol: string, metric: LsMe
   const out = new Map<number, LsPoint>(), take = (p: LsPoint | null): void => { if (p && p.t >= from - periodMs && p.t < to) out.set(p.t, p); };
   const s = encodeURIComponent(symbol);
   let end = to, page = 0;
+  // Include the reading just before the window, without fetching a full page for a tiny refresh.
+  const limitFor = (floor: number): number => Math.max(2, Math.min(PAGE_ROWS[venue] ?? 30, Math.ceil((end - floor) / periodMs) + 2));
   if (venue === 'binance') {
     const floor = Math.max(from, now - BINANCE_SPAN_MS + periodMs);
     // A COIN-M perpetual (BTCUSD_PERP) is read from the COIN-M statistics, by its pair.
@@ -133,31 +135,34 @@ export async function fetchLongShort(venue: string, symbol: string, metric: LsMe
     for (end = Math.min(to, now); page < PAGES && end > floor; page++) {
       // COIN-M names its top traders' position shares longPosition and shortPosition (USD-M calls them longAccount and shortAccount).
       const [longKey, shortKey] = coinM && metric === 'topPositions' ? ['longPosition', 'shortPosition'] : ['longAccount', 'shortAccount'];
-      const got = rows(await get(`${market}&period=${name}&limit=500&endTime=${Math.floor(end)}`), 'binance', 'timestamp', longKey, shortKey, 'longShortRatio');
+      const limit = limitFor(floor);
+      const got = rows(await get(`${market}&period=${name}&limit=${limit}&endTime=${Math.floor(end)}`), 'binance', 'timestamp', longKey, shortKey, 'longShortRatio');
       let oldest = Infinity;
       for (const r of got) { const t = num(at(r, 'timestamp')); take(lsReading(t, num(at(r, longKey)), num(at(r, shortKey)), num(at(r, 'longShortRatio')))); if (t > 0 && t < oldest) oldest = t; }
-      if (got.length < 500) break;
+      if (got.length < limit) break;
       end = nextEnd('binance', oldest);
     }
   } else if (venue === 'bybit') {
     for (; page < PAGES && end >= from; page++) {
+      const limit = limitFor(from);
       // A coin-margined perpetual (BTCUSD) is in Bybit's inverse category.
-      const answer = await get(`https://api.bybit.com/v5/market/account-ratio?category=${/^[A-Z0-9]+USD$/.test(symbol) ? 'inverse' : 'linear'}&symbol=${s}&period=${name}&limit=500&endTime=${Math.floor(end)}`);
+      const answer = await get(`https://api.bybit.com/v5/market/account-ratio?category=${/^[A-Z0-9]+USD$/.test(symbol) ? 'inverse' : 'linear'}&symbol=${s}&period=${name}&limit=${limit}&endTime=${Math.floor(end)}`);
       if (num(at(answer, 'retCode')) !== 0) throw new Error(`bybit: ${String(at(answer, 'retMsg'))}`);
       const got = rows(at(answer, 'result', 'list'), 'bybit', 'timestamp', 'buyRatio', 'sellRatio');
       let oldest = Infinity;
       for (const r of got) { const t = num(at(r, 'timestamp')); take(lsReading(t, num(at(r, 'buyRatio')), num(at(r, 'sellRatio')))); if (t > 0 && t < oldest) oldest = t; }
-      if (got.length < 500) break;
+      if (got.length < limit) break;
       end = nextEnd('bybit', oldest);
     }
   } else if (venue === 'okx') {
     for (; page < PAGES && end >= from; page++) {
-      const answer = await get(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract?instId=${s}&period=${name}&limit=100&end=${Math.floor(end)}`);
+      const limit = limitFor(from);
+      const answer = await get(`https://www.okx.com/api/v5/rubik/stat/contracts/long-short-account-ratio-contract?instId=${s}&period=${name}&limit=${limit}&end=${Math.floor(end)}`);
       if (String(at(answer, 'code')) !== '0') throw new Error(`okx: ${String(at(answer, 'msg'))}`);
       const got = rows(at(answer, 'data'), 'okx', 0, 1);
       let oldest = Infinity;
       for (const r of got) { const t = num(at(r, 0)), ratio = num(at(r, 1)); take(Number.isFinite(ratio) && ratio > 0 ? lsReading(t, shareOfRatio(ratio)) : null); if (t > 0 && t < oldest) oldest = t; }
-      if (got.length < 100) break;
+      if (got.length < limit) break;
       end = nextEnd('okx', oldest);
     }
   } else if (venue === 'bitget') {
@@ -185,10 +190,10 @@ export class LongShortCache {
   async series(id: string, metric: LsMetric, tfMs: number, from: number, to: number): Promise<LsSeries> {
     const colon = id.indexOf(':'), venue = id.slice(0, colon), symbol = id.slice(colon + 1);
     // A window needs at most `windowReadings` readings: a long one on a fine chart takes a coarser period, so one question always reaches
-    // across it and the series never holds more than it keeps (a month of five-minute readings is neither readable nor drawable).
+    // across it and the series never holds more than it keeps. Month-scale context uses daily readings, independent of the candle setting.
     const population = colon > 0 && LS_VENUES.includes(venue) ? lsPopulationOf(venue, metric) : null;
     // The chart's own period where that fits the window, else the shortest that does (OKX steps from five minutes straight to an hour).
-    const need = (to - from) / windowReadings(venue), fine = population ? lsPeriodOf(venue, tfMs) : null;
+    const span = to - from, need = Math.max(span / windowReadings(venue), span >= 30 * DAY ? DAY : 0), fine = population ? lsPeriodOf(venue, tfMs) : null;
     const periodMs = fine === null ? 0 : fine >= need ? fine : lsPeriodAtLeast(venue, need) ?? 0;
     const answer = (points: LsPoint[], status: LsStatus): LsSeries => ({ id, population, periodMs, points, status });
     if (!population || !periodMs) return answer([], 'unsupported');

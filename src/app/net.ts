@@ -3,12 +3,15 @@ import { parseLsSeries, type LsMetric, type LsSeries } from '../shared/long-shor
 import { COLUMNS_PER_REQUEST } from '../shared/columns.ts';
 import { decodeFlowFrame, decodeFlowMinutes, type FlowFrame, type FlowMinutesFrame, type FlowUpdate } from '../shared/flow.ts';
 import { parseProfile, parseRange, parseSizes, parseValueAreas, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from '../shared/footprint.ts';
+import { parseOiProfile, type OiProfileAnswer } from '../shared/oi-profile.ts';
 import { parseAbsorptionAnswer, parseAbsorptionLive, type AbsorptionAnswer } from '../shared/absorption.ts';
 import { parseCoverage, type CoverageAnswer, type CoverageMetric } from '../shared/coverage.ts';
 import { fromWire, type Print } from './prints.ts';
 import { fromWire as liquidationFromWire, type Liquidation } from '../shared/liquidations.ts';
 import { decodeColumns, decodeLevels, decodeTape, frameType, type ColumnsFrame } from './wire.ts';
 import type { CandleRow, OiBar } from './store.ts';
+import { parsePriceHistory, type PriceHistoryAnswer } from '../shared/price-history.ts';
+import { TIMEFRAMES } from '../shared/series.ts';
 import type { BootstrapState, FootprintResponse, LayersMessage, LiquidationsMessage, LiveHandlers, PrintsMessage, TickMessage } from './source.ts';
 import { t } from './i18n.ts';
 
@@ -28,6 +31,10 @@ export const getBootstrap = async (): Promise<BootstrapState> => (await request(
 export async function getCandles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]> {
   const body = await (await request(`/api/v2/candles?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${from}&to=${to}`)).json() as { candles: CandleRow[] };
   return body.candles;
+}
+export async function getPriceHistory(inst: string, tf: string, from: number, to: number, signal?: AbortSignal): Promise<PriceHistoryAnswer> {
+  const response = await request(`/api/v2/price-history?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${from}&to=${to}`, signal);
+  return parsePriceHistory(await response.json(), inst, TIMEFRAMES[tf] ?? 0);
 }
 /** Whale VWAP sums (a server from before them answers 404, which is an error here); rows that are not five finite numbers are dropped. */
 export async function getPrintSums(ids: string[], from: number, to: number, minUsd: number, stepMs: number): Promise<PrintSumsAnswer> {
@@ -100,6 +107,14 @@ export async function getProfile(ids: string[], from: number, to: number, rowSte
   if (!response.ok) throw new Error(`profile failed: ${response.status}`);
   const answer = parseProfile(await response.json().catch(() => null), ids);
   if (!answer) throw new Error('profile answered with something else');
+  return answer;
+}
+/** The change in open interest by price (shared/oi-profile.ts). Rejects on a server that does not know the question (an older one). */
+export async function getOiProfile(ids: string[], from: number, to: number, rowStep: number): Promise<OiProfileAnswer> {
+  const response = await fetch(`/api/v2/oi-profile?inst=${ids.map(encodeURIComponent).join(',')}&from=${Math.floor(from)}&to=${Math.ceil(to)}&step=${rowStep}`, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`oi profile failed: ${response.status}`);
+  const answer = parseOiProfile(await response.json().catch(() => null), ids);
+  if (!answer) throw new Error('oi profile answered with something else');
   return answer;
 }
 /** What happened in a selection of the map or of a pane (see `RangeAnswer`). Rejects on a server that does not know the question (an older one). */

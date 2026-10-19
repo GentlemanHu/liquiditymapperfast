@@ -4,10 +4,12 @@ import { checkTape } from '../shared/tape.ts';
 import { TIMEFRAMES } from '../shared/series.ts';
 import { LongShortCache, type LsMetric, type LsSeries } from '../shared/long-short.ts';
 import { webGet } from '../shared/history.ts';
+import { PriceHistoryCache, priceListing, type PriceHistoryAnswer } from '../shared/price-history.ts';
 import { toWire } from '../shared/prints.ts';
 import { toWire as liquidationWire, type Liquidation } from '../shared/liquidations.ts';
 import type { PrintSumsAnswer } from '../shared/print-sums.ts';
 import { parseProfile, parseRange, parseSizes, parseValueAreas, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from '../shared/footprint.ts';
+import { parseOiProfile, type OiProfileAnswer } from '../shared/oi-profile.ts';
 import { parseAbsorptionAnswer, parseAbsorptionLive, type AbsorptionAnswer } from '../shared/absorption.ts';
 import { parseCoverage, type CoverageAnswer, type CoverageMetric } from '../shared/coverage.ts';
 import type { RecoveryReport, RecoveryRequest } from '../shared/engine.ts';
@@ -97,6 +99,7 @@ export class BrowserSource implements DataSource, VenueControl {
   #readyAt = 0;
 
   constructor(worker: Worker, { persist = true, coin = BTC, tier = 0 }: { persist?: boolean; coin?: Coin; tier?: number } = {}) {
+    this.#coin = coin;
     this.#worker = worker;
     let ready!: () => void, known!: () => void, failReady!: (error: Error) => void, failKnown!: (error: Error) => void;
     this.#ready = new Promise<void>((resolve, reject) => { ready = resolve; failReady = reject; });
@@ -127,7 +130,8 @@ export class BrowserSource implements DataSource, VenueControl {
           this.#statuses = message.venues; known();
           for (const watcher of this.#watchers) watcher(message.venues.map(toEntry));
           break;
-        case 'recording': this.recording = message.recording; if (message.failed) this.storageFailed = true; break;
+        // A failed write is tried again: the next word from the worker says whether saving works now.
+        case 'recording': this.recording = message.recording; this.storageFailed = message.failed === true; break;
         case 'recovered': if (typeof message.id === 'string' && Number.isFinite(message.from) && Number.isFinite(message.to)) this.#handlers?.onRecovered?.(message.id, message.from, message.to); break;
         case 'rpc': {
           const call = this.#calls.get(message.id); this.#calls.delete(message.id);
@@ -203,6 +207,13 @@ export class BrowserSource implements DataSource, VenueControl {
   }
 
   async candles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]> { return this.#call({ method: 'candles', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to }); }
+  readonly #coin: Coin;
+  readonly #priceHistory = new PriceHistoryCache(webGet);
+  priceHistory(inst: string, tf: string, from: number, to: number): Promise<PriceHistoryAnswer> {
+    const target = priceListing(this.#coin, inst);
+    if (!target || !Object.hasOwn(TIMEFRAMES, tf)) return Promise.reject(new Error('Unsupported price history'));
+    return this.#priceHistory.series(target, TIMEFRAMES[tf]!, from, to);
+  }
   /**
    * Read from the venues by the page itself (each answers with CORS headers but OKX, which a page cannot read), kept in memory. A cancelled
    * question is not cancelled here: the request is the series', shared with every question for it, and the cache bounds its wait.
@@ -227,6 +238,11 @@ export class BrowserSource implements DataSource, VenueControl {
   async profile(ids: string[], from: number, to: number, rowStep: number): Promise<ProfileAnswer> {
     const answer = parseProfile(await this.#call({ method: 'profile', ids, from, to, rowStep }), ids);
     if (!answer) throw new Error('the browser engine answered the profile question with something else');
+    return answer;
+  }
+  async oiProfile(ids: string[], from: number, to: number, rowStep: number): Promise<OiProfileAnswer> {
+    const answer = parseOiProfile(await this.#call({ method: 'oiProfile', ids, from, to, rowStep }), ids);
+    if (!answer) throw new Error('the browser engine answered the open-interest question with something else');
     return answer;
   }
   async range(ids: string[], from: number, to: number, band: { p0: number; p1: number } | null, rowStep: number): Promise<RangeAnswer> {

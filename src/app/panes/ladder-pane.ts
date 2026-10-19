@@ -56,8 +56,12 @@ export { venueLabel };
 
 /** A venue line of the Compact book this frame: its venue, running totals, reach and colour. */
 interface Curve { venue: CurveVenue; index: number; cum: { bid: Float32Array; ask: Float32Array }; cover: Cover | null; color: string }
-/** Where the venue lines stand: `x` on a row (null where a line is not drawn), whether that row is past its book's reach (the total held), and what full width is. */
-interface CurveScale { x: (c: Curve, bin: number) => number | null; carried: (c: Curve, bin: number) => boolean; full: number }
+/**
+ * Where the venue lines stand: `x` on a row (null where the line has no place there; a carried row has one whether or not its dashes are drawn), whether that row is past its book's reach (the total held),
+ * whether the line has any of its own book in view on that row's side (`capped`: else the held total is all there is of it there), and what
+ * full width is.
+ */
+interface CurveScale { x: (c: Curve, bin: number) => number | null; carried: (c: Curve, bin: number) => boolean; capped: (c: Curve, bin: number) => boolean; full: number }
 /** The flow column's ranking window, as the popup says it. */
 const rankText = (rank: AppState['cvd']['rank']): string => rank === '15m' ? t('{n} min', { n: 15 }) : t('{n} h', { n: rank === '1h' ? 1 : 24 });
 
@@ -106,6 +110,8 @@ export class LadderPane {
   #curvesControl: HTMLLabelElement | null = null;
   /** The venue line under the pointer in the last frame (its place in the ranking), read by tests. */
   hoveredCurve: number | null = null;
+  /** The line that was under the pointer in the frame before this one (`hoveredCurve` is cleared as a frame starts): its dashes are drawn, so they answer the pointer. */
+  #heldCurve: number | null = null;
 
   constructor(host: HTMLElement, private store: Store, private kernels: Kernels, private hub: Pick<Hub, 'flow' | 'ensureFlow'> | null = null) {
     this.root.className = 'pane ladder';
@@ -360,7 +366,7 @@ export class LadderPane {
 
   #render(): void {
     const state = this.store.state, p = this.#palette;
-    this.mirror = null; this.hoveredCurve = null;
+    this.mirror = null; this.#heldCurve = this.hoveredCurve; this.hoveredCurve = null;
     const frame = state.levels, mark = state.mark.price;
     const books = state.ladderMode === 'single' ? this.#singleIds(state) : [];
     const columns = state.ladderMode === 'single' ? Math.max(1, books.length) : 1;
@@ -642,16 +648,23 @@ export class LadderPane {
       return ask ? c.cum.ask[bin]! : c.cum.bid[bin]!;
     };
     const carried = (c: Curve, bin: number): boolean => c.cover !== null && pastReach(c.cover, (g.bin0 + bin) * o.step, o.step, bin >= askFrom);
+    // On a row's side, the line's own book is in view when the first row it is drawn on there is not a carried one (`#paintCurves` starts it there).
+    const capped = (c: Curve, bin: number): boolean => {
+      const up = bin >= askFrom, bottom = top - o.rows + 1;
+      for (let b = up ? Math.max(askFrom, bottom) : Math.min(bidFrom, top); up ? b <= top : b >= bottom; b += up ? 1 : -1) if (value(c, b) !== null) return !carried(c, b);
+      return false;
+    };
     // Full width is the largest measured total: a carried row holds the total at its reach, so it never raises it.
     let full = 0;
     for (const c of curves) for (let bin = top - o.rows + 1; bin <= top; bin++) { const v = value(c, bin); if (v !== null && v > full) full = v; }
     full = Math.max(full, 1);
-    return { x: (c, bin) => { const v = value(c, bin); return v === null ? null : barX + lineFraction(v, full) * barW; }, carried, full };
+    return { x: (c, bin) => { const v = value(c, bin); return v === null ? null : barX + lineFraction(v, full) * barW; }, carried, capped, full };
   }
 
   /**
    * The venue lines, over the bars: each a crisp step outline in its colour; with one under the pointer, that one stronger and the rest faded.
-   * Where its book stops reaching, a short bar across marks the end, and the line goes on dashed and fainter at the total it reached.
+   * Where its book stops reaching, a short bar across marks the end; the line under the pointer goes on dashed and fainter at the total it
+   * reached (so does one with no book of its own in view on that side, where nothing else of it would show).
    */
   #paintCurves(ctx: CanvasRenderingContext2D, g: Grouped, curves: readonly Curve[], o: { head: number; rows: number; centerBin: number; markBin: number }, barX: number, scale: CurveScale, hovered: number | null): void {
     const xAt = scale.x;
@@ -678,12 +691,16 @@ export class LadderPane {
           ctx.lineTo(x, near); ctx.lineTo(x, far);
         }
         if (started) ctx.stroke();
-        // Past the reach: the end of the book across the line, then the total it reached held, dashed, to the edge of the view.
+        // Past the reach: the end of the book across the line, always. The total it reached, held, dashed, to the edge of the view, only for the
+        // line under the pointer (a dashed line from every shallow venue's cap, over the bars and in no place on the scale, read as unexplained
+        // dashes, Karl 2026-10-19), or when the end is off screen and the dashes are all of the line there is.
         if (end) {
           if (end.cap) { ctx.beginPath(); ctx.moveTo(end.x - 4, end.y); ctx.lineTo(end.x + 4, end.y); ctx.lineWidth = width + 0.5; ctx.stroke(); }
-          ctx.save(); ctx.setLineDash([3, 3]); ctx.lineWidth = Math.max(1, width - 0.5); ctx.globalAlpha = alpha * 0.55;
-          ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(end.x, up ? o.head : o.head + o.rows * ROW_H); ctx.stroke();
-          ctx.restore(); ctx.lineWidth = width;
+          if (k === hovered || !end.cap) {
+            ctx.save(); ctx.setLineDash([3, 3]); ctx.lineWidth = Math.max(1, width - 0.5); ctx.globalAlpha = alpha * 0.55;
+            ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(end.x, up ? o.head : o.head + o.rows * ROW_H); ctx.stroke();
+            ctx.restore(); ctx.lineWidth = width;
+          }
         }
       }
     }
@@ -815,7 +832,8 @@ export class LadderPane {
     if (state.ladderShow !== 'levels' && !scale && o.totals) this.#paintCumulative(ctx, g, cum, o, barX, barW, maxCum, weight);
     const ticks = scale ? lineTicks(scale.full).map(v => ({ v, x: Math.round(barX + lineFraction(v, scale.full) * barW) + 0.5 })) : [];
     if (ticks.length) {
-      ctx.save(); ctx.strokeStyle = p.muted; ctx.globalAlpha = 0.35; ctx.setLineDash([2, 3]); ctx.lineWidth = 1;
+      // Solid, like the map's own grid: a dash here would be read as the lines' "past its book" dashes (the key says what those mean).
+      ctx.save(); ctx.strokeStyle = p.line; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
       for (const tick of ticks) { ctx.beginPath(); ctx.moveTo(tick.x, o.head); ctx.lineTo(tick.x, o.head + rows * ROW_H); ctx.stroke(); }
       ctx.restore();
     }
@@ -865,14 +883,18 @@ export class LadderPane {
     // The venue lines over the bars, and which one the pointer is on: near a line across its row, or on its entry in the key.
     const hv = this.#hover, keyLine = head - HEAD_H / 2, maxShown = o.title || barW >= 170;
     let curveHit: { k: number; bin: number | null } | null = null;
-    // Whether any line runs on past its book in view: its first or last row on its own side is carried.
-    const shownTop = centerBin + Math.floor(rows / 2) - g.bin0, dashed = scale !== null && curves.some(c => scale.carried(c, shownTop) || scale.carried(c, shownTop - rows + 1));
-    const keySpans = curves.length && !o.title ? this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), null, dashed) : [];
+    // A line runs on past its book in view when its first or last row on its own side is carried; its dashes show for the line under the
+    // pointer, and for a line with none of its own book in view on that side (`capped`), where they are all of it there is.
+    const shownTop = centerBin + Math.floor(rows / 2) - g.bin0, shownEnds = [shownTop, shownTop - rows + 1];
+    const runsPast = (c: Curve): boolean => scale !== null && shownEnds.some(bin => scale.carried(c, bin));
+    const dashesAlone = scale !== null && curves.some(c => shownEnds.some(bin => scale.carried(c, bin) && !scale.capped(c, bin)));
+    const keySpans = curves.length && !o.title ? this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), null, dashesAlone) : [];
     if (xAt && hv && !this.#drag) {
       if (hv.y >= head - HEAD_H && hv.y < head) { const k = keySpans.findIndex(s => hv.x >= s.x0 && hv.x < s.x1); if (k >= 0) curveHit = { k, bin: null }; }
       else if (hv.y >= o.head && hv.y < o.head + rows * ROW_H && hv.x >= barX - CURVE_HIT_PX && hv.x <= barX + barW + CURVE_HIT_PX) {
         const bin = centerBin + Math.floor(rows / 2) - Math.floor((hv.y - o.head) / ROW_H) - g.bin0;
-        const k = nearestCurve(curves.map(c => xAt(c, bin)), hv.x);
+        // A dash that is not drawn is not there to point at: a carried row answers only for the line already under the pointer, or one drawn dashed alone.
+        const k = nearestCurve(curves.map((c, j) => scale!.carried(c, bin) && scale!.capped(c, bin) && j !== this.#heldCurve ? null : xAt(c, bin)), hv.x);
         if (k !== null) curveHit = { k, bin };
       }
     }
@@ -887,7 +909,7 @@ export class LadderPane {
       for (const tick of ticks) { const text = `$${usd(tick.v)}`, tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
       ctx.restore();
       // The key again over the faded lines' entries, so the one under the pointer stands out there too.
-      if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve); }
+      if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve, dashesAlone || runsPast(curves[this.hoveredCurve]!)); }
     }
     if (pull?.kind === 'filling') this.#paintPullFilling(ctx, pull.share, pull.waitS, x0 + priceW + USD_W, o.head, rows, centerBin + Math.floor(rows / 2) - g.bin0 - markBin);
     const cell = curveHit ? null : this.#cellUnder(state, g, cum, o, { priceW, usdW, cw, barX, barW, maxLevel, pull: pullRows });

@@ -58,6 +58,7 @@ export function zoneName(which: TimeZone = zone, at = Date.now()): string {
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 const dayFormats = new Map<string, Intl.DateTimeFormat>();
+const monthFormats = new Map<string, Intl.DateTimeFormat>();
 /** "Oct 5" in English, and the date as the language writes it ("5. Okt.", "10月5日") in the others; `wall` is a time moved onto the zone's clock. */
 function monthDay(wall: Date): string {
   const code = language();
@@ -74,9 +75,17 @@ export function clock(t: number, withDate = false): string {
 
 /**
  * A time-axis tick's label: a tick on a midnight of the zone's clock is its date alone ("Oct 7", never "Oct 7 00:00": zoomed out to days, every
- * tick is one); elsewhere the time, with the date before it on a tick that marks a new day (`marksDay`).
+ * tick is one); elsewhere the time, with the date before it on a tick that marks a new day (`marksDay`). Calendar ticks show a month
+ * (with its year when `marksDay`) or a year alone.
  */
-export function tickLabel(t: number, marksDay: boolean): string {
+export function tickLabel(t: number, marksDay: boolean, unit: 'time' | 'month' | 'year' = 'time'): string {
+  if (unit === 'year') return String(onWall(t).getUTCFullYear());
+  if (unit === 'month') {
+    const code = language(), key = code + '|' + marksDay;
+    let format = monthFormats.get(key);
+    if (!format) { format = new Intl.DateTimeFormat(code, { month: 'short', ...(marksDay ? { year: 'numeric' } : {}), timeZone: 'UTC' }); monthFormats.set(key, format); }
+    return format.format(onWall(t));
+  }
   if ((t + zoneOffsetMs(t)) % DAY === 0) return monthDay(onWall(t));
   return clock(t, marksDay);
 }

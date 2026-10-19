@@ -1,4 +1,4 @@
-import { connectLive, getAbsorption, getBootstrap, getCandles, getColumns, getCoverage, getFlow, getFlowMinutes, getFootprint, getLiquidations, getLongShort, getOi, getPrintSums, getPrints, getProfile, getRange, getSizes, getValueAreas } from './net.ts';
+import { connectLive, getAbsorption, getBootstrap, getCandles, getColumns, getCoverage, getFlow, getFlowMinutes, getFootprint, getLiquidations, getLongShort, getOi, getOiProfile, getPriceHistory, getPrintSums, getPrints, getProfile, getRange, getSizes, getValueAreas } from './net.ts';
 import type { BootstrapState, DataSource, VenueCatalog, VenueControl, VenueEntry } from './source.ts';
 import { stateOfStatus } from './venue-notice.ts';
 
@@ -67,6 +67,7 @@ export class ServerSource implements DataSource {
   bootstrap = async (): Promise<BootstrapState> => { const boot = await getBootstrap(); return { ...boot, oiReferences: boot.oiReferences ?? ['binance:BTCUSDT'] }; };
   connect: DataSource['connect'] = handlers => connectLive(handlers);
   candles = getCandles;
+  priceHistory = getPriceHistory;
   oi = getOi;
   longShort = getLongShort;
   prints = getPrints;
@@ -78,6 +79,7 @@ export class ServerSource implements DataSource {
   flowMinutes = getFlowMinutes;
   sizes = getSizes;
   profile = getProfile;
+  oiProfile = getOiProfile;
   range = getRange;
   valueAreas = getValueAreas;
   absorption = getAbsorption;

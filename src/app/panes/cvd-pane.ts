@@ -495,7 +495,6 @@ export class CvdPane {
     const scale = this.#scaleOf(lane, rebase); if (!scale) return;
     const X = (c: number): number => plot.x + (c + 0.5) / columns * plot.w, Y = (v: number): number => inner.y + inner.h - (v - scale.lo) / (scale.hi - scale.lo) * inner.h;
     ctx.save();
-    if (rebase && scale.lo < 0 && scale.hi > 0) { ctx.strokeStyle = p.line; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(plot.x, Math.round(Y(0)) + 0.5); ctx.lineTo(plot.x + plot.w, Math.round(Y(0)) + 0.5); ctx.stroke(); ctx.setLineDash([]); }
     // The envelope: where the running delta went inside a column, which a line through the last values would hide at coarse spans.
     if (lane.series) {
       ctx.globalAlpha = 0.2; ctx.fillStyle = color;

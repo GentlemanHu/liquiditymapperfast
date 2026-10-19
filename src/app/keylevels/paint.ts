@@ -1,4 +1,5 @@
 import { language, t } from '../i18n.ts';
+import { LabelBoard } from '../labels.ts';
 import { price as fmtPrice } from '../format.ts';
 import type { Palette } from '../theme.ts';
 import type { View } from '../view.ts';
@@ -52,7 +53,7 @@ export function periodDate(t: number, period: PeriodKind, zone: string): string 
  * earlier period still running on (its period ended before `now`) says which period it is, and gives way to the current ones. Returns the
  * tags wanted on the price axis: one for each line that reaches the right edge.
  */
-export function paintKeyLevels(ctx: CanvasRenderingContext2D, lines: readonly KeyLine[], v: View, pw: number, ph: number, p: Palette, s: KeyLevelSettings, now: number, zone: string): KeyTag[] {
+export function paintKeyLevels(ctx: CanvasRenderingContext2D, lines: readonly KeyLine[], v: View, pw: number, ph: number, p: Palette, s: KeyLevelSettings, now: number, zone: string, board: LabelBoard = new LabelBoard()): KeyTag[] {
   const tags: KeyTag[] = [], labels: { text: string; x: number; y: number; rank: number; alpha: number }[] = [];
   if (!lines.length) return tags;
   const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.75)';
@@ -79,11 +80,9 @@ export function paintKeyLevels(ctx: CanvasRenderingContext2D, lines: readonly Ke
   }
   ctx.setLineDash([]);
   ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const boxes: { x0: number; x1: number; y0: number; y1: number }[] = [];
   for (const l of labels.sort((a, b) => a.rank - b.rank)) {
     const w = ctx.measureText(l.text).width + 8, box = { x0: l.x - w, x1: l.x, y0: l.y - 7, y1: l.y + 7 };
-    if (l.y < 7 || l.y > ph - 7 || boxes.some(b => b.x0 < box.x1 && box.x0 < b.x1 && b.y0 < box.y1 && box.y0 < b.y1)) continue;
-    boxes.push(box);
+    if (l.y < 7 || l.y > ph - 7 || !board.claim(box)) continue;
     ctx.globalAlpha = l.alpha * 0.85; ctx.fillStyle = p.panel; ctx.fillRect(box.x0, box.y0, w, 14);
     ctx.globalAlpha = l.alpha; ctx.fillStyle = p.level; ctx.fillText(l.text, l.x - 4, l.y);
   }

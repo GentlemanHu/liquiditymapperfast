@@ -5,9 +5,11 @@ import type { Liquidation } from '../shared/liquidations.ts';
 import type { PrintSumsAnswer } from '../shared/print-sums.ts';
 import type { FlowFrame, FlowMinutesFrame, FlowUpdate } from '../shared/flow.ts';
 import type { ProfileAnswer, RangeAnswer, SizesAnswer, ValueAreaAnswer } from '../shared/footprint.ts';
+import type { OiProfileAnswer } from '../shared/oi-profile.ts';
 import type { AbsorptionAnswer, AbsorptionGroup, AbsorptionMinute } from '../shared/absorption.ts';
 import type { CoverageAnswer, CoverageMetric } from '../shared/coverage.ts';
 import type { RecoveryReport, RecoveryRequest } from '../shared/engine.ts';
+import type { PriceHistoryAnswer } from '../shared/price-history.ts';
 import type { ColumnsFrame, LevelsFrame } from './wire.ts';
 import type { Bar } from './panes/footprint.ts';
 import type { CandleRow, LayerLevel, Market, OiBar } from './store.ts';
@@ -90,6 +92,8 @@ export interface DataSource {
   /** `tape`: whether the page draws the trade dust (a server sends its batches only to a page that asked; the browser engine always does). */
   connect(handlers: LiveHandlers): { close(): void; tape(on: boolean): void };
   candles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]>;
+  /** Exchange history for the display-only price overview, with its own source and resolution; optional on older sources. */
+  priceHistory?(inst: string, tf: string, from: number, to: number, signal?: AbortSignal): Promise<PriceHistoryAnswer>;
   /** `usd`: an inverse market's own USD in place of its coins (the readings that kept one; an older source ignores it and answers coins). */
   oi(inst: string, tf: string, from: number, to: number, usd?: boolean): Promise<OiBar[]>;
   /**
@@ -118,6 +122,8 @@ export interface DataSource {
   sizes(ids: string[], windows: number[], cuts?: readonly number[]): Promise<SizesAnswer>;
   /** Traded volume by price for `ids` over the minutes that start in [from, to). Rejects when the source cannot say (an older server). */
   profile(ids: string[], from: number, to: number, rowStep: number): Promise<ProfileAnswer>;
+  /** The change in open interest of the perpetuals among `ids` by price (shared/oi-profile.ts). A source without it (an older server) leaves it out. */
+  oiProfile?(ids: string[], from: number, to: number, rowStep: number): Promise<OiProfileAnswer>;
   /** What happened in a selection: the minutes that start in [from, to), at the prices of `band` or at every price (see `RangeAnswer`). Rejects when the source cannot say (an older server). */
   range(ids: string[], from: number, to: number, band: { p0: number; p1: number } | null, rowStep: number): Promise<RangeAnswer>;
   /** The point of control and the value area of each window (whole minutes), on rows of `rowStep`, holding `share` (0..1). Rejects when the source cannot say. */

@@ -2,6 +2,7 @@ import { t } from '../i18n.ts';
 import { price as fmtPrice } from '../format.ts';
 import type { Palette } from '../theme.ts';
 import type { View } from '../view.ts';
+import { LabelBoard } from '../labels.ts';
 import type { KeyTag } from '../keylevels/paint.ts';
 import type { VwapPoint } from './vwap.ts';
 import type { VwapSettings } from './settings.ts';
@@ -33,7 +34,7 @@ const whale = (line: Pick<VwapLine, 'kind'>): boolean => line.kind === 'whaleBuy
  * sell colours (no axis tags: the axis is full enough); the name and price at the right end of the ones running to now. Returns the
  * tags wanted on the price axis (placed with the key levels' tags).
  */
-export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLine[], v: View, pw: number, ph: number, p: Palette, s: VwapSettings): KeyTag[] {
+export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLine[], v: View, pw: number, ph: number, p: Palette, s: VwapSettings, board: LabelBoard = new LabelBoard()): KeyTag[] {
   const tags: KeyTag[] = [];
   if (!lines.length) return tags;
   const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.75)';
@@ -77,11 +78,9 @@ export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLin
   ctx.setLineDash([]); ctx.globalAlpha = 1;
   // The names at the right edge, the session's first; one that would cover another is left out.
   ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-  const boxes: { y0: number; y1: number }[] = [];
   for (const l of labels.sort((a, b) => a.rank - b.rank)) {
-    if (l.y < 7 || l.y > ph - 7 || boxes.some(b => b.y0 < l.y + 7 && l.y - 7 < b.y1)) continue;
-    boxes.push({ y0: l.y - 7, y1: l.y + 7 });
     const w = ctx.measureText(l.text).width + 8;
+    if (l.y < 7 || l.y > ph - 7 || !board.claim({ x0: pw - 2 - w, x1: pw - 2, y0: l.y - 7, y1: l.y + 7 })) continue;
     ctx.globalAlpha = 0.85; ctx.fillStyle = p.panel; ctx.fillRect(pw - 2 - w, l.y - 7, w, 14);
     ctx.globalAlpha = 1; ctx.fillStyle = l.color; ctx.fillText(l.text, pw - 6, l.y);
   }

@@ -9,7 +9,7 @@ import { levelsOf, pointOfControl, valueArea } from '../src/shared/profile.ts';
 import { FootprintRecorder, parseProfile, parseValueAreas } from '../src/shared/footprint.ts';
 import { dayWindows, fromWall, lastWindows, offsetMs, sessionWindows, weekWindows, type SessionDef } from '../src/app/traded/sessions.ts';
 import { TRADED_DEFAULTS, linesCount, readTraded, recordedCount, resolveZone } from '../src/app/traded/settings.ts';
-import { answerLevels, candleBarMs, candleLevels, linesWindows, recordedShare, recordedWindows, requestStep, touchedAt } from '../src/app/traded/levels.ts';
+import { answerLevels, candleBarMs, candleLevels, columnWindow, linesWindows, recordedShare, recordedWindows, requestStep, touchedAt, windowLabel, windowZone } from '../src/app/traded/levels.ts';
 import { TradeCoverage, recordedMinutes } from '../src/shared/coverage.ts';
 import { tradedRows } from '../src/app/traded.ts';
 import { initialState } from '../src/app/store.ts';
@@ -146,6 +146,40 @@ test('the column asks on a step both its rows and the level rows divide, and the
   assert.equal(linesWindows({ ...TRADED_DEFAULTS, period: 'day', count: 2 }, 'utc', T0 - 5 * DAY, T0, T0).length, 2, 'the last two days that touch the view');
 });
 
+test('the traded column adds up the day, week or session the settings pick, the newest at the chart\'s right edge', () => {
+  const at = (day: number, hh = 0, mm = 0): number => Date.UTC(2026, 9, day, hh, mm);   // October 2026: the 12th is a Monday
+  const base = { ...TRADED_DEFAULTS, zone: 'UTC' }, now = at(14, 15, 30);
+  assert.equal(columnWindow({ ...base, period: 'view' }, 'utc', now, now), null, 'what is on the chart: the column follows the chart');
+  // A day, and a week from Monday, in the zone; the chart's right edge past the clock counts as now.
+  const day = columnWindow({ ...base, period: 'day' }, 'utc', now + 5 * MIN, now)!, week = columnWindow({ ...base, period: 'week' }, 'utc', now + DAY, now)!;
+  assert.deepEqual([day.from, day.to], [at(14), at(15)]);
+  assert.deepEqual([week.from, week.to], [at(12), at(19)]);
+  // The chart looking back: the window at its right edge, however little of it the chart holds and however many the lines draw.
+  assert.deepEqual([columnWindow({ ...base, period: 'day', count: 20 }, 'utc', at(12, 10), now)!.from, columnWindow({ ...base, period: 'week' }, 'utc', at(9, 10), now)!.from], [at(12), at(5)]);
+  // A day of a zone whose clocks change is 25 hours long on the day they go back.
+  const berlin = columnWindow({ ...base, zone: 'Europe/Berlin', period: 'day' }, 'utc', at(25, 12), at(25, 12))!;
+  assert.deepEqual([berlin.from, berlin.to], [at(24, 22), at(25, 23)]);
+  // Sessions: of those under way the one that began last; when none is, the one that ended last.
+  const def = (id: string, start: string, end: string, on = true): SessionDef => ({ id, name: id, zone: 'UTC', start, end, on, weekdays: false });
+  const sessions = [def('asia', '00:00', '09:00'), def('london', '07:00', '16:00'), def('ny', '12:00', '21:00')];
+  const pick = (t: number, list = sessions) => columnWindow({ ...base, period: 'sessions', sessions: list }, 'utc', t, t)?.name ?? null;
+  assert.equal(pick(at(14, 15, 30)), 'ny', 'London and New York are open: the one that began last');
+  assert.equal(pick(at(14, 8)), 'london', 'Asia and London are open');
+  assert.equal(pick(at(14, 22)), 'ny', 'none is open: the one that ended last');
+  assert.equal(pick(at(14, 6)), 'asia');
+  assert.equal(pick(at(14, 12), [def('short', '00:00', '08:00'), def('whole', '00:00', '00:00')]), 'whole', 'two began together: the one still open');
+  assert.equal(pick(at(14, 12), sessions.map(s => ({ ...s, on: false }))), null, 'no session on: the column follows the chart');
+  const labelled = (w: typeof day, kind: string): string => windowLabel({ ...w, key: `${kind}|x|${w.from}`, name: '' }, t => new Date(t).toISOString().slice(5, 10), 'Week');
+  assert.deepEqual([labelled(day, 'day'), labelled(week, 'week'), windowLabel({ key: 'session|asia|1', name: 'Asia', from: at(14), to: at(14, 9) }, () => '10-14', 'Week'), labelled(day, 'session')], ['10-14', 'Week 10-12', 'Asia 10-14', '10-14']);
+  // A session's date is read in its own zone: Tokyo's midnight of the 15th is still the 14th in UTC.
+  const tokyo = { ...base, period: 'sessions' as const, sessions: [{ ...def('tk', '00:00', '09:00'), zone: 'Asia/Tokyo', name: 'Tokyo' }] };
+  const tk = columnWindow(tokyo, 'utc', at(14, 16), at(14, 16))!;
+  assert.equal(tk.from, at(14, 15), 'midnight of the 15th in Tokyo');
+  assert.equal(windowZone(tk, tokyo, 'utc'), 'Asia/Tokyo');
+  assert.equal(windowZone(day, base, 'utc'), 'UTC', 'a day: the zone days start in');
+  assert.equal(windowZone(tk, { ...tokyo, sessions: [] }, 'utc'), 'UTC', 'a session no longer in the list: the zone days start in');
+});
+
 test('a band dragged on the traded column adds up to exactly the bars it covers', () => {
   const T0 = 1_800_000_000_000, recorder = new FootprintRecorder(null, () => T0 + 10 * MIN);
   const fills = Array.from({ length: 120 }, (_, i) => ({ instrumentId: i % 3 ? 'x:BTC' : 'y:BTC', tradeId: String(i), side: i % 2 ? 'sell' : 'buy', price: 85_000 + ((i * 37) % 400) + 0.5, notionalUsd: 500 + i * 13, sourceTimestamp: T0 + 2_000 + i * 400 }));
@@ -160,6 +194,28 @@ test('a band dragged on the traded column adds up to exactly the bars it covers'
   assert.ok(Math.abs(band.buy - buy) < 1e-6 && Math.abs(band.sell - sell) < 1e-6, `panel ${band.buy}/${band.sell} against bars ${buy}/${sell}`);
   // And the column has the orders that began on each row when the recording counts them (none here: no orders were counted).
   assert.equal(rows.counted, 1);
+});
+
+test('a profile read in slices with the event loop let go between is the answer read in one go, and value areas over hours built first lose or double no minute', async () => {
+  const T0 = 1_800_000_000_000, recorder = new FootprintRecorder(null, () => T0 + 20 * HOUR), ids = ['x:BTC', 'y:BTC'];
+  // 600 fills 100 s apart: about seventeen hours, across three of the six-hour slices the reads are made in.
+  const fills = Array.from({ length: 600 }, (_, i) => ({ instrumentId: ids[i % 2]!, tradeId: String(i), side: i % 3 ? 'sell' : 'buy', price: 85_000 + ((i * 37) % 400) + 0.5, notionalUsd: 500 + i * 13, sourceTimestamp: T0 + 5_000 + i * 100_000 }));
+  recorder.ingest(fills);
+  const inside = (from: number, to: number): number => fills.filter(f => { const m = Math.floor(f.sourceTimestamp / MIN) * MIN; return m >= from && m < to; }).reduce((sum, f) => sum + f.notionalUsd, 0);
+  // A window that starts before the recording, one that reaches past the newest minute (a week not over yet), and one inside it.
+  for (const [from, to] of [[T0 - HOUR, T0 + 30 * HOUR], [T0 + 7 * HOUR + 13 * MIN, T0 + 8 * DAY], [T0 + 2 * HOUR, T0 + 11 * HOUR]] as const) {
+    const sliced = await recorder.profileYielding(ids, from, to, 20), whole = recorder.profile(ids, from, to, 20);
+    assert.deepEqual(sliced, whole, `profile ${from}-${to}`);
+    const volume = whole.instruments.reduce((sum, i) => sum + i.rows.reduce((s, r) => s + r[1] + r[2], 0), 0);
+    assert.ok(volume > 0 && Math.abs(volume - inside(from, to)) < 1e-6, `every minute of ${from}-${to} once: ${volume} against ${inside(from, to)}`);
+  }
+  const windows = [{ from: T0, to: T0 + 13 * HOUR }, { from: T0 + 2 * HOUR, to: T0 + 40 * HOUR }];
+  const before = recorder.valueAreas(ids, windows, 20, 0.7);
+  // The route builds the ended hours first (`prepare`) and then reads them added together: the same answer as minute by minute.
+  await recorder.prepare(ids, windows[0]!.from, windows[1]!.to, HOUR);
+  const areas = recorder.valueAreas(ids, windows, 20, 0.7);
+  assert.deepEqual(areas, before);
+  windows.forEach((w, i) => assert.ok(Math.abs(areas.windows[i]!.total - inside(w.from, w.to)) < 1e-6, `window ${i}: ${areas.windows[i]!.total} against ${inside(w.from, w.to)}`));
 });
 
 test('the volume profile is off unless chosen: a first visit and a save from before it had settings read as off, a later choice stays', () => {

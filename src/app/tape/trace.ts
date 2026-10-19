@@ -1,4 +1,4 @@
-import type { TapeRing } from './ring.ts';
+import type { TapeRing, TapeSegment } from './ring.ts';
 
 /**
  * The price lines drawn through the trade dust: for each market, the orders of each pixel column of the view reduced to the first and last
@@ -32,6 +32,32 @@ export function secondsPath(priceOf: (sec: number) => number, s0: number, s1: nu
     if (p > high) high = p; if (p < low) low = p; close = p;
   }
   flush();
+  return out;
+}
+
+/** The price line breaks where its market traded nothing for this long (and never for fewer than three columns). */
+export const TRACE_GAP_MS = 10_000;
+/** How many empty columns in a row break the price line, with columns of `ms` milliseconds (`TraceIndex.path`'s `gap`). */
+export const traceGapColumns = (ms: number): number => Math.max(3, Math.ceil(TRACE_GAP_MS / ms));
+
+/**
+ * Where the map marks a gap in the dust, after `from`: the start of each stretch of time that no segment covers for as long as it takes to
+ * break the price line with columns of `ms` milliseconds, so a mark never stands where the line runs on. Segments follow batches as they
+ * arrive, and the orders in them are stamped by their exchanges, so they can overlap or come out of order: their ranges are merged first.
+ * A source that skips a slow page's 250 ms batch starts a segment too: a gap in the record, but no hole anyone can see, and a full-height
+ * dotted line for each one buried the map in them. (A hole the line breaks at can go unmarked when the orders either side fall at
+ * unlucky places in their columns: marks are the sure ones.)
+ */
+export function gapMarks(segments: readonly TapeSegment[], from: number, ms: number): number[] {
+  if (!(ms > 0) || !Number.isFinite(ms) || segments.length < 2) return [];
+  // Orders `gap + 1` columns apart leave `gap` empty columns between them: the least that breaks the line whatever the alignment.
+  const least = (traceGapColumns(ms) + 1) * ms, out: number[] = [], byStart = [...segments].sort((a, b) => a.from - b.from);
+  let reach = byStart[0]!.to;
+  for (let i = 1; i < byStart.length; i++) {
+    const s = byStart[i]!;
+    if (s.from > from && s.from - reach >= least) out.push(s.from);
+    if (s.to > reach) reach = s.to;
+  }
   return out;
 }
 
