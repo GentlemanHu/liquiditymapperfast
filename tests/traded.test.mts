@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { FootprintRecorder, parseProfile, type ProfileAnswer } from '../src/shared/footprint.ts';
-import { tradedHeader, tradedLines, tradedRowAt, tradedRows } from '../src/app/traded.ts';
+import { tradedFigures, tradedHeader, tradedLines, tradedNetLine, tradedRowAt, tradedRows } from '../src/app/traded.ts';
 import { createLocalServer } from '../src/server/http.mts';
 import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
@@ -179,4 +179,24 @@ test('an empty selection clears the traded column, and an answer still on its wa
   hub.ensureTraded([], T0, T0 + 2 * MIN, 5, false);          // and the selection empties before the answer comes
   asked[1]!.settle(true); await turn();
   assert.equal(hub.traded, null, 'the answer that came late is not drawn');
+});
+
+test('the header\'s box gives the whole window in numbers: sides, levels, mean, median, how much lies either side of the point of control, the price now', () => {
+  // Rows of 10 from 85,000: 100 bought at 85,000, 300 (200 + 100) at 85,010, 100 sold at 85,020, and 100 sold at 85,040.
+  const answer: ProfileAnswer = { from: T0, to: T0 + 60 * MIN, instruments: [
+    { id: 'a:BTC', step: 10, rows: [[85_000, 100, 0], [85_010, 200, 100], [85_020, 0, 100], [85_040, 0, 100]], minutes: 60, first: T0, earliest: T0 - 60 * MIN },
+  ] };
+  const rows = tradedRows(answer, 10, 85_000, 85_049);
+  assert.equal(tradedNetLine(rows), 'Δ $0 · 0.0 %', 'bought 300, sold 300: no side');
+  const lines = tradedFigures(rows, { poc: 85_010, vah: 85_020, val: 85_000 }, 85_031, 'Oct 19');
+  const value = (label: string): string | undefined => lines.find(l => l.label === label)?.text;
+  assert.equal(lines[0]!.text, 'Oct 19');
+  assert.equal(value('Bought at market'), '$300'); assert.equal(value('Sold at market'), '$300');
+  assert.equal(value('Value area'), '85,000 – 85,020');
+  // Middles 85,005 (100), 85,015 (300), 85,025 (100), 85,045 (100): 51,092,000 / 600.
+  assert.equal(value('Weighted mean price'), '85,020');
+  assert.equal(value('Median price'), '85,015', 'half of the 600 is reached in the second row');
+  assert.equal(value('Above the point of control'), '33.3 %'); assert.equal(value('Below the point of control'), '16.7 %');
+  assert.equal(value('Price now'), '85,031.0 · Above the value area', 'as the price axis writes it');
+  assert.deepEqual(tradedFigures(tradedRows({ ...answer, instruments: [] }, 10, 85_000, 85_049), null, 0, 'Oct 19').map(l => l.text), ['Oct 19', 'Nothing traded at these prices in this window.']);
 });

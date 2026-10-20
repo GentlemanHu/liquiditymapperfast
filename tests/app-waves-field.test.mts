@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RING_MS, WaveField, substepsFor } from '../src/app/glass/waves.ts';
+import { RING_MS, SUBSTEP_MS, WaveField } from '../src/app/glass/waves.ts';
 
 /**
  * A stand-in for a WebGL2 context that accepts every call: its constants are numbers, shaders and framebuffers always succeed, a uniform's
@@ -44,5 +44,14 @@ test('after a still spell the first step of a new pulse is one frame long, not t
   // Minutes later (the page's glass draws only when something changes), a new pulse.
   field.add(pulse, 300_000);
   const before = draws(); field.step(300_000);
-  assert.equal(draws() - before, substepsFor(16.7), 'one frame of substeps, not the 50 ms of a stale clock');
+  assert.equal(draws() - before, Math.round(16.7 / SUBSTEP_MS), 'one frame of substeps, not the 50 ms of a stale clock');
+});
+
+test('a long pause steps as a short one, not the whole pause at once', () => {
+  const { gl, draws } = fakeGl(), field = WaveField.create(gl)!;
+  field.resize(400, 300);
+  field.add(pulse, 100); field.step(100);
+  field.add(pulse, 1_100);
+  const before = draws(); field.step(1_100);
+  assert.equal(draws() - before, Math.round(50 / SUBSTEP_MS), 'a second away steps 50 ms');
 });

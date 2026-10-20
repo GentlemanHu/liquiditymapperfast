@@ -10,7 +10,7 @@ import { toWire as liquidationWire, type Liquidation } from '../shared/liquidati
 import type { PrintSumsAnswer } from '../shared/print-sums.ts';
 import { parseProfile, parseRange, parseSizes, parseValueAreas, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from '../shared/footprint.ts';
 import { parseOiProfile, type OiProfileAnswer } from '../shared/oi-profile.ts';
-import { parseAbsorptionAnswer, parseAbsorptionLive, type AbsorptionAnswer } from '../shared/absorption.ts';
+import { parseAbsorptionAnswer, parseAbsorptionLive, parseAbsorptionProfile, type AbsorptionAnswer, type AbsorptionProfileAnswer } from '../shared/absorption.ts';
 import { parseCoverage, type CoverageAnswer, type CoverageMetric } from '../shared/coverage.ts';
 import type { RecoveryReport, RecoveryRequest } from '../shared/engine.ts';
 import type { FeedsIn, FeedsOut, RpcCall, RpcResult } from './browser/protocol.ts';
@@ -233,6 +233,11 @@ export class BrowserSource implements DataSource, VenueControl {
   async absorption(ids: string[], mins: number[], from: number, to: number, limit: number, since: number): Promise<AbsorptionAnswer> {
     const answer = parseAbsorptionAnswer(await this.#call({ method: 'absorption', ids, mins, from, to, limit, since }), ids);
     if (!answer) throw new Error('the browser engine answered the absorption question with something else');
+    return answer;
+  }
+  async absorptionProfile(ids: string[], thresholds: number[], from: number, to: number, rowStep: number): Promise<AbsorptionProfileAnswer> {
+    const answer = parseAbsorptionProfile(await this.#call({ method: 'absorptionProfile', ids, thresholds, from, to, step: rowStep }), ids);
+    if (!answer) throw new Error('the browser engine answered the absorption column with something else');
     return answer;
   }
   async profile(ids: string[], from: number, to: number, rowStep: number): Promise<ProfileAnswer> {

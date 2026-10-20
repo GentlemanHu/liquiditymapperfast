@@ -5,7 +5,7 @@ import type { Liquidation } from '../../shared/liquidations.ts';
 import type { PrintSumsAnswer } from '../../shared/print-sums.ts';
 import type { ProfileAnswer, RangeAnswer, SizesAnswer, ValueAreaAnswer } from '../../shared/footprint.ts';
 import type { OiProfileAnswer } from '../../shared/oi-profile.ts';
-import type { AbsorptionAnswer, AbsorptionGroup, AbsorptionMinute } from '../../shared/absorption.ts';
+import type { AbsorptionAnswer, AbsorptionProfileAnswer, AbsorptionGroup, AbsorptionMinute } from '../../shared/absorption.ts';
 import type { FlowFrame, FlowUpdate } from '../../shared/flow.ts';
 import type { TapeBatch } from '../../shared/tape.ts';
 import type { ColumnsFrame } from '../../shared/columns.ts';
@@ -28,13 +28,14 @@ export type RpcCall =
   | { method: 'range'; ids: string[]; from: number; to: number; band: { p0: number; p1: number } | null; rowStep: number }
   | { method: 'valueAreas'; ids: string[]; windows: { from: number; to: number }[]; rowStep: number; share: number }
   | { method: 'absorption'; ids: string[]; mins: number[]; from: number; to: number; limit: number; since: number }
+  | { method: 'absorptionProfile'; ids: string[]; thresholds: number[]; from: number; to: number; step: number }
   | { method: 'candles'; inst: string; tfMs: number; from: number; to: number }
   | { method: 'oi'; inst: string; tfMs: number; from: number; to: number; usd?: boolean }
   | { method: 'coverage'; ids: string[]; metric: CoverageMetric; from: number; to: number }
   | { method: 'recover'; ids: string[]; windows: { from: number; to: number }[] };
 
 export interface RpcResult {
-  bootstrap: EngineBootstrap; columns: ColumnsFrame; footprint: FootprintAnswer; prints: Print[]; liquidations: Liquidation[]; printSums: PrintSumsAnswer | null; flow: FlowFrame; sizes: SizesAnswer; profile: ProfileAnswer; oiProfile: OiProfileAnswer; range: RangeAnswer; valueAreas: ValueAreaAnswer; absorption: AbsorptionAnswer; candles: Candle[]; oi: OiBar[]; coverage: CoverageAnswer; recover: RecoveryReport;
+  bootstrap: EngineBootstrap; columns: ColumnsFrame; footprint: FootprintAnswer; prints: Print[]; liquidations: Liquidation[]; printSums: PrintSumsAnswer | null; flow: FlowFrame; sizes: SizesAnswer; profile: ProfileAnswer; oiProfile: OiProfileAnswer; range: RangeAnswer; valueAreas: ValueAreaAnswer; absorption: AbsorptionAnswer; absorptionProfile: AbsorptionProfileAnswer; candles: Candle[]; oi: OiBar[]; coverage: CoverageAnswer; recover: RecoveryReport;
 }
 
 export type FeedsIn =

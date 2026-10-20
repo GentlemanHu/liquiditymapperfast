@@ -1,8 +1,8 @@
 import type { ProfileAnswer } from '../../shared/footprint.ts';
 import { levelsOf, rowOf, type ValueLevels } from '../../shared/profile.ts';
 import type { CandleRow } from '../store.ts';
-import { dayWindows, lastWindows, minutesOf, sessionWindows, weekWindows, type ProfileWindow } from './sessions.ts';
-import { resolveZone, type TradedSettings } from './settings.ts';
+import { dayWindows, lastWindows, minutesOf, monthWindows, sessionWindows, weekWindows, type ProfileWindow } from './sessions.ts';
+import { resolveZone, type KindSettings, type LineKind, type TradedSettings } from './settings.ts';
 
 /**
  * The step the traded column asks its rows on: one that both its display rows and the point of control's rows are whole multiples of (and
@@ -39,15 +39,21 @@ export function touchedAt(price: number, after: number, candles: readonly Candle
 }
 
 /**
- * The windows the lines are drawn for (days, weeks or sessions; none for what is on the chart): the last `count` of each kind that have begun,
- * of those that touch [t0, t1]. Days and weeks start in the settings' zone (`page`: the page's clock).
+ * The windows of one kind drawn on the chart (days, weeks, months or sessions): the last `count` of each that have begun, of those that touch
+ * [t0, t1]. Days and weeks start in the settings' zone (`page`: the page's clock).
  */
-export function linesWindows(s: TradedSettings, pageZone: 'local' | 'utc', t0: number, t1: number, now: number, count = s.count): ProfileWindow[] {
-  if (s.period === 'view' || count < 1) return [];
+export function linesWindows(s: KindSettings, pageZone: 'local' | 'utc', t0: number, t1: number, now: number, count = s.count): ProfileWindow[] {
+  if (count < 1) return [];
   const zone = resolveZone(s.zone, pageZone), end = Math.min(t1, now);
-  const all = s.period === 'day' ? dayWindows(zone, t0, end) : s.period === 'week' ? weekWindows(zone, t0, end)
+  const all = s.period === 'day' ? dayWindows(zone, t0, end) : s.period === 'week' ? weekWindows(zone, t0, end) : s.period === 'month' ? monthWindows(zone, t0, end)
     : sessionWindows(s.sessions, t0, end, z => resolveZone(z, pageZone));
   return lastWindows(all, count, now);
+}
+
+/** A window's kind, from its key (`day|…`, `week|…`, `month|…`, `session|…`). */
+export function windowKind(w: Pick<ProfileWindow, 'key'>): LineKind {
+  const kind = w.key.slice(0, w.key.indexOf('|'));
+  return kind === 'session' ? 'sessions' : kind === 'week' || kind === 'month' ? kind : 'day';
 }
 
 /** The windows the recording can still work out: those that began inside what it keeps (`retentionMs` back from the real clock `now`). */
@@ -72,7 +78,7 @@ export function recordedShare(w: { from: number; to: number; minutes: number; co
  * minutes, on which every day and week starts (no zone is off the hour by other than quarters), unless a session switched on starts or
  * ends off the five (09:17), then a minute.
  */
-export function candleBarMs(s: Pick<TradedSettings, 'period' | 'sessions'>): number {
+export function candleBarMs(s: Pick<KindSettings, 'period' | 'sessions'>): number {
   const off = (time: string): boolean => (minutesOf(time) ?? 0) % 5 !== 0;
   return s.period === 'sessions' && s.sessions.some(x => x.on && (off(x.start) || off(x.end))) ? 60_000 : 5 * 60_000;
 }
@@ -82,9 +88,10 @@ export function candleBarMs(s: Pick<TradedSettings, 'period' | 'sessions'>): num
  * volume in USD (its coins at the bar's typical price) spread evenly over its low to high, on rows of `step`: an estimate, since a candle
  * does not say where inside its range it traded. Only bars that lie wholly inside the window count; `heldTo` is how far the candles are
  * known, so a window under way is worked out up to there. Null levels when nothing traded. `covered` is the share of the window's bars, up
- * to `heldTo`, that are there (a venue that sends no bar for a minute nobody traded has one missing).
+ * to `heldTo`, that are there (a venue that sends no bar for a minute nobody traded has one missing). `rows` is the estimate itself: USD by
+ * row (the row's index on `step`), what a past window's profile on the chart draws.
  */
-export function candleLevels(bars: readonly CandleRow[], from: number, to: number, barMs: number, step: number, share: number, heldTo: number): { levels: ValueLevels | null; covered: number } {
+export function candleLevels(bars: readonly CandleRow[], from: number, to: number, barMs: number, step: number, share: number, heldTo: number): { levels: ValueLevels | null; covered: number; rows: Map<number, number> } {
   const rows = new Map<number, number>(), end = Math.min(to, Math.floor(heldTo / barMs) * barMs);
   let n = 0;
   for (const b of bars) {
@@ -101,23 +108,7 @@ export function candleLevels(bars: readonly CandleRow[], from: number, to: numbe
     }
   }
   const expected = Math.max(0, Math.floor((end - from) / barMs));
-  return { levels: levelsOf(rows, step, share), covered: expected > 0 ? Math.min(1, n / expected) : 0 };
-}
-
-/** How far before the chart's right edge the column looks for a window: a session on weekdays only is three days back over a weekend. */
-const COLUMN_LOOKBACK_MS = 8 * 86_400_000;
-
-/**
- * The window the traded column adds up when the settings pick days, weeks or sessions: the newest one that has begun by the chart's right edge
- * (`t1`, or now when that is earlier), which is the last of the windows the lines are drawn for; of the sessions, one that is under way before
- * one that has ended. Null for what is on the chart, and when no window of the period began in the eight days before (no session is on): the
- * column then follows the chart. It looks back from the right edge, not from the chart's left one, so a chart too short to hold a window
- * still has one.
- */
-export function columnWindow(s: TradedSettings, pageZone: 'local' | 'utc', t1: number, now: number): ProfileWindow | null {
-  const end = Math.min(t1, now), found = linesWindows({ ...s, count: 1 }, pageZone, end - COLUMN_LOOKBACK_MS, end, now);
-  for (let i = found.length - 1; i >= 0; i--) if (found[i]!.to > end) return found[i]!;
-  return found[found.length - 1] ?? null;
+  return { levels: levelsOf(rows, step, share), covered: expected > 0 ? Math.min(1, n / expected) : 0, rows };
 }
 
 /** The zone a window's dates are read in: a session's own (its start is a date there), else the zone days and weeks start in. */
@@ -130,11 +121,13 @@ export function windowZone(w: ProfileWindow, s: TradedSettings, pageZone: 'local
 }
 
 /**
- * What the column's header calls its window: a session by its name and date, a week by "Week" and the date of its first day, a day by its date.
- * `date` writes a time as a date in the window's zone; `week` is the word for a week.
+ * What the column's header calls its window: a session by its name and date, a week by "Week" and the date of its first day, a month by its
+ * month and year, a day by its date. `date` writes a time as a date in the window's zone, `month` as a month and year (absent: `date`);
+ * `week` is the word for a week.
  */
-export function windowLabel(w: ProfileWindow, date: (t: number) => string, week: string): string {
+export function windowLabel(w: ProfileWindow, date: (t: number) => string, week: string, month: (t: number) => string = date): string {
   const kind = w.key.slice(0, w.key.indexOf('|'));
   if (kind === 'session') return w.name ? `${w.name} ${date(w.from)}` : date(w.from);
+  if (kind === 'month') return month(w.from);
   return kind === 'week' ? `${week} ${date(w.from)}` : date(w.from);
 }

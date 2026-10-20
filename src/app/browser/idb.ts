@@ -3,9 +3,10 @@ import type { FootprintMinuteRow, FootprintStore } from '../../shared/footprint.
 import { largestPrints, type Print, type PrintStore } from '../../shared/prints.ts';
 import type { FlowMinuteRow, FlowStore } from '../../shared/flow.ts';
 import { fullerColumn, fullerFlowMinute, fullerFootprintMinute } from '../../shared/recording-merge.ts';
-import { peakOf, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from '../../shared/absorption.ts';
+import { hoursOf, peakOf, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from '../../shared/absorption.ts';
 import type { CoverageRow, CoverageStore } from '../../shared/coverage.ts';
 import { largestLiquidations, liquidationKey, type Liquidation, type LiquidationStore } from '../../shared/liquidations.ts';
+import type { OiReading, OiStore } from '../../shared/engine.ts';
 
 /**
  * Recordings kept in this browser (IndexedDB): the same four stores the server keeps in SQLite. The recorders read everything they
@@ -14,10 +15,10 @@ import { largestLiquidations, liquidationKey, type Liquidation, type Liquidation
  * opened again if the browser closed it), so a page open for days keeps saving; only a newer page taking the database over ends it.
  */
 
-const VERSION = 5, WRITE_DELAY_MS = 500;
-type Name = 'columns' | 'footprint' | 'prints' | 'flow' | 'absorption' | 'absorptionMinutes' | 'coverage' | 'liquidations';
-const STORES: Name[] = ['columns', 'footprint', 'prints', 'flow', 'absorption', 'absorptionMinutes', 'coverage', 'liquidations'];
-/** Absorption groups held in memory by the recorder (older ones are read on demand). */
+const VERSION = 6, WRITE_DELAY_MS = 500;
+type Name = 'columns' | 'footprint' | 'prints' | 'flow' | 'absorption' | 'absorptionMinutes' | 'coverage' | 'liquidations' | 'oi';
+const STORES: Name[] = ['columns', 'footprint', 'prints', 'flow', 'absorption', 'absorptionMinutes', 'coverage', 'liquidations', 'oi'];
+/** Absorption groups read when the database opens: the recorder starts with these and reads the rest of its day back after (`AbsorptionRecorder.hydrate`). */
 const ABSORPTION_MEMORY_MS = 2 * 3_600_000;
 interface AbsorptionRow { inst: string; t0: number; side: 'buy' | 'sell'; price: number; peak: number; steps: AbsorptionGroup['steps'] }
 interface AbsorptionMinuteRow { inst: string; t: number; n: number; mean: number; m2: number; floor: number }
@@ -25,6 +26,8 @@ interface AbsorptionMinuteRow { inst: string; t: number; n: number; mean: number
 interface ColumnRow { inst: string; t: number; step: number; n: number; bins: Int32Array; bid: Float32Array; ask: Float32Array; lt?: Float32Array; ltN?: number }
 interface PrintRow extends Print { k: string }
 interface LiquidationRow extends Liquidation { k: string }
+/** An open-interest reading (shared/engine.ts `OiReading`): about one a minute for each of six venues, some 8,600 a day. */
+type OiRow = OiReading;
 /** A stretch of the coverage record, with its end as `t` (the time index every store prunes by). */
 interface CoverRow extends CoverageRow { t: number }
 
@@ -34,7 +37,8 @@ function openDatabase(name: string): Promise<IDBDatabase> {
     const request = indexedDB.open(name, VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      // Version 2 added the flow store, version 3 the absorption stores, version 4 the coverage record, version 5 the liquidations: an older
+      // Version 2 added the flow store, version 3 the absorption stores, version 4 the coverage record, version 5 the liquidations, version 6
+      // the open-interest readings: an older
       // database keeps what it has and gains only those.
       if (!db.objectStoreNames.contains('columns')) db.createObjectStore('columns', { keyPath: ['inst', 't'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('footprint')) db.createObjectStore('footprint', { keyPath: ['inst', 't'] }).createIndex('t', 't');
@@ -44,6 +48,7 @@ function openDatabase(name: string): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('absorptionMinutes')) db.createObjectStore('absorptionMinutes', { keyPath: ['inst', 't'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('coverage')) db.createObjectStore('coverage', { keyPath: ['inst', 'metric', 'from'] }).createIndex('t', 't');
       if (!db.objectStoreNames.contains('liquidations')) db.createObjectStore('liquidations', { keyPath: 'k' }).createIndex('t', 't');
+      if (!db.objectStoreNames.contains('oi')) db.createObjectStore('oi', { keyPath: ['venue', 't'] }).createIndex('t', 't');
     };
     request.onsuccess = () => {
       const db = request.result;
@@ -89,7 +94,7 @@ function readSince<T>(db: IDBDatabase, name: Name, since: number): Promise<T[]> 
 const own = <A extends Int32Array | Float32Array>(array: A): A => array.byteLength === array.buffer.byteLength ? array : array.slice() as A;
 
 export interface Recordings {
-  columns: ColumnStore; footprint: FootprintStore; prints: PrintStore; flow: FlowStore; absorption: AbsorptionStore; coverage: CoverageStore; liquidations: LiquidationStore;
+  columns: ColumnStore; footprint: FootprintStore; prints: PrintStore; flow: FlowStore; absorption: AbsorptionStore; coverage: CoverageStore; liquidations: LiquidationStore; oi: OiStore;
   /** Apply what is queued now instead of at the next half second. */
   flush(): Promise<void>;
   close(): void;
@@ -108,9 +113,9 @@ export async function openRecordings(name: string, since: number, canWrite: () =
   const watch = (connection: IDBDatabase): void => { connection.onclose = () => { lost = true; }; };
   watch(db);
   const absorptionSince = Math.max(since, Date.now() - ABSORPTION_MEMORY_MS), started = performance.now();
-  const [columnRows, footprintRows, printRows, flowRows, absorptionRows, absorptionMinuteRows, coverRows, liquidationRows] = await Promise.all([readSince<ColumnRow>(db, 'columns', since), readSince<FootprintMinuteRow>(db, 'footprint', since), readSince<PrintRow>(db, 'prints', since), readSince<FlowMinuteRow>(db, 'flow', since),
-    readSince<AbsorptionRow>(db, 'absorption', absorptionSince), readSince<AbsorptionMinuteRow>(db, 'absorptionMinutes', absorptionSince), readSince<CoverRow>(db, 'coverage', since), readSince<LiquidationRow>(db, 'liquidations', since)]);
-  console.info(`recordings read back in ${Math.round(performance.now() - started)} ms: ${columnRows.length} map minutes, ${footprintRows.length} footprint minutes, ${printRows.length} trades, ${liquidationRows.length} liquidations`);
+  const [columnRows, footprintRows, printRows, flowRows, absorptionRows, absorptionMinuteRows, coverRows, liquidationRows, oiRows] = await Promise.all([readSince<ColumnRow>(db, 'columns', since), readSince<FootprintMinuteRow>(db, 'footprint', since), readSince<PrintRow>(db, 'prints', since), readSince<FlowMinuteRow>(db, 'flow', since),
+    readSince<AbsorptionRow>(db, 'absorption', absorptionSince), readSince<AbsorptionMinuteRow>(db, 'absorptionMinutes', absorptionSince), readSince<CoverRow>(db, 'coverage', since), readSince<LiquidationRow>(db, 'liquidations', since), readSince<OiRow>(db, 'oi', since)]);
+  console.info(`recordings read back in ${Math.round(performance.now() - started)} ms: ${columnRows.length} map minutes, ${footprintRows.length} footprint minutes, ${printRows.length} trades, ${liquidationRows.length} liquidations, ${oiRows.length} open-interest readings`);
   let queue: ((tx: IDBTransaction) => void)[] = [], timer: ReturnType<typeof setTimeout> | null = null, failed = false, closed = false, failures = 0;
   const schedule = (): void => { if (!timer) timer = setTimeout(() => { void write(); }, failures ? Math.min(RETRY_MAX_MS, WRITE_DELAY_MS * 2 ** failures) : WRITE_DELAY_MS); };
 
@@ -209,15 +214,26 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     }),
     close: () => {},
   };
-  // Absorption: the recorder holds the last two hours; older groups and minutes are read when the page asks for them, a cursor over the time index.
+  // Absorption: the recorder opens with the last two hours and reads the rest of its day back in the background; until then older groups
+  // and minutes are read when the page asks for them. Either way an hour of the time index at a time, one request each. A cursor walked them one round trip a row: a day of 100,000 groups took 1.9 s that way, 0.9 s in one
+  // request (Chromium, 2026-10-19), and an hour holds at most the per-minute cap's 600 groups an instrument, so no request holds a day.
   const toGroup = (row: AbsorptionRow): AbsorptionGroup => ({ id: row.inst, side: row.side, price: row.price, t0: row.t0, steps: row.steps });
   const toMinute = (row: AbsorptionMinuteRow): AbsorptionMinute => ({ id: row.inst, t: row.t, n: row.n, mean: row.mean, m2: row.m2, floor: row.floor });
-  const scan = <Row>(name: Name, from: number, to: number, keep: (row: Row) => boolean): Promise<Row[]> => new Promise((resolve, reject) => {
-    const out: Row[] = [], range = IDBKeyRange.bound(from, Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER, false, true);
-    const request = db.transaction(name, 'readonly').objectStore(name).index('t').openCursor(range);
-    request.onsuccess = () => { const cursor = request.result; if (cursor) { const row = cursor.value as Row; if (keep(row)) out.push(row); cursor.continue(); } else resolve(out); };
-    request.onerror = () => reject(request.error);
-  });
+  /** The ranges of [from, to) an hour at a time, from the retention's start on; a range reaching past the next hour (or open) is read in one. */
+  const hourRanges = (from: number, to: number): IDBKeyRange[] => {
+    const out: IDBKeyRange[] = [], start = Math.max(from, since), end = Math.min(to, Date.now() + 3_600_000);
+    for (const hour of hoursOf(start, end)) out.push(IDBKeyRange.bound(hour.from, hour.to, false, true));
+    const rest = Math.max(start, end);
+    if (to > rest) out.push(IDBKeyRange.bound(rest, Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER, false, true));
+    return out;
+  };
+  const readHours = async <Row>(name: Name, from: number, to: number, take: (rows: Row[]) => void): Promise<void> => {
+    for (const range of hourRanges(from, to)) take(await new Promise<Row[]>((resolve, reject) => {
+      const request = db.transaction(name, 'readonly').objectStore(name).index('t').getAll(range);
+      request.onsuccess = () => resolve(request.result as Row[]);
+      request.onerror = () => reject(request.error);
+    }));
+  };
   const absorption: AbsorptionStore = {
     load: () => ({ groups: absorptionRows.map(toGroup), minutes: absorptionMinuteRows.map(toMinute) }),
     save: (groups, minutes, expireBefore) => enqueue(tx => {
@@ -227,13 +243,36 @@ export async function openRecordings(name: string, since: number, canWrite: () =
       prune(tx, 'absorption', expireBefore); prune(tx, 'absorptionMinutes', expireBefore);
     }),
     query: async (ids, mins, from, to, limit) => {
-      const min = new Map(ids.map((id, i) => [id, mins[i] ?? Infinity]));
-      const rows = await scan<AbsorptionRow>('absorption', from, to, row => row.peak >= (min.get(row.inst) ?? Infinity));
-      const byId = new Map<string, AbsorptionRow[]>();
-      for (const row of rows) { let list = byId.get(row.inst); if (!list) { list = []; byId.set(row.inst, list); } list.push(row); }
+      const min = new Map(ids.map((id, i) => [id, mins[i] ?? Infinity])), byId = new Map<string, AbsorptionRow[]>();
+      await readHours<AbsorptionRow>('absorption', from, to, rows => {
+        for (const row of rows) if (row.peak >= (min.get(row.inst) ?? Infinity)) { let list = byId.get(row.inst); if (!list) { list = []; byId.set(row.inst, list); } list.push(row); }
+      });
       return [...byId.values()].flatMap(list => list.sort((a, b) => b.peak - a.peak).slice(0, limit).map(toGroup));
     },
-    minutes: async (ids, from, to) => { const wanted = new Set(ids); return (await scan<AbsorptionMinuteRow>('absorptionMinutes', from, to, row => wanted.has(row.inst))).map(toMinute); },
+    minutes: async (ids, from, to) => {
+      const wanted = new Set(ids), out: AbsorptionMinute[] = [];
+      await readHours<AbsorptionMinuteRow>('absorptionMinutes', from, to, rows => { for (const row of rows) if (wanted.has(row.inst)) out.push(toMinute(row)); });
+      return out;
+    },
+    // The column's read, and the recorder's reading its day back (`ids` null): each hour's groups and minutes in one transaction, so they are
+    // of one moment of the store.
+    eachHour: async (ids, mins, from, to, take) => {
+      const min = ids ? new Map(ids.map((id, i) => [id, mins[i] ?? Infinity])) : null;
+      const passes = (inst: string, value: number): boolean => !min || value >= (min.get(inst) ?? Infinity);
+      for (const range of hourRanges(from, to)) {
+        const [rows, minuteRows] = await new Promise<[AbsorptionRow[], AbsorptionMinuteRow[]]>((resolve, reject) => {
+          const tx = db.transaction(['absorption', 'absorptionMinutes'], 'readonly');
+          const groups = tx.objectStore('absorption').index('t').getAll(range), minutes = tx.objectStore('absorptionMinutes').index('t').getAll(range);
+          tx.oncomplete = () => resolve([groups.result as AbsorptionRow[], minutes.result as AbsorptionMinuteRow[]]);
+          const failed = (): void => reject(tx.error ?? new Error('the absorption read was aborted'));
+          tx.onerror = failed; tx.onabort = failed;
+        });
+        const groups: AbsorptionGroup[] = [], minutes: AbsorptionMinute[] = [];
+        for (const row of rows) if (passes(row.inst, row.peak)) groups.push(toGroup(row));
+        for (const row of minuteRows) if (passes(row.inst, row.floor)) minutes.push(toMinute(row));
+        take(groups, minutes);
+      }
+    },
     close: () => {},
   };
   // The coverage record: a stretch is written again as it grows (its start is its key), cut at the minute still open (shared/coverage.ts).
@@ -261,8 +300,14 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     },
     close: () => {},
   };
+  // Open-interest readings, one a venue a minute: read at start, each new one written as it comes.
+  const oi: OiStore = {
+    load: () => oiRows,
+    save: (rows, expireBefore) => enqueue(tx => { const store = tx.objectStore('oi'); for (const row of rows) store.put({ ...row } satisfies OiRow); prune(tx, 'oi', expireBefore); }),
+    close: () => {},
+  };
   return {
-    columns, footprint, prints, flow, absorption, coverage, liquidations,
+    columns, footprint, prints, flow, absorption, coverage, liquidations, oi,
     flush() { if (timer) clearTimeout(timer); return write(); },
     close() { if (timer) clearTimeout(timer); void write().finally(() => { closed = true; db.close(); }); },
   };

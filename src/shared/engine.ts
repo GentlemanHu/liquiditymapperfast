@@ -7,7 +7,7 @@ import { LIQUIDATION_FLOOR_USD, LIQUIDATIONS_PER_ANSWER, LiquidationStream, type
 import { OrderBuilder, orderRow } from './orders.ts';
 import { packTape, type TapeBatch } from './tape.ts';
 import { RecordedBefore } from './restart.ts';
-import { AbsorptionRecorder, GROUP_FLOOR_USD, type AbsorptionAnswer, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from './absorption.ts';
+import { AbsorptionRecorder, GROUP_FLOOR_USD, type AbsorptionAnswer, type AbsorptionProfileAnswer, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from './absorption.ts';
 import { FLOW_MEMORY_MS, FLOW_SEC, FlowRecorder, type FlowFrame, type FlowStore, type FlowUpdate } from './flow.ts';
 import { TIMEFRAMES, quoteRows, type Candle, type OiBar, type OiRow } from './series.ts';
 import { OI_SAMPLE_VENUES, fetchCandles, fetchOiHistory, fetchOiReading, oiBars, venueOf, webGet, type Fetcher } from './history.ts';
@@ -26,6 +26,8 @@ import { RECOVERY_BUDGET, historySource, planRecovery, rebuildOrders, runRecover
  */
 
 export { BROWSER_RETENTION_MS };
+/** How long after starting the absorption recorder reads the rest of its day back (the page asks its first questions meanwhile). */
+const HYDRATE_AFTER_MS = 5_000;
 const FLUSH_MS = 30_000, PRUNE_MS = 3_600_000, OI_SAMPLE_MS = 60_000, OI_KEEP_MS = 3 * 24 * 3_600_000, PROBE_AFTER_MS = 10_000, PROBE_AGAIN_MS = 5 * 60_000;
 /** A trade this recent is the venue's price; older than that the book's mid stands in. */
 const TRADE_PRICE_MS = 15_000;
@@ -58,6 +60,11 @@ export interface EngineTick {
 }
 export interface FootprintAnswer { step: number; fine: number; bars: ReturnType<FootprintRecorder['query']>['bars']; from: number; venues?: string[] }
 
+/** One open-interest reading as it is kept: the venue's perpetual, when it was read, its coins and (an inverse market) its own USD. */
+export interface OiReading { venue: string; t: number; base: number; quote?: number }
+/** Where open-interest readings outlive the page (the browser's recordings): `load` is synchronous, saving may be queued. */
+export interface OiStore { load(since: number): OiReading[]; save(rows: OiReading[], expireBefore: number): void; close(): void }
+
 export interface EngineOptions {
   /** The coin, and the tier its size floors are kept at (the coin's own unless the page fixed another for its recordings). */
   coin?: Coin; tier?: number;
@@ -68,7 +75,7 @@ export interface EngineOptions {
   get?: Fetcher;
   /** Whether a venue's reachability request was answered; the engine only uses it to explain a venue that never comes up. */
   ping?: (url: string, init?: { method: string; headers: Record<string, string>; body: string }) => Promise<boolean>;
-  columns?: ColumnStore | null; footprint?: FootprintStore | null; prints?: PrintStore | null; flow?: FlowStore | null; absorption?: AbsorptionStore | null; coverage?: CoverageStore | null; liquidations?: LiquidationStore | null;
+  columns?: ColumnStore | null; footprint?: FootprintStore | null; prints?: PrintStore | null; flow?: FlowStore | null; absorption?: AbsorptionStore | null; coverage?: CoverageStore | null; liquidations?: LiquidationStore | null; oi?: OiStore | null;
   retentionMs?: number;
   /** How a recovery reads a venue's trade history (shared/recovery.ts), and its budget; a test gives its own. */
   historyFetch?: HistoryFetch; recoveryBudget?: RecoveryBudget;
@@ -164,13 +171,25 @@ export class Engine {
   readonly #last = new Map<string, { price: number; at: number; t: number }>();
   readonly #candles = new Map<string, LiveCandle>();
   readonly #oiLive = new Map<string, OiRow[]>();
+  /** Where the open-interest readings outlive the page (the browser's recordings), and how long they are kept there. */
+  readonly #oiStore: OiStore | null;
+  readonly #retentionMs: number;
   readonly #oiAsked = new Map<string, number>();
   readonly #oiCache = new Map<string, { at: number; rows: Promise<OiRow[]> }>();
   #lastSample = 0; #lastFlush = 0; #lastPrune = 0; #lastFlowPush = 0;
   #lastTick = ''; #lastStatus = '';
   #timer: ReturnType<typeof setInterval> | null = null;
+  #hydration: ReturnType<typeof setTimeout> | null = null;
 
-  constructor({ coin = BTC, tier = coin.tier, venues = browserVenues(coin), now = Date.now, get = webGet, ping = defaultPing, columns = null, footprint = null, prints = null, flow = null, absorption = null, coverage = null, liquidations = null, retentionMs = BROWSER_RETENTION_MS, historyFetch = webHistoryFetch, recoveryBudget = RECOVERY_BUDGET }: EngineOptions = {}) {
+  constructor({ coin = BTC, tier = coin.tier, venues = browserVenues(coin), now = Date.now, get = webGet, ping = defaultPing, columns = null, footprint = null, prints = null, flow = null, absorption = null, coverage = null, liquidations = null, oi = null, retentionMs = BROWSER_RETENTION_MS, historyFetch = webHistoryFetch, recoveryBudget = RECOVERY_BUDGET }: EngineOptions = {}) {
+    this.#oiStore = oi; this.#retentionMs = retentionMs;
+    if (oi) {
+      for (const r of oi.load(now() - retentionMs)) {
+        let list = this.#oiLive.get(r.venue); if (!list) { list = []; this.#oiLive.set(r.venue, list); }
+        list.push({ observationTimestamp: r.t, base: r.base, ...(r.quote !== undefined ? { quote: r.quote } : {}) });
+      }
+      for (const list of this.#oiLive.values()) list.sort((a, b) => Number(a.observationTimestamp) - Number(b.observationTimestamp));
+    }
     this.#coin = coin; this.#venues = venues; this.#now = now; this.#get = get; this.#ping = ping; this.#historyFetch = historyFetch; this.#recoveryBudget = recoveryBudget;
     // A coin that trades less than BTC keeps smaller trades, groups and map cells (shared/coins.ts SCALES); BTC's are 1.
     const scale = SCALES[tier] ?? 1;
@@ -185,7 +204,8 @@ export class Engine {
     this.liquidationStream = new LiquidationStream(liquidations, now, retentionMs, LIQUIDATION_FLOOR_USD * scale);
     this.flows = new FlowRecorder(flow, now, Math.min(retentionMs, FLOW_MEMORY_MS), retentionMs);
     this.orders = new OrderBuilder(now);
-    this.absorption = new AbsorptionRecorder(absorption, now, { retentionMs, floorUsd: GROUP_FLOOR_USD * scale });
+    // It holds the whole day the page keeps, to answer the absorption column without reading the recordings (`start` reads it back).
+    this.absorption = new AbsorptionRecorder(absorption, now, { retentionMs, floorUsd: GROUP_FLOOR_USD * scale, memoryMs: retentionMs });
     this.tradeCoverage = new TradeCoverage(coverage, now, retentionMs);
     for (const id of this.footprints.instruments) this.#loadedThrough.set(id, this.footprints.lastMinute(id) + COLUMN_MS);
     this.#recorded = new RecordedBefore(this.flows, this.footprints);
@@ -233,9 +253,13 @@ export class Engine {
 
   // ---- The loop -------------------------------------------------------------------------------------------------------------------
 
-  start(intervalMs = 250): void { if (!this.#timer) this.#timer = setInterval(() => this.step(), intervalMs); }
+  start(intervalMs = 250): void {
+    if (!this.#timer) this.#timer = setInterval(() => this.step(), intervalMs);
+    if (!this.#hydration) { this.#hydration = setTimeout(() => { void this.absorption.hydrate(); }, HYDRATE_AFTER_MS); (this.#hydration as { unref?: () => void }).unref?.(); }
+  }
   stop(): void {
     if (this.#timer) clearInterval(this.#timer); this.#timer = null;
+    if (this.#hydration) clearTimeout(this.#hydration); this.#hydration = null;
     for (const run of this.#runs.values()) { for (const c of [run.book, ...run.feeds]) c.stop(); this.tradeCoverage.end(run.book.instrumentId, this.#now()); }
     this.#runs.clear(); this.flush();
   }
@@ -368,6 +392,8 @@ export class Engine {
 
   /** Absorption candidates for these instruments over [from, to) and the minutes since `since` (see AbsorptionRecorder.query). */
   absorptionHistory(ids: readonly string[], mins: readonly number[], from: number, to: number, limit: number, since: number): Promise<AbsorptionAnswer> { return this.absorption.query(ids, mins, from, to, limit, since); }
+  /** The absorption column for these instruments over [from, to), each at its threshold, on rows of `step` (see AbsorptionRecorder.profile). */
+  absorptionProfile(ids: readonly string[], thresholds: readonly (number | null)[], from: number, to: number, step: number): Promise<AbsorptionProfileAnswer> { return this.absorption.profile(ids, thresholds, from, to, step); }
 
   /** Traded volume by price for these instruments over [from, to) (the traded-volume column). */
   profile(ids: readonly string[], from: number, to: number, rowStep: number): ProfileAnswer { return this.footprints.profile(ids, from, to, rowStep); }
@@ -511,9 +537,11 @@ export class Engine {
       const listing = this.#coin.markets[venue as MarketVenue]; if (!listing) continue;
       void fetchOiReading(venue, this.#get, listing).then(reading => {
         if (reading === null) return;
-        const list = this.#oiLive.get(venue) ?? []; this.#oiLive.set(venue, list);
-        list.push({ observationTimestamp: this.#now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) });
+        const list = this.#oiLive.get(venue) ?? [], t = this.#now(); this.#oiLive.set(venue, list);
+        list.push({ observationTimestamp: t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) });
         while (list.length && Number(list[0]!.observationTimestamp) < this.#now() - OI_KEEP_MS) list.shift();
+        // Kept with the recordings, so a reload has the venues that keep no history of their own (Hyperliquid, Bitget, Deribit) too.
+        this.#oiStore?.save([{ venue, t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }], t - this.#retentionMs);
       }, () => { /* the next minute asks again */ });
     }
   }

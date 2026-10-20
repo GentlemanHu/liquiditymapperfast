@@ -6,7 +6,7 @@ import type { PrintSumsAnswer } from '../shared/print-sums.ts';
 import type { FlowFrame, FlowMinutesFrame, FlowUpdate } from '../shared/flow.ts';
 import type { ProfileAnswer, RangeAnswer, SizesAnswer, ValueAreaAnswer } from '../shared/footprint.ts';
 import type { OiProfileAnswer } from '../shared/oi-profile.ts';
-import type { AbsorptionAnswer, AbsorptionGroup, AbsorptionMinute } from '../shared/absorption.ts';
+import type { AbsorptionAnswer, AbsorptionGroup, AbsorptionMinute, AbsorptionProfileAnswer } from '../shared/absorption.ts';
 import type { CoverageAnswer, CoverageMetric } from '../shared/coverage.ts';
 import type { RecoveryReport, RecoveryRequest } from '../shared/engine.ts';
 import type { PriceHistoryAnswer } from '../shared/price-history.ts';
@@ -141,6 +141,11 @@ export interface DataSource {
   recover?(request: RecoveryRequest): Promise<RecoveryReport>;
   /** Absorption candidates of each of `ids` starting in [from, to) with a largest credit of at least its `mins` entry (at most `limit` each, the largest first), floors, and the minutes since `since`. */
   absorption(ids: string[], mins: number[], from: number, to: number, limit: number, since: number): Promise<AbsorptionAnswer>;
+  /**
+   * The absorption column (shared/absorption.ts `AbsorptionProfile`): the marked USD of every group of `ids` that began in [from, to), each at
+   * its `thresholds` entry, by price on rows of `rowStep`, none left out, and where the rows may be short. No minutes are read.
+   */
+  absorptionProfile(ids: string[], thresholds: number[], from: number, to: number, rowStep: number): Promise<AbsorptionProfileAnswer>;
   readonly venues: VenueControl;
   /** What becomes of the recordings, at `now`; a source whose recordings are kept elsewhere (the server) leaves it out. */
   saving?(now: number): SavingState;

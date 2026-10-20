@@ -5,7 +5,7 @@ import { createLocalServer } from '../src/server/http.mts';
 import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
 import { QuotaLedger } from '../src/core/quota.mts';
-import { FootprintRecorder } from '../src/shared/footprint.ts';
+import { FootprintRecorder, type FootprintMinuteRow, type FootprintStore } from '../src/shared/footprint.ts';
 import { inverseOiId, oiInstrument, oiIntervals, oiProfileOf, parseOiProfile } from '../src/shared/oi-profile.ts';
 import type { OiBar } from '../src/shared/series.ts';
 
@@ -87,6 +87,23 @@ test('the server answers the change by price from its stored readings and its fo
     const refuse = async (query: string) => { const x = await fetch(`${base}/api/v2/oi-profile?${query}`); assert.equal(x.status, 400, query); };
     await refuse(`inst=${id}&from=${now - MIN}&to=${now}&step=0`); await refuse(`from=${now - MIN}&to=${now}&step=100`); await refuse(`inst=${id}&from=0&to=${9 * 86_400_000}&step=100`);
   } finally { v2.close(); app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await app.close(); }
+});
+
+test('older than what memory holds, a change is spread by the prices of its hour added together, and still makes or loses nothing', () => {
+  // A store that answers ranges (as a server's does), holding two minutes of an hour five hours back; memory holds only the last hour.
+  const now = T0 + 6 * 60 * MIN, h = T0 + 60 * MIN, step = 1;
+  const rows: FootprintMinuteRow[] = [
+    { inst: 'x:BTC', t: h + 10 * MIN, step, bins: [[80_005, 3_000, 0], [80_105, 1_000, 0]], stats: null },
+    { inst: 'x:BTC', t: h + 40 * MIN, step, bins: [[80_005, 1_000, 0], [80_105, 3_000, 0]], stats: null },
+  ];
+  const store: FootprintStore = { load: since => rows.filter(r => r.t >= since), save: () => {}, close: () => {}, range: (inst, from, to) => rows.filter(r => r.inst === inst && r.t >= from && r.t < to) };
+  const recorder = new FootprintRecorder(store, () => now, 7 * 24 * 60 * MIN, 1, 60 * MIN);
+  const out = recorder.spread('x:BTC', 100, [{ from: h + 10 * MIN, to: h + 11 * MIN, amount: 40 }, { from: h + 40 * MIN, to: h + 41 * MIN, amount: -8 }, { from: h + 20 * MIN, to: h + 21 * MIN, amount: 4 }], false, 0);
+  // The hour traded 4,000 at each of the two prices: every change is split evenly, whichever minute it came in.
+  assert.deepEqual(out.rows.map(r => [r[0], r[1], r[2]]), [[80_000, 22, 4], [80_100, 22, 4]]);
+  assert.equal(out.unplaced, 0);
+  const up = out.rows.reduce((a, r) => a + r[1], 0), down = out.rows.reduce((a, r) => a + r[2], 0);
+  assert.ok(Math.abs(up - down - (40 - 8 + 4)) < 1e-9);
 });
 
 test('which markets have an open interest, and which count it in USD', () => {

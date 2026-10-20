@@ -14,11 +14,11 @@ import { atOnePrice, inverseOi, oiSumOf, type OiPart } from './oi-change.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
-import { MAX_PROFILE_INSTRUMENTS, MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
+import { MAX_PROFILE_INSTRUMENTS, MAX_PROFILE_SPAN_MS, MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
 import { oiInstrument } from '../shared/oi-profile.ts';
 import { AbsorptionBook } from './absorption.ts';
 import { ABSORPTION_RETENTION_MS, MAX_ABSORPTION_INSTRUMENTS } from '../shared/absorption.ts';
-import { absorptionAnswer, liquidationAnswer, type MetricFlags, type ProfileMetric } from './traded/metrics.ts';
+import { liquidationAnswer, type MetricFlags, type ProfileMetric } from './traded/metrics.ts';
 import { PRINTS_PER_ANSWER } from '../shared/prints.ts';
 import { webGet } from '../shared/history.ts';
 import { KeyLevelHistory } from './keylevels/history.ts';
@@ -31,6 +31,40 @@ export const TIMEFRAMES: Readonly<Record<string, number>> = { '1m': 60_000, '5m'
 const MINUTE = 60_000;
 /** The most absorption groups one question asks of each instrument (the largest). */
 const ABSORPTION_PER_INSTRUMENT = 4_000;
+
+/**
+ * One measure's column (`Hub.ensureMetricProfile`): its last answer (`held`: rows, what the record leaves out, the window's tag), whether the
+ * source can answer, and the question in flight or last asked, kept per measure so several columns are asked side by side.
+ */
+interface MetricColumn {
+  held: { step: number; answer: ProfileAnswer; flags: MetricFlags; tag: string } | null;
+  state: 'ready' | 'unavailable';
+  loading: boolean; asked: string; at: number; retryAt: number; ms: number; gen: number; settled: boolean;
+  /** The question last asked, without its window (`base`), and its window. */
+  window: AskedWindow | null;
+}
+
+/** A column's question without its window (instruments, rows, period), and the window it was asked for. */
+interface AskedWindow { base: string; from: number; to: number }
+
+/**
+ * The part of a column's window a source can be asked about: all of it up to `MAX_PROFILE_SPAN_MS`, else its newest part, up to now for one
+ * still under way (a month under way asked whole ends next month, and its newest eight days would lie in the future).
+ */
+function askedSpan(from: number, to: number): { from: number; to: number } {
+  if (!(to - from > MAX_PROFILE_SPAN_MS)) return { from, to };
+  const end = Math.min(to, (Math.floor(Date.now() / MINUTE) + 1) * MINUTE);
+  return { from: Math.max(from, end - MAX_PROFILE_SPAN_MS), to: end };
+}
+
+/**
+ * Whether a column's question differs from the last one only by its window sliding forward with the live edge, both ends by no more than
+ * `spacing`: such a question waits for the refresh spacing rather than going at once. Following the live edge the window moves every
+ * minute, and a week of 27 markets asked again each time held the server for seconds every minute (measured 2026-10-19).
+ */
+function slidOnly(last: AskedWindow | null, base: string, from: number, to: number, spacing: number): boolean {
+  return last !== null && last.base === base && from >= last.from && from - last.from <= spacing && to >= last.to && to - last.to <= spacing;
+}
 /**
  * A window of recorded columns is complete once its last minute has ended and the recorder has taken that minute's last sample (seconds
  * later); this much room also covers a source whose clock is a little off.
@@ -56,6 +90,8 @@ export const VALUE_AREA_SETTLE_MS = 60 * MINUTE;
 export const PROFILE_CANDLES_BACK_MS = 21 * 7 * 86_400_000;
 /** A value area's key: the instruments, the row step and share it was read with, and its window. */
 export const valueAreaKey = (ids: readonly string[], step: number, share: number, w: { from: number; to: number }): string => `${ids.join(',')}|${step}|${share}|${w.from}-${w.to}`;
+/** The key a past window's traded volume by price is held by (`Hub.windowProfiles`): the instruments first, as `valueAreaKey`'s. */
+export const windowProfileKey = (ids: readonly string[], step: number, w: { from: number; to: number }): string => `${ids.join(',')}|${step}|${w.from}-${w.to}`;
 
 /** The perpetuals whose open interest is added together with every venue on (market-choice.ts). */
 export { oiVenueIds } from './market-choice.ts';
@@ -246,12 +282,17 @@ export class Hub {
    * what it reaches), and whether it can no longer change (`final`: answered a while after it ended), so it is not asked again (`ensureValueAreas`).
    */
   readonly valueAreas = new Map<string, ValueAreaWindow & { at: number; asOf: number; final: boolean }>();
+  /** Traded volume by price of past days, weeks or sessions, by window (`windowProfileKey`), for their profiles on the chart (`ensureWindowProfiles`). */
+  readonly windowProfiles = new Map<string, { answer: ProfileAnswer; at: number; final: boolean }>();
+  #wpLoading = false; #wpRetryAt = 0;
   valueAreasState: 'ready' | 'unavailable' = 'ready';
   #vaLoading = false; #vaRetryAt = 0; #vaLastMs = 0;
   tradedState: 'ready' | 'unavailable' = 'ready';
   /** Called when the traded-volume column has a new answer (or the source said it has none). */
   onTraded: () => void = () => {};
   #tradedLoading = false; #tradedAsked = ''; #tradedAt = 0; #tradedRetryAt = 0;
+  /** The traded-volume question last asked, without its window, and its window (`slidOnly`). */
+  #tradedWindow: AskedWindow | null = null;
   /**
    * How long the last traded-volume answer took (ms). A server answers on its only thread: a week of rows took 7 to 9 s on a live recording of
    * 27 markets (2026-10-18), during which it answered nothing else, so a slow answer is asked for again that much less often.
@@ -261,10 +302,17 @@ export class Hub {
   #tradedSettled = false;
   /** Counts the traded-volume questions, so an answer can tell whether it is still the one wanted. */
   #tradedGen = 0;
-  /** The column's last answer for a measure other than traded volume (`ensureMetricProfile`), what it leaves out, and whether the source can answer. */
-  metricProfile: { metric: ProfileMetric; step: number; answer: ProfileAnswer; flags: MetricFlags } | null = null;
-  metricState: 'ready' | 'unavailable' = 'ready';
-  #metricLoading = false; #metricAsked = ''; #metricAt = 0; #metricRetryAt = 0; #metricMs = 0; #metricGen = 0;
+  /** Each measure's column other than traded volume (`ensureMetricProfile`): its last answer and how it is being asked, apart from the others. */
+  readonly #metricColumns = new Map<ProfileMetric, MetricColumn>();
+  #metricColumn(metric: ProfileMetric): MetricColumn {
+    let c = this.#metricColumns.get(metric);
+    if (!c) { c = { held: null, state: 'ready', loading: false, asked: '', at: 0, retryAt: 0, ms: 0, gen: 0, settled: false, window: null }; this.#metricColumns.set(metric, c); }
+    return c;
+  }
+  /** A measure's last answer (traded/metrics.ts), what it leaves out and the window it was asked for; null until one came. */
+  metricProfile(metric: ProfileMetric): MetricColumn['held'] { return this.#metricColumns.get(metric)?.held ?? null; }
+  /** Whether the source can answer for this measure ('unavailable': an older server; asked again a minute later). */
+  metricState(metric: ProfileMetric): 'ready' | 'unavailable' { return this.#metricColumns.get(metric)?.state ?? 'ready'; }
   /** Oldest recorded depth minute across instruments (ms), or 0 when nothing is recorded. */
   recordedSince = 0;
   /** Instrument with candle history to fall back to when the selected market has none. */
@@ -525,11 +573,13 @@ export class Hub {
    * again (one with no threshold yet is asked only for its minutes, and then again once they give it one). As with the bubbles, history is
    * asked once per window and the live stream keeps it current: again when the window leaves what the book still claims (a full book lets go
    * of claimed groups the view no longer reaches, and its cover then starts after them), a threshold falls under what it was asked from, or
-   * the stream reconnected. A source that cannot answer (an older server) is asked again a minute later.
+   * the stream reconnected. A source that cannot answer (an older server) is asked again a minute later. With `statsOnly` (the marks are off
+   * and only the absorption column judges groups) only the minutes are asked for (`#ensureAbsorptionMinutes`).
    */
-  ensureAbsorption(allIds: readonly string[], allThresholds: readonly (number | null)[], view: Bounds, sdMinutes: number): void {
+  ensureAbsorption(allIds: readonly string[], allThresholds: readonly (number | null)[], view: Bounds, sdMinutes: number, statsOnly = false): void {
     // More instruments than one question may name is more markets than any page has; the first are asked about.
     const ids = allIds.slice(0, MAX_ABSORPTION_INSTRUMENTS), thresholds = allThresholds.slice(0, MAX_ABSORPTION_INSTRUMENTS);
+    if (statsOnly) { if (ids.length) this.#ensureAbsorptionMinutes(ids, sdMinutes); return; }
     if (!ids.length || !(view.t1 > view.t0)) return;
     const now = Date.now(), MIN = 60_000;
     // Nothing older than the recorder keeps exists (and the server refuses a question of more than eight days): a map zoomed out further
@@ -558,6 +608,36 @@ export class Hub {
         this.absorption.load(answer, current ? { from, to: to >= now ? Infinity : to, mins: new Map(ids.map((id, i) => [id, mins[i]!])) } : null);
         this.absorptionState = 'ready';
         if (current) this.#absorptionCover = { key, minutesFrom: Math.min(since, have?.minutesFrom ?? Infinity) };
+        this.onAbsorptionChanged();
+      },
+      (error: unknown) => {
+        this.absorptionState = (error as { status?: unknown } | null)?.status === 404 ? 'unavailable' : 'failed';
+        this.#absorptionRetryAt = Date.now() + 60_000; this.onAbsorptionChanged();
+      },
+    ).finally(() => { this.#absorptionLoading = false; });
+  }
+
+  /**
+   * The minutes of the last `sdMinutes` alone, for the automatic threshold the absorption column judges at while the marks are off: asked
+   * once, as the marks ask them (the live stream then brings each minute as it settles), and again when the instruments or the span change or
+   * the stream reconnected. The question names the last minute with every threshold out of reach, so it reads no group, and any server that
+   * answers the marks answers it.
+   */
+  #ensureAbsorptionMinutes(ids: readonly string[], sdMinutes: number): void {
+    const now = Date.now();
+    if (this.#absorptionLoading) return;
+    if (this.absorptionState !== 'ready' && now < this.#absorptionRetryAt) return;
+    const key = `${ids.join(',')}|${sdMinutes}`, have = this.#absorptionCover?.key === key ? this.#absorptionCover : null;
+    const since = Math.floor(now / MINUTE) * MINUTE - (sdMinutes + 1) * MINUTE;
+    if (have && have.minutesFrom <= since) return;
+    const connection = this.#connection;
+    this.#absorptionLoading = true;
+    this.source.absorption([...ids], ids.map(() => Number.MAX_SAFE_INTEGER), now - MINUTE, now, 1, since).then(
+      answer => {
+        // No cover: the answer claims no groups.
+        this.absorption.load(answer);
+        this.absorptionState = 'ready';
+        if (connection === this.#connection) this.#absorptionCover = { key, minutesFrom: Math.min(since, have?.minutesFrom ?? Infinity) };
         this.onAbsorptionChanged();
       },
       (error: unknown) => {
@@ -603,6 +683,29 @@ export class Hub {
   /** Forget the value areas of windows of `id` that [from, to) reaches into: trades were filled in there after they were answered. */
   #dropValueAreas(id: string, from: number, to: number): void {
     for (const [key, w] of this.valueAreas) if (w.from < to && w.to > from && key.slice(0, key.indexOf('|')).split(',').includes(id)) this.valueAreas.delete(key);
+    for (const [key, w] of this.windowProfiles) if (w.answer.from < to && w.answer.to > from && key.slice(0, key.indexOf('|')).split(',').includes(id)) this.windowProfiles.delete(key);
+  }
+
+  /**
+   * Make sure the traded volume by price of these past days, weeks or sessions is held (`windowProfiles`), for their profiles on the chart:
+   * one window asked at a time, the newest first; one that ended an hour or more before its answer (`VALUE_AREA_SETTLE_MS`, as long as late
+   * trades are rechecked) is kept for good, any other asked again after a minute. Each is asked whole (they began inside what the recording
+   * keeps) on rows of `step`, the level rows, so zooming asks nothing again.
+   */
+  ensureWindowProfiles(ids: readonly string[], windows: readonly { from: number; to: number }[], step: number): void {
+    if (this.#wpLoading || !ids.length || !windows.length || !(step > 0)) return;
+    const now = Date.now();
+    if (now < this.#wpRetryAt) return;
+    const w = [...windows].sort((a, b) => b.to - a.to).find(x => { const held = this.windowProfiles.get(windowProfileKey(ids, step, x)); return !held || (!held.final && now - held.at >= 60_000); });
+    if (!w) return;
+    this.#wpLoading = true;
+    const { from, to } = askedSpan(w.from, w.to), key = windowProfileKey(ids, step, w);
+    this.source.profile([...ids], from, to, step).then(answer => {
+      this.windowProfiles.set(key, { answer, at: Date.now(), final: Date.now() >= w.to + VALUE_AREA_SETTLE_MS });
+      // A bound on what is held (20 windows of each session at most are drawn): the oldest answers go first.
+      if (this.windowProfiles.size > 200) for (const k of [...this.windowProfiles.keys()].slice(0, this.windowProfiles.size - 150)) this.windowProfiles.delete(k);
+      this.onTraded();
+    }, () => { this.#wpRetryAt = Date.now() + 60_000; }).finally(() => { this.#wpLoading = false; });
   }
 
   /**
@@ -614,15 +717,19 @@ export class Hub {
    * asked again a minute later. `tag` names the window for the answer held (`traded`).
    */
   ensureTraded(ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }): void {
+    // A window longer than a source may be asked about (a chart zoomed out past eight days, a month) is asked for its newest part: refused
+    // whole, it left the column on its last answer, asked again a minute later and refused again. The header says from when it holds.
+    ({ from, to } = askedSpan(from, to));
     // No instruments left: nothing has traded on the map, and an answer still on its way for the last ones must not draw them back.
     if (!ids.length) { if (this.traded || this.#tradedAsked) { this.traded = null; this.#tradedAsked = ''; this.#tradedGen++; this.onTraded(); } return; }
     if (this.#tradedLoading || !(to > from) || !(step > 0)) return;
     const now = Date.now();
     if (this.tradedState === 'unavailable' && now < this.#tradedRetryAt) return;
     // The window's tag is part of the question: a day and the session that covers the same hours have the same bounds and another answer's name.
-    const key = `${ids.join(',')}|${step}|${from}|${to}|${period.tag}`;
-    if (key === this.#tradedAsked && !(live && now - this.#tradedAt >= Math.min(300_000, Math.max(5_000, 20 * this.#tradedMs))) && !(period.settled && !this.#tradedSettled)) return;
-    this.#tradedLoading = true; this.#tradedAsked = key; this.#tradedAt = now; this.#tradedSettled = period.settled;
+    const base = `${ids.join(',')}|${step}|${period.tag}`, key = `${base}|${from}|${to}`, spacing = Math.min(300_000, Math.max(5_000, 20 * this.#tradedMs));
+    const slid = live && slidOnly(this.#tradedWindow, base, from, to, spacing);
+    if ((key === this.#tradedAsked || slid) && !(live && now - this.#tradedAt >= spacing) && !(period.settled && !this.#tradedSettled)) return;
+    this.#tradedLoading = true; this.#tradedAsked = key; this.#tradedAt = now; this.#tradedSettled = period.settled; this.#tradedWindow = { base, from, to };
     const generation = ++this.#tradedGen, started = performance.now();
     this.source.profile([...ids], from, to, step).then(
       answer => { if (generation !== this.#tradedGen) return; this.#tradedMs = performance.now() - started; this.traded = { step, answer, tag: period.tag }; this.tradedState = 'ready'; this.onTraded(); },
@@ -634,19 +741,22 @@ export class Hub {
    * Make sure the column has an answer for a measure other than traded volume (traded/metrics.ts) over this window, as `ensureTraded` does
    * for volume: the change in open interest of the perpetuals among `ids` (shared/oi-profile.ts), liquidations from the source's record
    * (its largest 5,000 when more match), absorption groups at each instrument's threshold
-   * (`thresholds`; one with none yet has nothing marked). Asked again every five seconds while the map follows the live edge, no oftener
-   * than ten times the last answer took (an absorption question reads a server's store).
+   * (`thresholds`; one with none yet has nothing marked). Asked again as `ensureTraded` asks (`live`, `settled`, the same spacing), and `tag`
+   * names the window for the answer held.
    */
-  ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, thresholds: ReadonlyMap<string, number | null> = new Map()): void {
-    if (this.#metricLoading || !(to > from) || !(step > 0)) return;
+  ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }, thresholds: ReadonlyMap<string, number | null> = new Map()): void {
+    const c = this.#metricColumn(metric);
+    ({ from, to } = askedSpan(from, to));   // as `ensureTraded`
+    if (c.loading || !(to > from) || !(step > 0)) return;
     const now = Date.now();
-    if (this.metricState === 'unavailable' && now < this.#metricRetryAt) return;
+    if (c.state === 'unavailable' && now < c.retryAt) return;
     const judged = metric === 'absorption' ? ids.filter(id => typeof thresholds.get(id) === 'number').slice(0, MAX_ABSORPTION_INSTRUMENTS)
       : metric === 'oi' ? ids.filter(oiInstrument).slice(0, MAX_PROFILE_INSTRUMENTS) : [...ids];
-    const key = `${metric}|${judged.map(id => metric === 'absorption' ? `${id}:${thresholds.get(id)}` : id).join(',')}|${step}|${from}|${to}`;
-    if (key === this.#metricAsked && !(live && now - this.#metricAt >= Math.max(5_000, 10 * this.#metricMs))) return;
-    this.#metricLoading = true; this.#metricAsked = key; this.#metricAt = now;
-    const generation = ++this.#metricGen, started = performance.now(), source = this.source, none = { cut: false, incomplete: false };
+    const base = `${judged.map(id => metric === 'absorption' ? `${id}:${thresholds.get(id)}` : id).join(',')}|${step}|${period.tag}`, key = `${base}|${from}|${to}`;
+    const spacing = Math.min(300_000, Math.max(5_000, 20 * c.ms)), slid = live && slidOnly(c.window, base, from, to, spacing);
+    if ((key === c.asked || slid) && !(live && now - c.at >= spacing) && !(period.settled && !c.settled)) return;
+    c.loading = true; c.asked = key; c.at = now; c.settled = period.settled; c.window = { base, from, to };
+    const generation = ++c.gen, started = performance.now(), source = this.source, none = { cut: false, incomplete: false };
     const work: Promise<{ answer: ProfileAnswer; flags: MetricFlags }> = metric === 'oi'
       ? (!judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
         : (source.oiProfile ? source.oiProfile(judged, from, to, step) : Promise.reject(new Error('no open-interest profile from this source')))
@@ -655,15 +765,14 @@ export class Hub {
       ? (source.liquidations ? source.liquidations(from, to) : Promise.reject(new Error('no liquidations from this source')))
         .then(rows => ({ answer: liquidationAnswer(rows, judged, from, to, step), flags: { cut: rows.length >= LIQUIDATIONS_PER_ANSWER, incomplete: false } }))
       : !judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
-      // `since` at the window's end: the groups are wanted, not the minutes.
-      : source.absorption(judged, judged.map(id => thresholds.get(id)!), from, to, ABSORPTION_PER_INSTRUMENT, to).then(a => ({
-        answer: absorptionAnswer(a.groups, thresholds, from, to, step),
-        flags: { cut: a.capped.length > 0, incomplete: judged.some(id => (a.floors[id] ?? 0) > thresholds.get(id)!) },
+      // Added up where the groups are kept, every one of the window and no minutes (the thresholds are the marks', `ensureAbsorption`).
+      : source.absorptionProfile(judged, judged.map(id => thresholds.get(id)!), from, to, step).then(answer => ({
+        answer, flags: { cut: answer.cut.length > 0, incomplete: answer.incomplete.length > 0 },
       }));
     work.then(
-      ({ answer, flags }) => { if (generation !== this.#metricGen) return; this.#metricMs = performance.now() - started; this.metricProfile = { metric, step, answer, flags }; this.metricState = 'ready'; this.onTraded(); },
-      () => { if (generation !== this.#metricGen) return; this.metricState = 'unavailable'; this.#metricRetryAt = Date.now() + 60_000; this.#metricAsked = ''; this.onTraded(); },
-    ).finally(() => { this.#metricLoading = false; });
+      ({ answer, flags }) => { if (generation !== c.gen) return; c.ms = performance.now() - started; c.held = { step, answer, flags, tag: period.tag }; c.state = 'ready'; this.onTraded(); },
+      () => { if (generation !== c.gen) return; c.state = 'unavailable'; c.retryAt = Date.now() + 60_000; c.asked = ''; this.onTraded(); },
+    ).finally(() => { c.loading = false; });
   }
 
   /**

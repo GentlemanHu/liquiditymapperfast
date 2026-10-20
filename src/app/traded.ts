@@ -97,3 +97,49 @@ export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels
 
 /** The row under a price, or -1 outside the rows. */
 export const tradedRowAt = (rows: TradedRows, price: number): number => { const i = Math.floor(price / rows.step) - rows.bin0; return i >= 0 && i < rows.buy.length ? i : -1; };
+
+/** The first side less the second over the whole window (bought less sold, for traded volume). */
+export function tradedNet(rows: TradedRows): number { let net = 0; for (let i = 0; i < rows.buy.length; i++) net += rows.buy[i]! - rows.sell[i]!; return net; }
+
+const share = (x: number): string => `${(x * 100).toFixed(1)} %`;
+const signedUsd = (x: number): string => `${x > 0 ? '+' : x < 0 ? '−' : ''}$${usd(Math.abs(x))}`;
+/** The column header's line under its total: the difference of the two sides, and that as a share of the total. */
+export const tradedNetLine = (rows: TradedRows): string => { const net = tradedNet(rows); return `Δ ${signedUsd(net)} · ${share(rows.total > 0 ? net / rows.total : 0)}`; };
+
+/**
+ * What the box over the column's header says of its whole window: the two sides and their difference, the point of control and the value
+ * area with its width, the window's weighted mean and median prices, how much of it lies above and below the point of control, and where
+ * the price `mark` is now. Numbers only: the shape of the distribution is read from them (most of it above the point of control: it built
+ * upward), not named. `title` names the window.
+ */
+export function tradedFigures(rows: TradedRows, levels: ValueLevels | null, mark: number, title: string, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
+  const lines: InfoLine[] = [{ text: title, bold: true }];
+  if (!(rows.total > 0)) { lines.push({ text: words.none, color: 'muted', wrap: true }); return lines; }
+  const mid = (i: number): number => (rows.bin0 + i + 0.5) * rows.step, at = (price: number): string => fmtPrice(price, rows.step);
+  let buy = 0, sell = 0, weighted = 0;
+  for (let i = 0; i < rows.buy.length; i++) { const b = rows.buy[i]!, s = rows.sell[i]!; buy += b; sell += s; weighted += mid(i) * (b + s); }
+  const net = buy - sell;
+  lines.push({ label: words.buy, text: `$${usd(buy)}`, color: 'buy' }, { label: words.sell, text: `$${usd(sell)}`, color: 'sell' },
+    { label: words.net, text: `${signedUsd(net)} · ${share(net / rows.total)}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+  // The median: the row where the running total, from the lowest price up, first reaches half of it.
+  let run = 0, median = mid(0);
+  for (let i = 0; i < rows.buy.length; i++) { run += rows.buy[i]! + rows.sell[i]!; if (run >= rows.total / 2) { median = mid(i); break; } }
+  if (levels) {
+    const width = levels.vah - levels.val;
+    lines.push({ label: t('Point of control'), text: at(levels.poc), rule: true }, { label: t('Value area'), text: `${at(levels.val)} – ${at(levels.vah)}` },
+      { label: t('Value area width'), text: `$${usd(width)} · ${(width / ((levels.vah + levels.val) / 2) * 100).toFixed(2)} %` });
+  }
+  lines.push({ label: t('Weighted mean price'), text: at(weighted / rows.total), ...(levels ? {} : { rule: true }) }, { label: t('Median price'), text: at(median) });
+  // Either side of the point of control's row: the levels' where they are worked out, else the column's own largest row.
+  const pocRow = levels ? tradedRowAt(rows, levels.poc) : rows.poc;
+  if (pocRow >= 0) {
+    let above = 0, below = 0;
+    for (let i = 0; i < rows.buy.length; i++) { const v = rows.buy[i]! + rows.sell[i]!; if (i > pocRow) above += v; else if (i < pocRow) below += v; }
+    lines.push({ label: t('Above the point of control'), text: share(above / rows.total) }, { label: t('Below the point of control'), text: share(below / rows.total) });
+  }
+  if (mark > 0) {
+    const where = !levels ? '' : Math.abs(mark - levels.poc) < rows.step / 2 ? t('Point of control') : mark > levels.vah ? t('Above the value area') : mark < levels.val ? t('Below the value area') : t('In the value area');
+    lines.push({ label: t('Price now'), text: where ? `${fmtPrice(mark)} · ${where}` : fmtPrice(mark), rule: true });
+  }
+  return lines;
+}

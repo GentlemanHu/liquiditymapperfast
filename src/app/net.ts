@@ -4,7 +4,7 @@ import { COLUMNS_PER_REQUEST } from '../shared/columns.ts';
 import { decodeFlowFrame, decodeFlowMinutes, type FlowFrame, type FlowMinutesFrame, type FlowUpdate } from '../shared/flow.ts';
 import { parseProfile, parseRange, parseSizes, parseValueAreas, type ProfileAnswer, type RangeAnswer, type SizesAnswer, type ValueAreaAnswer } from '../shared/footprint.ts';
 import { parseOiProfile, type OiProfileAnswer } from '../shared/oi-profile.ts';
-import { parseAbsorptionAnswer, parseAbsorptionLive, type AbsorptionAnswer } from '../shared/absorption.ts';
+import { AbsorptionProfile, parseAbsorptionAnswer, parseAbsorptionLive, parseAbsorptionProfile, type AbsorptionAnswer, type AbsorptionProfileAnswer } from '../shared/absorption.ts';
 import { parseCoverage, type CoverageAnswer, type CoverageMetric } from '../shared/coverage.ts';
 import { fromWire, type Print } from './prints.ts';
 import { fromWire as liquidationFromWire, type Liquidation } from '../shared/liquidations.ts';
@@ -91,6 +91,27 @@ export async function getAbsorption(ids: string[], mins: number[], from: number,
   if (!response.ok) throw Object.assign(new Error(`absorption failed: ${response.status}`), { status: response.status });
   const answer = parseAbsorptionAnswer(await response.json().catch(() => null), ids);
   if (!answer) throw new Error('absorption answered with something else');
+  return answer;
+}
+/** The most groups of each instrument an older server is asked for, for the absorption column it cannot add up itself (the largest). */
+const OLDER_SERVER_GROUPS = 4_000;
+/**
+ * The absorption column (see DataSource.absorptionProfile). A server from before the route (404) is asked for the groups instead, the
+ * largest OLDER_SERVER_GROUPS of each instrument (and the minutes of the last minute only), and they are added up here; `cut` then names
+ * the instruments that had more.
+ */
+export async function getAbsorptionProfile(ids: string[], thresholds: number[], from: number, to: number, rowStep: number): Promise<AbsorptionProfileAnswer> {
+  const response = await fetch(`/api/v2/absorption-profile?inst=${ids.map(encodeURIComponent).join(',')}&min=${thresholds.join(',')}&from=${Math.floor(from)}&to=${Math.ceil(to)}&step=${rowStep}`, { cache: 'no-store' });
+  if (response.status === 404) {
+    const older = await getAbsorption(ids, thresholds, from, to, OLDER_SERVER_GROUPS, Math.max(Math.ceil(to), Date.now() - 60_000));
+    const out = new AbsorptionProfile(new Map(ids.map((id, i) => [id, thresholds[i]!])), from, to, rowStep);
+    for (const g of older.groups) out.add(g);
+    for (const [id, floor] of Object.entries(older.floors)) out.floor(id, null, floor);
+    return out.answer(older.capped);
+  }
+  if (!response.ok) throw Object.assign(new Error(`absorption profile failed: ${response.status}`), { status: response.status });
+  const answer = parseAbsorptionProfile(await response.json().catch(() => null), ids);
+  if (!answer) throw new Error('the absorption column answered with something else');
   return answer;
 }
 /** Traded volume by price for these instruments over [from, to); an older server without the route rejects (404). */

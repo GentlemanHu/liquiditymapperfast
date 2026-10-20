@@ -32,9 +32,13 @@ test('absorption by price: the marked part of each group at its threshold, sells
   assert.equal(rows.c, undefined, 'an instrument with no threshold yet has nothing marked');
 });
 
-test('the measure is stored with the volume profile settings; one this page does not know is traded volume', () => {
-  assert.equal(readTraded({}).metric, 'volume');
-  assert.equal(readTraded({ metric: 'liquidations' }).metric, 'liquidations');
-  assert.equal(readTraded({ metric: 'absorption' }).metric, 'absorption');
-  assert.equal(readTraded({ metric: 'tea leaves' }).metric, 'volume');
+test('the columns\' measures are stored with the volume profile settings, each once, in the columns\' order, never none', () => {
+  assert.deepEqual(readTraded({}).metrics, ['volume']);
+  assert.deepEqual(readTraded({ metrics: ['liquidations', 'volume', 'liquidations'] }).metrics, ['volume', 'liquidations']);
+  assert.deepEqual(readTraded({ metrics: ['absorption', 'oi', 'volume', 'liquidations'] }).metrics, ['volume', 'oi', 'absorption', 'liquidations']);
+  assert.deepEqual(readTraded({ metrics: ['tea leaves'] }).metrics, ['volume'], 'nothing this page knows: traded volume');
+  assert.deepEqual(readTraded({ metrics: [] }).metrics, ['volume']);
+  // A save from when the column showed one measure.
+  assert.deepEqual(readTraded({ metric: 'liquidations' }).metrics, ['liquidations']);
+  assert.deepEqual(readTraded({ metric: 'tea leaves' }).metrics, ['volume']);
 });

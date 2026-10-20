@@ -28,6 +28,21 @@ test('a save written under the old defaults (Depth and Open interest both on, no
   saved({ defaultsRev: DEFAULTS_REV, show: { ...DEFAULT_SHOW, depth: true, oi: true } }, () => assert.deepEqual([initialState().show.depth, initialState().show.oi], [true, true]));
 });
 
+test('a save from before revision 2 shows what was new: days on the chart with their profiles, and the measure strip on a desktop', () => {
+  // A save of the day before: the volume profile on, no period on the chart and no profile (the choice came that day), the strip off.
+  const before = { defaultsRev: 1, show: { ...DEFAULT_SHOW, traded: true }, traded: { lines: [], profiles: null, metrics: ['volume', 'oi'] }, measureStrip: { on: false, kind: 'oi' } };
+  saved(before, () => {
+    const s = initialState();
+    assert.deepEqual([s.traded.lines, s.traded.profiles, s.measureStrip.on, s.measureStrip.kind, s.defaultsRev], [['day'], 'day', true, 'oi', DEFAULTS_REV]);
+    assert.deepEqual(s.traded.metrics, ['volume', 'oi'], 'the columns chosen stay');
+  });
+  // Periods chosen before are kept as they were; and anything saved under revision 2 is a choice.
+  saved({ ...before, traded: { lines: ['week'], profiles: null } }, () => assert.deepEqual([initialState().traded.lines, initialState().traded.profiles], [['week'], null]));
+  saved({ ...before, defaultsRev: DEFAULTS_REV }, () => assert.deepEqual([initialState().traded.lines, initialState().measureStrip.on], [[], false]));
+  // A first visit: the strip on (a desktop), the days ready for when the volume profile is switched on.
+  saved(null, () => { const s = initialState(); assert.deepEqual([s.measureStrip.on, s.traded.lines, s.traded.profiles], [true, ['day'], 'day']); });
+});
+
 test('the columns begin at the golden section of the window, as wide as before at the least', () => {
   assert.ok(Math.abs(1 - 2 * COLUMN_SHARE - 0.618) < 0.001, 'the map keeps 61.8 %');
   assert.deepEqual(defaultColumns(1366), { flowW: MIN_FLOW_W, sideW: MIN_SIDE_W });

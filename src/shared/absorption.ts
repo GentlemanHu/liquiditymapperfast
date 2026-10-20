@@ -13,7 +13,7 @@
  *
  * Times are the exchange's, and fills are taken in their order: each instrument holds its fills for `LATE_MS` behind the newest one seen
  * (feeds deliver some a few milliseconds out of order; measured, at most 25 ms) and takes them sorted by time, at their own times. A fill
- * stamped earlier than what was already taken, inside a minute already settled, or before what memory answers for, is left out: it is
+ * stamped earlier than what was already taken, inside a minute already settled, or more than two hours old (`ACCEPT_MS`), is left out: it is
  * history arriving late (some venues send their recent trades again when a feed connects, newest first), and counting it at another time
  * would sum trades that never met in one window. Fills arrive here after duplicates are removed (a replayed fill would otherwise add to
  * every sum). A sum does not depend on how a venue splits an order into fills, unlike a size floor on single prints.
@@ -26,6 +26,11 @@
  * complete there. Per minute, the window sums' count, mean and squared deviations are kept for the automatic threshold.
  */
 
+import { binOf, parseProfile, type FootprintRow, type ProfileAnswer } from './footprint.ts';
+import { AbsorptionArchive } from './absorption-archive.ts';
+import { AbsorptionHour } from './absorption-hours.ts';
+import { KeptCache } from './kept-cache.ts';
+
 /** The window, in ms (the usual default of absorption indicators). */
 export const ABSORPTION_WINDOW_MS = 10;
 /** The smallest credit a group must reach to be kept. */
@@ -36,15 +41,36 @@ export const GROUPS_PER_MINUTE = 10;
 export const LATE_MS = 250;
 /** The most instruments one history question may name (the page asks about every market it knows). */
 export const MAX_ABSORPTION_INSTRUMENTS = 200;
-const MINUTE = 60_000;
+const MINUTE = 60_000, HOUR = 3_600_000;
 /** An instrument with nothing new for this long (by the receiving clock) has its runs and windows closed. */
 const QUIET_MS = 500;
 /** A minute is settled (written, and its floor final) once its instrument's clock, or the receiving clock for a quiet one, is this far past its end. */
 const MINUTE_SETTLE_MS = 3_000;
-/** Groups and minutes this recent are held in memory to answer the page; older ones are asked of the store. */
+/** Groups and minutes this recent are held in memory to answer the page, unless the recorder is told to hold more; older ones are asked of the store. */
 const MEMORY_MS = 2 * 3_600_000;
+/** What a store's `load` gives a recorder that starts (a page's database reads two hours when it opens): the rest of a longer memory is read back after (`hydrate`). */
+const LOADED_MS = 2 * 3_600_000;
+/** A fill stamped this far behind the receiving clock is history arriving late (see the module comment), however much memory holds. */
+const ACCEPT_MS = 2 * 3_600_000;
+/** How much is read back at a time: at the per-minute cap on 27 venues, about 4,000 groups (one read of them holds the worker some 70 ms). */
+const HYDRATE_STEP_MS = 15 * 60_000;
 /** How long the recorder keeps groups and minutes: nothing older can be asked for. */
 export const ABSORPTION_RETENTION_MS = 7 * 24 * 3_600_000;
+/**
+ * The most room the packed stored hours take (shared/absorption-hours.ts), the least recently asked let go first: a week of BTC's fourteen
+ * venues, 630,000 groups, packs into 24 MB (2026-10-20); the per-minute cap on 27 venues would need several times that.
+ */
+export const ABSORPTION_HOUR_BYTES = 64 * 1_048_576;
+/** How long packing stored hours, or answering from them, holds the thread before it lets other work run (ms). */
+const TURN_MS = 8;
+/** How often packing ahead looks again whether the questions it waits for are answered (ms). */
+const ASKING_WAIT_MS = 20;
+/**
+ * Let other work run: on a server right after what is waiting (a zero timer waits for the clock's next tick, a millisecond or, on Windows,
+ * up to 15, which a cold week of a few hundred turns paid for in seconds).
+ */
+const immediate = (globalThis as { setImmediate?: (run: () => void) => unknown }).setImmediate;
+const nextTurn = (): Promise<void> => new Promise<void>(resolve => { if (immediate) immediate(resolve); else setTimeout(resolve, 0); });
 
 /** [credit, USD, fills, first time, last time]: the fills credited at least `credit`, credits falling from row to row (USD and fills add up). */
 export type AbsorptionStep = [number, number, number, number, number];
@@ -66,7 +92,26 @@ export interface AbsorptionStore {
   query(ids: readonly string[], mins: readonly number[], from: number, to: number, limit: number): AbsorptionGroup[] | Promise<AbsorptionGroup[]>;
   /** Minutes of `ids` in [from, to). */
   minutes(ids: readonly string[], from: number, to: number): AbsorptionMinute[] | Promise<AbsorptionMinute[]>;
+  /**
+   * [from, to) handed to `take` an hour of the store at a time (the per-minute cap bounds an hour), other work let run between hours: every
+   * group of `ids` that began in the hour with a largest credit of at least its `mins` entry, none left out and in no order, and the minutes
+   * whose floor is at least that, read together (`ids` null: every group and minute of every instrument, for a recorder reading its day
+   * back). Nothing after `to` is read, and nothing is kept.
+   */
+  eachHour(ids: readonly string[] | null, mins: readonly number[], from: number, to: number, take: (groups: readonly AbsorptionGroup[], minutes: readonly AbsorptionMinute[]) => void): Promise<void>;
+  /**
+   * A store that reads back at once (the server's): every group and minute of `id` whose time is in the hour from `hour`, whatever its
+   * credit, so the hour is packed once (shared/absorption-hours.ts) and every later threshold answered from it.
+   */
+  readHour?(id: string, hour: number): { groups: AbsorptionGroup[]; minutes: AbsorptionMinute[] };
+  /** The instruments it holds groups of (a server packs their recent hours after it starts). */
+  instruments?(): string[];
   close(): void;
+}
+
+/** The hours of [from, to), cut at whole hours: how a store hands over a long window a part at a time. */
+export function* hoursOf(from: number, to: number): Generator<{ from: number; to: number }> {
+  for (let at = from; at < to;) { const end = Math.min(to, (Math.floor(at / HOUR) + 1) * HOUR); yield { from: at, to: end }; at = end; }
 }
 
 /** The largest credit of a group. */
@@ -114,6 +159,131 @@ export function markedPart(g: AbsorptionGroup, threshold: number): { usd: number
   return found ? { usd: found[1], fills: found[2], t0: found[3], t1: found[4], peak: peakOf(g) } : null;
 }
 
+/**
+ * The absorption column's answer (traded/metrics.ts): per instrument, rows of the step ([row price, market sells resting buyers took, market
+ * buys resting sellers took], USD), each group's marked part counted once on the row of its price; and the instruments whose rows may be
+ * short: `incomplete`, where a minute kept only its largest groups and one left out would have been marked; `cut`, where the source answered
+ * only the largest groups (an older server).
+ */
+export interface AbsorptionProfileAnswer extends ProfileAnswer { incomplete: string[]; cut: string[] }
+
+/**
+ * Adds groups up into the absorption column's rows at each instrument's threshold (none: nothing of it is marked), the groups that began in
+ * [from, to) only, each once, and takes the minutes' floors to say where the rows may be short.
+ *
+ * A minute's floor is the base floor, or raised to the peak of a group it left out. A floor over the threshold left out a group that was
+ * marked. A floor equal to it may have (`markedPart` marks a peak equal to the threshold), but then every group the minute kept reached it
+ * too, so the minute is called short only when it kept `perMinute` groups at or over the threshold. Only a minute that kept exactly that many
+ * and left nothing out, at a threshold equal to the base floor, is called short when it is not.
+ */
+export class AbsorptionProfile {
+  readonly #by = new Map<string, Map<number, [number, number]>>();
+  readonly #seen = new Set<string>();
+  /** Groups at or over the threshold, per instrument and minute number. */
+  readonly #kept = new Map<string, Map<number, number>>();
+  /** Per instrument, the minutes whose floor equals the threshold (null: one of them, which is not known). */
+  readonly #ties = new Map<string, Set<number> | null>();
+  readonly #short = new Set<string>();
+  readonly #thresholds: ReadonlyMap<string, number | null>;
+
+  constructor(thresholds: ReadonlyMap<string, number | null>, readonly from: number, readonly to: number, readonly step: number, readonly perMinute = GROUPS_PER_MINUTE) {
+    this.#thresholds = thresholds;
+  }
+
+  /**
+   * A group, its marked part counted. `unique`: it cannot be another's copy (a store keeps a group once, and answers apart from memory), so it
+   * is not looked up; otherwise a group found again (trades sent again after a restart) is counted once.
+   */
+  add(g: AbsorptionGroup, unique = false): void {
+    const threshold = this.#thresholds.get(g.id);
+    if (threshold === null || threshold === undefined || g.t0 < this.from || g.t0 >= this.to) return;
+    const part = markedPart(g, threshold);
+    if (!part) return;
+    if (!unique) {
+      const key = `${g.id}|${g.side}|${g.price}|${g.t0}`;
+      if (this.#seen.has(key)) return;
+      this.#seen.add(key);
+    }
+    this.marked(g.id, g.side, g.price, g.t0, part.usd);
+  }
+
+  /** A group judged already, by its marked USD (the archive's, which holds each group once). */
+  marked(id: string, side: 'buy' | 'sell', price: number, t0: number, usd: number): void {
+    let bins = this.#by.get(id); if (!bins) { bins = new Map(); this.#by.set(id, bins); }
+    const bin = binOf(price, this.step), cell = bins.get(bin);
+    if (cell) cell[side === 'sell' ? 0 : 1] += usd; else bins.set(bin, side === 'sell' ? [usd, 0] : [0, usd]);
+    let kept = this.#kept.get(id); if (!kept) { kept = new Map(); this.#kept.set(id, kept); }
+    const minute = Math.floor(t0 / MINUTE);
+    kept.set(minute, (kept.get(minute) ?? 0) + 1);
+  }
+
+  /**
+   * One whole hour of `id` inside the window, from its packed groups (shared/absorption-hours.ts): each cell's marked USD on the row of its
+   * price, and the hour's floors judged as `floor` judges them, a minute at the threshold with the number of its groups that reach it.
+   */
+  hour(id: string, h: AbsorptionHour): void {
+    const threshold = this.#thresholds.get(id);
+    if (threshold === null || threshold === undefined) return;
+    if (h.topFloor > threshold) this.#short.add(id);
+    else if (h.topFloor === threshold) {
+      for (let m = 0; m < h.floors.length; m++) {
+        if (h.floors[m] !== threshold) continue;
+        const t = h.hour + m * MINUTE, n = h.reaching(m, threshold);
+        this.floor(id, t, threshold);
+        if (!n) continue;
+        let kept = this.#kept.get(id); if (!kept) { kept = new Map(); this.#kept.set(id, kept); }
+        kept.set(Math.floor(t / MINUTE), (kept.get(Math.floor(t / MINUTE)) ?? 0) + n);
+      }
+    }
+    const { price, side, first, credit, sum } = h, step = this.step;
+    let bins = this.#by.get(id), bin = Number.NaN, sell = 0, buy = 0;
+    const put = (): void => {
+      if (!bins) { bins = new Map(); this.#by.set(id, bins); }
+      const cell = bins.get(bin);
+      if (cell) { cell[0] += sell; cell[1] += buy; } else bins.set(bin, [sell, buy]);
+    };
+    // Cells come by price, so neighbours on one row are added up here and the row is looked up once.
+    for (let c = 0; c < price.length; c++) {
+      let lo = first[c]!, hi = first[c + 1]!;
+      if (!(credit[lo]! >= threshold)) continue;
+      // The increments that reach the threshold come first: find where they end.
+      for (lo++; lo < hi;) { const mid = (lo + hi) >>> 1; if (credit[mid]! >= threshold) lo = mid + 1; else hi = mid; }
+      const row = binOf(price[c]!, step);
+      if (row !== bin) { if (!Number.isNaN(bin)) put(); bin = row; sell = 0; buy = 0; }
+      if (side[c]) sell += sum[lo - 1]!; else buy += sum[lo - 1]!;
+    }
+    if (!Number.isNaN(bin)) put();
+  }
+
+  /** The floor of `id`'s minute starting at `t` (null: the highest of the window's, its minute not known). */
+  floor(id: string, t: number | null, floor: number): void {
+    const threshold = this.#thresholds.get(id);
+    if (threshold === null || threshold === undefined) return;
+    if (floor > threshold) { this.#short.add(id); return; }
+    if (floor < threshold) return;
+    const ties = this.#ties.get(id);
+    if (t === null || ties === null) { this.#ties.set(id, null); return; }
+    if (ties) ties.add(Math.floor(t / MINUTE)); else this.#ties.set(id, new Set([Math.floor(t / MINUTE)]));
+  }
+
+  answer(cut: readonly string[] = []): AbsorptionProfileAnswer {
+    const short = new Set(this.#short);
+    for (const [id, minutes] of this.#ties) {
+      const kept = this.#kept.get(id);
+      if (short.has(id) || !kept) continue;
+      for (const [minute, n] of kept) if (n >= this.perMinute && (!minutes || minutes.has(minute))) { short.add(id); break; }
+    }
+    const instruments = [];
+    for (const id of this.#thresholds.keys()) {
+      const bins = this.#by.get(id);
+      if (!bins) continue;
+      const rows = [...bins].sort((a, b) => a[0] - b[0]).map(([bin, [a, b]]): FootprintRow => [bin * this.step, a, b]);
+      instruments.push({ id, step: this.step, minutes: 0, first: null, earliest: null, rows });
+    }
+    return { from: this.from, to: this.to, instruments, incomplete: [...short], cut: [...cut] };
+  }
+}
+
 interface Fill { t: number; usd: number; credit: number }
 interface Run { side: 'buy' | 'sell'; price: number; fills: Fill[]; last: number }
 interface Window { start: number; sum: number }
@@ -131,7 +301,7 @@ class InstrumentState {
   readonly held: Held[] = [];
   /** The end of the last minute settled: a fill stamped before it is left out (its row is written and final). */
   settledUntil = -Infinity;
-  /** Fills left out for being stamped before what was taken, inside a settled minute, or before what memory holds. */
+  /** Fills left out for being stamped before what was taken, inside a settled minute, or more than two hours old. */
   late = 0;
   /** The fills of the last window, per side and price ("buy|83000.5"): only these can still be in a window. */
   readonly recent = new Map<string, Fill[]>();
@@ -147,29 +317,65 @@ export class AbsorptionRecorder {
   readonly #instruments = new Map<string, InstrumentState>();
   #freshGroups: AbsorptionGroup[] = [];
   #freshMinutes: AbsorptionMinute[] = [];
-  /** Groups and settled minutes from `#memoryFrom` on (the store holds everything settled; memory answers the recent part). */
-  #memoryGroups: AbsorptionGroup[] = [];
-  readonly #memoryMinutes = new Map<string, Map<number, AbsorptionMinute>>();
+  /**
+   * The settled groups and minutes from `#memoryFrom` on, packed (the store holds everything settled; memory answers the recent part). The
+   * groups of a minute not settled yet are in its instrument's `minutes`.
+   */
+  readonly #archive = new AbsorptionArchive();
   #memoryFrom: number;
+  /** A fill stamped before this is history arriving late (`ACCEPT_MS`): memory reaching further back admits none of it. */
+  #acceptFrom: number;
   #unsavedGroups: AbsorptionGroup[] = [];
   #unsavedMinutes: AbsorptionMinute[] = [];
   readonly #store: AbsorptionStore | null;
+  #hydrating = false;
+  #warming = false;
+  /** Questions reading the store now (`profile`): packing ahead waits for them. */
+  #asking = 0;
+  #closed = false;
+  /**
+   * The stored hours packed for the absorption column, per instrument and hour (`${id}|${hour}`), when the store reads an hour back and holds
+   * more than memory (the server's; the page's memory holds all it keeps). Only whole hours before memory and inside the retention: see `profile`.
+   */
+  readonly #hours: KeptCache<AbsorptionHour> | null;
+  /** No hour before this is packed: the store lets go of older groups as it saves, so an hour across this line is read as it is. */
+  #packFrom: number;
 
   readonly windowMs: number;
   readonly #retentionMs: number;
+  readonly #memoryMs: number;
   readonly #perMinute: number;
   readonly #floor: number;
+  readonly #hourBytes: number;
 
-  constructor(store: AbsorptionStore | null = null, private now: () => number = Date.now, { retentionMs = ABSORPTION_RETENTION_MS, windowMs = ABSORPTION_WINDOW_MS, perMinute = GROUPS_PER_MINUTE, floorUsd = GROUP_FLOOR_USD }: { retentionMs?: number; windowMs?: number; perMinute?: number; floorUsd?: number } = {}) {
-    this.#store = store; this.windowMs = windowMs; this.#retentionMs = retentionMs; this.#perMinute = perMinute; this.#floor = floorUsd;
-    this.#memoryFrom = store ? now() - MEMORY_MS : -Infinity;
+  /**
+   * `memoryMs`: how much memory holds to answer the page; a page holds its whole day (the store's `load` gives the last two hours at start, and
+   * `hydrate` reads the rest back), a server two hours. `hourBytes`: the room for the packed stored hours.
+   */
+  constructor(store: AbsorptionStore | null = null, private now: () => number = Date.now, { retentionMs = ABSORPTION_RETENTION_MS, windowMs = ABSORPTION_WINDOW_MS, perMinute = GROUPS_PER_MINUTE, floorUsd = GROUP_FLOOR_USD, memoryMs = MEMORY_MS, hourBytes = ABSORPTION_HOUR_BYTES }: { retentionMs?: number; windowMs?: number; perMinute?: number; floorUsd?: number; memoryMs?: number; hourBytes?: number } = {}) {
+    this.#store = store; this.windowMs = windowMs; this.#retentionMs = retentionMs; this.#memoryMs = memoryMs; this.#perMinute = perMinute; this.#floor = floorUsd; this.#hourBytes = hourBytes;
+    this.#memoryFrom = store ? now() - Math.min(memoryMs, LOADED_MS) : -Infinity;
+    this.#acceptFrom = store ? now() - ACCEPT_MS : -Infinity;
+    this.#hours = store && typeof store.readHour === 'function' && memoryMs < retentionMs ? new KeptCache(hourBytes, now) : null;
+    this.#packFrom = now() - retentionMs;
     if (store) {
-      const { groups, minutes } = store.load(this.#memoryFrom);
-      this.#memoryGroups = groups.filter(g => g.t0 >= this.#memoryFrom);
+      const { groups, minutes } = store.load(this.#memoryFrom), loaded = new Set<string>();
+      // Each group once (memory holds a group once from here on: a fill in a minute already written is left out, so nothing found live repeats it).
+      for (const g of groups) {
+        const key = `${g.id}|${g.side}|${g.price}|${g.t0}`;
+        if (g.t0 >= this.#memoryFrom && !loaded.has(key)) { loaded.add(key); this.#archive.addGroup(g); }
+      }
       // Where settling had got to: a fill a venue sends again for a settled minute must not start a group a second time there.
-      for (const m of minutes) { this.#remember(m); const s = this.#state(m.id); s.settledUntil = Math.max(s.settledUntil, m.t + MINUTE); }
+      for (const m of minutes) { if (m.t >= this.#memoryFrom) this.#archive.addMinute(m); const s = this.#state(m.id); s.settledUntil = Math.max(s.settledUntil, m.t + MINUTE); }
     }
   }
+
+  /** Where memory answers from (earlier is asked of the store). */
+  get memoryFrom(): number { return this.#memoryFrom; }
+  /** The settled groups memory holds, and the bytes they and the minutes take. */
+  get held(): { groups: number; bytes: number } { return { groups: this.#archive.size, bytes: this.#archive.bytes }; }
+  /** The stored hours held packed (one per instrument and hour), and the room they take as the cache counts it. */
+  get packed(): { hours: number; bytes: number } { return { hours: this.#hours?.size ?? 0, bytes: this.#hours?.weight ?? 0 }; }
 
   #state(id: string): InstrumentState { let s = this.#instruments.get(id); if (!s) { s = new InstrumentState(); this.#instruments.set(id, s); } return s; }
 
@@ -177,8 +383,8 @@ export class AbsorptionRecorder {
   add(id: string, t: number, price: number, usd: number, side: 'buy' | 'sell'): void {
     if (!id || !(price > 0) || !(usd > 0) || !Number.isFinite(t) || (side !== 'buy' && side !== 'sell')) return;
     const s = this.#state(id);
-    // Also older than what memory answers for: the store holds that time, and a venue sending hours-old trades again must not add to it.
-    if (t < s.done || t < s.settledUntil || t < this.#memoryFrom) { s.late++; return; }
+    // Also hours old: the store holds that time, and a venue sending hours-old trades again must not add to it.
+    if (t < s.done || t < s.settledUntil || t < this.#acceptFrom) { s.late++; return; }
     s.lastSeenAt = this.now(); s.clock = Math.max(s.clock, t);
     let at = s.held.length; while (at > 0 && s.held[at - 1]!.t > t) at--;
     s.held.splice(at, 0, { t, price, usd, side });
@@ -252,7 +458,9 @@ export class AbsorptionRecorder {
       if (t + MINUTE > clock - MINUTE_SETTLE_MS || t + MINUTE > openFrom) continue;
       const row: AbsorptionMinute = { id, t, n: m.n, mean: m.mean, m2: m.m2, floor: m.floor };
       // The first row of a minute stands: after a restart, trades a venue sends again would otherwise replace a whole minute with a part.
-      if (this.#remember(row)) { this.#freshMinutes.push(row); this.#unsavedMinutes.push(row); }
+      if (this.#archive.addMinute(row)) { this.#freshMinutes.push(row); this.#unsavedMinutes.push(row); }
+      // Its groups are final now: packed into memory, and written.
+      for (const g of m.groups) this.#archive.addGroup(g);
       this.#unsavedGroups.push(...m.groups);
       s.minutes.delete(t); s.settledUntil = Math.max(s.settledUntil, t + MINUTE);
     }
@@ -282,17 +490,8 @@ export class AbsorptionRecorder {
       const left = m.groups.pop()!;
       m.floor = Math.max(m.floor, peakOf(left));
       if (left === group) return;
-      const at = this.#memoryGroups.indexOf(left); if (at >= 0) this.#memoryGroups.splice(at, 1);
     }
-    this.#freshGroups.push(group); this.#memoryGroups.push(group);
-  }
-
-  /** Hold a settled minute; false when one for that instrument and time is held already (the first stands). */
-  #remember(m: AbsorptionMinute): boolean {
-    let byTime = this.#memoryMinutes.get(m.id); if (!byTime) { byTime = new Map(); this.#memoryMinutes.set(m.id, byTime); }
-    if (byTime.has(m.t)) return false;
-    byTime.set(m.t, m);
-    return true;
+    this.#freshGroups.push(group);
   }
 
   /** Fills of `id` left out as history arriving late (see the module comment). */
@@ -307,21 +506,62 @@ export class AbsorptionRecorder {
 
   /** Write what is settled, and let go of memory older than what memory answers for. */
   flush(): void {
-    const now = this.now(), memoryFrom = now - MEMORY_MS;
-    if (this.#store && memoryFrom > this.#memoryFrom) {
-      this.#memoryFrom = memoryFrom;
-      this.#memoryGroups = this.#memoryGroups.filter(g => g.t0 >= memoryFrom);
-      for (const byTime of this.#memoryMinutes.values()) for (const t of byTime.keys()) if (t < memoryFrom) byTime.delete(t);
-    } else if (!this.#store) {
-      // Without a store, memory is everything: keep the retention.
-      const cutoff = now - this.#retentionMs;
-      this.#memoryGroups = this.#memoryGroups.filter(g => g.t0 >= cutoff);
-      for (const byTime of this.#memoryMinutes.values()) for (const t of byTime.keys()) if (t < cutoff) byTime.delete(t);
+    const now = this.now();
+    if (this.#store) {
+      this.#acceptFrom = Math.max(this.#acceptFrom, now - ACCEPT_MS);
+      const memoryFrom = now - this.#memoryMs;
+      if (memoryFrom > this.#memoryFrom) { this.#memoryFrom = memoryFrom; this.#archive.expire(memoryFrom); }
+    } else this.#archive.expire(now - this.#retentionMs);   // without a store, memory is everything: keep the retention
+    // Hours some minutes past their end take no more groups (a quiet venue's last minute settles within seconds).
+    this.#archive.compact(now - 10 * MINUTE);
+    if (this.#hours) {
+      // A packed hour a group is written to now is packed again when next asked: a minute that settles late (a venue sending trades again
+      // after a restart can start a group two hours back) may write to an hour memory no longer answers for.
+      for (const g of this.#unsavedGroups) this.#hours.delete(`${g.id}|${Math.floor(g.t0 / HOUR) * HOUR}`);
+      // The store lets go of older groups as it saves: no packed hour may still hold them.
+      this.#packFrom = Math.max(this.#packFrom, now - this.#retentionMs);
+      const packFrom = this.#packFrom;
+      this.#hours.deleteWhere((_, h) => h.hour < packFrom);
     }
     if (this.#store && (this.#unsavedGroups.length || this.#unsavedMinutes.length)) this.#store.save(this.#unsavedGroups, this.#unsavedMinutes, now - this.#retentionMs);
     this.#unsavedGroups = []; this.#unsavedMinutes = [];
   }
-  close(): void { this.step(true); this.flush(); this.#store?.close(); }
+  close(): void { this.#closed = true; this.step(true); this.flush(); this.#store?.close(); }
+
+  /**
+   * Read back, newest first, what memory is to hold and only the store has (a page opens with two hours and holds its day): a quarter of an
+   * hour of groups and minutes at a time, each installed whole before memory answers for it, so a question asked meanwhile is answered by
+   * memory and the store together as before. It stops when the store fails (a later call goes on from where it got to) or the recorder
+   * closes, and admits no fill: what is history arriving late stays so (`#acceptFrom`).
+   */
+  async hydrate(): Promise<void> {
+    const store = this.#store;
+    if (!store || this.#hydrating || this.#closed) return;
+    this.#hydrating = true;
+    const started = performance.now(), before = this.#memoryFrom;
+    try {
+      for (;;) {
+        const end = this.#memoryFrom, cutoff = this.now() - this.#memoryMs;
+        if (this.#closed || !(end > cutoff)) break;
+        const start = Math.max(cutoff, Math.ceil(end / HYDRATE_STEP_MS) * HYDRATE_STEP_MS - HYDRATE_STEP_MS);
+        const groups: AbsorptionGroup[] = [], minutes: AbsorptionMinute[] = [];
+        await store.eachHour(null, [], start, end, (g, m) => { for (const x of g) groups.push(x); for (const x of m) minutes.push(x); });
+        // Closed meanwhile, or memory moved (it let go of its oldest part): nothing of this read is installed.
+        if (this.#closed || this.#memoryFrom !== end) continue;
+        const from = Math.max(start, this.now() - this.#memoryMs);
+        for (const g of groups) if (g.t0 >= from && g.t0 < end) this.#archive.addGroup(g);
+        for (const m of minutes) if (m.t >= from && m.t < end) { this.#archive.addMinute(m); const s = this.#state(m.id); s.settledUntil = Math.max(s.settledUntil, m.t + MINUTE); }
+        this.#memoryFrom = from;
+      }
+      if (this.#memoryFrom < before) {
+        this.#archive.compact(this.now() - 10 * MINUTE);
+        const { groups, bytes } = this.held;
+        console.info(`absorption: ${groups} groups held in memory (${(bytes / 1_048_576).toFixed(1)} MB) from ${new Date(this.#memoryFrom).toISOString()}, read back in ${Math.round(performance.now() - started)} ms`);
+      }
+    } catch (error) {
+      console.warn('absorption: reading the day back stopped; the recordings answer the rest:', error);
+    } finally { this.#hydrating = false; }
+  }
 
   /**
    * The page's question for a window [from, to): per instrument, the groups that started in it with a largest credit of at least its
@@ -329,11 +569,23 @@ export class AbsorptionRecorder {
    * settled minutes of [since, now] for the automatic threshold. Memory answers from `#memoryFrom` on, the store before that.
    */
   async query(ids: readonly string[], mins: readonly number[], from: number, to: number, limit: number, since: number): Promise<AbsorptionAnswer> {
-    const min = new Map(ids.map((id, i) => [id, mins[i] ?? Infinity])), split = Math.max(from, this.#memoryFrom);
+    const min = new Map(ids.map((id, i) => [id, mins[i] ?? Infinity])), memoryFrom = this.#memoryFrom, split = Math.max(from, memoryFrom);
+    // Memory's part is taken before anything is awaited: memory may let go of its oldest part while the store reads, and the store is asked
+    // only up to where memory answered from.
+    const recent: AbsorptionGroup[] = [], open: [string, number][] = [];
+    this.#archive.eachGroup(split, to, min, g => recent.push(g));
+    for (const [id, s] of this.#instruments) {
+      if (!min.has(id)) continue;
+      for (const [t, m] of s.minutes) {
+        if (t >= from && t < to) open.push([id, m.floor]);
+        for (const g of m.groups) if (g.t0 >= split && g.t0 < to && peakOf(g) >= min.get(id)!) recent.push(g);
+      }
+    }
+    const recentFloors = this.#memoryMinutesOf(ids, from, to, memoryFrom), recentMinutes = this.#memoryMinutesOf(ids, since, Infinity, memoryFrom);
     const found: AbsorptionGroup[] = [];
     // One more than the limit, so an instrument with exactly `limit` groups is not reported as cut.
-    if (this.#store && from < this.#memoryFrom) for (const g of await this.#store.query(ids, mins, from, Math.min(to, this.#memoryFrom), limit + 1)) found.push(g);
-    for (const g of this.#memoryGroups) if (g.t0 >= split && g.t0 < to && peakOf(g) >= (min.get(g.id) ?? Infinity)) found.push(g);
+    if (this.#store && from < memoryFrom) for (const g of await this.#store.query(ids, mins, from, Math.min(to, memoryFrom), limit + 1)) found.push(g);
+    for (const g of recent) found.push(g);
     // A group found again (trades sent again after a restart) is one group: the store keeps one row, and memory may hold both.
     const byId = new Map<string, AbsorptionGroup[]>(), keys = new Set<string>();
     for (const g of found) {
@@ -344,18 +596,118 @@ export class AbsorptionRecorder {
     for (const [id, list] of byId) { list.sort((a, b) => peakOf(b) - peakOf(a)); if (list.length > limit) capped.push(id); groups.push(...list.slice(0, limit)); }
     const floors: Record<string, number> = {};
     const raise = (id: string, floor: number): void => { floors[id] = Math.max(floors[id] ?? 0, floor); };
-    for (const m of await this.#minutesOf(ids, from, to)) raise(m.id, m.floor);
-    for (const [id, s] of this.#instruments) if (min.has(id)) for (const [t, m] of s.minutes) if (t >= from && t < to) raise(id, m.floor);
-    return { groups, floors, minutes: await this.#minutesOf(ids, since, Infinity), capped };
-  }
-
-  async #minutesOf(ids: readonly string[], from: number, to: number): Promise<AbsorptionMinute[]> {
-    const out: AbsorptionMinute[] = [];
+    for (const m of await this.#storedMinutesOf(ids, from, to, memoryFrom)) raise(m.id, m.floor);
+    for (const m of recentFloors) raise(m.id, m.floor);
+    for (const [id, floor] of open) raise(id, floor);
     // Pushed one by one: a week of stored minutes over many instruments spread into one call overflowed the stack (the first questions
     // after a restart, when memory holds nothing yet; Karl, 2026-10-15).
-    if (this.#store && from < this.#memoryFrom) for (const m of await this.#store.minutes(ids, from, Math.min(to, this.#memoryFrom))) out.push(m);
-    for (const id of ids) for (const [t, m] of this.#memoryMinutes.get(id) ?? []) if (t >= Math.max(from, this.#memoryFrom) && t < to) out.push(m);
-    return out.sort((a, b) => a.t - b.t);
+    const minutes: AbsorptionMinute[] = [];
+    for (const m of await this.#storedMinutesOf(ids, since, Infinity, memoryFrom)) minutes.push(m);
+    for (const m of recentMinutes) minutes.push(m);
+    return { groups, floors, minutes: minutes.sort((a, b) => a.t - b.t), capped };
+  }
+
+  /**
+   * The absorption column's question (`AbsorptionProfile`): the marked part of every group of `ids` that began in [from, to), at its
+   * instrument's `thresholds` entry, by price on rows of `step`, none left out; and where a minute's floor may have left marked groups out.
+   * Nothing after the window is read: the column wants no statistics. The store hands its part over an hour at a time and keeps nothing.
+   */
+  async profile(ids: readonly string[], thresholds: readonly (number | null)[], from: number, to: number, step: number): Promise<AbsorptionProfileAnswer> {
+    const judged = new Map(ids.map((id, i) => [id, thresholds[i] ?? null])), memoryFrom = this.#memoryFrom, split = Math.min(to, Math.max(from, memoryFrom));
+    const out = new AbsorptionProfile(judged, from, to, step, this.#perMinute);
+    // Memory's part first, before anything is awaited (as in `query`): the settled groups judged where they are packed, each held once, then
+    // the groups of the minutes still open.
+    this.#archive.eachMarked(split, to, judged, (id, side, price, t0, usd) => out.marked(id, side, price, t0, usd));
+    for (const m of this.#memoryMinutesOf(ids, from, to, memoryFrom)) out.floor(m.id, m.t, m.floor);
+    for (const [id, s] of this.#instruments) {
+      if (!judged.has(id)) continue;
+      for (const [t, m] of s.minutes) { if (t >= from && t < to) out.floor(id, t, m.floor); for (const g of m.groups) if (g.t0 >= split) out.add(g); }
+    }
+    // Each instrument once: the store's part is not looked up group by group.
+    const asked = [...new Set(ids.filter(id => typeof judged.get(id) === 'number'))];
+    if (this.#store && from < split && asked.length) {
+      // A store keeps a group once, and answers only before where memory answered from.
+      const store = this.#store, mins = asked.map(id => judged.get(id)!);
+      const take = (groups: readonly AbsorptionGroup[], minutes: readonly AbsorptionMinute[]): void => {
+        for (const g of groups) out.add(g, true);
+        for (const m of minutes) out.floor(m.id, m.t, m.floor);
+      };
+      if (!this.#hours) await store.eachHour(asked, mins, from, split, take);
+      else {
+        // Packing ahead (`warm`) waits while a question reads.
+        this.#asking++;
+        try {
+          // Whole stored hours from their packed groups; the part hours at either end, and an hour the retention cuts, read as they are.
+          const whole: number[] = [];
+          for (const part of hoursOf(from, split)) {
+            if (part.to - part.from === HOUR && part.from >= this.#packFrom) whole.push(part.from);
+            else await store.eachHour(asked, mins, part.from, part.to, take);
+          }
+          let turn = performance.now();
+          for (const hour of whole) for (const id of asked) {
+            out.hour(id, this.#packed(id, hour));
+            if (performance.now() - turn > TURN_MS) { await nextTurn(); turn = performance.now(); }
+          }
+        } finally { this.#asking--; }
+      }
+    }
+    return out.answer();
+  }
+
+  /**
+   * `id`'s stored hour from `hour`, packed: the one held, or read and packed now and held when there is room (a question larger than the room
+   * is answered all the same, from what it packed). Only an hour before memory and inside the retention is held, so nothing held changes but
+   * by a group written to it (`flush`).
+   */
+  #packed(id: string, hour: number): AbsorptionHour {
+    const key = `${id}|${hour}`, held = this.#hours!.get(key);
+    if (held) return held;
+    const { groups, minutes } = this.#store!.readHour!(id, hour), packed = new AbsorptionHour(hour, groups, minutes);
+    if (hour >= this.#packFrom && hour + HOUR <= this.#memoryFrom) this.#hours!.set(key, packed, packed.bytes);
+    return packed;
+  }
+
+  /**
+   * Pack the stored hours before the page asks (a server, a few seconds after it starts), so the first question is answered from them: newest
+   * first, every instrument the store has groups of, the last day and on back through the retention while they take less than half their
+   * room (the rest is the questions'). A few at a time with other work let run between, stopping when the recorder closes.
+   */
+  async warm(): Promise<void> {
+    const store = this.#store, hours = this.#hours;
+    if (!store?.instruments || !hours || this.#warming || this.#closed) return;
+    this.#warming = true;
+    const started = performance.now();
+    let count = 0, turn = started;
+    try {
+      const ids = store.instruments();
+      for (let hour = Math.floor(this.#memoryFrom / HOUR) * HOUR - HOUR; hour >= this.#packFrom; hour -= HOUR) {
+        for (const id of ids) {
+          // A question reading meanwhile goes first: it packs what it needs itself.
+          while (this.#asking && !this.#closed) { await new Promise<void>(resolve => setTimeout(resolve, ASKING_WAIT_MS)); turn = performance.now(); }
+          if (this.#closed || hours.weight >= this.#hourBytes / 2) return;
+          if (hours.has(`${id}|${hour}`) || hour + HOUR > this.#memoryFrom) continue;
+          this.#packed(id, hour); count++;
+          if (performance.now() - turn > TURN_MS) { await nextTurn(); turn = performance.now(); }
+        }
+      }
+    } catch (error) {
+      console.warn('absorption: packing the stored hours stopped; questions pack what they need:', error);
+    } finally {
+      this.#warming = false;
+      if (count) console.info(`absorption: ${count} stored hours packed (${(hours.weight / 1_048_576).toFixed(1)} MB) in ${Math.round(performance.now() - started)} ms`);
+    }
+  }
+
+  /** The settled minutes memory holds of `ids` in [from, to), from `memoryFrom` on. */
+  #memoryMinutesOf(ids: readonly string[], from: number, to: number, memoryFrom: number): AbsorptionMinute[] {
+    const out: AbsorptionMinute[] = [];
+    this.#archive.eachMinute(ids, Math.max(from, memoryFrom), to, m => out.push(m));
+    return out;
+  }
+
+  /** The stored minutes of `ids` in [from, to) before `memoryFrom` (memory answers from there on). */
+  async #storedMinutesOf(ids: readonly string[], from: number, to: number, memoryFrom: number): Promise<AbsorptionMinute[]> {
+    return this.#store && from < memoryFrom ? await this.#store.minutes(ids, from, Math.min(to, memoryFrom)) : [];
   }
 }
 
@@ -393,6 +745,15 @@ export function parseAbsorptionAnswer(value: unknown, ids: readonly string[]): A
   for (const item of body.minutes as unknown[]) { const m = parseMinute(item); if (!m || !asked.has(m.id)) return null; minutes.push(m); }
   for (const [id, floor] of Object.entries(body.floors as Record<string, unknown>)) { if (!asked.has(id) || !finite(floor) || floor < 0) return null; floors[id] = floor; }
   return { groups, floors, minutes, capped };
+}
+
+/** An absorption column answer checked against the instruments asked for: the answer, or null when it is anything else. */
+export function parseAbsorptionProfile(value: unknown, ids: readonly string[]): AbsorptionProfileAnswer | null {
+  const answer = parseProfile(value, ids), body = value as { incomplete?: unknown; cut?: unknown } | null;
+  const idList = (list: unknown): string[] | null => Array.isArray(list) && list.every(id => typeof id === 'string' && ids.includes(id)) ? list as string[] : null;
+  const incomplete = idList(body?.incomplete), cut = idList(body?.cut);
+  if (!answer || !incomplete || !cut) return null;
+  return { ...answer, incomplete, cut };
 }
 
 /** What the live stream says (groups found, minutes settled), each item checked; broken items are dropped, never drawn. */

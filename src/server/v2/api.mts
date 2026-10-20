@@ -19,7 +19,7 @@ import { TAPE_BATCH_MAX, packTape } from '../../shared/tape.ts';
 import type { MarketOrder } from '../../shared/orders.ts';
 import { FootprintRecorder } from './footprint.mts';
 import { inverseOiId, oiInstrument, oiProfileOf, type OiSeries } from '../../shared/oi-profile.ts';
-import { MAX_CUT_USD, MAX_CUTS, MAX_PROFILE_INSTRUMENTS, MAX_RANGE_INSTRUMENTS, MAX_SIZES_MINUTES, MAX_SIZES_WINDOWS, MAX_VALUE_AREA_SPAN_MS, MAX_VALUE_AREA_WINDOWS, parseCuts, type TradeLike } from '../../shared/footprint.ts';
+import { MAX_CUT_USD, MAX_CUTS, MAX_PROFILE_INSTRUMENTS, MAX_PROFILE_SPAN_MS, MAX_RANGE_INSTRUMENTS, MAX_SIZES_MINUTES, MAX_SIZES_WINDOWS, MAX_VALUE_AREA_SPAN_MS, MAX_VALUE_AREA_WINDOWS, parseCuts, type TradeLike } from '../../shared/footprint.ts';
 import { RecordedBefore } from '../../shared/restart.ts';
 import { MAX_COVERAGE_INSTRUMENTS, MAX_COVERAGE_SPAN_MS, TradeCoverage, coverageWindow, depthAnswer, recordedMinutes, tradeAnswer, type CoverageMetric } from './coverage.mts';
 import { venueForFeedId } from '../../core/venue-status.mts';
@@ -44,7 +44,7 @@ export interface V2Handle {
   degradedVenues(): Map<string, string>;
 }
 
-const MAX_COLUMN_SPAN_MS = 8 * 24 * 3_600_000;
+const MAX_COLUMN_SPAN_MS = MAX_PROFILE_SPAN_MS;
 /** The stretch of prints one turn of the event loop fills the footprint's lists from (see `fillLists` below). */
 const FILL_STEP_MS = 10 * 60_000;
 /** The most flow history one request may ask for: what the recorder keeps in memory, and a few thousand seconds per instrument cost 8 bytes each. */
@@ -55,6 +55,8 @@ const MAX_FLOW_MINUTES_SPAN_MS = 8 * 24 * 3_600_000;
 const MAX_SIZES_INSTRUMENTS = 96;
 /** The live socket says something at least this often, so a client can tell a quiet server from a dead connection. */
 const HEARTBEAT_MS = 5_000;
+/** How long after starting the stored absorption hours are packed (`AbsorptionRecorder.warm`). */
+const ABSORPTION_WARM_AFTER_MS = 3_000;
 /** Books with at least this many raw levels are re-valued no more often than the interval below. */
 const DEEP_BOOK_LEVELS = 2_000, DEEP_BOOK_INTERVAL_MS = 1_000;
 /** A far book reader that has done nothing for this long while its book is live is replaced (a working one ticks every FAR_EVERY_MS). */
@@ -130,6 +132,9 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   /** Absorption candidates (see shared/absorption.ts): every fill the builder took, once each. */
   const absorption = new AbsorptionRecorder(persist ? path.join(dataDir, 'depth-v2.sqlite') : null);
   const detect = (taken: readonly TakenFill[]): void => { for (const f of taken) absorption.add(f.instrumentId, f.t, f.price, f.usd, f.side); };
+  // The stored hours are packed for the absorption column once the start's own work is done, so the page's first question does not read them.
+  const absorptionWarm = setTimeout(() => { void absorption.warm(); }, ABSORPTION_WARM_AFTER_MS);
+  absorptionWarm.unref();
   /** Every order completed since the last dust batch, for the clients that asked for it (`tapeClients`), at most a batch's worth. */
   let tapeOut: MarketOrder[] = [], tapeSeq = 0;
   const tapeClients = new WeakSet<WebSocket>();
@@ -515,6 +520,26 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       answer => sendJson(res, { windowMs: ABSORPTION_WINDOW_MS, floorUsd: GROUP_FLOOR_USD, perMinute: GROUPS_PER_MINUTE, ...answer }),
       error => { console.error('v2 /api/v2/absorption failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); });
   };
+  /**
+   * The absorption column for some instruments over a window (shared/absorption.ts `AbsorptionProfile`): the marked USD of every group that
+   * began in it, at each instrument's threshold (`min`, one per instrument or one for all), by price on rows of `step`, none left out, and the
+   * instruments whose rows may be short. No minute after the window is read; whole stored hours are answered from their packed groups (read
+   * once, see shared/absorption-hours.ts) and the part hours read as they are, with the event loop let go between.
+   */
+  const absorptionProfileRoute = (url: URL, res: ServerResponse) => {
+    const ids = (url.searchParams.get('inst') ?? '').split(',').filter(Boolean);
+    if (!ids.length || ids.length > MAX_ABSORPTION_INSTRUMENTS) return sendJson(res, { error: `inst must name 1 to ${MAX_ABSORPTION_INSTRUMENTS} instruments` }, 400);
+    const span = windowOf(url, Date.now() + 60_000, 3_600_000); if (!span) return sendJson(res, { error: BAD_WINDOW }, 400);
+    if (span.to - span.from > MAX_COLUMN_SPAN_MS) return sendJson(res, { error: 'the window may be at most eight days' }, 400);
+    const mins = (url.searchParams.get('min') ?? '').split(',').filter(Boolean).map(Number);
+    if (!mins.length || (mins.length > 1 && mins.length !== ids.length)) return sendJson(res, { error: 'min must be one amount, or one per instrument' }, 400);
+    if (mins.some(m => !Number.isFinite(m) || m < 0)) return sendJson(res, { error: 'min must be USD amounts' }, 400);
+    const step = Number(url.searchParams.get('step'));
+    if (!(step > 0) || !Number.isFinite(step)) return sendJson(res, { error: 'step must be a positive number' }, 400);
+    absorption.profile(ids, ids.map((_, i) => mins.length > 1 ? mins[i]! : mins[0]!), span.from, span.to, step).then(
+      answer => sendJson(res, answer),
+      error => { console.error('v2 /api/v2/absorption-profile failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); });
+  };
   /** Traded volume by price for some instruments over a window (the page's traded-volume column). */
   const profileRoute = (url: URL, res: ServerResponse) => {
     const ids = (url.searchParams.get('inst') ?? '').split(',').filter(Boolean);
@@ -523,8 +548,9 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (span.to - span.from > MAX_COLUMN_SPAN_MS) return sendJson(res, { error: 'the window may be at most eight days' }, 400);
     const step = Number(url.searchParams.get('step'));
     if (!(step > 0) || !Number.isFinite(step)) return sendJson(res, { error: 'step must be a positive number' }, 400);
-    // Read a few hours of a market at a time with the event loop let go between: a week of every market held the thread for seconds.
-    footprint.profileYielding(ids, span.from, span.to, step).then(
+    // The ended hours are built first, a few at a time with the event loop let go between (`prepare`, as for the value areas), then read
+    // added together a few hours of a market at a time: a week of every market read minute by minute held the thread for 15 s.
+    footprint.prepare(ids, span.from, span.to, 3_600_000).then(() => footprint.profileYielding(ids, span.from, span.to, step)).then(
       answer => sendJson(res, answer),
       error => { console.error('v2 /api/v2/profile failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); else res.end(); });
   };
@@ -653,6 +679,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
           case '/api/v2/range': rangeRoute(url, res); return true;
           case '/api/v2/value-areas': valueAreasRoute(url, res); return true;
           case '/api/v2/absorption': absorptionRoute(url, res); return true;
+          case '/api/v2/absorption-profile': absorptionProfileRoute(url, res); return true;
           case '/api/v2/coverage': coverageRoute(url, res); return true;
           case '/api/v2/venues': venuesRoute(res); return true;
           case '/coins.json': return coins?.send(res) ?? false;
@@ -666,7 +693,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     },
     close() {
       closed = true;
-      clearInterval(loop); syncFar([]); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
+      clearInterval(loop); clearTimeout(absorptionWarm); syncFar([]); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).
       for (const part of [() => takeOrders(true), () => recorder.flush(), () => store?.close(), () => footprint.close(), () => coverage.close(), () => prints.close(), () => liquidations.close(), () => flow.close(), () => absorption.close(), () => flowSources.close(), () => extra.close()]) {

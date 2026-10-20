@@ -44,6 +44,7 @@ import { LANGUAGES, language, pickLanguage, saveLanguage, savedLanguage } from '
 import { t, tn } from './i18n.ts';
 import { coinChoice, currentCoin, scaledUsd, unscaledUsd } from './coin.ts';
 import { buildTradedPanel } from './traded/panel.ts';
+import { buildMeasurePanel } from './measures/panel.ts';
 import { venueMark } from './venue-marks.ts';
 import { gridStepFor } from '../shared/grid.ts';
 
@@ -162,6 +163,15 @@ export class Toolbar {
   /** The volume profile: the traded-volume column beside the book profile and the point-of-control lines on the chart, set in its panel (traded/panel.ts). */
   #traded = el('button', { class: 'led-btn', textContent: t('Volume profile'), tip: HELP.traded.tip });
   #tradedPanel: Panel | null = null;
+  /**
+   * The measure strip along the top of the map (measures/): a split button on the status bar beside Waves, and in the Chart section of a
+   * phone's Settings. Measured 2026-10-19 at 1600 px: the top bar has 18 px to spare and its one-row decks already hold two lines (a row more
+   * makes the whole bar taller), and in the map's corner the button left the legend too little room for its candle line.
+   */
+  #strip = el('button', { type: 'button', class: 'led-btn', textContent: t('Measure strip'), tip: HELP.measures.tip });
+  #stripKey = settingsKey(t('Measure strip'));
+  #stripSplit = splitButton(this.#strip, this.#stripKey);
+  #stripPanel: Panel | null = null;
   /** The Range tool: lit while it is armed or a selection is shown (range/tool.ts). */
   #range = el('button', { class: 'led-btn', textContent: t('Range'), tip: HELP.range.tip });
   onRange: () => void = () => {};
@@ -315,6 +325,11 @@ export class Toolbar {
       this.#tradedPanel = this.#track(togglePanel(this.#settingsKeys.traded, { title: t('Volume profile'), width: 520, align: 'left', onClose: () => { this.#tradedPanel = null; } }, build), build);
     };
     this.#traded.onclick = () => this.store.set(togglePatch(this.store.state, 'traded'));
+    this.#stripKey.onclick = () => {
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildMeasurePanel(this.store, tools, body, () => this.#stripPanel?.render(build));
+      this.#stripPanel = this.#track(togglePanel(this.#stripKey, { title: t('Measure strip'), width: 400, align: 'right', onClose: () => { this.#stripPanel = null; } }, build), build);
+    };
+    this.#strip.onclick = () => this.store.set({ measureStrip: { ...this.store.state.measureStrip, on: !this.store.state.measureStrip.on } });
     this.#settingsKeys.absorption.onclick = () => {
       const build = (tools: HTMLElement, body: HTMLElement): void => this.#buildAbsorption(tools, body, () => this.#absorptionPanel?.render(build));
       this.#absorptionPanel = this.#track(togglePanel(this.#settingsKeys.absorption, { title: t('Absorption'), width: 400, align: 'left', onClose: () => { this.#absorptionPanel = null; } }, build), build);
@@ -456,8 +471,8 @@ export class Toolbar {
       const inCorner = this.#mapHost !== null;
       if (inCorner) { this.#mapTools.replaceChildren(this.#goto, this.#rangeCorner, this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
       const host = this.#statusHost;
-      // With a status bar the connection state and the language and theme buttons live there.
-      host?.replaceChildren(this.#layouts, this.#keys, this.#zone, this.#language, this.#theme, this.#glass);
+      // With a status bar the connection state, the language and theme buttons and the measure strip's and Waves' lamps live there.
+      host?.replaceChildren(this.#layouts, this.#keys, this.#zone, this.#language, this.#theme, this.#stripSplit, this.#glass);
       // A console of decks, each a framed group of what belongs together, at most two rows tall, wrapping as whole decks (Karl,
       // 2026-10-16: one wrapping row read as a jumble). The venues are switched from the Venues button, not listed as chips.
       setTip(this.#venuesButton!, t('Venues: switch each exchange on or off for the map, the book and the flow column, or choose which ones feed the page'));
@@ -500,7 +515,7 @@ export class Toolbar {
       body.append(
         section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#range, this.#guide, this.#shot, this.#author, this.#install.root)]),
         section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, LT and Footprint each add a tab to the bar under the map.') })]),
-        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]))]),
+        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#stripSplit)]),
         // Only a phone has the Tape tab; a touch tablet keeps the desktop's panes and gets this sheet without it.
         ...(this.tapeFields && isPhone() ? [section(t('Tape'), this.tapeFields().map(([label, control]) => field(label, control)), helpButton('candlePane'))] : []),
         section(t('Heatmap'), [
@@ -536,7 +551,7 @@ export class Toolbar {
     [...this.#timeframes.children].forEach(b => b.classList.toggle('on', b.textContent === state.timeframe));
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
-    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
+    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#footprint, state.show.footprint); lamp(this.#strip, state.measureStrip.on); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
     if (this.#awake.checked !== state.keepAwake) this.#awake.checked = state.keepAwake;
     lamp(this.#glass, state.material === 'glass');
     if (this.#glassSwitch.checked !== (state.material === 'glass')) this.#glassSwitch.checked = state.material === 'glass';

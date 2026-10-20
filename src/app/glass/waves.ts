@@ -4,8 +4,8 @@
  * panes, and soaked up by the screen's own edges so nothing rings for ever. Buys and sells are two fields in one texture (red and green
  * channels), so their crests keep their colours and pass through each other.
  *
- * The field is the 2D wave equation on a grid a quarter of the screen across (`CELL` CSS px a cell), stepped with leapfrog in a few
- * substeps a frame (as many as stability asks for at the wave's speed), in half-float textures. A pulse's height grows with the square
+ * The field is the 2D wave equation on a grid a quarter of the screen across (`CELL` CSS px a cell), stepped with leapfrog in substeps of
+ * one fixed length (`SUBSTEP_MS`, as many a frame as its time holds), in half-float textures. A pulse's height grows with the square
  * root of the order's size and its width with the size's logarithm, so a larger order makes a taller wave and a longer one, as a larger
  * stone does. It runs only while a pulse is still in it (a few seconds after the last), and needs a card that can draw into half floats;
  * `WaveField.create` says null where it cannot, and the glass keeps its older light then.
@@ -31,11 +31,22 @@ export interface WaveSource { x: number; y: number; amp: number; width: number; 
 /** A region of the field's medium (CSS px): glass slows a wave, a wall mostly throws it back. */
 export interface WaveRegion { x: number; y: number; w: number; h: number; kind: 'glass' | 'wall' }
 
-/** Substeps a frame of `dtMs` needs at the open screen's speed to stay stable (the Courant number held to 0.6 in 2D). */
-export function substepsFor(dtMs: number, cell = CELL, speed = WAVE_SPEED): number {
-  const cellsPerMs = speed / cell / 1000, limit = 0.6 / cellsPerMs;
-  return Math.max(1, Math.min(20, Math.ceil(Math.min(dtMs, 50) / limit)));
-}
+/**
+ * The one length of a substep (ms): four to a 120 Hz frame, eight to a 60 Hz one, as a 120 Hz phone already stepped it; a Courant number
+ * of 0.47 at the open screen's speed, well inside the 0.71 that leapfrog allows in 2D.
+ *
+ * Every substep must be as long as the one before (Karl's iPad, 2026-10-19). Leapfrog keeps a wave's speed only as how far it moved in the
+ * last substep, so a substep of another length rescales every speed in the field. The length used to be each frame's time over as many
+ * substeps as it needed, and Safari's clock reads whole milliseconds: a 60 Hz frame read 16 ms, then 17, 17, 16 (six substeps of 2.67 ms,
+ * then seven of 2.43), a 120 Hz one 8, then 9 (three, then four). Rescaled back and forth in a pattern that repeats, the waves were pumped
+ * as a swing is, faster than the damping takes them, until the page was white with them. Chrome's clock reads tenths, so every frame
+ * there came to the same substeps, and its waves died down.
+ */
+export const SUBSTEP_MS = 1000 / 480;
+/** The step shader's `courant`: the open screen's Courant number squared, the same for every substep. */
+const COURANT = (WAVE_SPEED / CELL / 1000 * SUBSTEP_MS) ** 2;
+/** The most a frame steps (ms): after a stall the field goes on from where it was rather than running the whole stall at once. */
+const MAX_FRAME_MS = 50;
 
 /** A pulse for an order of `usd` against the size that starts one (`min`): height with the square root, width with the logarithm. */
 export function pulseFor(usd: number, min: number): { amp: number; width: number } {
@@ -96,6 +107,8 @@ export class WaveField {
   #pending: WaveSource[] = [];
   #lastSource = -Infinity;
   #last = 0;
+  /** How far the field's time is behind the clock (ms, within half a substep either way): carried to the next frame, never dropped. */
+  #carry = 0;
   /** Whether the field has been set back to still since its waves ran out (so nothing stays frozen in it). */
   #still = true;
 
@@ -178,14 +191,18 @@ export class WaveField {
   /** Step the field to `now` (ms). Leaves the default framebuffer bound and blending off; the caller sets its own viewport after. */
   step(now: number): void {
     const gl = this.gl, l = this.#loc.get(this.#step)!;
-    // A still field keeps no time: the first frame of the next pulse steps one frame's time, not the whole idle spell (50 ms, 19 substeps).
-    if (!this.alive(now)) { this.#pending.length = 0; this.#last = 0; if (!this.#still) this.#clear(); return; }
-    const dt = this.#last ? Math.min(50, now - this.#last) : 16.7; this.#last = now;
-    const steps = substepsFor(dt), cellsPerMs = WAVE_SPEED / CELL / 1000, courant = (cellsPerMs * Math.min(dt, 50) / steps) ** 2;
+    // A still field keeps no time: the first frame of the next pulse steps one frame's time, not the whole idle spell (50 ms, 24 substeps).
+    if (!this.alive(now)) { this.#pending.length = 0; this.#last = 0; this.#carry = 0; if (!this.#still) this.#clear(); return; }
+    // Whole substeps of the one length, to the nearest, and what is left over (either way) goes into the next frame: so frames of 16 and
+    // 17 ms are eight substeps each, a second draw in the same millisecond steps none, and a clock that went back (a page woken from the
+    // background) steps none either. A pulse waiting for a frame that steps none goes in with the next substep.
+    const dt = this.#last ? Math.min(MAX_FRAME_MS, Math.max(0, now - this.#last)) : 16.7; this.#last = now;
+    const due = this.#carry + dt, steps = Math.max(0, Math.round(due / SUBSTEP_MS));
+    this.#carry = due - steps * SUBSTEP_MS;
     gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
     gl.viewport(0, 0, this.#cols, this.#rows);
     gl.useProgram(this.#step);
-    gl.uniform2f(l.get('texel')!, 1 / this.#cols, 1 / this.#rows); gl.uniform1f(l.get('courant')!, courant);
+    gl.uniform2f(l.get('texel')!, 1 / this.#cols, 1 / this.#rows); gl.uniform1f(l.get('courant')!, COURANT);
     gl.uniform1i(l.get('cur')!, 0); gl.uniform1i(l.get('prev')!, 1); gl.uniform1i(l.get('medium')!, 2);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.#mediumTex);
     for (let k = 0; k < steps; k++) {
@@ -209,7 +226,7 @@ export class WaveField {
     const gl = this.gl;
     for (const fbo of this.#fbo) { gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.#still = true; this.#last = 0;
+    this.#still = true; this.#last = 0; this.#carry = 0;
   }
 
   #texture(): WebGLTexture {

@@ -567,7 +567,7 @@ test('marks near each other become one square exactly as comparing each with eve
 test('a question reaching back into a large store does not overflow the stack (the first answers after a restart)', async () => {
   // 300,000 stored minutes: spread into one push they overflowed the stack on the live server right after a restart (2026-10-15).
   const minutes: AbsorptionMinute[] = Array.from({ length: 300_000 }, (_, i) => ({ id: 'binance:BTCUSDT', t: T0 - (300_000 - i) * MIN, n: 1, mean: 0, m2: 0, floor: 1_000 }));
-  const store = { load: () => ({ groups: [], minutes: [] }), save: () => {}, query: () => [], minutes: () => minutes, close: () => {} };
+  const store = { load: () => ({ groups: [], minutes: [] }), save: () => {}, query: () => [], minutes: () => minutes, eachHour: async () => {}, close: () => {} };
   const recorder = new AbsorptionRecorder(store, () => T0);
   const answer = await recorder.query(['binance:BTCUSDT'], [0], T0 - 300_000 * MIN, T0, 50, T0 - 300_000 * MIN);
   assert.equal(answer.minutes.length, 300_000);

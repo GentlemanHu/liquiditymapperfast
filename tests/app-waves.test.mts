@@ -1,12 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CELL, WAVE_SPEED, pulseFor, substepsFor } from '../src/app/glass/waves.ts';
+import { CELL, SUBSTEP_MS, WAVE_SPEED, pulseFor } from '../src/app/glass/waves.ts';
 
-test('the wave field steps often enough to stay stable at its speed, and never more than it must', () => {
-  const courant = (dt: number): number => WAVE_SPEED / CELL / 1000 * dt / substepsFor(dt);
-  for (const dt of [4, 8, 16.7, 33, 50]) assert.ok(courant(dt) <= 0.6 + 1e-9, `a frame of ${dt} ms`);
-  assert.equal(substepsFor(16.7), Math.ceil(16.7 / (0.6 / (WAVE_SPEED / CELL / 1000))), 'the fewest that hold it');
-  assert.equal(substepsFor(1000), substepsFor(50), 'a long pause steps as a short one, not a second at once');
+test('the wave field\'s one substep is short enough to stay stable at its speed, and whole in the usual frames', () => {
+  const courant = WAVE_SPEED / CELL / 1000 * SUBSTEP_MS;
+  assert.ok(courant <= 0.6, `a Courant number of ${courant.toFixed(3)}, inside the 0.71 that leapfrog allows in 2D`);
+  for (const hz of [30, 60, 120]) assert.ok(Math.abs(1000 / hz / SUBSTEP_MS - Math.round(1000 / hz / SUBSTEP_MS)) < 1e-9, `a whole number of substeps in a ${hz} Hz frame`);
 });
 
 test('a larger order makes a taller and a wider pulse, as a larger stone does, within bounds', () => {

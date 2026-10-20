@@ -1,5 +1,5 @@
 import { binOf, type FootprintRow, type ProfileAnswer } from '../../shared/footprint.ts';
-import { markedPart, type AbsorptionGroup } from '../../shared/absorption.ts';
+import { AbsorptionProfile, type AbsorptionGroup } from '../../shared/absorption.ts';
 import type { Liquidation } from '../../shared/liquidations.ts';
 import { usd } from '../format.ts';
 import { t } from '../i18n.ts';
@@ -9,8 +9,9 @@ import { VOLUME_WORDS, type ColumnWords, type TradedRows } from '../traded.ts';
  * What the volume profile column adds up by price. Traded volume is the footprint's; the others put another record on the same rows, two
  * sides each in the same places (bid colour, then ask colour), so the bars, the point of control, the value area and the lines read them
  * the same way:
- * - absorption: the marked part of each absorption group (shared/absorption.ts `markedPart`, counted once a group) at the threshold the
- *   Absorption settings judge it at: market sells that met resting buyers, then market buys that met resting sellers;
+ * - absorption: the marked part of each absorption group (shared/absorption.ts `AbsorptionProfile`, counted once a group) at the threshold
+ *   the Absorption settings judge it at: market sells that met resting buyers, then market buys that met resting sellers. The source adds
+ *   them up where they are kept (`DataSource.absorptionProfile`);
  * - liquidations: reported liquidations at the price the market was at (shared/liquidations.ts): shorts liquidated (forced buys), then longs
  *   liquidated (forced sells). Only the venues that publish them count, Binance at most one a market a second.
  * - open interest: each perpetual's change between its readings spread over the prices that traded on it in between (shared/oi-profile.ts):
@@ -86,12 +87,8 @@ export function liquidationAnswer(rows: readonly Liquidation[], ids: readonly st
  * price on rows of `step`: market sells taken by resting buyers, then market buys taken by resting sellers, in USD.
  */
 export function absorptionAnswer(groups: readonly AbsorptionGroup[], thresholds: ReadonlyMap<string, number | null>, from: number, to: number, step: number): ProfileAnswer {
-  const by = new Map<string, Map<number, [number, number]>>();
-  for (const g of groups) {
-    const threshold = thresholds.get(g.id);
-    if (g.t0 < from || g.t0 >= to || threshold === null || threshold === undefined) continue;
-    const part = markedPart(g, threshold);
-    if (part) add(by, g.id, binOf(g.price, step), g.side === 'sell' ? 0 : 1, part.usd);
-  }
-  return answerOf(by, step, from, to);
+  // Added up as a source adds them (shared/absorption.ts `AbsorptionProfile`).
+  const out = new AbsorptionProfile(thresholds, from, to, step);
+  for (const g of groups) out.add(g);
+  return out.answer();
 }

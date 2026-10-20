@@ -7,13 +7,12 @@ import { t, tn } from '../i18n.ts';
 import { clock, usd } from '../format.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
-import { kindOf } from '../scope.ts';
-import { flowIds, flowLoadIds } from '../cvd/ids.ts';
-import { aggregateIds } from '../cvd/model.ts';
+import { flowLoadIds } from '../cvd/ids.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { AXIS_W } from './heat-pane.ts';
 import { TimePane, setHtml } from './lower-panes.ts';
 import { FlowCache, candleStarts, deltaCandles, resetKeys, unrecorded, type DeltaCandle } from '../delta/candles.ts';
+import { deltaFlows, deltaIds, ensureDeltaFlow } from '../delta/flows.ts';
 import { PIVOTS, type DeltaSettings } from '../delta/settings.ts';
 import { divergences, inView, paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { coinText, nlnsCardLines, nlnsModel, withLead, type NlnsCandle, type NlnsMarket } from '../delta/nlns.ts';
@@ -23,7 +22,6 @@ import { togglePanel, type Panel } from '../ui.ts';
 import { buildOiMarketsPanel } from '../market-picker.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 
-const HISTORY_CAP_MS = 24 * 3_600_000, MINUTES_FROM_MS = 6 * 3_600_000;
 const signed = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 
 /** The popup for one candle of the pane: its time, its delta and the CVD it closed at. */
@@ -114,29 +112,16 @@ export class DeltaPane extends TimePane {
     if (key !== this.#divKey) { this.#divKey = key; this.onDivergences(); }
   }
 
-  /** The candles of the view: the flow book asked for what they need, the closed ones worked out once, the open one every time. */
-  /** Ask the flow book for what candles from `from` need: the seconds the page holds (a day), and the minutes before them, as the flow column asks for them. */
-  #ensure(loadIds: string[], from: number, now: number): void {
-    const flow = this.hub.flow, secondsFrom = Math.max(now - HISTORY_CAP_MS, from - 60_000);
-    void this.hub.ensureFlow(loadIds, secondsFrom);
-    if (from < secondsFrom - 60_000) {
-      let latest = -Infinity;
-      for (const id of loadIds) { const first = flow.get(id)?.span?.first; if (first !== undefined && first * 1000 > latest) latest = first * 1000; }
-      if (latest === -Infinity && !flow.missing(loadIds, secondsFrom).length) latest = now;
-      if (latest > -Infinity) void this.hub.ensureFlowMinutes(loadIds, Math.floor((from - 3_600_000) / MINUTES_FROM_MS) * MINUTES_FROM_MS, Math.ceil((latest + 120_000) / 3_600_000) * 3_600_000);
-    }
-  }
+  /** Ask the flow book for what candles from `from` need (delta/flows.ts, shared with the measure strip over the map). */
+  #ensure(loadIds: string[], from: number, now: number): void { ensureDeltaFlow(this.hub, loadIds, from, now); }
 
+  /** The candles of the view: the flow book asked for what they need, the closed ones worked out once, the open one every time. */
   #candles(state: AppState, now: number): { candles: DeltaCandle[]; starts: number[]; earliest: number | null } {
     const v = this.view, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, s = state.delta, zone = resolveZone(state.traded.zone, state.timeZone), flow = this.hub.flow;
     const starts = candleStarts(v.t0, v.t1, now, tf, s.reset, zone, undefined, s.style !== 'bars');
     if (!starts.length) return { candles: [], starts, earliest: null };
     this.#ensure(flowLoadIds(state, flow.ids), starts[0]!, Date.now());
-    const ids = aggregateIds(flow, flowIds(state, flow.ids), id => kindOf(state.markets, id));
-    const tracks = ids.flatMap(id => { const track = flow.track(id); return track ? [track] : []; });
-    let earliest: number | null = null;
-    for (const track of tracks) if (track.first !== null && (earliest === null || track.first * 1000 < earliest)) earliest = track.first * 1000;
-    const flows = unrecorded(starts, this.#cache.get(`${ids.join(',')}|${tf}|${flow.loads}`, tracks, starts, tf, now), tf, now);
+    const { flows, earliest } = deltaFlows(this.#cache, flow, deltaIds(state, flow), starts, tf, now);
     return { candles: deltaCandles(starts, flows, resetKeys(starts, s.reset, zone)), starts, earliest };
   }
 
