@@ -271,6 +271,8 @@ test('from the recording only what it still holds is offered: as many days or se
   // Other periods' lines beside the columns' own: kept in their order, each once, nothing unknown; a save from before draws the columns' alone.
   assert.deepEqual(readTraded({}).lines, ['day'], 'each day on the chart, until chosen otherwise');
   assert.deepEqual(readTraded({ lines: [] }).lines, [], 'none, once chosen');
+  assert.equal(TRADED_DEFAULTS.windowLines, true, 'the chart window\'s lines on by default'); assert.equal(readTraded({}).windowLines, true);
+  assert.equal(readTraded({ windowLines: false }).windowLines, false, 'and off once chosen, whatever periods are drawn'); assert.equal(readTraded({ lines: ['day'] }).windowLines, true);
   assert.deepEqual(readTraded({ lines: ['month', 'day', 'month', 'year'] }).lines, ['day', 'month']);
   assert.deepEqual(readTraded({ lines: 'day' }).lines, ['day'], 'not a list: the default');
   assert.deepEqual(chartKinds({ lines: ['day', 'week'], profiles: 'month' }), ['day', 'week', 'month'], 'the profiles\' kind is worked out even with its lines off');

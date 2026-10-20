@@ -63,7 +63,7 @@ export function tradedHeader(rows: TradedRows | null): [string, string] {
 
 /**
  * What a row's two sides, their difference and its share are called: traded volume's by default, another measure's for the column's other
- * measures (traded/metrics.ts), whose two sides take the same places (bid colour, then ask colour).
+ * measures (measures/registry.ts), whose two sides take the same places (bid colour, then ask colour).
  */
 export interface ColumnWords { buy: string; sell: string; net: string; share: string; none: string }
 export const VOLUME_WORDS: ColumnWords = { buy: t('Bought at market'), sell: t('Sold at market'), net: t('Delta'), share: t('Share of volume'), none: t('Nothing traded at these prices in this window.') };

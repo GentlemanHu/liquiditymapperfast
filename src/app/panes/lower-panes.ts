@@ -10,7 +10,7 @@ import { activeIds, emptyScopeMessage, marketIds } from '../scope.ts';
 import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } from '../depth-bars.ts';
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
-import { gutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
+import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
 import { BAR_STATS, GROUP_TITLES, PRESETS, enabledStats, rowScale, statCellLines, statDef, strength, type StatCell, type StatGroup } from './bar-stats.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
@@ -45,7 +45,14 @@ export abstract class TimePane {
   protected head = document.createElement('div');
   protected canvas = document.createElement('canvas');
   protected ctx: CanvasRenderingContext2D;
+  /**
+   * The width from the plot's left edge to the canvas's right edge (what the panes draw in), its height and the pixel ratio. The plot starts
+   * where the map's does, after the columns left of the map (`#left`), so time lines up with the map's; the panes draw in the plot's
+   * coordinates and leave the strip under those columns empty.
+   */
   protected w = 0; protected h = 0; protected dpr = 1;
+  #canvasW = 0;
+  get #left(): number { return leftGutter(this.store.state); }
   protected palette = PALETTES.light!;
   #frame = 0;
   /** What the map does with a gesture on the time axis these panes share with it (set by `useTimeGestures`). */
@@ -68,19 +75,19 @@ export abstract class TimePane {
     // A drag across a pane selects a stretch of time for the Range tool while it is armed, or with Ctrl (Cmd on a Mac) held.
     this.canvas.addEventListener('pointerdown', e => {
       if (e.pointerType === 'touch' || !this.#range) return;
-      const x = e.clientX - this.canvas.getBoundingClientRect().left;
+      const x = e.clientX - this.canvas.getBoundingClientRect().left - this.#left;
       if (!selects(this.#range.armed, e) || x < 0 || x > this.plotW) return;
       this.#selecting = { x }; this.#range.begin({ t: this.#timeAt(x), p: null }); this.canvas.setPointerCapture(e.pointerId);
     });
     this.canvas.addEventListener('pointerup', e => {
       const sel = this.#selecting; if (!sel || !this.#range) return;
-      const x = e.clientX - this.canvas.getBoundingClientRect().left; this.#selecting = null;
+      const x = e.clientX - this.canvas.getBoundingClientRect().left - this.#left; this.#selecting = null;
       this.#range.end({ t: this.#timeAt(x), p: null }, Math.abs(x - sel.x) < DRAG_MIN_PX);
       if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
     });
     this.canvas.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch') return;
-      const r = this.canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      const r = this.canvas.getBoundingClientRect(), x = e.clientX - r.left - this.#left, y = e.clientY - r.top;
       this.pointer = { x: e.clientX, y: e.clientY };
       if (this.#selecting) this.#range?.move({ t: this.#timeAt(x), p: null });
       this.canvas.style.cursor = this.#range?.armed && x <= this.plotW ? 'crosshair' : '';
@@ -89,7 +96,7 @@ export abstract class TimePane {
       this.store.set({ hover: { t: this.view.tOf(Math.min(x, this.plotW), this.plotW), price: null, y, source } });
     });
     this.canvas.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') { this.pointer = null; this.store.set({ hover: null }); } });
-    bindTouch(this.canvas, new GestureRecognizer(this.#touchHandlers()));
+    bindTouch(this.canvas, new GestureRecognizer(this.#touchHandlers()), () => this.#left);
   }
 
   /** Let the panes' finger gestures move the map's time axis (called once the map exists). */
@@ -107,7 +114,7 @@ export abstract class TimePane {
     const pin = (p: Pt): void => {
       if (p.x < 0 || p.x > this.plotW) { this.#unpin(); return; }
       this.#pinned = p;
-      const box = this.canvas.getBoundingClientRect(); this.pointer = { x: box.left + p.x, y: box.top + p.y };
+      const box = this.canvas.getBoundingClientRect(); this.pointer = { x: box.left + this.#left + p.x, y: box.top + p.y };
       this.store.set({ hover: { t: this.view.tOf(p.x, this.plotW), price: null, y: p.y, source: this.#source, touch: true } });
     };
     return {
@@ -143,11 +150,14 @@ export abstract class TimePane {
   invalidate(): void { if (!this.#frame) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#prepare(); }); }
   #resize(): void {
     const r = this.canvas.getBoundingClientRect();
-    this.w = Math.max(1, Math.floor(r.width)); this.h = Math.max(1, Math.floor(r.height)); this.dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.round(this.w * this.dpr); this.canvas.height = Math.round(this.h * this.dpr); this.invalidate();
+    this.#canvasW = Math.max(1, Math.floor(r.width)); this.h = Math.max(1, Math.floor(r.height)); this.dpr = window.devicePixelRatio || 1;
+    this.canvas.width = Math.round(this.#canvasW * this.dpr); this.canvas.height = Math.round(this.h * this.dpr); this.invalidate();
   }
   #prepare(): void {
-    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); this.ctx.clearRect(0, 0, this.w, this.h);
+    const left = this.#left;
+    this.w = Math.max(1, this.#canvasW - left);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); this.ctx.clearRect(0, 0, this.#canvasW, this.h);
+    this.ctx.setTransform(this.dpr, 0, 0, this.dpr, this.dpr * left, 0);
     this.ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; this.ctx.textBaseline = 'middle';
     if (this.view.t1 > this.view.t0 && this.w > 1) { this.cursorT = null; this.#grid(); this.draw(); this.#replayMask(); this.#rangeBand(); this.#crosshair(); } else { if (this.#pinned) this.#unpin(); this.undrawn(); }
   }

@@ -14,11 +14,11 @@ import { atOnePrice, inverseOi, oiSumOf, type OiPart } from './oi-change.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
-import { MAX_PROFILE_INSTRUMENTS, MAX_PROFILE_SPAN_MS, MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
-import { oiInstrument } from '../shared/oi-profile.ts';
+import { MAX_PROFILE_SPAN_MS, MAX_VALUE_AREA_WINDOWS, type ProfileAnswer, type ValueAreaWindow } from '../shared/footprint.ts';
 import { AbsorptionBook } from './absorption.ts';
 import { ABSORPTION_RETENTION_MS, MAX_ABSORPTION_INSTRUMENTS } from '../shared/absorption.ts';
-import { liquidationAnswer, type MetricFlags, type ProfileMetric } from './traded/metrics.ts';
+import { measureDef, type MetricFlags, type ProfileMetric } from './measures/registry.ts';
+import { NO_FLAGS, type Thresholds } from './measures/measure.ts';
 import { PRINTS_PER_ANSWER } from '../shared/prints.ts';
 import { webGet } from '../shared/history.ts';
 import { KeyLevelHistory } from './keylevels/history.ts';
@@ -310,10 +310,29 @@ export class Hub {
     if (!c) { c = { held: null, state: 'ready', loading: false, asked: '', at: 0, retryAt: 0, ms: 0, gen: 0, settled: false, window: null }; this.#metricColumns.set(metric, c); }
     return c;
   }
-  /** A measure's last answer (traded/metrics.ts), what it leaves out and the window it was asked for; null until one came. */
+  /** A measure's last answer (measures/registry.ts), what it leaves out and the window it was asked for; null until one came. */
   metricProfile(metric: ProfileMetric): MetricColumn['held'] { return this.#metricColumns.get(metric)?.held ?? null; }
   /** Whether the source can answer for this measure ('unavailable': an older server; asked again a minute later). */
   metricState(metric: ProfileMetric): 'ready' | 'unavailable' { return this.#metricColumns.get(metric)?.state ?? 'ready'; }
+  /**
+   * Any measure's last answer by price, traded volume's included: what every column and the lines read, whichever side of the map they are
+   * on (a measure drawn on both sides reads this one answer).
+   */
+  profile(metric: ProfileMetric): MetricColumn['held'] {
+    if (metric !== 'volume') return this.metricProfile(metric);
+    return this.traded ? { ...this.traded, flags: NO_FLAGS } : null;
+  }
+  /** Whether the source can answer for a measure by price, traded volume's included. */
+  profileState(metric: ProfileMetric): 'ready' | 'unavailable' { return metric === 'volume' ? this.tradedState : this.metricState(metric); }
+  /**
+   * Make sure a measure has an answer by price for these instruments, this window and these rows: traded volume's question (`ensureTraded`)
+   * or another measure's (`ensureMetricProfile`), each asked once however many columns draw it. Nothing in the question names where it is
+   * drawn, so a column moved from one side of the map to the other asks nothing new.
+   */
+  ensureProfile(metric: ProfileMetric, ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }, thresholds: Thresholds = new Map()): void {
+    if (metric === 'volume') this.ensureTraded(ids, from, to, step, live, period);
+    else this.ensureMetricProfile(metric, ids, from, to, step, live, period, thresholds);
+  }
   /** Oldest recorded depth minute across instruments (ms), or 0 when nothing is recorded. */
   recordedSince = 0;
   /** Instrument with candle history to fall back to when the selected market has none. */
@@ -751,44 +770,31 @@ export class Hub {
     if ((key === this.#tradedAsked || slid) && !(live && now - this.#tradedAt >= spacing) && !(period.settled && !this.#tradedSettled)) return;
     this.#tradedLoading = true; this.#tradedAsked = key; this.#tradedAt = now; this.#tradedSettled = period.settled; this.#tradedWindow = { base, from, to };
     const generation = ++this.#tradedGen, started = performance.now();
-    this.source.profile([...ids], from, to, step).then(
+    measureDef('volume').byPrice.ask(this.source, [...ids], from, to, step, new Map()).then(({ answer }) => answer).then(
       answer => { if (generation !== this.#tradedGen) return; this.#tradedMs = performance.now() - started; this.traded = { step, answer, tag: period.tag }; this.tradedState = 'ready'; this.onTraded(); },
       () => { if (generation !== this.#tradedGen) return; this.tradedState = 'unavailable'; this.#tradedRetryAt = Date.now() + 60_000; this.#tradedAsked = ''; this.onTraded(); },
     ).finally(() => { this.#tradedLoading = false; });
   }
 
   /**
-   * Make sure the column has an answer for a measure other than traded volume (traded/metrics.ts) over this window, as `ensureTraded` does
-   * for volume: the change in open interest of the perpetuals among `ids` (shared/oi-profile.ts), liquidations from the source's record
-   * (its largest 5,000 when more match), absorption groups at each instrument's threshold
-   * (`thresholds`; one with none yet has nothing marked). Asked again as `ensureTraded` asks (`live`, `settled`, the same spacing), and `tag`
-   * names the window for the answer held.
+   * Make sure the column has an answer for a measure other than traded volume over this window, as `ensureTraded` does for volume, asked as
+   * its registration says (measures/defs/): on the instruments it counts among `ids` (the perpetuals with open interest, those with an
+   * absorption threshold, `thresholds`), named in the question as it names them (absorption with its threshold). Asked again as
+   * `ensureTraded` asks (`live`, `settled`, the same spacing), and `tag` names the window for the answer held.
    */
-  ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }, thresholds: ReadonlyMap<string, number | null> = new Map()): void {
-    const c = this.#metricColumn(metric);
+  ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }, thresholds: Thresholds = new Map()): void {
+    const c = this.#metricColumn(metric), def = measureDef(metric).byPrice;
     ({ from, to } = askedSpan(from, to));   // as `ensureTraded`
     if (c.loading || !(to > from) || !(step > 0)) return;
     const now = Date.now();
     if (c.state === 'unavailable' && now < c.retryAt) return;
-    const judged = metric === 'absorption' ? ids.filter(id => typeof thresholds.get(id) === 'number').slice(0, MAX_ABSORPTION_INSTRUMENTS)
-      : metric === 'oi' ? ids.filter(oiInstrument).slice(0, MAX_PROFILE_INSTRUMENTS) : [...ids];
-    const base = `${judged.map(id => metric === 'absorption' ? `${id}:${thresholds.get(id)}` : id).join(',')}|${step}|${period.tag}`, key = `${base}|${from}|${to}`;
+    const judged = def.instruments(ids, thresholds);
+    const base = `${judged.map(id => def.keyOf(id, thresholds)).join(',')}|${step}|${period.tag}`, key = `${base}|${from}|${to}`;
     const spacing = Math.min(300_000, Math.max(5_000, 20 * c.ms)), slid = live && slidOnly(c.window, base, from, to, spacing);
     if ((key === c.asked || slid) && !(live && now - c.at >= spacing) && !(period.settled && !c.settled)) return;
     c.loading = true; c.asked = key; c.at = now; c.settled = period.settled; c.window = { base, from, to };
-    const generation = ++c.gen, started = performance.now(), source = this.source, none = { cut: false, incomplete: false };
-    const work: Promise<{ answer: ProfileAnswer; flags: MetricFlags }> = metric === 'oi'
-      ? (!judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
-        : (source.oiProfile ? source.oiProfile(judged, from, to, step) : Promise.reject(new Error('no open-interest profile from this source')))
-          .then(answer => ({ answer, flags: { ...none, unplaced: answer.unplaced } })))
-      : metric === 'liquidations'
-      ? (source.liquidations ? source.liquidations(from, to) : Promise.reject(new Error('no liquidations from this source')))
-        .then(rows => ({ answer: liquidationAnswer(rows, judged, from, to, step), flags: { cut: rows.length >= LIQUIDATIONS_PER_ANSWER, incomplete: false } }))
-      : !judged.length ? Promise.resolve({ answer: { from, to, instruments: [] }, flags: none })
-      // Added up where the groups are kept, every one of the window and no minutes (the thresholds are the marks', `ensureAbsorption`).
-      : source.absorptionProfile(judged, judged.map(id => thresholds.get(id)!), from, to, step).then(answer => ({
-        answer, flags: { cut: answer.cut.length > 0, incomplete: answer.incomplete.length > 0 },
-      }));
+    const generation = ++c.gen, started = performance.now();
+    const work: Promise<{ answer: ProfileAnswer; flags: MetricFlags }> = def.ask(this.source, judged, from, to, step, thresholds);
     work.then(
       ({ answer, flags }) => { if (generation !== c.gen) return; c.ms = performance.now() - started; c.held = { step, answer, flags, tag: period.tag }; c.state = 'ready'; this.onTraded(); },
       () => { if (generation !== c.gen) return; c.state = 'unavailable'; c.retryAt = Date.now() + 60_000; c.asked = ''; this.onTraded(); },

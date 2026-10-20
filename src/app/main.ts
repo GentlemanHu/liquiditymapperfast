@@ -17,7 +17,7 @@ import { installTips } from './tip.ts';
 import { installTouchSelects } from './touch-select.ts';
 import { lazy, preload } from './lazy.ts';
 import { ScreenWake } from './wake.ts';
-import { HeatPane, gutter } from './panes/heat-pane.ts';
+import { HeatPane, gutter, leftGutter } from './panes/heat-pane.ts';
 import { LadderPane } from './panes/ladder-pane.ts';
 import { CvdPane } from './panes/cvd-pane.ts';
 import { BarStatsPane, DepthPane, LtPane, OiPane } from './panes/lower-panes.ts';
@@ -129,6 +129,9 @@ async function main(): Promise<void> {
   for (const pane of [depth, oi, delta, ls, lt, bars]) pane.useTimeGestures(heat.timeGestures());
   heat.onFrame = lower; heat.onView = lower;
   heat.onTopProfile = () => toolbar.openTradedPanel();
+  heat.onArrangedChange = () => toolbar.refreshTradedPanel();
+  // The panel says what of the profiles has no room, in the room the map had when it was last drawn.
+  toolbar.profileRoom = () => heat.profileRoom();
   // The Range tool: a drag on the map, on a pane under it or across the flow column selects, and its panel adds up what happened there.
   const range = new RangeTool(store, hub); range.anchor = toolbar.rangeButton; range.mapWindow = () => ({ t0: heat.view.t0, t1: heat.view.t1 });
   heat.range = range; cvd.range = range; for (const pane of [depth, oi, delta, ls, lt, bars]) pane.useRange(range);
@@ -216,9 +219,14 @@ async function main(): Promise<void> {
 
   // The profile column and axis are narrower on a phone; everything that aligns to them has to redraw when that changes.
   onLayoutMode(() => { layout(); heat.invalidate(); lower(); toolbar.sync(store.state, heat.window); candle.setShown(candleShown()); coverPanes(); hub.setTape(tapeWanted()); });
+  // The columns beside the map: what the corner buttons and the replay bar keep clear of (the map's own pane sets them each frame too).
+  const gutters = () => {
+    const s = store.state;
+    document.documentElement.style.setProperty('--gutter', `${gutter(s)}px`); document.documentElement.style.setProperty('--gutter-left', `${leftGutter(s)}px`);
+  };
   const layout = () => {
     const s = store.state;
-    document.documentElement.style.setProperty('--gutter', `${gutter(s)}px`);
+    gutters();
     depth.root.hidden = !s.show.depth; oi.root.hidden = !s.show.oi; delta.root.hidden = !s.show.delta; ls.root.hidden = !s.show.ls; lt.root.hidden = !s.show.lt; bars.root.hidden = !s.show.footprint;
     // The two side panels vanish and return at once: nothing is rebuilt, a hidden column is simply not laid out.
     cvd.root.hidden = !s.show.cvd; ladder.root.hidden = !s.show.book;
@@ -236,7 +244,7 @@ async function main(): Promise<void> {
     if (changed.has('material')) { applyMaterial(); hub.setTape(tapeWanted()); }
     if (changed.has('cvd')) cvd.settingsChanged();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
-    if (changed.has('show')) layout();
+    if (changed.has('show')) layout(); else if (changed.has('traded')) gutters();
     if (changed.has('marketId') || changed.has('timeframe')) void hub.loadSeries(true).then(() => { heat.fit(); lower(); });
     if (changed.has('disabledVenues') || changed.has('heatmapSource') || changed.has('scope')) { heat.dataChanged(); depth.refresh(); lt.refresh(); cvd.refresh(); }
     if (changed.has('markets')) cvd.invalidate();

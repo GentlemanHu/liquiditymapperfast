@@ -23,6 +23,7 @@ import { readPullWindow, type PullWindow } from './panes/pull-stack.ts';
 import type { EngineState } from './sound/engine.ts';
 import type { RangeSelection } from './range/selection.ts';
 import { hasTop, readTraded, topFromStrip, type TradedSettings } from './traded/settings.ts';
+import { withTopOn } from './traded/profiles.ts';
 import { t } from './i18n.ts';
 import type { ReplayView } from './replay/clock.ts';
 
@@ -202,10 +203,10 @@ export function sameShape<T extends object>(defaults: T, raw: unknown): T {
  */
 export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): Settings {
   const heat = sameShape(HEAT_DEFAULTS, saved.heat), lt = saved.lt as { view?: unknown } | undefined;
-  // A save or a layout from when the profile along the top was the measure strip (`measureStrip`): the strip becomes the profile, and where
-  // it showed, the Volume profile it now belongs to is switched on, or the strip would be gone.
+  // A save or a layout from when the profile along the top was the measure strip (`measureStrip`): the strip becomes the profile along the
+  // top (`readTraded`), and where it showed, the Volume profile it now belongs to is switched on, or the strip would be gone.
   const strip = hasTop(saved.traded) ? null : topFromStrip((saved as Record<string, unknown>).measureStrip);
-  const traded = readTraded(saved.traded), show = sameShape(defaultShow(), saved.show);
+  const traded = readTraded(saved.traded, strip), show = sameShape(defaultShow(), saved.show);
   return {
     timeframe: typeof saved.timeframe === 'string' && TIMEFRAME_IDS.includes(saved.timeframe) ? saved.timeframe : '1h',
     // A layer saved before it was withdrawn would otherwise open on an empty chart.
@@ -214,7 +215,7 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
     cvd: readCvd(saved.cvd), highlight: readHighlight(saved.highlight), absorption: readAbsorption(saved.absorption), tradeBubbles: readBubbles(saved.tradeBubbles),
     liquidations: readLiquidations(saved.liquidations), keyLevels: readKeyLevels(saved.keyLevels), vwap: readVwap(saved.vwap), footprint: readFootprint(saved.footprint),
     delta: readDelta(saved.delta), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts', pullStack: readPullWindow(saved.pullStack),
-    traded: strip ? { ...traded, top: strip } : traded,
+    traded,
     scope: saved.scope === 'spot' || saved.scope === 'perp' ? saved.scope : 'all',
     heat: { ...heat, style: HEAT_STYLES.some(style => style.id === heat.style) ? heat.style : 'size', smooth: heat.smooth === 'off' ? 'off' : 'auto', contrast: clampContrast(heat.contrast) },
     lt: { ...sameShape(LT_DEFAULTS, saved.lt), view: lt?.view === 'imbalance' ? 'imbalance' : 'lines' },
@@ -241,7 +242,7 @@ export const DEFAULT_THEME = 'light';
  * chosen: the choice came that day), and the measure strip along the top of the map is on (on a desktop: a phone has no room for it).
  * Revision 3 (2026-10-20): the measure strip became the volume profile turned onto the time axis, set in the Volume profile's panel and
  * switched with it (Karl: "why not do basically exactly a clone of the profile, but at the top of the chart"). A save's strip is read into
- * `traded.top` by `readSettings` (saved layouts too): its switch as it was, Delta as traded volume, OI change as open interest, and the
+ * the profile along the top by `readSettings` (saved layouts too; traded/profiles.ts since): its switch as it was, Delta as traded volume, OI change as open interest, and the
  * Volume profile switched on where the strip showed, or the strip would be gone. A save from before revision 2, and a first visit, had the
  * strip on (on a desktop): they get the profile along the top, and with it the Volume profile.
  */
@@ -271,7 +272,7 @@ export function initialState(): AppState {
   if (rev < 2) {
     if (!state.traded.lines.length && state.traded.profiles === null) state.traded = { ...state.traded, lines: ['day'], profiles: 'day' };
     // The strip revision 2 turned on is the profile along the top now, which shows with the Volume profile.
-    if (!isPhone()) { state.traded = { ...state.traded, top: { ...state.traded.top, on: true } }; state.show = { ...state.show, traded: true }; }
+    if (!isPhone()) { state.traded = { ...state.traded, placements: withTopOn(state.traded.placements) }; state.show = { ...state.show, traded: true }; }
   }
   state.defaultsRev = DEFAULTS_REV;
   state.theme = resolveThemeId(state.theme);

@@ -55,6 +55,20 @@ test('an unknown venue, a failing page and garbage rows give nothing instead of 
   await assert.rejects(fetchCandles('binance:BTCUSDT', HOUR, T0, T0 + HOUR, async () => { throw new Error('blocked'); }), /blocked/);
 });
 
+test('asked for, a page that fails after others came keeps them: the newest part, for the caller to ask on from', async () => {
+  const calls: string[] = [], ok = binance(4500, calls);
+  const flaky: Fetcher = async url => { if (calls.length >= 2) { calls.push(url); throw new Error('408'); } return ok(url); };
+  const all = 4500 * MINUTE;
+  await assert.rejects(fetchCandles('binance:BTCUSDT', MINUTE, T0, T0 + all, flaky), /408/, 'not asked for: it throws, as before');
+  calls.length = 0;
+  const kept = await fetchCandles('binance:BTCUSDT', MINUTE, T0, T0 + all, flaky, undefined, 12, { partial: true });
+  assert.equal(calls.length, 3, 'two pages, then the one that failed');
+  assert.equal(kept.length, 3000, 'the two pages that came');
+  assert.equal(kept[kept.length - 1]![0], T0 + 4499 * MINUTE, 'the newest bar'); assert.equal(kept[0]![0], T0 + 1500 * MINUTE, 'unbroken back to where the pages reached');
+  calls.length = 0;
+  await assert.rejects(fetchCandles('binance:BTCUSDT', MINUTE, T0, T0 + all, async () => { throw new Error('down'); }, undefined, 12, { partial: true }), /down/, 'nothing came: it throws');
+});
+
 test('a misbehaving endpoint that keeps returning the same page cannot loop', async () => {
   let calls = 0;
   const stuck: Fetcher = async () => { calls++; return [[T0, '1', '2', '0.5', '1.5', '1']]; };

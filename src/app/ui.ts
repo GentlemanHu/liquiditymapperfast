@@ -88,10 +88,13 @@ export function openPanel(anchor: HTMLElement, options: PanelOptions, build: (to
   const panel: Panel = {
     root, tools, body, anchor,
     render(next) {
-      const keep = body.scrollTop;
+      // A control that rebuilds the panel keeps the keyboard where it was when it carries a key of its own (`data-focus`): arrows through a
+      // group of round buttons go on from the one just chosen.
+      const keep = body.scrollTop, active = document.activeElement, focus = active instanceof HTMLElement && body.contains(active) ? active.dataset.focus : undefined;
       tools.replaceChildren(); body.replaceChildren(); next(tools, body);
       tools.hidden = tools.childElementCount === 0;
       reposition(); body.scrollTop = keep;
+      if (focus) [...body.querySelectorAll<HTMLElement>('[data-focus]')].find(x => x.dataset.focus === focus)?.focus({ preventScroll: true });
     },
     reposition: () => reposition(),
     close() {

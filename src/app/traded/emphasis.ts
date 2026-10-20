@@ -3,21 +3,26 @@ import type { Palette } from '../theme.ts';
 import { scaledUsd } from '../coin.ts';
 
 /**
- * Which side of a split bar was the stronger, drawn so it shows (Karl, 2026-10-20): the stronger side a little brighter, the weaker dimmer,
- * on a smooth curve, in the profile columns, the profiles on the chart and the profile along the top alike. One pure function decides how
+ * Which side of a split bar was the stronger, drawn so it shows (Karl, 2026-10-20): the stronger side brighter, the weaker dimmer, on a
+ * smooth curve, in the profile columns, the profiles on the chart and the profile along the top alike. One pure function decides how
  * one-sided a row is and one builder makes the colours, so the three painters cannot disagree.
  *
- * How one-sided: q = (b − s) / (T + τ), T = b + s, τ = max($25k scaled to the coin, 5 % of the busiest row of the whole answer). The τ pulls
- * thin rows toward balance, so $10 against nothing is not drawn as one-sided. The curve u = min(1, |q| / 0.8), E = u²(3 − 2u) starts flat
- * (no step at balance) and is full from q = 0.8. Order counts are not used: they count orders begun over a window that may be partial.
+ * One fixed scale, the same in every window and for every measure: q = (b − s) / (T + τ), T = b + s, τ = max($25k scaled to the coin, 2 % of
+ * the median row of the whole answer). The τ pulls thin rows toward balance, so $10 against nothing is not drawn as one-sided; taken from the
+ * median, one huge row does not mute all the others (it did when τ was 5 % of the busiest row: on real profiles almost nothing showed). The
+ * curve u = min(1, |q| / 0.30), E = u²(3 − 2u) starts flat (no step at balance), gives a well-filled 52 / 48 row about 0.05 and a 60 / 40 one
+ * about 0.74, and is full from about 65 / 35. Liquidations, often all one side, honestly saturate; their size is the bar's length. Order
+ * counts are not used: they count orders begun over a window that may be partial.
  */
 
 /** The smallest row at which one-sidedness counts in full, for BTC (scaled to the coin on screen, `scaledUsd`). */
 export const EMPHASIS_FLOOR_USD = 25_000;
-/** The alpha the split bars are drawn at, and the weaker side's at full one-sidedness: dimmer, never gone. */
+/** The share of the median row τ grows to, and the |q| at which a row is fully one-sided. */
+export const MEDIAN_SHARE = 0.02, FULL_AT = 0.30;
+/** The alpha the split bars are drawn at, and the weaker side's at full one-sidedness: dimmer, never gone. The stronger side rises to 1. */
 export const BAR_ALPHA = 0.85, WEAK_ALPHA = 0.35;
-/** How far the stronger side's lightness moves at full one-sidedness (OKLCH), toward the text colour. */
-export const LIGHTNESS_LIFT = 0.08;
+/** How far the stronger side's lightness moves at full one-sidedness (OKLCH), toward the text colour and never past it. */
+export const LIGHTNESS_LIFT = 0.12;
 /** Steps of each colour ramp. */
 const STEPS = 256;
 
@@ -26,32 +31,58 @@ export const emphasisFloor = (): number => scaledUsd(EMPHASIS_FLOOR_USD);
 
 /**
  * How one-sided a row is, signed: positive when the first side (bid colour) was the stronger, negative for the second, 0 when balanced or
- * empty; its size is E, 0 to 1. `maxTotal` is the busiest row of the whole answer, `floorUsd` the floor of τ (`emphasisFloor`).
+ * empty; its size is E, 0 to 1. `median` is the median row of the whole answer (`answerMedian`, `bucketsMedian`), `floorUsd` the floor of τ
+ * (`emphasisFloor`).
  */
-export function dominance(b: number, s: number, maxTotal: number, floorUsd: number): number {
+export function dominance(b: number, s: number, median: number, floorUsd: number): number {
   const total = b + s;
   if (!(total > 0)) return 0;
-  const tau = Math.max(floorUsd, 0.05 * Math.max(0, maxTotal)), q = (b - s) / (total + tau);
-  const u = Math.min(1, Math.abs(q) / 0.8), e = u * u * (3 - 2 * u);
+  const tau = Math.max(floorUsd, MEDIAN_SHARE * Math.max(0, median)), q = (b - s) / (total + tau);
+  const u = Math.min(1, Math.abs(q) / FULL_AT), e = u * u * (3 - 2 * u);
   return q > 0 ? e : q < 0 ? -e : 0;
 }
 
 /** The weaker side's alpha at one-sidedness `e` (0 to 1), from `base` (the painter's bar alpha) down to its `WEAK_ALPHA` share of it. */
 export const weakAlpha = (e: number, base = BAR_ALPHA): number => base * (1 - Math.min(1, Math.max(0, e)) * (1 - WEAK_ALPHA / BAR_ALPHA));
+/** The stronger side's alpha at one-sidedness `e`, from `base` up to fully opaque. */
+export const strongAlpha = (e: number, base = BAR_ALPHA): number => base + (1 - base) * Math.min(1, Math.max(0, e));
 
-const busiest = new WeakMap<ProfileAnswer, { step: number; max: number }>();
+/** The median of the rows that hold anything (0 when none does). */
+export function medianRow(totals: Iterable<number>): number {
+  const held: number[] = [];
+  for (const v of totals) if (v > 0) held.push(v);
+  if (!held.length) return 0;
+  held.sort((a, b) => a - b);
+  const mid = held.length >> 1;
+  return held.length % 2 ? held[mid]! : (held[mid - 1]! + held[mid]!) / 2;
+}
+
+const medians = new WeakMap<ProfileAnswer, { step: number; median: number }>();
 /**
- * The busiest row of a whole answer on rows of `step`, every price it holds and not only those on screen (each instrument's row goes where
- * its middle falls, as `tradedRows` puts it): what τ is taken from, so scrolling the price does not change how one-sided a row looks.
+ * The median row of a whole answer on rows of `step`, every price it holds and not only those on screen (each instrument's row goes where
+ * its middle falls, as `tradedRows` puts it): what τ is taken from, so scrolling the price does not change how one-sided a row looks. Kept
+ * per answer, so painting does not sort.
  */
-export function answerMax(answer: ProfileAnswer, step: number): number {
-  const held = busiest.get(answer);
-  if (held && held.step === step) return held.max;
+export function answerMedian(answer: ProfileAnswer, step: number): number {
+  const held = medians.get(answer);
+  if (held && held.step === step) return held.median;
   const rows = new Map<number, number>();
   for (const inst of answer.instruments) for (const [low, b, s] of inst.rows) { const k = Math.floor((low + inst.step / 2) / step); rows.set(k, (rows.get(k) ?? 0) + b + s); }
-  let max = 0; for (const v of rows.values()) if (v > max) max = v;
-  busiest.set(answer, { step, max });
-  return max;
+  const median = medianRow(rows.values());
+  medians.set(answer, { step, median });
+  return median;
+}
+
+const bucketMedians = new WeakMap<object, number>();
+/** The median bucket of a run of buckets (the profile along the top), kept per run. */
+export function bucketsMedian(rows: { buy: ArrayLike<number>; sell: ArrayLike<number> }): number {
+  let held = bucketMedians.get(rows);
+  if (held === undefined) {
+    const totals: number[] = [];
+    for (let i = 0; i < rows.buy.length; i++) totals.push(rows.buy[i]! + rows.sell[i]!);
+    held = medianRow(totals); bucketMedians.set(rows, held);
+  }
+  return held;
 }
 
 // ---- colour ----------------------------------------------------------------------------------------------------------------------------
@@ -82,7 +113,7 @@ export function hexOfOklch(L: number, C: number, h: number): string {
   return `#${linearOf(L, c, h).map(v => Math.round(Math.min(1, Math.max(0, toGamma(Math.min(1, Math.max(0, v))))) * 255).toString(16).padStart(2, '0')).join('')}`;
 }
 
-/** The stronger side's colours, by one-sidedness from 0 to 1 in `STEPS` steps: the side's colour, its lightness moved toward the text. */
+/** The stronger side's colours, by one-sidedness from 0 to 1 in `STEPS` steps: the side's colour, its lightness moved toward the text's. */
 export interface EmphasisRamps { bid: readonly string[]; ask: readonly string[] }
 
 const ramps = new WeakMap<Palette, EmphasisRamps>();
@@ -90,10 +121,11 @@ const ramps = new WeakMap<Palette, EmphasisRamps>();
 export function emphasisRamps(p: Palette): EmphasisRamps {
   let held = ramps.get(p);
   if (held) return held;
-  // Toward the text colour, away from the background: lighter on a dark theme, darker on a light one.
-  const sign = p.dark ? 1 : -1, ramp = (hex: string): string[] => {
-    const [L, C, h] = oklch(hex);
-    return Array.from({ length: STEPS }, (_, i) => i === 0 ? hex : hexOfOklch(Math.min(1, Math.max(0, L + sign * LIGHTNESS_LIFT * i / (STEPS - 1))), C, h));
+  // Away from the background (lighter on a dark theme, darker on a light one), toward the text colour and never past its lightness: a side
+  // already past it (Amber's buy colour) keeps its lightness and is stronger by its alpha alone.
+  const sign = p.dark ? 1 : -1, text = oklch(p.text)[0], ramp = (hex: string): string[] => {
+    const [L, C, h] = oklch(hex), room = Math.max(0, sign * (text - L));
+    return Array.from({ length: STEPS }, (_, i) => i === 0 ? hex : hexOfOklch(Math.min(1, Math.max(0, L + sign * Math.min(room, LIGHTNESS_LIFT * i / (STEPS - 1)))), C, h));
   };
   held = { bid: ramp(p.bid), ask: ramp(p.ask) };
   ramps.set(p, held);
@@ -104,14 +136,14 @@ export function emphasisRamps(p: Palette): EmphasisRamps {
 export interface SideStyle { color: string; alpha: number }
 
 /**
- * Both sides' styles for a row of `b` and `s` (the bid-colour side first), with `on` the setting: the stronger side in its ramp's colour at
- * the bar alpha, the weaker side in its own colour, dimmer. Off, balanced or empty: both as they always were.
+ * Both sides' styles for a row of `b` and `s` (the bid-colour side first), with `on` the setting: the stronger side in its ramp's colour and
+ * more opaque, the weaker side in its own colour, dimmer. Off, balanced or empty: both as they always were. `median` as for `dominance`.
  */
-export function splitStyles(b: number, s: number, maxTotal: number, floorUsd: number, p: Palette, on: boolean, base = BAR_ALPHA): [SideStyle, SideStyle] {
-  const d = on ? dominance(b, s, maxTotal, floorUsd) : 0;
+export function splitStyles(b: number, s: number, median: number, floorUsd: number, p: Palette, on: boolean, base = BAR_ALPHA): [SideStyle, SideStyle] {
+  const d = on ? dominance(b, s, median, floorUsd) : 0;
   if (d === 0) return [{ color: p.bid, alpha: base }, { color: p.ask, alpha: base }];
-  const e = Math.abs(d), r = emphasisRamps(p), i = Math.round(e * (STEPS - 1));
-  return d > 0 ? [{ color: r.bid[i]!, alpha: base }, { color: p.ask, alpha: weakAlpha(e, base) }] : [{ color: p.bid, alpha: weakAlpha(e, base) }, { color: r.ask[i]!, alpha: base }];
+  const e = Math.abs(d), r = emphasisRamps(p), i = Math.round(e * (STEPS - 1)), strong = strongAlpha(e, base), weak = weakAlpha(e, base);
+  return d > 0 ? [{ color: r.bid[i]!, alpha: strong }, { color: p.ask, alpha: weak }] : [{ color: p.bid, alpha: weak }, { color: r.ask[i]!, alpha: strong }];
 }
 
 /** Whether the setting applies with these bars, and why not: Delta bars draw only the difference, which already says which side won. */

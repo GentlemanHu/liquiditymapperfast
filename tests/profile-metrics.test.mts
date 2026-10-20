@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { absorptionAnswer, liquidationAnswer } from '../src/app/traded/metrics.ts';
+import { absorptionAnswer } from '../src/app/measures/defs/absorption.ts';
+import { liquidationAnswer } from '../src/app/measures/defs/liquidations.ts';
+import { placedOn } from '../src/app/traded/profiles.ts';
 import { readTraded } from '../src/app/traded/settings.ts';
 import type { AbsorptionGroup } from '../src/shared/absorption.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -32,13 +34,14 @@ test('absorption by price: the marked part of each group at its threshold, sells
   assert.equal(rows.c, undefined, 'an instrument with no threshold yet has nothing marked');
 });
 
-test('the columns\' measures are stored with the volume profile settings, each once, in the columns\' order, never none', () => {
-  assert.deepEqual(readTraded({}).metrics, ['volume']);
-  assert.deepEqual(readTraded({ metrics: ['liquidations', 'volume', 'liquidations'] }).metrics, ['volume', 'liquidations']);
-  assert.deepEqual(readTraded({ metrics: ['absorption', 'oi', 'volume', 'liquidations'] }).metrics, ['volume', 'oi', 'absorption', 'liquidations']);
-  assert.deepEqual(readTraded({ metrics: ['tea leaves'] }).metrics, ['volume'], 'nothing this page knows: traded volume');
-  assert.deepEqual(readTraded({ metrics: [] }).metrics, ['volume']);
+test('an older save\'s columns are read as columns right of the map, each once, in the registry\'s order, never none', () => {
+  const right = (saved: unknown): string[] => placedOn(readTraded(saved).placements, 'right').map(p => p.metric);
+  assert.deepEqual(right({}), ['volume']);
+  assert.deepEqual(right({ metrics: ['liquidations', 'volume', 'liquidations'] }), ['volume', 'liquidations']);
+  assert.deepEqual(right({ metrics: ['absorption', 'oi', 'volume', 'liquidations'] }), ['volume', 'oi', 'absorption', 'liquidations']);
+  assert.deepEqual(right({ metrics: ['tea leaves'] }), ['volume'], 'nothing this page knows: traded volume');
+  assert.deepEqual(right({ metrics: [] }), ['volume']);
   // A save from when the column showed one measure.
-  assert.deepEqual(readTraded({ metric: 'liquidations' }).metrics, ['liquidations']);
-  assert.deepEqual(readTraded({ metric: 'tea leaves' }).metrics, ['volume']);
+  assert.deepEqual(right({ metric: 'liquidations' }), ['liquidations']);
+  assert.deepEqual(right({ metric: 'tea leaves' }), ['volume']);
 });

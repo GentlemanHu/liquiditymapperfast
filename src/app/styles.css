@@ -424,6 +424,30 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 .emphasis-row { display: grid; grid-template-columns: 52px minmax(0, 160px); align-items: center; gap: 8px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .emphasis-bar { display: flex; height: 8px; }
 .panel .field.off { opacity: .5; cursor: default; }
+/* Where each measure is drawn (traded/placement-panel.ts): the grid of switches, a row a measure and a column a place, with the small picture
+   of the chart beside it, or under it in a narrow panel. */
+.place-box { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 14px; margin: 8px 0 2px; }
+.place-grid { flex: 1 1 240px; display: grid; gap: 2px; min-width: 0; }
+.place-row { display: grid; grid-template-columns: minmax(64px, 1fr) repeat(3, 42px); align-items: center; gap: 4px; min-height: 28px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.place-row.place-head { min-height: 0; padding-bottom: 3px; font-size: 10px; color: var(--muted); }
+.place-col { display: grid; justify-items: center; line-height: 1.2; text-align: center; }
+.place-col b { font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.place-col small { font-size: 9px; }
+.place-name { min-width: 0; line-height: 1.25; overflow-wrap: anywhere; }
+.place-cell { display: grid; place-items: center; }
+.place-sketch-wrap { flex: 0 1 200px; min-width: 160px; }
+.place-sketch { display: block; width: 100%; height: auto; }
+.place-sketch .sk-fixed { fill: color-mix(in srgb, var(--text) 6%, transparent); stroke: var(--line); }
+.place-sketch .sk-map { fill: color-mix(in srgb, var(--ui) 6%, transparent); stroke: var(--muted); }
+.place-sketch .sk-col { fill: var(--panel); stroke: var(--muted); }
+.place-sketch .sk-bid { fill: var(--bid); opacity: .75; }
+.place-sketch .sk-ask { fill: var(--ask); opacity: .75; }
+.place-sketch .sk-off { opacity: .45; }
+.place-sketch .sk-off .sk-col { stroke: #e6a700; stroke-dasharray: 2 2; }
+.place-sketch .sk-word { fill: var(--text); font: 600 7px ui-sans-serif, system-ui, sans-serif; dominant-baseline: middle; stroke: var(--panel); stroke-width: 2px; paint-order: stroke; }
+.place-sketch .sk-up { text-anchor: middle; }
+.place-sketch .sk-left { text-anchor: start; }
+.place-sketch .sk-cap { fill: var(--muted); font: 7px ui-sans-serif, system-ui, sans-serif; text-anchor: middle; }
 /* An exchange's mark (venue-marks.ts) beside its name: its brand colour and monogram, a notch in the corner for a spot market. Drawn, not an image. */
 .venue-mark { display: inline-grid; place-items: center; position: relative; flex: 0 0 auto; vertical-align: -2px; overflow: hidden; border-radius: min(2px, var(--radius));
   background: var(--mark-bg); color: var(--mark-fg); font-style: normal; font-weight: 700; line-height: 1; letter-spacing: -0.02em;
@@ -492,7 +516,12 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 .keylevel-grid .what .desc { color: var(--muted); font-size: 11px; }
 .keylevel-grid label { display: flex; justify-content: center; align-self: stretch; align-items: center; border-top: 1px solid var(--line); cursor: pointer; }
 .keylevel-grid label:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
-.keylevel-grid input[type=checkbox] { margin: 0; width: 15px; height: 15px; accent-color: var(--ui); cursor: pointer; }
+.keylevel-grid input:is([type=checkbox], [type=radio]) { margin: 0; width: 15px; height: 15px; accent-color: var(--ui); cursor: pointer; }
+/* The Volume profile's periods, the same grid: a row a period, its lines (boxes, several) and its bar profiles (round buttons, one kind). */
+.period-grid { grid-template-columns: minmax(0, 1fr) 84px 96px; }
+.period-grid .head { line-height: 1.25; }
+.period-grid .head.period-name { text-align: left; }
+.period-grid .none { display: flex; justify-content: center; align-self: stretch; align-items: center; border-top: 1px solid var(--line); color: var(--muted); }
 .panel .field { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 14px; align-items: center; padding: 7px 8px; margin: 0 -8px; border-radius: var(--radius); }
 .panel .field > select, .panel .field > input[type=number] { width: 150px; }
 /* A long choice ("Aggregated: every market switched on") does not fit 150 px beside the name: the select takes a line of its own under it. */
@@ -615,7 +644,7 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 /* The date and time take a line whole (beside two buttons it lost its "PM"); the buttons sit under it. */
 .goto-time { flex: 1 1 100%; min-width: 0; padding: 3px 6px; font: inherit; }
 /* The replay bar (replay/bar.ts): on the map, above its time axis. */
-.pane.heat .replay-bar { position: absolute; z-index: 3; left: 8px; bottom: 30px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px; color: var(--text); background: var(--face, var(--panel)); border-radius: var(--radius); box-shadow: inset 1px 1px 0 var(--hi, transparent), inset -1px -1px 0 var(--lo, transparent), 2px 2px 0 var(--shadow); }
+.pane.heat .replay-bar { position: absolute; z-index: 3; left: calc(var(--gutter-left, 0px) + 8px); bottom: 30px; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px; color: var(--text); background: var(--face, var(--panel)); border-radius: var(--radius); box-shadow: inset 1px 1px 0 var(--hi, transparent), inset -1px -1px 0 var(--lo, transparent), 2px 2px 0 var(--shadow); }
 .pane.heat .replay-bar[hidden] { display: none; }
 .replay-bar .replay-time { font-variant-numeric: tabular-nums; min-width: 9.5em; }
 .replay-bar.ended .replay-play, .replay-bar.ended select, .replay-bar.ended .replay-live { display: none; }

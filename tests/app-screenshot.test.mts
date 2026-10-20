@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { arrowHead, blockArrow, clampRect, fileName, hitHandle, inside, markPlacement, markText, rectFrom, resizeRect, snapAngle, squareTo, toolbarPlacement, worthKeeping, type Shape } from '../src/app/screenshot/shapes.ts';
-import { splitTop } from '../src/app/screenshot/capture.ts';
+import { splitTop, svgAlign, svgBaseline, svgDash, svgPaintOrder, svgPaints } from '../src/app/screenshot/capture.ts';
 
 const screen = { w: 1200, h: 800 };
 
@@ -110,4 +110,14 @@ test('a block arrow points at where the drag ended, its shaft as wide as set and
   assert.deepEqual(blockArrow({ x: 5, y: 5 }, { x: 5, y: 5 }, 20), [], 'nothing for no length');
   assert.ok(!worthKeeping({ kind: 'block', a: { x: 0, y: 0 }, b: { x: 5, y: 0 }, color: '#f00', width: 4, size: 36, fill: 0.2, border: 'color' }));
   assert.ok(worthKeeping({ kind: 'block', a: { x: 0, y: 0 }, b: { x: 50, y: 0 }, color: '#f00', width: 4, size: 36, fill: 0.2, border: 'color' }));
+});
+
+test('an SVG drawing is read from its computed styles: where its text lines up, its dashes, and which paints draw', () => {
+  assert.equal(svgAlign('middle'), 'center'); assert.equal(svgAlign('end'), 'end'); assert.equal(svgAlign('start'), 'start'); assert.equal(svgAlign(''), 'start');
+  assert.equal(svgBaseline('middle'), 'alphabetic', 'drawn on the baseline and moved up by half the x-height'); assert.equal(svgBaseline('central'), 'middle'); assert.equal(svgBaseline('hanging'), 'hanging'); assert.equal(svgBaseline('auto'), 'alphabetic');
+  assert.deepEqual(svgDash('none'), []); assert.deepEqual(svgDash('2px, 2px'), [2, 2]); assert.deepEqual(svgDash('4 1.5'), [4, 1.5]); assert.deepEqual(svgDash(''), []);
+  assert.deepEqual(svgDash('10%, 5%'), [], 'a share of the viewport is not resolved: drawn solid');
+  assert.deepEqual(svgPaintOrder('normal'), ['fill', 'stroke']); assert.deepEqual(svgPaintOrder('stroke'), ['stroke', 'fill']);
+  assert.deepEqual(svgPaintOrder('markers stroke fill'), ['stroke', 'fill']); assert.deepEqual(svgPaintOrder('fill markers'), ['fill', 'stroke']);
+  assert.equal(svgPaints('rgb(15, 164, 74)'), true); assert.equal(svgPaints('none'), false); assert.equal(svgPaints('url("#g")'), false); assert.equal(svgPaints(''), false);
 });

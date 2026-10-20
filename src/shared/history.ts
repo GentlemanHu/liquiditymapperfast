@@ -122,9 +122,11 @@ export function nativeInterval(spec: Pick<CandleSpec, 'intervals'>, tfMs: number
 
 /**
  * Candles for `instrumentId` at `tfMs` over [from, to], oldest first, built from the venue's native bars (a coarser timeframe is
- * aggregated from a finer one) by walking back page by page from `to`. Returns [] for a venue it does not know.
+ * aggregated from a finer one) by walking back page by page from `to`. Returns [] for a venue it does not know. A page that fails throws,
+ * unless `partial` is asked for and pages came before it: then what came is returned, the newest part of [from, to] unbroken, for the
+ * caller to ask on from where it got to (a timeout on the fifteenth page of four months of five-minute bars threw the fourteen away).
  */
-export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12, options?: { pageSize?: number; strict?: boolean }): Promise<Candle[]> {
+export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12, options?: { pageSize?: number; strict?: boolean; partial?: boolean }): Promise<Candle[]> {
   const spec = SPECS[venueOf(instrumentId)], market = listingOf(venueOf(instrumentId), listing);
   const native = spec ? nativeInterval(spec, tfMs) : null;
   if (!spec || !market || native === null) return [];
@@ -135,7 +137,8 @@ export async function fetchCandles(instrumentId: string, tfMs: number, from: num
   for (let pages = 0; pages < maxPages && end > from; pages++) {
     // Price context and VWAP/levels ask only for the bars they need, including small tail refreshes.
     const limit = options?.pageSize === undefined ? undefined : Math.max(1, Math.min(spec.limit, options.pageSize, Math.ceil((end - from) / native) + 2));
-    const received = await spec.page(interval, native, end, get, market.symbol, limit);
+    let received: CandleRow[];
+    try { received = await spec.page(interval, native, end, get, market.symbol, limit); } catch (error) { if (options?.partial && rows.size) break; throw error; }
     if (options?.strict && received.some(r => ![r.start, r.open, r.high, r.low, r.close, r.volume].every(Number.isFinite) || !Number.isSafeInteger(r.start) || r.start < 0 || r.start % native !== 0 || !(r.low > 0) || r.high < Math.max(r.open, r.close) || r.low > Math.min(r.open, r.close) || !(r.volume! >= 0))) throw new Error('Invalid candle page');
     const got = received.filter(r => Number.isFinite(r.start) && Number.isFinite(r.open) && Number.isFinite(r.close));
     if (!got.length) break;

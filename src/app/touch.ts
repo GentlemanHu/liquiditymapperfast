@@ -211,15 +211,17 @@ export function axisPinchScale(from: number, to: number, floor = 24, ramp = 24):
   return Math.pow(ratio, weight);
 }
 
-/** Position of a pointer event inside `el`. */
-const local = (el: HTMLElement, e: PointerEvent): Pt => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+/** Position of a pointer event inside `el`, `dx` left of where its host's own coordinates begin. */
+const at = (el: HTMLElement, e: PointerEvent, dx: number): Pt => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left - dx, y: e.clientY - r.top }; };
 
 /**
  * Feed `recognizer` from the touch pointers on `el` (mouse and pen are left to the host's own handlers). The element is made
- * `touch-action: none` here as well as in the stylesheet, so the browser never starts a scroll or a page zoom of its own on it.
+ * `touch-action: none` here as well as in the stylesheet, so the browser never starts a scroll or a page zoom of its own on it. `originX`
+ * is where the host's coordinates begin inside the element (the map's plot starts after the columns left of it).
  */
-export function bindTouch(el: HTMLElement, recognizer: GestureRecognizer): () => void {
+export function bindTouch(el: HTMLElement, recognizer: GestureRecognizer, originX: () => number = () => 0): () => void {
   el.style.touchAction = 'none';
+  const local = (target: HTMLElement, e: PointerEvent): Pt => at(target, e, originX());
   const own = (e: PointerEvent): boolean => e.pointerType === 'touch';
   const down = (e: PointerEvent): void => { if (!own(e)) return; try { el.setPointerCapture(e.pointerId); } catch { /* the pointer is already gone */ } recognizer.pointerDown(e.pointerId, local(el, e), e.timeStamp); };
   const move = (e: PointerEvent): void => { if (own(e)) recognizer.pointerMove(e.pointerId, local(el, e), e.timeStamp); };

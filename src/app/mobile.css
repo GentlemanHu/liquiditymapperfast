@@ -168,7 +168,8 @@ html[data-bar="compact"] .panel .switch input:checked + i::after { transform: tr
 html[data-bar="compact"] .panel .opt input[type=checkbox], html[data-bar="compact"] .panel .tier-name input { width: 20px; height: 20px; }
 html[data-bar="compact"] .panel .opt { grid-template-columns: 24px 1fr; }
 html[data-bar="compact"] .keylevel-grid { grid-template-columns: 1fr repeat(3, 48px); }
-html[data-bar="compact"] .keylevel-grid input[type=checkbox] { width: 20px; height: 20px; }
+html[data-bar="compact"] .period-grid { grid-template-columns: minmax(0, 1fr) 72px 88px; }
+html[data-bar="compact"] .keylevel-grid input:is([type=checkbox], [type=radio]) { width: 20px; height: 20px; }
 html[data-bar="compact"] .keylevel-grid .what { padding: 8px 0; }
 html[data-bar="compact"] .panel .grip { width: 30px; height: 36px; }
 html[data-bar="compact"] .panel .srow { grid-template-columns: 32px 18px minmax(0, 1fr) 38px; padding: 5px 6px; }

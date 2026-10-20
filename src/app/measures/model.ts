@@ -3,7 +3,7 @@ import { OI_GAP_MS, oiIntervals } from '../../shared/oi-profile.ts';
 import type { OiBar } from '../store.ts';
 import type { InfoLine } from '../infobox.ts';
 import { rowBody, type ColumnWords, type TradedRows } from '../traded.ts';
-import { metricWords, type ProfileMetric } from '../traded/metrics.ts';
+import type { ProfileMetric } from './registry.ts';
 import { valueArea } from '../../shared/profile.ts';
 import { clock, startOfDay } from '../format.ts';
 import { t } from '../i18n.ts';
@@ -254,13 +254,6 @@ export function lengthText(step: number): string {
   return step < MINUTE ? t('{n} s', { n: step / SECOND }) : step < HOUR ? t('{n} min', { n: step / MINUTE }) : t('{n} h', { n: step / HOUR });
 }
 
-/** What a stretch with nothing in it is called, for each measure (the column's words are about prices). */
-export function timeWords(metric: ProfileMetric): ColumnWords {
-  const none = metric === 'oi' ? t('Open interest did not change in this stretch.') : metric === 'absorption' ? t('Nothing absorbed in this stretch.')
-    : metric === 'liquidations' ? t('No liquidation reported in this stretch.') : t('Nothing traded in this stretch.');
-  return { ...metricWords(metric), none };
-}
-
 const minutes = (ms: number): number => Math.max(1, Math.round(ms / MINUTE));
 
 /** Why a bucket has no data, in words. */
@@ -274,8 +267,11 @@ export function gapText(gap: TimeGap): string {
   }
 }
 
-/** What the box of a bucket needs beside the rows: the measure, how often open interest is read, the value area, and the page's clock. */
-export interface TimeBoxContext { metric: ProfileMetric; spacingMs: number; levels: TimeLevels | null; now: number }
+/**
+ * What the box of a bucket needs beside the rows: the measure and its words by time (the registry's `timeWords`, handed in so this module
+ * stays below the registry the measures' files import it from), how often open interest is read, the value area, and the page's clock.
+ */
+export interface TimeBoxContext { metric: ProfileMetric; words: ColumnWords; spacingMs: number; levels: TimeLevels | null; now: number }
 
 /**
  * The box for bucket `i`: its time span, then the body every row of the column has (its two sides, their difference, its share, where it
@@ -287,7 +283,7 @@ export function timeLines(rows: TimeRows, i: number, c: TimeBoxContext): InfoLin
   const lines: InfoLine[] = [{ text: `${timeText(a, rows.step, c.now)} – ${timeText(b, rows.step, c.now)}${open ? ` · ${t('under way')}` : ''}`, bold: true }];
   if (gap) { lines.push({ text: gapText(gap), color: 'muted', wrap: true }); return lines; }
   const l = c.levels, where = !l ? null : i === l.poc ? t('Point of control') : i >= l.lo && i <= l.hi ? t('In the value area') : i < l.lo ? t('Before the value area') : t('After the value area');
-  lines.push(...rowBody(rows, i, timeWords(c.metric), where));
+  lines.push(...rowBody(rows, i, c.words, where));
   if (c.metric === 'oi' && c.spacingMs > MINUTE) lines.push({ text: t('Open interest is read about every {n} min here: a change between readings is spread over the minutes in between by their volume, as the column spreads it over prices.', { n: minutes(c.spacingMs) }), color: 'muted', wrap: true });
   return lines;
 }
@@ -332,9 +328,38 @@ export const BAND_H = 96;
  * frame since the legend grows a line for a price history note; the column's width tall, a fifth of the map at most on a short one, and
  * never down into the volume strip. Null when the map is too short for it.
  */
-export function stripBand(o: { legendBottom: number; toolsBottom: number; ph: number; volume: boolean }): { top: number; height: number } | null {
-  const top = Math.ceil(Math.max(o.legendBottom, o.toolsBottom) + BAND_GAP);
-  const floor = o.ph - (o.volume ? volumeBand(o.ph) + 6 : 0) - 24;
-  const height = Math.floor(Math.min(BAND_H, Math.max(36, o.ph * 0.2), floor - top));
-  return height >= 32 ? { top, height } : null;
+export function stripBand(o: BandPlace): { top: number; height: number } | null {
+  const top = bandTop(o), height = Math.floor(Math.min(BAND_H, Math.max(36, o.ph * 0.2), bandFloor(o) - top));
+  return height >= MIN_BAND_H ? { top, height } : null;
+}
+
+/** What a band is placed by: the bottoms of the legend plate and the corner buttons, the plot's height, and whether the volume strip is drawn. */
+export interface BandPlace { legendBottom: number; toolsBottom: number; ph: number; volume: boolean }
+/** A band lower than this is a sliver: none is drawn. */
+const MIN_BAND_H = 32;
+const bandTop = (o: BandPlace): number => Math.ceil(Math.max(o.legendBottom, o.toolsBottom) + BAND_GAP);
+const bandFloor = (o: BandPlace): number => o.ph - (o.volume ? volumeBand(o.ph) + 6 : 0) - 24;
+/** Each band's height when one, two or three stack: shorter the more there are, so the chart keeps its height. */
+export const STACK_H: readonly number[] = [BAND_H, 70, 56];
+/** Space between stacked bands, so each one's edges read as its own. */
+export const STACK_GAP = 3;
+/** The share of the plot's height the bands may take together. */
+export const BANDS_SHARE = 0.25;
+
+/**
+ * Where `count` bands go, from the top down: one as `stripBand` places it; two or three stacked under it, each `STACK_H` tall at most and
+ * all of them a quarter of the plot at most, never down into the volume strip. Fewer when they would be slivers, and none when even one
+ * would be: the caller says what was left out.
+ */
+export function stackedBands(o: BandPlace, count: number): { top: number; height: number }[] {
+  const one = stripBand(o);
+  if (count < 1 || !one) return [];
+  const top = bandTop(o), room = Math.min(o.ph * BANDS_SHARE, bandFloor(o) - top);
+  for (let n = Math.min(count, STACK_H.length); n >= 2; n--) {
+    const height = Math.floor(Math.min(STACK_H[n - 1]!, (room - (n - 1) * STACK_GAP) / n));
+    if (height >= MIN_BAND_H) return Array.from({ length: n }, (_, i) => ({ top: top + i * (height + STACK_GAP), height }));
+  }
+  // One band as `stripBand` places it, no taller than the quarter the bands may take, and none if that leaves a sliver.
+  const height = Math.min(one.height, Math.floor(room));
+  return height >= MIN_BAND_H ? [{ top: one.top, height }] : [];
 }

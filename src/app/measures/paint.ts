@@ -1,7 +1,7 @@
 import type { Palette } from '../theme.ts';
 import type { View } from '../view.ts';
 import { t } from '../i18n.ts';
-import { emphasisFloor, splitStyles } from '../traded/emphasis.ts';
+import { bucketsMedian, emphasisFloor, splitStyles } from '../traded/emphasis.ts';
 import { bucketSpan, timeText, type TimeLevels, type TimeRows } from './model.ts';
 
 /** What the painter needs of the map: its view, its plot size and the palette. */
@@ -49,7 +49,7 @@ export function paintBand(ctx: CanvasRenderingContext2D, rows: TimeRows, band: {
     ctx.fillStyle = p.poc; ctx.globalAlpha = 0.12; ctx.fillRect(xa, top + 1, xb - xa, H - 1); ctx.globalAlpha = 1;
   }
   if (rows.max > 0) {
-    const length = H - 6, floor = emphasisFloor();
+    const length = H - 6, floor = emphasisFloor(), median = bucketsMedian(rows);
     ctx.globalAlpha = 0.85;
     for (let i = 0; i < rows.buy.length; i++) {
       const b = rows.buy[i]!, s = rows.sell[i]!, total = b + s; if (!(total > 0)) continue;
@@ -65,8 +65,8 @@ export function paintBand(ctx: CanvasRenderingContext2D, rows: TimeRows, band: {
         if (Math.abs(net) > 0) { ctx.fillStyle = net > 0 ? p.bid : p.ask; ctx.fillRect(x0, top + 1, w, Math.max(1, Math.abs(net) / rows.max * length)); }
         continue;
       }
-      // The stronger side brighter, the weaker dimmer, against the busiest bucket of the whole window, as the column shades its rows.
-      const [first, second] = splitStyles(b, s, rows.max, floor, p, d.emphasis);
+      // The stronger side brighter, the weaker dimmer, on the scale the column shades its rows by (τ from the window's median bucket).
+      const [first, second] = splitStyles(b, s, median, floor, p, d.emphasis);
       if (b > 0) { ctx.globalAlpha = first.alpha; ctx.fillStyle = first.color; ctx.fillRect(x0, top + 1, w, Math.max(0.5, buyLen)); }
       if (s > 0) { ctx.globalAlpha = second.alpha; ctx.fillStyle = second.color; ctx.fillRect(x0, top + 1 + buyLen, w, Math.max(0.5, len - buyLen)); }
       ctx.globalAlpha = 0.85;

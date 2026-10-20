@@ -160,7 +160,7 @@ export function markedPart(g: AbsorptionGroup, threshold: number): { usd: number
 }
 
 /**
- * The absorption column's answer (traded/metrics.ts): per instrument, rows of the step ([row price, market sells resting buyers took, market
+ * The absorption column's answer (measures/defs/absorption.ts): per instrument, rows of the step ([row price, market sells resting buyers took, market
  * buys resting sellers took], USD), each group's marked part counted once on the row of its price; and the instruments whose rows may be
  * short: `incomplete`, where a minute kept only its largest groups and one left out would have been marked; `cut`, where the source answered
  * only the largest groups (an older server).

@@ -21,8 +21,10 @@ import { cumulative, groupLevels, type Grouped } from './levels-data.ts';
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf } from '../scope.ts';
 import { fitText } from '../text-fit.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
-import { tradedFigures, tradedHeader, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
-import { metricHeader, metricWords, type ProfileMetric } from '../traded/metrics.ts';
+import { tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
+import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
+import { lineMetric, onPriceAxis, placedOn } from '../traded/profiles.ts';
+import { MAX_BANDS, arrangeProfiles, arrangeSides, columnHit, type Arranged, type ProfileRoom } from '../traded/arrange.ts';
 import { flowIds, flowLoadIds, mapVenues } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
@@ -37,11 +39,11 @@ import { layoutInfo, paintInfoBox, type InfoLine } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, holdPixel, limitFactor, regionAt, wheelAxis } from './heat-zoom.ts';
-import { t } from '../i18n.ts';
+import { t, tn } from '../i18n.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
 import { linesToAsk } from '../sizes.ts';
 import { chartKinds, linesCount, linesSource, resolveZone, type LineKind, type TradedSettings } from '../traded/settings.ts';
-import { answerMax, emphasisFloor, splitStyles } from '../traded/emphasis.ts';
+import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { MAX_BACK_MS, barMsFor, keyLines, neededFrom, type KeyLine } from '../keylevels/levels.ts';
 import { anyLine } from '../keylevels/settings.ts';
@@ -57,7 +59,8 @@ import { drawVenueMark } from '../venue-marks.ts';
 import { draftLabel } from '../range/stats.ts';
 import type { RangePoint, RangeTool } from '../range/tool.ts';
 import { paintDivergence, type Divergence } from '../delta/divergence.ts';
-import { TopProfile, topAbsorption } from '../measures/strip.ts';
+import { TopBands, topMarks, type TopProfile } from '../measures/strip.ts';
+import { BAND_GAP } from '../measures/model.ts';
 import { countdown, lineSide } from '../price-line.ts';
 import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../replay/clock.ts';
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
@@ -68,6 +71,8 @@ import { priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindo
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
+/** The amber a profile with no room is said in, as a column's header says a cut record. */
+const HIDDEN_COLOR = '#e6a700';
 
 /** Glows around whale bubbles, by colour, radius (whole px) and pixel ratio. */
 const glows = new Map<string, { image: HTMLCanvasElement; half: number }>();
@@ -116,21 +121,29 @@ function axisNeed(): number {
   const price = currentCoin().price;
   return price > 0 && price < 1 ? Math.ceil((Math.ceil(-Math.log10(price * 0.0005)) + 2) * 6.5 + 12) : 0;
 }
-/** How many volume profile columns fit beside the map: as many as leave it half the pane (the price axis and the profile counted), one at least. */
+/**
+ * How many volume profile columns fit beside the map, right and left of it together: as many as leave it half the pane (the price axis and
+ * the profile counted), one at least.
+ */
 let COLUMNS_FIT = Infinity;
 export function setCompactGutters(compact: boolean, paneW = Infinity): void {
   AXIS_W = Math.max(compact ? 58 : 64, axisNeed()); PROFILE_W = compact ? 84 : 128; TRADED_W = compact ? 0 : 96;
   COLUMNS_FIT = TRADED_W > 0 ? Math.max(1, Math.floor((paneW / 2 - AXIS_W - PROFILE_W) / TRADED_W)) : 0;
 }
-/** Whether the traded-volume column is drawn: switched on, and the map is wide enough to have one. */
+/** Whether the volume profile columns can be drawn: switched on, and the map is wide enough to have them (a phone has none). */
 export const tradedShown = (state: AppState): boolean => state.show.traded && TRADED_W > 0;
+const NO_SIDES: ReturnType<typeof arrangeSides> = { right: [], left: [], hidden: [] };
+let sidesMemo: { set: object; fit: number; sides: ReturnType<typeof arrangeSides> } | null = null;
 /**
- * The measures whose columns are drawn, side by side in this order: those chosen, as many as fit beside the map (`COLUMNS_FIT`); none
- * when the columns are off or the map has no room for them.
+ * The columns drawn right and left of the map, nearest the map first, as many as fit (`COLUMNS_FIT`, both sides together), and those
+ * switched on with no room (traded/arrange.ts); none while the Volume profile is off. Worked out again only when the places or the room change.
  */
-export const tradedColumns = (state: AppState): readonly ProfileMetric[] => tradedShown(state) ? state.traded.metrics.slice(0, COLUMNS_FIT) : [];
-/** The measure the point of control and value area lines on the chart are read from: traded volume when its column is chosen, else the first. */
-export const lineMetric = (state: AppState): ProfileMetric => state.traded.metrics.includes('volume') ? 'volume' : state.traded.metrics[0] ?? 'volume';
+export function sideColumns(state: AppState): ReturnType<typeof arrangeSides> {
+  if (!state.show.traded) return NO_SIDES;
+  const set = state.traded.placements, fit = TRADED_W > 0 ? COLUMNS_FIT : 0;
+  if (sidesMemo?.set !== set || sidesMemo.fit !== fit) sidesMemo = { set, fit, sides: arrangeSides(set, fit) };
+  return sidesMemo.sides;
+}
 const TIME_H = 22;
 
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
@@ -138,7 +151,23 @@ const NARROW_PLOT = 420;
 /** A map pane narrower than this gets the narrow price axis and profile column. */
 const COMPACT_PANE = 520;
 
-export function gutter(state: AppState): number { return AXIS_W + (state.show.profile ? PROFILE_W : 0) + tradedColumns(state).length * TRADED_W; }
+export function gutter(state: AppState): number { return AXIS_W + (state.show.profile ? PROFILE_W : 0) + sideColumns(state).right.length * TRADED_W; }
+/** The width the columns left of the map take, between the flow column and the map: the map and the panes under it start after them. */
+export function leftGutter(state: AppState): number { return sideColumns(state).left.length * TRADED_W; }
+/** Which side of the map a column is on. */
+type Side = 'right' | 'left';
+/**
+ * The measures asked by price this frame: each drawn column's measure once, whichever side it is on and however many sides, then the lines'
+ * measure while the chart window's lines are drawn (asked with no room for its column too, since the lines are drawn from it), and traded
+ * volume while periods are drawn (it says which venues the recording holds).
+ */
+export function priceQuestions(state: AppState): ProfileMetric[] {
+  const s = state.traded, sides = sideColumns(state), asked = new Set([...sides.right, ...sides.left].map(p => p.metric));
+  if (s.windowLines && (s.poc || s.va)) asked.add(lineMetric(s.placements));
+  // The periods judge which venues the recording holds by the traded-volume answer (`#recordedIds`): asked for them, columns or none.
+  if (chartKinds(s).length) asked.add('volume');
+  return [...asked];
+}
 
 /** Rolling volume baseline for a candle array, keyed by the sensitivity it was computed with. */
 interface VolumeAnalysis { candles: AppState['candles']; key: string; found: Anomalies }
@@ -153,11 +182,11 @@ export class HeatPane {
   /** Mirror-hover comparison for the pointer over the profile column, or null (read by tests, drawn on the profile). */
   mirror: MirrorStats | null = null;
   #profileHover: { y: number } | null = null;
-  /** The pointer over a volume profile column (its y, and which column: its place in `tradedColumns`), or null. */
-  #tradedHover: { y: number; i: number } | null = null;
+  /** The pointer over a volume profile column (its y, and which column: its side and its place there, nearest the map first), or null. */
+  #tradedHover: { y: number; side: Side; i: number } | null = null;
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
-  /** The last value given to --gutter on the pane, so a frame that changes nothing writes nothing. */
-  #gutterCss = '';
+  /** The last values given to --gutter and --gutter-left on the pane, so a frame that changes nothing writes nothing. */
+  #gutterCss = ''; #leftCss = '';
   onStats: () => void = () => {};
   onView: () => void = () => {};
   onFrame: () => void = () => {};
@@ -165,7 +194,8 @@ export class HeatPane {
   divergences: () => readonly Divergence[] = () => [];
   #glCanvas = document.createElement('canvas');
   #ctx: CanvasRenderingContext2D;
-  #w = 0; #h = 0; #dpr = 1;
+  /** The pane's whole width; the plot and everything right of it start after the columns left of the map (`#left`). */
+  #paneW = 0; #h = 0; #dpr = 1;
   #dirty = true; #frame = 0;
   /** When the map was last drawn: the countdown redraws it once a second only when nothing else has (a quiet market). */
   #lastRender = 0;
@@ -189,8 +219,8 @@ export class HeatPane {
   /** The Range tool (set by the page), and a selection being dragged here: where it began, and where a finger last was. */
   range: RangeTool | null = null;
   #selecting: { x: number; y: number } | null = null;
-  /** A drag on the traded column: where it began (it selects whole rows of the column, over the column's window). */
-  #columnSelect: { y: number; i: number } | null = null;
+  /** A drag on a volume profile column: where it began and on which (it selects whole rows of the column, over the column's window). */
+  #columnSelect: { y: number; side: Side; i: number } | null = null;
   /** Each column's point of control and value area over its window, and the answer and rows they were read from. */
   readonly #levelsMemo = new Map<ProfileMetric, { answer: ProfileAnswer; step: number; share: number; levels: ValueLevels | null }>();
   /** The days, weeks or sessions the lines are drawn for, and what they were worked out for. */
@@ -200,7 +230,7 @@ export class HeatPane {
   /** When each past point of control was first traded at again (`#touchedAfter`), by window, price and the candles read. */
   readonly #touched = new Map<string, number | null>();
   /** Each on-chart profile's rows on the display grid, by what they were grouped from (an answer, or a candle estimate), kept while it is. */
-  readonly #profileRows = new WeakMap<object, { row: number; rows: Map<number, [number, number]>; max: number }>();
+  readonly #profileRows = new WeakMap<object, { row: number; rows: Map<number, [number, number]>; max: number; median: number }>();
   /** The volume profile's tags on the price axis, placed with the key levels' and the VWAP's. */
   #valueTags: KeyTag[] = [];
   /** The names put at the lines' right ends this frame (Volume profile, key levels, VWAP). */
@@ -217,6 +247,9 @@ export class HeatPane {
   onAnchor: ((t: number) => void) | null = null;
   /** A click on the header of the profile along the top (set by the page): its settings, in the Volume profile panel. */
   onTopProfile: () => void = () => {};
+  /** What of the profiles has no room changed (a resize, a taller legend): the open panel says it again. */
+  onArrangedChange: () => void = () => {};
+  #hiddenKey = '';
   /** The tags the key levels want on the price axis this frame. */
   #keyTags: KeyTag[] = [];
   #touchSelect: { start: Pt; at: Pt } | null = null;
@@ -236,8 +269,11 @@ export class HeatPane {
   #pulseFrame = 0; #pulseDrawn = 0;
   #lod = new FootprintLod();
   #lodFrame: LodFrame = { barAlpha: 0, sellBuyAlpha: 0, needsFrame: false, heatmapOpacity: 1, narrowing: 0 };
-  /** The volume profile along the top of the map (measures/): the column's measure added up by time, under the legend. */
-  readonly #measures = new TopProfile();
+  /** The bands along the top of the map (measures/): the columns' measures added up by time, under the legend. */
+  readonly #bands = new TopBands();
+  /** Where the profiles went this frame (traded/arrange.ts), and the small tags that say how many had no room, for the pointer. */
+  #arranged: Arranged = { right: [], left: [], top: [], hidden: [] };
+  #hiddenTags: { x: number; y: number; w: number; h: number }[] = [];
   #volume: VolumeAnalysis | null = null;
   /** Absorption icons drawn in the last frame (centre, size, the marks they stand for), for hover. */
   #absorptionIcons: { x: number; y: number; s: number; marks: AbsorptionMark[]; usd: number }[] = [];
@@ -290,6 +326,10 @@ export class HeatPane {
     document.addEventListener('visibilitychange', () => { if (document.hidden) this.hub.priceHistory.stop(); else this.invalidate(); });
   }
 
+  /** Where the plot starts in the pane: after the columns left of the map. The overlay draws in the plot's coordinates, those columns at negative x. */
+  get #left(): number { return leftGutter(this.store.state); }
+  /** The width from the plot's left edge to the pane's right edge: what everything drawn right of the plot (the columns, the axis) measures from. */
+  get #w(): number { return Math.max(1, this.#paneW - this.#left); }
   get plotW(): number { return Math.max(1, this.#w - gutter(this.store.state)); }
   get plotH(): number { return Math.max(1, this.#h - TIME_H); }
   setPalette(name: string): void {
@@ -326,17 +366,20 @@ export class HeatPane {
 
   #resize(): void {
     const rect = this.root.getBoundingClientRect();
-    this.#w = Math.max(1, Math.floor(rect.width)); this.#h = Math.max(1, Math.floor(rect.height)); this.#dpr = window.devicePixelRatio || 1;
+    this.#paneW = Math.max(1, Math.floor(rect.width)); this.#h = Math.max(1, Math.floor(rect.height)); this.#dpr = window.devicePixelRatio || 1;
     // A narrow map (a phone, or half of a landscape one) gives the axis and the profile less room, so the plot keeps most of it.
-    setCompactGutters(this.#w < COMPACT_PANE, this.#w);
-    this.overlay.width = Math.round(this.#w * this.#dpr); this.overlay.height = Math.round(this.#h * this.#dpr);
-    this.overlay.style.width = `${this.#w}px`; this.overlay.style.height = `${this.#h}px`;
+    setCompactGutters(this.#paneW < COMPACT_PANE, this.#paneW);
+    this.overlay.width = Math.round(this.#paneW * this.#dpr); this.overlay.height = Math.round(this.#h * this.#dpr);
+    this.overlay.style.width = `${this.#paneW}px`; this.overlay.style.height = `${this.#h}px`;
     this.#pulse.width = this.overlay.width; this.#pulse.height = this.overlay.height;
     this.#pulse.style.width = this.overlay.style.width; this.#pulse.style.height = this.overlay.style.height;
     this.#positionGl();
     this.#rasteredKey = ''; this.onView(); this.invalidate();
   }
   #positionGl(): void {
+    // The heatmap and the dust start where the plot does: after the columns left of the map.
+    const left = `${this.#left}px`;
+    if (this.#glCanvas.style.left !== left) { this.#glCanvas.style.left = left; this.#dustCanvas.style.left = left; }
     this.#glCanvas.style.width = `${this.plotW}px`; this.#glCanvas.style.height = `${this.plotH}px`;
     // The heatmap is blocks of colour, so a finger's screen (3 device pixels to a CSS pixel) gains nothing from filling every one of them; the browser scales a 2x canvas up.
     this.gl.resize(this.plotW, this.plotH, isCoarse() ? Math.min(this.#dpr, 2) : this.#dpr);
@@ -357,7 +400,7 @@ export class HeatPane {
     const pw = this.plotW, ph = this.plotH, x = this.view.xOf(t, pw), y = this.view.yOf(price, ph);
     if (!(x >= 0 && x <= pw + 2 && y >= 0 && y <= ph)) return null;
     const r = this.overlay.getBoundingClientRect();
-    return r.width > 0 ? { x: r.left + Math.min(x, pw), y: r.top + y } : null;
+    return r.width > 0 ? { x: r.left + this.#left + Math.min(x, pw), y: r.top + y } : null;
   }
 
   /** Orders arrived for the dust: it is redrawn on the next frame, alone (the overlay's price line follows with its own next frame). */
@@ -530,7 +573,7 @@ export class HeatPane {
     this.#lastRender = performance.now();
     this.#dirty = false;
     const state = this.#displayState();
-    if (this.#w <= 1 || this.#h <= 1) return;
+    if (this.#paneW <= 1 || this.#h <= 1) return;
     if (!(this.view.t1 > this.view.t0) && (state.candles.length || state.mark.price)) this.fit();
     if (state.followLive && this.view.t1 > this.view.t0) {
       const shift = pageNow() + this.#liveMargin - this.view.t1;
@@ -540,8 +583,9 @@ export class HeatPane {
     }
     this.#positionGl();
     this.#ensureOverview(state);
-    const gutterCss = `${gutter(state)}px`;
+    const gutterCss = `${gutter(state)}px`, leftCss = `${this.#left}px`;
     if (this.#gutterCss !== gutterCss) { this.#gutterCss = gutterCss; this.root.style.setProperty('--gutter', gutterCss); }
+    if (this.#leftCss !== leftCss) { this.#leftCss = leftCss; this.root.style.setProperty('--gutter-left', leftCss); }
     this.#manageRaster();
     if (state.show.bubbles) this.hub.ensurePrints(this.view, scaledUsd(state.tradeBubbles.minUsd));
     if (state.liquidations.on) this.hub.ensureLiquidations(this.view, scaledUsd(state.liquidations.minUsd));
@@ -551,15 +595,19 @@ export class HeatPane {
       // What is on the chart draws its lines from the column's answer; a day, week or session draws them from the value areas, so on a map with no
       // room for the column (a phone) its whole-period profile would be read for nothing. Another measure than traded volume draws its lines
       // from its column's answer whatever the period, so that one is asked even with no room for the columns.
-      const wanted = new Set([...tradedColumns(state), lineMetric(state)]);
-      for (const metric of wanted) this.#ensureTraded(state, metric);
+      // A measure drawn on both sides is one question (the hub keeps one answer a measure): moving a column to the other side asks nothing new.
+      for (const metric of priceQuestions(state)) this.#ensureTraded(state, metric);
       this.#ensureValueAreas(state);
       this.#ensurePastProfiles(state);
     }
     // The absorption column judges groups at the thresholds the marks use, which need the recent minutes the marks load: with the marks off,
     // those minutes alone (and none for a fixed threshold). The column's groups are added up where they are kept (`Hub.ensureMetricProfile`).
-    // The profile along the top adds up the marks' own groups, so while it shows absorption they are loaded as for the marks.
-    const column = state.show.traded && state.traded.metrics.includes('absorption'), marked = state.absorption.on || topAbsorption(state);
+    // A band along the top adds up the marks' own groups, so while one shows absorption they are loaded as for the marks (only a band that
+    // fits: where they go is worked out here, before the data is asked for, and kept for the overlay).
+    this.#arranged = this.#arrange(state);
+    const hiddenKey = this.#arranged.hidden.map(p => p.id).join(',');
+    if (hiddenKey !== this.#hiddenKey) { this.#hiddenKey = hiddenKey; queueMicrotask(() => this.onArrangedChange()); }
+    const set = state.traded.placements, column = state.show.traded && MEASURES.some(m => m.judgedByMarks && onPriceAxis(set, m.id)), marked = state.absorption.on || topMarks(state, this.#arranged.top);
     if (marked || (column && state.absorption.mode === 'auto')) { const { ids, thresholds } = this.#absorptionContext(state); this.hub.ensureAbsorption(ids, ids.map(id => thresholds.get(id) ?? null), this.view, state.absorption.sdMinutes, !marked); }
     this.#stepFootprint(state);
     // Under a dominant footprint the heatmap is gone altogether, so there is nothing to draw.
@@ -624,9 +672,11 @@ export class HeatPane {
   }
 
   #paintOverlay(state: AppState): void {
-    const ctx = this.#ctx, w = this.#w, h = this.#h, pw = this.plotW, ph = this.plotH, v = this.view, p = this.#palette;
+    const ctx = this.#ctx, w = this.#w, h = this.#h, pw = this.plotW, ph = this.plotH, v = this.view, p = this.#palette, left = this.#left;
     ctx.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, this.#paneW, h);
+    // Everything is drawn in the plot's coordinates: the plot starts at 0, the columns left of the map are at negative x.
+    ctx.setTransform(this.#dpr, 0, 0, this.#dpr, this.#dpr * left, 0);
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     ctx.textBaseline = 'middle';
     // grid
@@ -646,7 +696,7 @@ export class HeatPane {
     this.#paintVolume(ctx, state, pw, ph, this.#lodFrame.narrowing);
     // Under the candles as the volume bars are, and under the legend and the corner buttons, whose bottoms it is placed by; over what the
     // columns add up, with the marks' absorption thresholds; what it asked for redraws the map when it comes.
-    this.#measures.paint(ctx, state, this.hub, { view: v, pw, ph, palette: p, legendBottom: this.#legendBox.bottom, toolsBottom: () => { const c = this.root.querySelector<HTMLElement>('.map-tools'); return c ? c.offsetTop + c.offsetHeight + 3 : 0; }, window: this.#tradedWindow(), absorption: () => this.#absorptionContext(state), loaded: () => this.invalidate() });
+    this.#bands.paint(ctx, state, this.hub, { view: v, pw, ph, palette: p, legendBottom: this.#legendBox.bottom, window: this.#tradedWindow(), absorption: () => this.#absorptionContext(state), loaded: () => this.invalidate() }, this.#arranged.top);
     this.#pulseRects = [];
     if (state.show.footprint) {
       const marks = this.#footprintMarks.get(this.#footprint, state.barStatOptions), fp = state.footprint;
@@ -688,6 +738,7 @@ export class HeatPane {
     // The profile column is the book as it is now: not shown in replay, which has no book of its moment.
     if (state.show.profile && !replaying()) this.#paintProfile(ctx, state, pw, ph);
     if (tradedShown(state)) this.#paintTraded(ctx, state, pw, ph);
+    this.#paintHidden(ctx, pw, ph);
     const axisX = w - AXIS_W;
     ctx.fillStyle = p.panel; ctx.fillRect(axisX, 0, AXIS_W, h);
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(axisX + 0.5, 0); ctx.lineTo(axisX + 0.5, h); ctx.stroke();
@@ -711,14 +762,14 @@ export class HeatPane {
         ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
       }
     }
-    // time axis
-    ctx.fillStyle = p.panel; ctx.fillRect(0, ph, w, TIME_H);
+    // time axis (under the columns left of the map too)
+    ctx.fillStyle = p.panel; ctx.fillRect(-left, ph, w + left, TIME_H);
     ctx.fillStyle = p.muted; ctx.textAlign = 'center'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     for (const label of timeLabels) ctx.fillText(label.text, label.x, ph + TIME_H / 2);
     // Which clock the labels are on, under the price axis where no tick label goes (a screenshot says it too).
     ctx.textAlign = 'right'; ctx.fillText(zoneName(), w - 6, ph + TIME_H / 2); ctx.textAlign = 'center';
     this.#paintLegend(ctx, state);
-    if (this.#measures.misplaced(this.#legendBox.bottom)) this.invalidate(); // the legend changed height: place the band under it again
+    if (this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate(); // the legend changed height: place the bands under it again
     if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, 50); }
     const emptyScope = heatmapSourceOf(state) === 'aggregated' ? emptyScopeMessage(state) : null;
     if (emptyScope) { // the filter selected nothing: say so instead of drawing a blank map
@@ -1153,12 +1204,19 @@ export class HeatPane {
     ctx.globalAlpha = 1;
   }
 
-  /** Left edge of the traded-volume column (after the profile when that is shown), or null when the column is not drawn. */
-  #tradedX(): number | null { const state = this.store.state; return tradedShown(state) ? this.plotW + (state.show.profile ? PROFILE_W : 0) : null; }
-  /** The volume profile column under `x` (its place in `tradedColumns`), or -1. */
-  #columnAt(x: number): number {
-    const x0 = this.#tradedX(), n = tradedColumns(this.store.state).length;
-    return x0 === null || !(x > x0) || x > x0 + n * TRADED_W ? -1 : Math.min(n - 1, Math.ceil((x - x0) / TRADED_W) - 1);
+  /**
+   * Left edge of a column (in the plot's coordinates): right of the map after the profile when that is shown, the first nearest the map; left
+   * of it at negative x, the first against the map's left edge and the others outward.
+   */
+  #columnX(side: Side, i: number): number {
+    const state = this.store.state;
+    return side === 'right' ? this.plotW + (state.show.profile ? PROFILE_W : 0) + i * TRADED_W : -(i + 1) * TRADED_W;
+  }
+  /** The volume profile column under `x`: its side, its place there and its measure; null off the columns. */
+  #columnAt(x: number): { side: Side; i: number; metric: ProfileMetric } | null {
+    const state = this.store.state; if (!tradedShown(state)) return null;
+    const sides = sideColumns(state), hit = columnHit(x, this.#columnX('right', 0), sides.right.length, sides.left.length, TRADED_W);
+    return hit ? { ...hit, metric: sides[hit.side][hit.i]!.metric } : null;
   }
 
   /** The rows the traded column draws: the profile's step, so the two columns share their rows. */
@@ -1194,8 +1252,6 @@ export class HeatPane {
     for (const inst of answer.instruments) if (inst.earliest !== null && inst.earliest > since) since = inst.earliest;
     return since > this.#tradedWindow().from + 60_000 ? since : null;
   }
-  /** The column's answer: what is on the chart keeps drawing the last answer while a new one loads. */
-  #heldTraded(): Hub['traded'] { return this.hub.traded; }
   /** The point of control and the value area of what is on the chart, read from the column's answer over every price (kept until either changes). */
   #viewLevels(metric: ProfileMetric): ValueLevels | null {
     const answer = this.#columnAnswer(metric); if (!answer) return null;
@@ -1206,13 +1262,10 @@ export class HeatPane {
     return levels;
   }
   /**
-   * What a column draws: traded volume's answer, or another measure's once one is held (traded/metrics.ts), each only when it is for the
-   * window the columns add up (`#heldTraded`).
+   * What a column draws: its measure's answer by price once one is held, the last one while a new one loads; the same answer on either side
+   * of the map (`Hub.profile`).
    */
-  #columnAnswer(metric: ProfileMetric): ProfileAnswer | null {
-    if (metric === 'volume') return this.#heldTraded()?.answer ?? null;
-    return this.hub.metricProfile(metric)?.answer ?? null;
-  }
+  #columnAnswer(metric: ProfileMetric): ProfileAnswer | null { return this.hub.profile(metric)?.answer ?? null; }
 
   /**
    * Ask for what a column adds up over the window on the map (whole minutes, up to the one that is open), on the instruments the flow
@@ -1225,8 +1278,7 @@ export class HeatPane {
     // What is on the chart keeps changing only while it follows the live edge.
     const live = state.followLive && !replaying(), ids = flowIds(state, this.hub.flow.ids), end = to;
     const step = requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), asked = { tag: '', settled: false };
-    if (metric === 'volume') this.hub.ensureTraded(ids, from, end, step, live, asked);
-    else this.hub.ensureMetricProfile(metric, ids, from, end, step, live, asked, metric === 'absorption' ? this.#absorptionContext(state).thresholds : undefined);
+    this.hub.ensureProfile(metric, ids, from, end, step, live, asked, measureDef(metric).judgedByMarks ? this.#absorptionContext(state).thresholds : undefined);
   }
 
   /**
@@ -1405,16 +1457,24 @@ export class HeatPane {
     const recorded = windows.filter(w => this.#windowSource(state, w) === 'recorded');
     if (recorded.length) this.hub.ensureValueAreas(this.#recordedIds(state), recorded, this.#levelStep(), s.share / 100);
     // The candles, of each size the kinds use: what the lines come from, or, from the recording, what tells whether a past point of control
-    // was traded through since (`#touchedAfter`), from the earliest window's end.
-    const from = new Map<number, number>();
+    // was traded through since (`#touchedAfter`), from each window's end.
+    const from = new Map<number, number[]>(), now = pageNow();
     for (const w of windows) {
       const fromRecording = this.#windowSource(state, w) === 'recorded';
-      if (fromRecording && !(s.naked && s.poc)) continue;
-      const { barMs } = this.#profileCandles(state, windowKind(w)), at = fromRecording ? w.to : w.from;
-      from.set(barMs, Math.min(from.get(barMs) ?? Infinity, at));
+      // From the recording only an ended window's point of control can have been traded through since (the one under way would ask for
+      // candles from tomorrow, which come never, and hold the months' back).
+      if (fromRecording && (!(s.naked && s.poc) || w.to > now)) continue;
+      const { barMs } = this.#profileCandles(state, windowKind(w)), at = fromRecording ? w.to : w.from, list = from.get(barMs) ?? [];
+      list.push(at); from.set(barMs, list);
     }
+    // Newest first: back to the newest window the candles do not reach yet, then on back with each load (Karl, 2026-10-20: four months of
+    // five-minute bars are twenty-four requests, and the month under way, which needs six, waited for all of them).
     const target = profileTarget(currentCoin());
-    for (const [barMs, at] of from) this.hub.profileHistory(barMs).ensure(target, Math.floor(at / barMs) * barMs, barMs, () => this.invalidate());
+    for (const [barMs, ats] of from) {
+      const h = this.hub.profileHistory(barMs), held = target && h.id === target.id && h.barMs === barMs ? h.heldFrom : Infinity;
+      const missing = ats.filter(at => at < held), at = missing.length ? Math.max(...missing) : Math.min(...ats);
+      h.ensure(target, Math.floor(at / barMs) * barMs, barMs, () => this.invalidate());
+    }
   }
   /**
    * When price first traded at a past window's point of control after the window ended: a time, null when it has not (as far as the
@@ -1497,7 +1557,7 @@ export class HeatPane {
   }
   /**
    * Each day, week, month or session of the profiles' kind (`profiles`) draws its traded-volume profile on the chart, over its own time: bars from
-   * its start, the longest 60 % of its width, under the candles over a backing that mutes the map; from the recording in the bid and ask colours, from candles (an
+   * its start (or the chart's left edge, for one that began before it), the longest 60 % of its width on the chart, under the candles over a backing that mutes the map; from the recording in the bid and ask colours, from candles (an
    * estimate, marked ≈ on its lines) in the profile colour alone, since a candle says nothing of who traded. A window narrower than 24 px
    * draws none.
    */
@@ -1510,8 +1570,10 @@ export class HeatPane {
     for (const w of this.#linesWindows(state)) {
       if (windowKind(w) !== kind || (replaying() && w.to > now)) continue;
       const drawn = this.#windowLevels(state, ids, w, step, share, now); if (!drawn) continue;
-      const x0 = v.xOf(w.from, pw), x1 = v.xOf(Math.min(w.to, now, drawn.upTo), pw);
-      if (x1 - x0 < 24 || x1 < 0 || x0 > pw) continue;
+      // Over the part of the window on the chart: one that began left of it draws from its left edge, and one that runs on past its right edge
+      // scales to it, so a month zoomed in on its last days still shows its profile (Karl, 2026-10-20) and its longest row stays on the chart.
+      const x0 = Math.max(0, v.xOf(w.from, pw)), x1 = Math.min(pw, v.xOf(Math.min(w.to, now, drawn.upTo), pw));
+      if (x1 - x0 < 24) continue;
       // Each row of the display grid: [buy, sell] (from candles all of it in the first), regrouped only when what it comes from or the rows
       // change, never per frame.
       const from = fromCandles ? this.#windowFromCandles(state, w, step, share, now)?.rows : this.hub.windowProfiles.get(windowProfileKey(ids, step, w))?.answer;
@@ -1522,9 +1584,9 @@ export class HeatPane {
         if (from instanceof Map) for (const [k, usd] of from) into((k + 0.5) * step, usd, 0);
         else for (const inst of from.instruments) for (const [low, buy, sell] of inst.rows) into(low + inst.step / 2, buy, sell);
         let max = 0; for (const [a, b] of rows.values()) max = Math.max(max, a + b);
-        grouped = { row, rows, max }; this.#profileRows.set(from, grouped);
+        grouped = { row, rows, max, median: medianRow([...rows.values()].map(([a, b]) => a + b)) }; this.#profileRows.set(from, grouped);
       }
-      const { rows, max } = grouped;
+      const { rows, max, median } = grouped;
       if (!(max > 0)) continue;
       const room = (x1 - x0) * 0.6, floor = emphasisFloor(), on = state.traded.emphasis && state.traded.bars === 'split';
       for (const [k, [a, b]] of rows) {
@@ -1534,8 +1596,8 @@ export class HeatPane {
         ctx.globalAlpha = 1; ctx.fillStyle = halo; ctx.fillRect(x0, y0, len, hgt);
         ctx.globalAlpha = 0.75;
         if (fromCandles) { ctx.fillStyle = p.poc; ctx.fillRect(x0, y0, len, hgt); continue; }
-        // The stronger side brighter and the weaker dimmer, against the busiest row of the window, as in the columns.
-        const buyLen = len * a / (a + b), [first, second] = splitStyles(a, b, max, floor, p, on);
+        // The stronger side brighter and the weaker dimmer, on the scale the columns use (τ from the window's median row).
+        const buyLen = len * a / (a + b), [first, second] = splitStyles(a, b, median, floor, p, on);
         if (a > 0) { ctx.globalAlpha = first.alpha; ctx.fillStyle = first.color; ctx.fillRect(x0, y0, buyLen, hgt); }
         if (b > 0) { ctx.globalAlpha = second.alpha; ctx.fillStyle = second.color; ctx.fillRect(x0 + buyLen, y0, len - buyLen, hgt); }
       }
@@ -1562,10 +1624,10 @@ export class HeatPane {
     // The lines are traded volume's when its column is chosen, else the first column's. Another measure than traded volume draws its own
     // levels, over the window the columns add up (what is on the chart, or the day, week or session under way): past days, weeks and
     // sessions are traded volume's.
-    const lines = lineMetric(state);
-    // Across the chart, the columns' own levels (what is on the chart), while no period is drawn on it: with days or weeks on the chart, a
-    // second point of control across all of them would be one more line that belongs to none.
-    if (!s.lines.length) {
+    const lines = lineMetric(s.placements);
+    // Across the chart, the columns' own levels (what is on the chart), when the periods grid's Chart window row is ticked, whatever periods
+    // are drawn with them (Karl, 2026-10-20).
+    if (s.windowLines) {
       // From where the column's numbers begin: a chart wider than what it could add up gets lines over the part it did, not across all of it.
       const levels = this.#viewLevels(lines), covers = this.#columnCovers(lines);
       if (levels) segments.push({ x0: covers === null ? 0 : v.xOf(covers, pw), x1: pw, levels, name: '', naked: null, live: true, key: 'view', kind: 'view' });
@@ -1616,7 +1678,8 @@ export class HeatPane {
       const runsOn = s.poc && seg.naked !== null && seg.naked > x1, runsTo = runsOn ? Math.min(pw, seg.naked!) : x1;
       if (s.poc) { line(x0, x1, poc, 2 * heavy, []); if (runsOn) line(x1, Math.min(pw + 4, seg.naked!), poc, 2 * heavy, [2, 3]); }
       ctx.setLineDash([]);
-      const name = seg.name ? `${seg.name} ` : '', pocText = `${name}${t('POC')} ${fmtPrice(poc, step)}`;
+      // The chart window's lines are named only beside a period's, which carry their own names.
+      const own = seg.kind === 'view' && many ? t('Chart') : seg.name, name = own ? `${own} ` : '', pocText = `${name}${t('POC')} ${fmtPrice(poc, step)}`;
       if (s.labels && x1 - x0 > 70) {
         // The point of control is named where it ends: at the end of its run when it runs on.
         if (s.poc) label(pocText, runsTo, poc, runsOn ? 2 : 0);
@@ -1651,16 +1714,28 @@ export class HeatPane {
    * the recording began when the window reaches back further than that.
    */
   #paintTraded(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    const x = this.#tradedX(); if (x === null) return;
-    // One column a measure, side by side; the box of the row under the pointer goes last, over the map left of them all.
-    let box: ColumnBox | null = null;
-    tradedColumns(state).forEach((metric, i) => { box = this.#paintColumn(ctx, state, pw, ph, metric, i, x + i * TRADED_W) ?? box; });
-    if (box) { const b: ColumnBox = box; paintInfoBox(ctx, b.lines, x, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, this.#palette, { placement: b.placement ?? 'center' }); ctx.textBaseline = 'middle'; }
+    // One column a measure, side by side on each side; the box of the row under the pointer goes last, over the map beside them: left of
+    // the right columns, right of the left ones.
+    let box: (ColumnBox & { side: Side }) | null = null;
+    const sides = sideColumns(state);
+    for (const side of ['right', 'left'] as const) sides[side].forEach((p, i) => { const b = this.#paintColumn(ctx, state, pw, ph, p.metric, side, i, this.#columnX(side, i)); if (b) box = { ...b, side }; });
+    if (box) {
+      const b: ColumnBox & { side: Side } = box;
+      paintInfoBox(ctx, b.lines, b.side === 'right' ? this.#columnX('right', 0) : 0, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, this.#palette, { placement: b.placement ?? 'center' }); ctx.textBaseline = 'middle';
+    }
   }
 
-  /** One measure's column at `x0` (the `i`th): its bars, value area, selection, hovered row and header; the hovered row's box, for the caller to draw. */
-  #paintColumn(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, metric: ProfileMetric, i: number, x0: number): ColumnBox | null {
-    const p = this.#palette, v = this.view, W = TRADED_W, answer = this.#columnAnswer(metric);
+  /**
+   * One measure's column at `x0` (the `i`th of its side): its bars, value area, selection, hovered row and header; the hovered row's box, for
+   * the caller to draw. A column left of the map is the mirror of one right of it: its bars grow from the edge against the map outward and its
+   * price tags stand at its outer edge, so both sides face the chart; its header reads as the others do.
+   */
+  #paintColumn(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, metric: ProfileMetric, side: Side, i: number, x0: number): ColumnBox | null {
+    const p = this.#palette, v = this.view, W = TRADED_W, answer = this.#columnAnswer(metric), left = side === 'left';
+    // Where a bar of `length` starting `from` px off the map-side edge lies: rightward from the left edge on the right, leftward on the left.
+    const bar = (from: number, length: number): [number, number] => left ? [x0 + W - 1 - from - length, length] : [x0 + 1 + from, length];
+    // The column's inside, off the edge line on the map's side.
+    const inner = left ? x0 : x0 + 1;
     const rows: TradedRows | null = answer ? tradedRows(answer, this.#tradedStep(), v.p0, v.p1) : null;
     const s = state.traded, levels = this.#viewLevels(metric);
     // The header: the total, the line under it, and the difference of the two sides.
@@ -1670,11 +1745,11 @@ export class HeatPane {
     // The value area, shaded behind the bars.
     if (s.valueArea && levels) {
       const ya = v.yOf(levels.vah, ph), yb = v.yOf(levels.val, ph);
-      ctx.fillStyle = p.poc; ctx.globalAlpha = 0.12; ctx.fillRect(x0 + 1, ya, W - 1, yb - ya); ctx.globalAlpha = 1;
+      ctx.fillStyle = p.poc; ctx.globalAlpha = 0.12; ctx.fillRect(inner, ya, W - 1, yb - ya); ctx.globalAlpha = 1;
     }
     if (rows && rows.max > 0) {
-      // One-sidedness is judged against the busiest row of the whole answer, not of the prices on screen (traded/emphasis.ts).
-      const width = W - 6, busiest = answer ? answerMax(answer, rows.step) : rows.max, floor = emphasisFloor();
+      // One-sidedness is judged on one scale, τ from the median row of the whole answer, not of the prices on screen (traded/emphasis.ts).
+      const width = W - 6, median = answer ? answerMedian(answer, rows.step) : 0, floor = emphasisFloor();
       for (let i = 0; i < rows.buy.length; i++) {
         const b = rows.buy[i]!, sl = rows.sell[i]!, total = b + sl; if (!(total > 0)) continue;
         const low = (rows.bin0 + i) * rows.step, y0 = v.yOf(low + rows.step, ph), y1 = v.yOf(low, ph);
@@ -1686,69 +1761,121 @@ export class HeatPane {
           // The whole row faintly, and the difference over it on the same scale in the colour of the side that was the bigger: a busy row whose
           // two sides were close still shows, as busy and balanced, never as a row where nothing traded (Karl, 2026-10-20).
           const net = b - sl;
-          ctx.globalAlpha = 0.25; ctx.fillStyle = p.muted; ctx.fillRect(x0 + 1, y0, len, hgt); ctx.globalAlpha = 0.85;
-          if (Math.abs(net) > 0) { ctx.fillStyle = net > 0 ? p.bid : p.ask; ctx.fillRect(x0 + 1, y0, Math.max(1, Math.abs(net) / rows.max * width), hgt); }
+          ctx.globalAlpha = 0.25; ctx.fillStyle = p.muted; ctx.fillRect(bar(0, len)[0], y0, len, hgt); ctx.globalAlpha = 0.85;
+          if (Math.abs(net) > 0) { const n = Math.max(1, Math.abs(net) / rows.max * width); ctx.fillStyle = net > 0 ? p.bid : p.ask; ctx.fillRect(bar(0, n)[0], y0, n, hgt); }
           continue;
         }
-        const [first, second] = splitStyles(b, sl, busiest, floor, p, s.emphasis);
-        if (b > 0) { ctx.globalAlpha = first.alpha; ctx.fillStyle = first.color; ctx.fillRect(x0 + 1, y0, Math.max(0.5, buyLen), hgt); }
-        if (sl > 0) { ctx.globalAlpha = second.alpha; ctx.fillStyle = second.color; ctx.fillRect(x0 + 1 + buyLen, y0, Math.max(0.5, len - buyLen), hgt); }
+        // The first side (bid colour) against the map's edge, then the second, on both sides of the map.
+        const [first, second] = splitStyles(b, sl, median, floor, p, s.emphasis);
+        if (b > 0) { const [x, w] = bar(0, Math.max(0.5, buyLen)); ctx.globalAlpha = first.alpha; ctx.fillStyle = first.color; ctx.fillRect(x, y0, w, hgt); }
+        if (sl > 0) { const [x, w] = bar(buyLen, Math.max(0.5, len - buyLen)); ctx.globalAlpha = second.alpha; ctx.fillStyle = second.color; ctx.fillRect(x, y0, w, hgt); }
       }
       ctx.globalAlpha = 1;
     }
     // The point of control across the column, at its price, and the value area's edges: the same levels the lines on the chart draw.
     if (s.valueArea && levels) {
-      const mark = (price: number, width: number, dash: number[]): void => { const y = Math.round(v.yOf(price, ph)) + 0.5; if (y < 0 || y > ph) return; ctx.setLineDash(dash); ctx.strokeStyle = p.poc; ctx.lineWidth = width; ctx.beginPath(); ctx.moveTo(x0 + 1, y); ctx.lineTo(x0 + W, y); ctx.stroke(); };
+      const mark = (price: number, width: number, dash: number[]): void => { const y = Math.round(v.yOf(price, ph)) + 0.5; if (y < 0 || y > ph) return; ctx.setLineDash(dash); ctx.strokeStyle = p.poc; ctx.lineWidth = width; ctx.beginPath(); ctx.moveTo(inner, y); ctx.lineTo(inner + W - 1, y); ctx.stroke(); };
       mark(levels.vah, 1, [3, 2]); mark(levels.val, 1, [3, 2]); mark(levels.poc, 2, []); ctx.setLineDash([]); ctx.lineWidth = 1;
-      // Their prices at the column's right edge, the point of control's first: one that would cover another, or the header, is left out.
-      ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      // Their prices at the column's outer edge, the point of control's first: one that would cover another, or the header, is left out.
+      ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = left ? 'left' : 'right'; ctx.textBaseline = 'middle';
       const placed: number[] = [];
       for (const [code, price] of [[t('POC'), levels.poc], [t('VAH'), levels.vah], [t('VAL'), levels.val]] as const) {
         const y = v.yOf(price, ph); if (y < headH + 7 || y > ph - 7 || placed.some(q => Math.abs(q - y) < 12)) continue;
         placed.push(y);
         const text = `${code} ${fmtPrice(price, this.#levelStep())}`, w = ctx.measureText(text).width + 6;
-        ctx.globalAlpha = 0.85; ctx.fillStyle = p.panel; ctx.fillRect(x0 + W - w - 1, y - 6, w, 12);
-        ctx.globalAlpha = 1; ctx.fillStyle = p.poc; ctx.fillText(text, x0 + W - 4, y);
+        ctx.globalAlpha = 0.85; ctx.fillStyle = p.panel; ctx.fillRect(left ? x0 + 1 : x0 + W - w - 1, y - 6, w, 12);
+        ctx.globalAlpha = 1; ctx.fillStyle = p.poc; ctx.fillText(text, left ? x0 + 4 : x0 + W - 4, y);
       }
     }
     // A selection made on the column (its window, a band of its rows), shaded on it.
     const sel = state.range, win = this.#tradedWindow();
     if (sel && sel.p0 !== null && sel.p1 !== null && Math.abs(sel.t0 - win.from) < 60_000 && Math.abs(sel.t1 - win.to) < 120_000) {
       const ya = v.yOf(sel.p1, ph), yb = v.yOf(sel.p0, ph);
-      ctx.fillStyle = p.text; ctx.globalAlpha = 0.14; ctx.fillRect(x0 + 1, ya, W - 1, yb - ya); ctx.globalAlpha = 1;
-      ctx.strokeStyle = p.text; ctx.setLineDash([5, 4]); ctx.strokeRect(x0 + 1.5, Math.round(ya) + 0.5, W - 2, Math.max(1, Math.round(yb - ya) - 1)); ctx.setLineDash([]);
+      ctx.fillStyle = p.text; ctx.globalAlpha = 0.14; ctx.fillRect(inner, ya, W - 1, yb - ya); ctx.globalAlpha = 1;
+      ctx.strokeStyle = p.text; ctx.setLineDash([5, 4]); ctx.strokeRect(inner + 0.5, Math.round(ya) + 0.5, W - 2, Math.max(1, Math.round(yb - ya) - 1)); ctx.setLineDash([]);
     }
     // The row under the pointer, framed; over the header, none: the header's box speaks for the whole window.
-    const hover = this.#tradedHover?.i === i ? this.#tradedHover : null, onHead = !!hover && hover.y < headH;
+    const hover = this.#tradedHover?.side === side && this.#tradedHover.i === i ? this.#tradedHover : null, onHead = !!hover && hover.y < headH;
     const hoverRow = rows && hover && !onHead ? tradedRowAt(rows, v.pOf(hover.y, ph)) : -1;
     if (rows && hoverRow >= 0) {
       const low = (rows.bin0 + hoverRow) * rows.step, y0 = v.yOf(low + rows.step, ph), y1 = v.yOf(low, ph);
       ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.globalAlpha = 0.9; ctx.strokeRect(x0 + 0.5, Math.round(y0) + 0.5, W - 1, Math.max(1, Math.round(y1 - y0))); ctx.globalAlpha = 1;
     }
-    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, headH); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(inner, 0, W - 1, headH); ctx.globalAlpha = 1;
     ctx.fillStyle = p.muted; ctx.font = `${pw < NARROW_PLOT ? 9.5 : 10}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    const held = metric === 'volume' ? null : this.hub.metricProfile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
-    const measured = metric === 'volume' ? null : metricHeader(metric, rows, flags);
-    let [head, sub] = metric === 'volume'
-      ? (this.hub.tradedState === 'unavailable' && !rows ? [t('TRADED'), t('not on this server')] : tradedHeader(rows))
-      : this.hub.metricState(metric) === 'unavailable' && !rows ? [measured!.head, t('not on this server')]
-      : [measured!.head, measured!.sub];
+    const held = this.hub.profile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
+    const measured = measureDef(metric).header(rows, flags);
+    let { head, sub } = measured;
+    if (this.hub.profileState(metric) === 'unavailable' && !rows) sub = t('not on this server');
     ctx.fillText(head, x0 + 4, 4);
     let lineY = 16;
     // A window that reaches back before the recording, or a measure whose record is cut, says so in the dot rows' amber; so does a chart wider
     // than what the column could add up (a source answers eight days at most, `askedSpan`): the column then holds only its newest part.
     const covers = this.#columnCovers(metric);
     if (covers !== null) sub = t('since {time}', { time: clock(covers, covers < startOfDay(Date.now())) });
-    const warn = covers !== null || (metric === 'volume' ? rows?.partial === true : measured!.warn);
+    const warn = covers !== null || measured.warn;
     if (sub) { if (warn) ctx.fillStyle = '#e6a700'; ctx.fillText(sub, x0 + 4, lineY); }
     if (rows && rows.total > 0) { const net = tradedNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + 4, lineY + 12, W - 8); }
     ctx.restore(); ctx.textBaseline = 'middle';
-    ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
-    // The box stands to the left of the columns, over the map, like the profile's comparison.
+    // The edge line on the map's side: a right column's left edge, a left column's right edge.
+    const edge = left ? x0 + W - 0.5 : x0 + 0.5;
+    ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(edge, 0); ctx.lineTo(edge, ph); ctx.stroke();
+    // The box stands beside the columns, over the map, like the profile's comparison.
     // It opens downward from under the chart's corner buttons, which would otherwise cover its first lines.
     if (rows && hover && onHead) return { lines: tradedFigures(rows, levels, state.mark.price, t('What is on the chart'), metricWords(metric)), y: 34, placement: 'down' };
     return rows && hover && hoverRow >= 0 ? { lines: tradedLines(rows, hoverRow, levels, metricWords(metric)), y: hover.y } : null;
   }
+
+  /**
+   * The room the profiles have now (traded/arrange.ts): the columns that fit beside the map (none on a phone), the bands that may stack (one
+   * on a phone, as before) and where the bands go, under the legend and the corner buttons. Also read by the panel, for what has no room.
+   */
+  profileRoom(): ProfileRoom {
+    const state = this.store.state, tools = this.root.querySelector<HTMLElement>('.map-tools');
+    return { sides: tradedShown(state) ? COLUMNS_FIT : 0, maxBands: TRADED_W > 0 ? MAX_BANDS : 1,
+      band: { legendBottom: this.#legendBox.bottom, toolsBottom: tools ? tools.offsetTop + tools.offsetHeight + 3 : 0, ph: this.plotH, volume: state.show.volume } };
+  }
+
+  /** Where the profiles go this frame; the corner buttons are measured only while a band is wanted. */
+  #arrange(state: AppState): Arranged {
+    if (!state.show.traded) return { right: [], left: [], top: [], hidden: [] };
+    const set = state.traded.placements;
+    if (placedOn(set, 'top').length) return arrangeProfiles(set, this.profileRoom());
+    const sides = sideColumns(state);
+    return { right: sides.right, left: sides.left, top: [], hidden: sides.hidden };
+  }
+
+  /**
+   * What had no room, said where it would have been (Karl's rule: never dropped without a word): a small tag at the foot of the outermost
+   * column for the columns, under the lowest band for the bands, each a button to the panel's places. A phone has no columns at all, which
+   * its panel says, so only its bands are counted here.
+   */
+  #paintHidden(ctx: CanvasRenderingContext2D, pw: number, ph: number): void {
+    this.#hiddenTags = [];
+    const hidden = this.#arranged.hidden; if (!hidden.length) return;
+    const p = this.#palette, sides = hidden.filter(x => x.placement !== 'top').length, bands = hidden.length - sides;
+    const tag = (n: number, x: number, y: number, w: number): void => {
+      const text = tn(n, '{n} hidden for space', '{n} hidden for space');
+      ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+      const width = Math.min(w, ctx.measureText(text).width + 12), x0 = Math.round(x + (w - width) / 2);
+      ctx.globalAlpha = 0.92; ctx.fillStyle = p.panel; ctx.fillRect(x0, y, width, 15); ctx.globalAlpha = 1;
+      ctx.strokeStyle = HIDDEN_COLOR; ctx.setLineDash([2, 2]); ctx.strokeRect(x0 + 0.5, y + 0.5, width - 1, 14); ctx.setLineDash([]);
+      ctx.fillStyle = HIDDEN_COLOR; ctx.fillText(text, x0 + width / 2, y + 8, width - 6);
+      this.#hiddenTags.push({ x: x0, y, w: width, h: 15 });
+    };
+    const shown = this.#arranged;
+    if (sides && TRADED_W > 0) {
+      const side: Side = shown.right.length ? 'right' : 'left', n = shown[side].length;
+      if (n) tag(sides, this.#columnX(side, n - 1) + 3, ph - 20, TRADED_W - 6);
+    }
+    if (bands) {
+      const last = shown.top[shown.top.length - 1], y = last ? last.top + last.height + 3 : this.#legendBox.bottom + BAND_GAP;
+      tag(bands, pw - 156, y, 150);
+    }
+    ctx.textAlign = 'left'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+  }
+  /** Whether a point of the map is on a tag of what had no room. */
+  #onHiddenTag(x: number, y: number): boolean { return this.#hiddenTags.some(r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h); }
 
   #paintProfile(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const frame = state.levels; if (!frame) return;
@@ -1844,7 +1971,7 @@ export class HeatPane {
       this.#paintTrapPopup(ctx, trapHit, x, y, pw, ph, touch);
     } else if (ownY && here && (rowHit = this.#footprintUnder(x, hv.t, hv.price!, pw))) {
       this.#paintFootprintPopup(ctx, rowHit, x, y, pw, ph, touch);
-    } else if (ownY && here && (measured = this.#measures.readout(x, y, hv.t))) { // a bucket of the profile along the top: its box, under the band
+    } else if (ownY && here && (measured = this.#bands.readout(x, y, hv.t))) { // a bucket of a band along the top: its box, under the band
       paintInfoBox(ctx, measured.lines, x, measured.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'down' });
     } else if (ownY && here && state.layer === 'liquidity') {
       const cell = this.valueAt(hv.t, hv.price!);
@@ -1927,8 +2054,10 @@ export class HeatPane {
     const ctx = this.#pulse.getContext('2d')!, pw = this.plotW, ph = this.plotH;
     this.#pulseDrawn = time;
     ctx.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
-    ctx.clearRect(0, 0, this.#w, this.#h);
+    ctx.clearRect(0, 0, this.#paneW, this.#h);
     if (!this.#pulseRects.length) return;
+    // In the plot's coordinates, as the overlay draws.
+    ctx.setTransform(this.#dpr, 0, 0, this.#dpr, this.#dpr * this.#left, 0);
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     // A 2.4 s breath between a faint and a clear glow; a trap that is no longer live (old, or price came back) is a still, faint outline.
     const breath = still ? 0.5 : 0.5 + 0.5 * Math.sin(time / 2400 * Math.PI * 2);
@@ -2138,8 +2267,8 @@ export class HeatPane {
     return {
       down: () => this.#stopFling(),
       tap: p => {
-        if (this.store.state.vwapAnchoring && p.x <= this.plotW && p.y <= this.plotH) { this.onAnchor?.(this.view.tOf(p.x, this.plotW)); return; }
-        if (this.#measures.onHeader(p.x, p.y)) { this.onTopProfile(); return; }
+        if (this.store.state.vwapAnchoring && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.onAnchor?.(this.view.tOf(p.x, this.plotW)); return; }
+        if (this.#bands.onHeader(p.x, p.y) || this.#onHiddenTag(p.x, p.y)) { this.onTopProfile(); return; }
         if (this.#pinActive() && Math.hypot(this.#pin!.x - p.x, this.#pin!.y - p.y) < 28) this.#unpin(); else this.#pinAt(p);
       },
       doubleTap: () => { this.#unpin(); this.fit(); },
@@ -2148,7 +2277,7 @@ export class HeatPane {
       holdMove: p => this.#pinAt(p),
       panStart: p => {
         this.#unpin();
-        if (this.range?.armed && p.x <= this.plotW && p.y <= this.plotH) { this.#touchSelect = { start: p, at: p }; this.range.begin(this.#rangePoint(p.x, p.y)); return; }
+        if (this.range?.armed && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.#touchSelect = { start: p, at: p }; this.range.begin(this.#rangePoint(p.x, p.y)); return; }
         this.#panKind = p.y > this.plotH ? 'time' : p.x > this.#w - AXIS_W ? 'price' : 'map';
         this.#axisDrag = this.#panKind === 'map' ? null : { view: this.view.clone(), x: 0, y: 0 };
       },
@@ -2204,8 +2333,8 @@ export class HeatPane {
       this.store.set({ hover: { t: v.tOf(p.x, pw), price: v.pOf(p.y, ph), y: p.y, source: 'heat', touch: true } });
     } else if (this.store.state.show.profile && p.x > pw && p.x <= pw + PROFILE_W && p.y >= 0 && p.y <= ph) {
       this.#profileHover = { y: p.y }; this.store.set({ hover: null });
-    } else if (column >= 0 && p.y >= 0 && p.y <= ph) {
-      this.#profileHover = null; this.#tradedHover = { y: p.y, i: column }; this.store.set({ hover: null });
+    } else if (column && p.y >= 0 && p.y <= ph) {
+      this.#profileHover = null; this.#tradedHover = { y: p.y, side: column.side, i: column.i }; this.store.set({ hover: null });
     } else { this.#pin = null; this.#profileHover = null; this.store.set({ hover: null }); }
     this.invalidate();
   }
@@ -2286,7 +2415,8 @@ export class HeatPane {
 
   #bindInput(): void {
     const el = this.overlay;
-    const local = (e: MouseEvent) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    // In the plot's coordinates: the columns left of the map are at negative x.
+    const local = (e: MouseEvent) => { const r = el.getBoundingClientRect(); return { x: e.clientX - r.left - this.#left, y: e.clientY - r.top }; };
     const touched = () => { this.store.set({ followLive: false }); this.#liveMargin = this.view.t1 - pageNow(); this.#rasteredKey = ''; this.onView(); this.invalidate(); };
     // The wheel on the chart zooms time and on the price scale zooms price (Shift swaps them). Each holds still what is being watched: the
     // current price, or the live edge while the map follows the market, so the map swells and shrinks around it instead of sliding.
@@ -2310,14 +2440,16 @@ export class HeatPane {
       if (e.pointerType === 'touch') return;
       const { x, y } = local(e);
       // Placing a VWAP anchor: the click is the anchor, nothing else.
-      if (this.store.state.vwapAnchoring && e.button === 0 && x <= this.plotW && y <= this.plotH) { this.onAnchor?.(this.view.tOf(x, this.plotW)); return; }
-      if (e.button === 0 && this.#measures.onHeader(x, y)) { this.onTopProfile(); return; }
-      if (this.range && selects(this.range.armed, e) && x <= this.plotW && y <= this.plotH) {
+      // The plot is from 0 to plotW: the columns left of the map are at negative x and take their own presses.
+      const onPlot = x >= 0 && x <= this.plotW && y <= this.plotH;
+      if (this.store.state.vwapAnchoring && e.button === 0 && onPlot) { this.onAnchor?.(this.view.tOf(x, this.plotW)); return; }
+      if (e.button === 0 && (this.#bands.onHeader(x, y) || this.#onHiddenTag(x, y))) { this.onTopProfile(); return; }
+      if (this.range && selects(this.range.armed, e) && onPlot) {
         this.#selecting = { x, y }; this.range.begin(this.#rangePoint(x, y)); el.setPointerCapture(e.pointerId); return;
       }
       const column = this.#columnAt(x);
-      if (this.range && e.button === 0 && column >= 0 && y >= 0 && y <= this.plotH) {
-        this.#columnSelect = { y, i: column };
+      if (this.range && e.button === 0 && column && y >= 0 && y <= this.plotH) {
+        this.#columnSelect = { y, side: column.side, i: column.i };
         const { from, to } = this.#tradedWindow(), band = this.#columnBand(y, y);
         this.range.begin({ t: from, p: band.p0 }); this.range.move({ t: to, p: band.p1 }, { t: from, p: band.p0 });
         el.setPointerCapture(e.pointerId); return;
@@ -2339,16 +2471,16 @@ export class HeatPane {
       if (this.#columnSelect && this.range) {
         const { from, to } = this.#tradedWindow(), band = this.#columnBand(this.#columnSelect.y, y);
         this.range.move({ t: to, p: band.p1 }, { t: from, p: band.p0 });
-        this.#tradedHover = { y, i: this.#columnSelect.i }; this.invalidate();
+        this.#tradedHover = { y, side: this.#columnSelect.side, i: this.#columnSelect.i }; this.invalidate();
         return;
       }
       if (this.#selecting && this.range) {
         this.range.move(this.#rangePoint(x, y));
-        if (x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
+        if (x >= 0 && x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
         return;
       }
-      const overColumn = this.#columnAt(x) >= 0 && y <= this.plotH;
-      el.style.cursor = this.#onScale(x, y) ? 'ns-resize' : this.#measures.onHeader(x, y) ? 'pointer' : overColumn || ((this.range?.armed || this.store.state.vwapAnchoring) && x <= this.plotW && y <= this.plotH) ? 'crosshair' : '';
+      const overColumn = this.#columnAt(x) !== null && y <= this.plotH;
+      el.style.cursor = this.#onScale(x, y) ? 'ns-resize' : this.#bands.onHeader(x, y) || this.#onHiddenTag(x, y) ? 'pointer' : overColumn || ((this.range?.armed || this.store.state.vwapAnchoring) && x >= 0 && x <= this.plotW && y <= this.plotH) ? 'crosshair' : '';
       if (this.#zoomDrag) {
         // Drag right zooms the time axis in, drag up zooms the price axis in (left/down zoom out).
         const z = this.#zoomDrag, k = 0.006, pw = this.plotW, ph = this.plotH;
@@ -2364,11 +2496,11 @@ export class HeatPane {
         const dx = x - this.#drag.x, dy = this.#drag.shift ? 0 : y - this.#drag.y;
         this.view.pan(dx, dy, this.plotW, this.plotH); this.#drag.x = x; this.#drag.y = y; touched();
       }
-      if (x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
+      if (x >= 0 && x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
       else this.store.set({ hover: null });
       const onProfile = this.store.state.show.profile && x > this.plotW && x <= this.plotW + PROFILE_W, column = this.#columnAt(x);
       this.#profileHover = !this.#drag && onProfile && y >= 0 && y <= this.plotH ? { y } : null;
-      this.#tradedHover = !this.#drag && column >= 0 && y >= 0 && y <= this.plotH ? { y, i: column } : null;
+      this.#tradedHover = !this.#drag && column && y >= 0 && y <= this.plotH ? { y, side: column.side, i: column.i } : null;
       this.invalidate();
     });
     el.addEventListener('pointerup', e => {
@@ -2391,6 +2523,6 @@ export class HeatPane {
       this.#drag = null; this.#zoomDrag = null; this.#scaleDrag = null; el.style.cursor = this.#onScale(local(e).x, local(e).y) ? 'ns-resize' : ''; if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId); });
     el.addEventListener('pointerleave', e => { if (e.pointerType === 'touch') return; if (!this.#scaleDrag) el.style.cursor = ''; this.#profileHover = null; this.#tradedHover = null; if (!this.#drag && !this.#zoomDrag) { this.store.set({ hover: null }); this.invalidate(); } });
     el.addEventListener('dblclick', () => this.fit());
-    bindTouch(el, new GestureRecognizer(this.#touchHandlers()));
+    bindTouch(el, new GestureRecognizer(this.#touchHandlers()), () => this.#left);
   }
 }

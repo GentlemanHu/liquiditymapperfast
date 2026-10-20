@@ -4,12 +4,18 @@
  * Pure functions, so the rules are tested without a canvas.
  */
 
-/** Where the pointer is on the map's canvas. `plotW` and `plotH` bound the chart itself; right of it are the profile column and the price scale. */
+/**
+ * Where the pointer is on the map's canvas, in the plot's coordinates. `plotW` and `plotH` bound the chart itself; right of it are the profile
+ * column and the price scale, left of it (negative x) the volume profile columns placed there.
+ */
 export type MapRegion = 'plot' | 'scale' | 'time';
 
-/** The part of the map under (`x`, `y`): below the plot is the time strip, right of it the profile column and the price scale. */
+/**
+ * The part of the map under (`x`, `y`): below the plot is the time strip; right of it the profile column and the price scale, and left of it
+ * the columns placed there, which zoom price as the columns on the right do.
+ */
 export function regionAt(x: number, y: number, plotW: number, plotH: number): MapRegion {
-  return y > plotH ? 'time' : x > plotW ? 'scale' : 'plot';
+  return y > plotH ? 'time' : x > plotW || x < 0 ? 'scale' : 'plot';
 }
 
 /** Which axis a wheel turn zooms: the price scale zooms price and the chart and the time strip zoom time; Shift swaps the pair. */

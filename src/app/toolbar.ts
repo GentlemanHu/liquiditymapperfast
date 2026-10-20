@@ -44,6 +44,7 @@ import { LANGUAGES, language, pickLanguage, saveLanguage, savedLanguage } from '
 import { t, tn } from './i18n.ts';
 import { coinChoice, currentCoin, scaledUsd, unscaledUsd } from './coin.ts';
 import { buildTradedPanel } from './traded/panel.ts';
+import type { ProfileRoom } from './traded/arrange.ts';
 import { venueMark } from './venue-marks.ts';
 import { gridStepFor } from '../shared/grid.ts';
 
@@ -156,6 +157,8 @@ export class Toolbar {
   keyHistory: KeyLevelHistory | null = null;
   /** The volume profile's candles of one bar size (set by the page), for its panel to say whether they could be read. */
   profileHistory: ((barMs: number) => KeyLevelHistory) | null = null;
+  /** The room the map's profiles have (heat-pane.ts `profileRoom`), for the Volume profile panel to say what has none; set by the page. */
+  profileRoom: (() => ProfileRoom) | null = null;
   /** Where the page's data comes from (set by the page): a page reading the exchanges itself keeps liquidations only while it is open. */
   sourceKind: 'server' | 'browser' = 'server';
   #highlights = el('button', { class: 'led-btn', textContent: t('Highlights'), tip: t('What stands out: unusual volume, open-interest changes and depth imbalance') });
@@ -311,7 +314,7 @@ export class Toolbar {
     };
     this.#highlights.onclick = () => this.store.set(togglePatch(this.store.state, 'highlights'));
     this.#settingsKeys.traded.onclick = () => {
-      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory });
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null });
       this.#tradedPanel = this.#track(togglePanel(this.#settingsKeys.traded, { title: t('Volume profile'), width: 520, align: 'left', onClose: () => { this.#tradedPanel = null; } }, build), build);
     };
     this.#traded.onclick = () => this.store.set(togglePatch(this.store.state, 'traded'));
@@ -377,6 +380,8 @@ export class Toolbar {
 
   /** Redraw the lamp panel that is open, after its feature was switched from the keyboard, so its switch says what the lamp does. */
   refreshOpenPanel(): void { if (this.#open && openedPanel() === this.#open.panel) this.#open.redraw(); }
+  /** Redraw the Volume profile panel if it is the one open: what of the profiles has no room changed (a resize), and its sketch and note say so. */
+  refreshTradedPanel(): void { if (this.#tradedPanel && this.#open?.panel === this.#tradedPanel) this.refreshOpenPanel(); }
 
   /**
    * The Go to panel: a date and time on the page's clock, the map centred on it at its zoom. It says how far back the depth and the candles
@@ -443,12 +448,12 @@ export class Toolbar {
   hostStatusControls(host: HTMLElement): void { this.#statusHost = host; this.#arrange(); }
 
   /**
-   * Open the Volume profile panel (from the header of the profile along the top, on the map) and show its time profile: the band's settings
-   * live with the profile's, a click from where it is drawn. An open panel stays and only scrolls there.
+   * Open the Volume profile panel (from a band's header on the map, or a tag of what has no room) and show where each measure is drawn: a
+   * band's settings live with the profile's, a click from where it is drawn. An open panel stays and only scrolls there.
    */
   openTradedPanel(): void {
     if (!this.#tradedPanel) this.#settingsKeys.traded.click();
-    this.#tradedPanel?.body.querySelector('[data-section="top"]')?.scrollIntoView({ block: 'start' });
+    this.#tradedPanel?.body.querySelector('[data-section="placement"]')?.scrollIntoView({ block: 'start' });
   }
 
   /** The Tape view's choices (panes/candle-pane.ts `settingsFields`), a section of the phone's Settings; set by the page. */

@@ -9,9 +9,11 @@ import { LAYOUT_KEYS, readSettings, type AppState, type OiBar } from '../src/app
 import { readLayouts, settingsToApply } from '../src/app/layouts/layouts.ts';
 import { TRADED_DEFAULTS, readTraded } from '../src/app/traded/settings.ts';
 import { tradedHeader, tradedLines, tradedRows } from '../src/app/traded.ts';
-import { metricHeader, metricWords } from '../src/app/traded/metrics.ts';
+import { metricHeader, metricWords, timeWords, type ProfileMetric } from '../src/app/measures/registry.ts';
+import { setFromLegacy } from '../src/app/traded/profiles.ts';
+import { arrangeProfiles } from '../src/app/traded/arrange.ts';
 import { BAND_GAP, BAND_H, BUCKETS_MS, bandCaption, bucketAt, bucketFor, bucketMs, bucketSpan, eventRows, flowRows, minuteFlowAt, oiRows, oiSpread, stripBand, timeLevels, timeLines, timeText, type OiMarket } from '../src/app/measures/model.ts';
-import { TopProfile, topAbsorption, topShown, type BandHub, type TopPlace } from '../src/app/measures/strip.ts';
+import { TopBands, TopProfile, topMarks, topShown, type BandHub, type TopPlace } from '../src/app/measures/strip.ts';
 import type { Liquidation } from '../src/app/liquidations.ts';
 import type { AbsorptionMark } from '../src/app/absorption.ts';
 import { PALETTES } from '../src/app/theme.ts';
@@ -26,11 +28,17 @@ const T = Date.UTC(2026, 9, 19, 12);
 const MARKETS = [{ instrumentId: 'binance:BTCUSDT', venue: 'binance', base: 'BTC', quote: 'USDT', marketType: 'perpetual' }, { instrumentId: 'bybit:BTCUSDT', venue: 'bybit', base: 'BTC', quote: 'USDT', marketType: 'perpetual' }];
 
 /** The page's state as far as the band reads it: the Volume profile on, its profile along the top showing `metric`. */
-function stateOf(patch: Partial<AppState> = {}, metric: AppState['traded']['top']['metric'] = 'volume'): AppState {
+function stateOf(patch: Partial<AppState> = {}, metric: ProfileMetric = 'volume'): AppState {
   return { markets: MARKETS, marketId: 'binance:BTCUSDT', seriesInstrument: 'binance:BTCUSDT', disabledVenues: [], scope: 'all', levels: null, bookGone: {}, timeframe: '1m',
     oi: [], oiParts: [], oiInstrument: '', oiPrice: 0, candles: [], hover: null, mark: { price: 100, asOf: 0 }, show: { volume: true, traded: true }, liquidations: { on: false, minUsd: 1_000, side: 'both', scale: 1, labels: true },
-    traded: { ...TRADED_DEFAULTS, top: { on: true, metric } }, ...patch } as unknown as AppState;
+    traded: { ...TRADED_DEFAULTS, placements: setFromLegacy(['volume'], { on: true, metric }) }, ...patch } as unknown as AppState;
 }
+
+/** The profile along the top as the saves before the places held it (traded/profiles.ts): its measure, and whether it is on. */
+const topOf = (traded: AppState['traded']): { on: boolean; metric: string } => {
+  const p = traded.placements.instances.find(x => x.placement === 'top');
+  return { on: p?.enabled === true, metric: p?.metric ?? '' };
+};
 
 /** A flow book holding two markets' seconds over [from, to): Binance buys 3 and sells 1 a second, Bybit buys 1 and sells 2. */
 function bookOf(from: number, to: number): FlowBook {
@@ -151,10 +159,10 @@ test('open interest: the column\'s rule, each change spread over the minutes it 
   assert.deepEqual([rows.buy[2], rows.gaps[2]], [0, null], 'a reading that did not move is a zero, not a gap');
   assert.equal(rows.gaps[0], 'noHistory', 'before the first reading');
   assert.deepEqual(rows.gaps.slice(6), ['noReading', 'noReading', 'noReading', 'noReading'], 'after the last: no reading stands for these minutes');
-  const words = metricWords('oi'), lines = timeLines(rows, 1, { metric: 'oi', spacingMs: 5 * MIN, levels: null, now: T + HOUR });
+  const words = metricWords('oi'), lines = timeLines(rows, 1, { metric: 'oi', words: timeWords('oi'), spacingMs: 5 * MIN, levels: null, now: T + HOUR });
   assert.ok(lines.some(l => l.label === words.buy && l.text === `$${usd(1010)}`) && lines.every(l => !/\bbuy|bought|sell|sold\b/i.test(l.label ?? '')), 'never called buying');
   assert.ok(lines.some(l => /spread over the minutes in between/.test(l.text)), 'how a change between readings five minutes apart is placed');
-  assert.ok(timeLines(rows, 7, { metric: 'oi', spacingMs: 5 * MIN, levels: null, now: T + HOUR }).some(l => /No open-interest reading/.test(l.text)));
+  assert.ok(timeLines(rows, 7, { metric: 'oi', words: timeWords('oi'), spacingMs: 5 * MIN, levels: null, now: T + HOUR }).some(l => /No open-interest reading/.test(l.text)));
 });
 
 test('open interest: a change across more than an hour, with nothing traded under it, or past the window is not placed, and the header says so', () => {
@@ -178,7 +186,7 @@ test('open interest along the top is read by the minute whatever the chart\'s ti
   const oi = { 'binance:BTCUSDT': [minute(0, 100), minute(1, 110), minute(2, 100), minute(3, 100)] };
   const totals: number[] = [];
   for (const close of [50, 999]) {
-    const hub = hubOf(bookOf(T - HOUR, T + 10 * MIN), { oi }), top = new TopProfile(), state = stateOf({ timeframe: '1h', candles: [[T, 1, 1, 1, close, 1]] }, 'oi');
+    const hub = hubOf(bookOf(T - HOUR, T + 10 * MIN), { oi }), top = new TopProfile('oi'), state = stateOf({ timeframe: '1h', candles: [[T, 1, 1, 1, close, 1]] }, 'oi');
     let drawn = 0;
     top.work(state, hub, { from: T, to: T + 10 * MIN }, 10 * MIN, 1200, T + 10 * MIN, noAbsorption, () => drawn++);
     assert.deepEqual(hub.oiAsked, ['binance:BTCUSDT|1m', 'bybit:BTCUSDT|1m'], 'the columns\' perpetuals, by the minute, on an hourly chart');
@@ -196,7 +204,7 @@ test('liquidations and absorption: the column\'s markets and thresholds, their t
   const liq = (t: number, side: 'long' | 'short', usd: number, id = 'binance:BTCUSDT'): Liquidation => ({ t, id, side, price: 1, usd, reported: 1, kind: 'price' } as unknown as Liquidation);
   const flow = bookOf(T - MIN, T + 10 * MIN);
   const liquidations = [liq(T + 10 * SEC, 'short', 5_000), liq(T + 20 * SEC, 'long', 2_000), liq(T + 21 * SEC, 'long', 500), liq(T + 40 * SEC, 'short', 9_000, 'okx:BTC-USDT-SWAP')];
-  const hub = hubOf(flow, { liquidations }), top = new TopProfile(), win = { from: T, to: T + 10 * MIN };
+  const hub = hubOf(flow, { liquidations }), top = new TopProfile('liquidations'), win = { from: T, to: T + 10 * MIN };
   const before = top.work(stateOf({}, 'liquidations'), hub, win, 10 * MIN, 300, T + 10 * MIN, noAbsorption)!;
   assert.deepEqual(hub.liquidationsAsked, [[T, T + 10 * MIN]], 'asked for the column\'s window, with no smallest size (the diamonds\' does not count)');
   assert.ok(before.rows.gaps.every(g => g === 'notLoaded'), 'until they come: not loaded, not zero');
@@ -207,7 +215,7 @@ test('liquidations and absorption: the column\'s markets and thresholds, their t
   assert.equal(w.rows.sell[4], 2_500, 'longs liquidated, every size: $2,000 and $500, as the column adds them');
   assert.equal(w.rows.total, 7_500, 'a market the columns do not count is left out');
   assert.equal(w.flags.cut, false);
-  const many = hubOf(flow, { liquidations: Array.from({ length: 5_000 }, (_, i) => liq(T + i, 'long', 1)) }), cutTop = new TopProfile();
+  const many = hubOf(flow, { liquidations: Array.from({ length: 5_000 }, (_, i) => liq(T + i, 'long', 1)) }), cutTop = new TopProfile('liquidations');
   cutTop.work(stateOf({}, 'liquidations'), many, win, 10 * MIN, 300, T + 10 * MIN, noAbsorption); await settle();
   const cut = cutTop.work(stateOf({}, 'liquidations'), many, win, 10 * MIN, 300, T + 10 * MIN, noAbsorption)!;
   assert.deepEqual([metricHeader('liquidations', cut.rows, cut.flags).sub, metricHeader('liquidations', cut.rows, cut.flags).warn], ['the largest 5,000', true], 'an answer cut at its limit is said to be partial');
@@ -217,7 +225,7 @@ test('liquidations and absorption: the column\'s markets and thresholds, their t
   const ab = hubOf(flow, { marks: [mark(T + MIN, 'sell', 400), mark(T + MIN + SEC, 'buy', 300), mark(T - 2 * HOUR, 'buy', 1)], absorptionCut: new Map([['binance:BTCUSDT', 150]]) });
   const marks = ab.absorption.marks; ab.absorption.marks = (ids, ...rest) => { judged = ids; return marks(ids, ...rest); };
   const abs = (): { thresholds: Map<string, number | null> } => ({ thresholds: new Map<string, number | null>([['binance:BTCUSDT', 100], ['bybit:BTCUSDT', null], ['okx:BTC-USDT-SWAP', 100]]) });
-  const a = new TopProfile().work(stateOf({}, 'absorption'), ab, win, 10 * MIN, 300, T + 10 * MIN, abs)!;
+  const a = new TopProfile('absorption').work(stateOf({}, 'absorption'), ab, win, 10 * MIN, 300, T + 10 * MIN, abs)!;
   assert.deepEqual(judged, ['binance:BTCUSDT'], 'the column\'s markets that have a threshold');
   assert.deepEqual([a.rows.buy[12], a.rows.sell[12], a.rows.total], [400, 300, 700]);
   assert.equal(a.flags.cut, true, 'a mark at or above the threshold may have been let go: partial');
@@ -226,8 +234,8 @@ test('liquidations and absorption: the column\'s markets and thresholds, their t
   const held = eventRows([{ t: T + 30 * SEC, side: 0, usd: 1 }], T, T + 2 * MIN, MIN, { from: T + MIN, to: Infinity });
   assert.deepEqual(held.gaps, ['notLoaded', null]);
   assert.equal(held.total, 0, 'an event outside what is held is not counted');
-  assert.ok(timeLines(held, 0, { metric: 'liquidations', spacingMs: 0, levels: null, now: T + HOUR }).some(l => /Nothing is held/.test(l.text)));
-  assert.ok(timeLines(held, 1, { metric: 'liquidations', spacingMs: 0, levels: null, now: T + HOUR }).some(l => /No liquidation reported in this stretch/.test(l.text)), 'held and empty: nothing reported');
+  assert.ok(timeLines(held, 0, { metric: 'liquidations', words: timeWords('liquidations'), spacingMs: 0, levels: null, now: T + HOUR }).some(l => /Nothing is held/.test(l.text)));
+  assert.ok(timeLines(held, 1, { metric: 'liquidations', words: timeWords('liquidations'), spacingMs: 0, levels: null, now: T + HOUR }).some(l => /No liquidation reported in this stretch/.test(l.text)), 'held and empty: nothing reported');
 });
 
 test('absorption: a busy minute that left out a marked group makes the band say "some minutes in part", by the column\'s rule', () => {
@@ -235,7 +243,7 @@ test('absorption: a busy minute that left out a marked group makes the band say 
   const abs = (): { thresholds: Map<string, number | null> } => ({ thresholds: new Map<string, number | null>([['binance:BTCUSDT', 100_000]]) });
   const flagsAt = (floor: number | undefined): { incomplete: boolean; sub: string; warn: boolean } => {
     const hub = hubOf(bookOf(T - MIN, T + 10 * MIN), { marks: [mark(T + MIN, 300_000)], floor });
-    const w = new TopProfile().work(stateOf({}, 'absorption'), hub, { from: T, to: T + 10 * MIN }, 10 * MIN, 300, T + 10 * MIN, abs)!;
+    const w = new TopProfile('absorption').work(stateOf({}, 'absorption'), hub, { from: T, to: T + 10 * MIN }, 10 * MIN, 300, T + 10 * MIN, abs)!;
     const head = metricHeader('absorption', w.rows, w.flags);
     return { incomplete: w.flags.incomplete, sub: head.sub, warn: head.warn };
   };
@@ -276,14 +284,14 @@ test('a stretch with no data is drawn as such: a dotted line where its bar would
   assert.deepEqual(dotted(oiRows(flat.parts, flat.covered, T, T + 10 * MIN, MIN, flat.first)), [[0, 52.5], [100, 52.5]], 'only the minute before the first reading');
 });
 
-test('split bars are drawn at the shared alphas, 0.85 for the stronger side and 0.35 for the weaker at full one-sidedness, in every painter', () => {
+test('split bars are drawn at the shared alphas, opaque for the stronger side and 0.35 for the weaker at full one-sidedness, in every painter', () => {
   const p = PALETTES.light!, band = { top: 50, height: 96 }, frame = { view: new View({ t0: T, t1: T + 10 * MIN, p0: 1, p1: 2 }), pw: 1000, ph: 600, palette: p };
   const rows = eventRows([{ t: T + 5 * SEC, side: 0, usd: 50e6 }, { t: T + 6 * SEC, side: 1, usd: 1e6 }], T, T + 10 * MIN, MIN, { from: -Infinity, to: Infinity });
   const { ctx, calls } = recorder();
   paintBand(ctx, rows, band, frame, { bars: 'split', emphasis: true, levels: null, head: '', sub: '', warn: false, net: null, caption: '', hovered: -1, now: T + HOUR });
   const bars = calls.filter(c => c.name === 'fillRect' && (c.args[1] as number) >= band.top + 1 && (c.args[1] as number) < band.top + band.height);
   const strong = bars.find(c => c.fill === emphasisRamps(p).bid[255]), weak = bars.find(c => c.fill === p.ask);
-  assert.ok(strong && Math.abs((strong.alpha as number) - 0.85) < 1e-9, `the stronger side at 0.85 (${strong?.alpha})`);
+  assert.ok(strong && Math.abs((strong.alpha as number) - 1) < 1e-9, `the stronger side opaque (${strong?.alpha})`);
   assert.ok(weak && Math.abs((weak.alpha as number) - 0.35) < 1e-9, `the weaker side at 0.35 (${weak?.alpha})`);
   // The map's own painters (the columns, the profiles on the chart) call the shared function with its own alpha, never one of their own.
   const source = fs.readFileSync(path.join(process.cwd(), 'src', 'app', 'panes', 'heat-pane.ts'), 'utf8'), uses = [...source.matchAll(/splitStyles\(([^()]*)\)/g)];
@@ -301,16 +309,16 @@ test('the point of control is the busiest bucket and the value area the run arou
   let inside = 0; for (let i = l.lo; i <= l.hi; i++) inside += sizes[i]!;
   assert.equal(inside, 85);
   assert.deepEqual([l.lo, l.hi], [3, 7]);
-  const box = timeLines(rows, 3, { metric: 'volume', spacingMs: 0, levels: l, now: T + HOUR });
+  const box = timeLines(rows, 3, { metric: 'volume', words: timeWords('volume'), spacingMs: 0, levels: l, now: T + HOUR });
   assert.ok(box.some(x => x.label === 'Profile' && x.text === 'In the value area'));
-  assert.ok(timeLines(rows, 1, { metric: 'volume', spacingMs: 0, levels: l, now: T + HOUR }).some(x => x.text === 'Before the value area'));
-  assert.ok(timeLines(rows, 9, { metric: 'volume', spacingMs: 0, levels: l, now: T + HOUR }).some(x => x.text === 'After the value area'));
+  assert.ok(timeLines(rows, 1, { metric: 'volume', words: timeWords('volume'), spacingMs: 0, levels: l, now: T + HOUR }).some(x => x.text === 'Before the value area'));
+  assert.ok(timeLines(rows, 9, { metric: 'volume', words: timeWords('volume'), spacingMs: 0, levels: l, now: T + HOUR }).some(x => x.text === 'After the value area'));
   assert.equal(timeLevels(eventRows([], T, T + MIN, MIN, null), 0.7), null, 'nothing in it: no levels');
 });
 
 test('a bucket\'s box is a column row\'s box with its time span for its prices', () => {
   const rows = eventRows([{ t: T + 5 * SEC, side: 0, usd: 3_000 }, { t: T + 6 * SEC, side: 1, usd: 1_000 }], T, T + MIN, 15 * SEC, { from: -Infinity, to: Infinity });
-  const box = timeLines(rows, 0, { metric: 'volume', spacingMs: 0, levels: null, now: T + HOUR });
+  const box = timeLines(rows, 0, { metric: 'volume', words: timeWords('volume'), spacingMs: 0, levels: null, now: T + HOUR });
   assert.equal(box[0]!.text, `${timeText(T, 15 * SEC, T + HOUR)} – ${timeText(T + 15 * SEC, 15 * SEC, T + HOUR)}`);
   assert.match(box[0]!.text, /:00 – .*:15$/, 'to the second for buckets under a minute');
   // The same numbers on a row of the column say the same lines under the first.
@@ -322,7 +330,7 @@ test('a bucket\'s box is a column row\'s box with its time span for its prices',
 });
 
 test('what was worked out is kept for the same buckets and second, and worked out again for other markets or new flow', () => {
-  const now = T + 90 * MIN, flow = bookOf(T - HOUR, now), hub = hubOf(flow), top = new TopProfile(), span = 60 * MIN;
+  const now = T + 90 * MIN, flow = bookOf(T - HOUR, now), hub = hubOf(flow), top = new TopProfile('volume'), span = 60 * MIN;
   const win = { from: T + 30 * MIN, to: now + MIN };
   const a = top.work(stateOf(), hub, win, span, 1200, now, noAbsorption)!;
   assert.equal(a.rows.step, 10 * SEC);
@@ -334,20 +342,24 @@ test('what was worked out is kept for the same buckets and second, and worked ou
   assert.notEqual(top.work(stateOf(), hub, win, span, 1200, now, noAbsorption), a, 'flow loaded again (loads): worked out again');
 });
 
-test('while the Volume profile or its profile along the top is off, the band works nothing out, asks for nothing and draws nothing', () => {
-  const flow = bookOf(T - HOUR, T), hub = hubOf(flow), top = new TopProfile();
+test('while the Volume profile or its bands along the top are off, the bands work nothing out, ask for nothing and draw nothing', () => {
+  const flow = bookOf(T - HOUR, T), hub = hubOf(flow), bands = new TopBands();
   const untouchable = new Proxy({}, { get: () => { throw new Error('the canvas was used'); } }) as CanvasRenderingContext2D;
-  let measured = 0;
-  const place: TopPlace = { view: new View({ t0: T - HOUR, t1: T, p0: 1, p1: 2 }), pw: 800, ph: 600, palette: PALETTES.light!, legendBottom: 42, toolsBottom: () => { measured++; return 37; }, window: { from: T - HOUR, to: T }, absorption: noAbsorption, loaded: () => {} };
-  for (const state of [stateOf({ show: { volume: true, traded: false } } as Partial<AppState>), stateOf({ traded: { ...TRADED_DEFAULTS, top: { on: false, metric: 'volume' } } })]) {
-    top.paint(untouchable, state, hub, place);
-    assert.equal(topShown(state), false);
-  }
-  assert.equal(hub.asked, 0); assert.equal(measured, 0, 'not even the corner is measured');
-  assert.equal(top.readout(400, 60, T - MIN), null); assert.equal(top.onHeader(10, 60), false);
-  assert.equal(top.misplaced(56), false, 'off: nothing to place');
-  assert.equal(topAbsorption(stateOf({}, 'absorption')), true, 'showing absorption: the marks\' groups are loaded');
-  assert.equal(topAbsorption(stateOf({ show: { volume: true, traded: false } } as Partial<AppState>, 'absorption')), false);
+  const place: TopPlace = { view: new View({ t0: T - HOUR, t1: T, p0: 1, p1: 2 }), pw: 800, ph: 600, palette: PALETTES.light!, legendBottom: 42, window: { from: T - HOUR, to: T }, absorption: noAbsorption, loaded: () => {} };
+  const room = { sides: 4, maxBands: 3, band: { legendBottom: 42, toolsBottom: 37, ph: 600, volume: true } };
+  const off = stateOf({ show: { volume: true, traded: false } } as Partial<AppState>), noBand = stateOf({ traded: { ...TRADED_DEFAULTS, placements: setFromLegacy(['volume'], { on: false, metric: 'volume' }) } });
+  // The Volume profile off: a band handed over anyway is not drawn. Its band off: none is placed.
+  bands.paint(untouchable, off, hub, place, arrangeProfiles(stateOf().traded.placements, room).top);
+  assert.deepEqual(arrangeProfiles(noBand.traded.placements, room).top, []);
+  bands.paint(untouchable, noBand, hub, place, arrangeProfiles(noBand.traded.placements, room).top);
+  assert.equal(topShown(off), false); assert.equal(topShown(noBand), false);
+  assert.equal(hub.asked, 0);
+  assert.equal(bands.readout(400, 60, T - MIN), null); assert.equal(bands.onHeader(10, 60), false);
+  assert.equal(bands.misplaced(56), false, 'off: nothing to place');
+  const drawn = arrangeProfiles(stateOf({}, 'absorption').traded.placements, room).top;
+  assert.equal(topMarks(stateOf({}, 'absorption'), drawn), true, 'showing absorption: the marks\' groups are loaded');
+  assert.equal(topMarks(stateOf({ show: { volume: true, traded: false } } as Partial<AppState>, 'absorption'), drawn), false);
+  assert.equal(topMarks(stateOf({}, 'absorption'), []), false, 'a band switched on with no room asks for nothing');
 });
 
 test('the band sits under the legend and the corner buttons, the column\'s width tall, and keeps clear of the volume strip', () => {
@@ -360,36 +372,38 @@ test('the band sits under the legend and the corner buttons, the column\'s width
     if (band) assert.ok(band.top + band.height <= ph - Math.max(34, Math.min(ph * 0.17, 150)) - 6, `clear of the volume strip at ${ph}`);
     if (band) assert.ok(band.height <= BAND_H && band.height <= Math.max(36, ph * 0.2), `scaled down on a short map at ${ph}`);
   }
-  // Placed under the legend the last frame drew; a legend that changed asks for another frame.
-  const top = new TopProfile(), tiny: TopPlace = { view: new View({ t0: T - HOUR, t1: T, p0: 1, p1: 2 }), pw: 800, ph: 60, palette: PALETTES.light!, legendBottom: 42, toolsBottom: () => 37, window: { from: T - HOUR, to: T }, absorption: noAbsorption, loaded: () => {} };
-  top.paint(new Proxy({}, { get: () => { throw new Error('drawn'); } }) as CanvasRenderingContext2D, stateOf(), hubOf(new FlowBook()), tiny);
-  assert.equal(top.misplaced(42), false); assert.equal(top.misplaced(56), true);
+  // Placed under the legend the last frame drew; a legend that changed asks for another frame. Too short a map places no band at all.
+  const bands = new TopBands(), tiny: TopPlace = { view: new View({ t0: T - HOUR, t1: T, p0: 1, p1: 2 }), pw: 800, ph: 60, palette: PALETTES.light!, legendBottom: 42, window: { from: T - HOUR, to: T }, absorption: noAbsorption, loaded: () => {} };
+  const placed = arrangeProfiles(stateOf().traded.placements, { sides: 4, maxBands: 3, band: { legendBottom: 42, toolsBottom: 37, ph: 60, volume: true } });
+  assert.deepEqual([placed.top, placed.hidden.map(p => p.id)], [[], ['volume:top']], 'no room: none placed, and it is said to be hidden');
+  bands.paint(new Proxy({}, { get: () => { throw new Error('drawn'); } }) as CanvasRenderingContext2D, stateOf(), hubOf(new FlowBook()), tiny, placed.top);
+  assert.equal(bands.misplaced(42), false); assert.equal(bands.misplaced(56), true);
 });
 
 test('settings: the profile along the top is part of the Volume profile, on with traded volume by default, read field by field', () => {
-  assert.deepEqual(TRADED_DEFAULTS.top, { on: true, metric: 'volume' });
-  assert.deepEqual(readTraded({}).top, { on: true, metric: 'volume' });
-  assert.deepEqual(readTraded({ top: { on: false, metric: 'absorption' } }).top, { on: false, metric: 'absorption' });
-  assert.deepEqual(readTraded({ top: { on: 'yes', metric: 'whales' } }).top, { on: true, metric: 'volume' }, 'junk: the defaults');
+  assert.deepEqual(topOf(TRADED_DEFAULTS), { on: true, metric: 'volume' });
+  assert.deepEqual(topOf(readTraded({})), { on: true, metric: 'volume' });
+  assert.deepEqual(topOf(readTraded({ top: { on: false, metric: 'absorption' } })), { on: false, metric: 'absorption' });
+  assert.deepEqual(topOf(readTraded({ top: { on: 'yes', metric: 'whales' } })), { on: true, metric: 'volume' }, 'junk: the defaults');
   assert.ok(!(LAYOUT_KEYS as readonly string[]).includes('measureStrip'), 'the strip has no key of its own any more: layouts carry it in traded');
 });
 
 test('a save or a layout holding the measure strip reads as the profile along the top, with the Volume profile on where the strip showed', () => {
   const show = { profile: true, traded: false, volume: true };
   const oi = readSettings({ show, measureStrip: { on: true, kind: 'oi' }, traded: { bars: 'delta' } } as never);
-  assert.deepEqual([oi.traded.top, oi.show.traded, oi.traded.bars], [{ on: true, metric: 'oi' }, true, 'delta']);
+  assert.deepEqual([topOf(oi.traded), oi.show.traded, oi.traded.bars], [{ on: true, metric: 'oi' }, true, 'delta']);
   const delta = readSettings({ show, measureStrip: { on: true, kind: 'delta' }, traded: { bars: 'split' } } as never);
-  assert.deepEqual([delta.traded.top, delta.traded.bars], [{ on: true, metric: 'volume' }, 'split'], 'delta is traded volume, the bars as they were chosen');
+  assert.deepEqual([topOf(delta.traded), delta.traded.bars], [{ on: true, metric: 'volume' }, 'split'], 'delta is traded volume, the bars as they were chosen');
   const off = readSettings({ show, measureStrip: { on: false, kind: 'oi' } } as never);
-  assert.deepEqual([off.traded.top, off.show.traded], [{ on: false, metric: 'oi' }, false], 'a strip that was off: off, and the Volume profile as it was');
+  assert.deepEqual([topOf(off.traded), off.show.traded], [{ on: false, metric: 'oi' }, false], 'a strip that was off: off, and the Volume profile as it was');
   const newer = readSettings({ show, measureStrip: { on: true, kind: 'oi' }, traded: { top: { on: false, metric: 'liquidations' } } } as never);
-  assert.deepEqual([newer.traded.top, newer.show.traded], [{ on: false, metric: 'liquidations' }, false], 'a save with the profile along the top already: the strip is not read');
+  assert.deepEqual([topOf(newer.traded), newer.show.traded], [{ on: false, metric: 'liquidations' }, false], 'a save with the profile along the top already: the strip is not read');
   // A layout from a file or from storage, and one applied.
   const [layout] = readLayouts([{ name: 'Strip', panes: { order: [], heights: {}, sideW: 420, flowW: 300 }, settings: { show, measureStrip: { on: true, kind: 'oi' } } }]);
-  assert.deepEqual([layout!.settings.traded!.top, layout!.settings.show!.traded], [{ on: true, metric: 'oi' }, true]);
+  assert.deepEqual([topOf(layout!.settings.traded!), layout!.settings.show!.traded], [{ on: true, metric: 'oi' }, true]);
   assert.ok(!('measureStrip' in layout!.settings), 'and nothing of the strip is kept');
   const applied = settingsToApply({ show, measureStrip: { on: true, kind: 'delta' } } as never, { vwap: { anchors: {} }, traded: { zone: 'UTC' } } as unknown as AppState);
-  assert.deepEqual([applied.traded.top, applied.show.traded, applied.traded.zone], [{ on: true, metric: 'volume' }, true, 'UTC']);
+  assert.deepEqual([topOf(applied.traded), applied.show.traded, applied.traded.zone], [{ on: true, metric: 'volume' }, true, 'UTC']);
 });
 
 test('the strip\'s own words are gone from every language pack', () => {
@@ -402,6 +416,8 @@ test('the strip\'s own words are gone from every language pack', () => {
   for (const file of packs) {
     const pack = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) as Record<string, unknown>;
     for (const key of gone) assert.ok(!(key in pack), `${file} still has "${key}"`);
-    for (const key of ['Profile by time', 'Time profile (along the top)', 'Emphasise the bigger side', 'Before the value area', 'After the value area', 'VA start', 'VA end']) assert.ok(key in pack, `${file} lacks "${key}"`);
+    // The band's own switch and measure became cells of the places' grid (traded/placement-panel.ts).
+    for (const key of ['Profile by time', 'Time profile (along the top)', 'Columns (by price)']) assert.ok(!(key in pack), `${file} still has "${key}"`);
+    for (const key of ['Where each measure is drawn', 'Emphasise the bigger side', 'Before the value area', 'After the value area', 'VA start', 'VA end']) assert.ok(key in pack, `${file} lacks "${key}"`);
   }
 });
