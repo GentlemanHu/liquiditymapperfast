@@ -16,14 +16,13 @@ import { readKeyLevels, type KeyLevelSettings } from './keylevels/settings.ts';
 import { readVwap, type VwapSettings } from './vwap/settings.ts';
 import { readFootprint, type FootprintSettings } from './footprint/settings.ts';
 import { readDelta, type DeltaSettings } from './delta/settings.ts';
-import { readMeasureStrip, type MeasureStripSettings } from './measures/settings.ts';
 import { isPhone } from './device.ts';
 import { LS_METRICS, type LsMetric } from '../shared/long-short.ts';
 import { readCustomMarkets, type CustomMarkets } from './market-choice.ts';
 import { readPullWindow, type PullWindow } from './panes/pull-stack.ts';
 import type { EngineState } from './sound/engine.ts';
 import type { RangeSelection } from './range/selection.ts';
-import { readTraded, type TradedSettings } from './traded/settings.ts';
+import { hasTop, readTraded, topFromStrip, type TradedSettings } from './traded/settings.ts';
 import { t } from './i18n.ts';
 import type { ReplayView } from './replay/clock.ts';
 
@@ -108,8 +107,6 @@ export interface AppState {
   footprint: FootprintSettings;
   /** The Delta pane's settings: bars or CVD candles, where the CVD restarts, divergences. */
   delta: DeltaSettings;
-  /** The measure strip along the top of the map: whether it shows, and whether it shows each candle's delta or its change of open interest. */
-  measureStrip: MeasureStripSettings;
   /** The Binance series the Long/Short pane shows: every account, its top traders' accounts or their positions (the other venues publish one each). */
   lsMetric: LsMetric;
   /** Sound notifications: master switch, volume, which trades count and the size tiers. */
@@ -169,7 +166,7 @@ export interface AppState {
 
 type Listener = (state: AppState, changed: ReadonlySet<keyof AppState>) => void;
 
-const PERSISTED: (keyof AppState)[] = ['keepAwake', 'material', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'delta', 'measureStrip', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'defaultsRev', 'traded', 'oiMarkets', 'lsMetric', 'customMarkets'];
+const PERSISTED: (keyof AppState)[] = ['keepAwake', 'material', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'defaultsRev', 'traded', 'oiMarkets', 'lsMetric', 'customMarkets'];
 function readSaved(): Partial<AppState> {
   try { const raw = window.localStorage.getItem('hlm-app-v2'); return raw ? JSON.parse(raw) as Partial<AppState> : {}; } catch { return {}; }
 }
@@ -179,7 +176,7 @@ export const LADDER_CURVES = [0, 3, 5, 8] as const;
 export type LadderCurves = (typeof LADDER_CURVES)[number];
 
 /** The settings a saved layout holds: what the chart shows and how, never the coin, the venues, the theme, the time zone or the sounds. */
-export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'delta', 'measureStrip',
+export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'delta',
   'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'traded', 'oiMarkets', 'lsMetric', 'customMarkets'] as const satisfies readonly (keyof AppState)[];
 export type Settings = Pick<AppState, (typeof LAYOUT_KEYS)[number]>;
 
@@ -205,14 +202,19 @@ export function sameShape<T extends object>(defaults: T, raw: unknown): T {
  */
 export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): Settings {
   const heat = sameShape(HEAT_DEFAULTS, saved.heat), lt = saved.lt as { view?: unknown } | undefined;
+  // A save or a layout from when the profile along the top was the measure strip (`measureStrip`): the strip becomes the profile, and where
+  // it showed, the Volume profile it now belongs to is switched on, or the strip would be gone.
+  const strip = hasTop(saved.traded) ? null : topFromStrip((saved as Record<string, unknown>).measureStrip);
+  const traded = readTraded(saved.traded), show = sameShape(defaultShow(), saved.show);
   return {
     timeframe: typeof saved.timeframe === 'string' && TIMEFRAME_IDS.includes(saved.timeframe) ? saved.timeframe : '1h',
     // A layer saved before it was withdrawn would otherwise open on an empty chart.
     layer: AVAILABLE_LAYERS.includes(saved.layer as Layer) ? saved.layer as Layer : 'liquidity',
-    show: sameShape(defaultShow(), saved.show),
+    show: strip?.on ? { ...show, traded: true } : show,
     cvd: readCvd(saved.cvd), highlight: readHighlight(saved.highlight), absorption: readAbsorption(saved.absorption), tradeBubbles: readBubbles(saved.tradeBubbles),
     liquidations: readLiquidations(saved.liquidations), keyLevels: readKeyLevels(saved.keyLevels), vwap: readVwap(saved.vwap), footprint: readFootprint(saved.footprint),
-    delta: readDelta(saved.delta), measureStrip: readMeasureStrip(saved.measureStrip), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts', pullStack: readPullWindow(saved.pullStack), traded: readTraded(saved.traded),
+    delta: readDelta(saved.delta), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts', pullStack: readPullWindow(saved.pullStack),
+    traded: strip ? { ...traded, top: strip } : traded,
     scope: saved.scope === 'spot' || saved.scope === 'perp' ? saved.scope : 'all',
     heat: { ...heat, style: HEAT_STYLES.some(style => style.id === heat.style) ? heat.style : 'size', smooth: heat.smooth === 'off' ? 'off' : 'auto', contrast: clampContrast(heat.contrast) },
     lt: { ...sameShape(LT_DEFAULTS, saved.lt), view: lt?.view === 'imbalance' ? 'imbalance' : 'lines' },
@@ -237,8 +239,13 @@ export const DEFAULT_THEME = 'light';
  * them on was a choice and is left. Revision 2 (2026-10-20): what was new that day shows, as Karl asked ("the UI needs to show the new"):
  * the volume profile's days are drawn on the chart, their lines and their profiles, where a save holds no period and no profile (never
  * chosen: the choice came that day), and the measure strip along the top of the map is on (on a desktop: a phone has no room for it).
+ * Revision 3 (2026-10-20): the measure strip became the volume profile turned onto the time axis, set in the Volume profile's panel and
+ * switched with it (Karl: "why not do basically exactly a clone of the profile, but at the top of the chart"). A save's strip is read into
+ * `traded.top` by `readSettings` (saved layouts too): its switch as it was, Delta as traded volume, OI change as open interest, and the
+ * Volume profile switched on where the strip showed, or the strip would be gone. A save from before revision 2, and a first visit, had the
+ * strip on (on a desktop): they get the profile along the top, and with it the Volume profile.
  */
-export const DEFAULTS_REV = 2;
+export const DEFAULTS_REV = 3;
 
 export function initialState(): AppState {
   const saved = readSaved();
@@ -248,9 +255,12 @@ export function initialState(): AppState {
     ladderVenue: '', ladderVenues: [], replay: null, theme: DEFAULT_THEME, themePicked: false, defaultsRev: DEFAULTS_REV, material: 'solid', followLive: true, keepAwake: false, timeZone: 'local', hover: null, range: null, rangeTool: false,
     ...saved, ...readSettings(saved),
   };
+  // A save's measure strip was read into the profile along the top (`readSettings`): it is no setting of its own any more.
+  delete (state as unknown as Record<string, unknown>).measureStrip;
   // The volume profile (the traded column, now with its lines on the chart) is off unless chosen: a save from before it had settings of its
-  // own holds the column's old default, not a choice. (A page's save only: a saved layout always carries its own.)
-  if (saved.traded === undefined) state.show.traded = false;
+  // own holds the column's old default, not a choice. (A page's save only: a saved layout always carries its own.) A measure strip that
+  // showed is the exception: `readSettings` switched the Volume profile on for it, the profile along the top being part of it now.
+  if (saved.traded === undefined && topFromStrip((saved as Record<string, unknown>).measureStrip)?.on !== true) state.show.traded = false;
   state.sounds = readSounds(saved.sounds);
   state.timeZone = saved.timeZone === 'utc' ? 'utc' : 'local';
   // Terminal was the default for a day (2026-10-17), and every save of that day wrote it down whether chosen or not: a saved Terminal that
@@ -260,7 +270,8 @@ export function initialState(): AppState {
   if (rev < 1 && state.show.depth && state.show.oi) state.show = { ...state.show, depth: false, oi: false };
   if (rev < 2) {
     if (!state.traded.lines.length && state.traded.profiles === null) state.traded = { ...state.traded, lines: ['day'], profiles: 'day' };
-    if (!isPhone()) state.measureStrip = { ...state.measureStrip, on: true };
+    // The strip revision 2 turned on is the profile along the top now, which shows with the Volume profile.
+    if (!isPhone()) { state.traded = { ...state.traded, top: { ...state.traded.top, on: true } }; state.show = { ...state.show, traded: true }; }
   }
   state.defaultsRev = DEFAULTS_REV;
   state.theme = resolveThemeId(state.theme);

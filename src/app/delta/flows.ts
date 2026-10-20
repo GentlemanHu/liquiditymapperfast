@@ -6,8 +6,8 @@ import { kindOf } from '../scope.ts';
 import { unrecorded, type CandleFlow, type DeltaTrack, type FlowCache } from './candles.ts';
 
 /**
- * The part of the Delta pane's work that the measure strip along the top of the map does too: which markets the delta is taken over, asking
- * the flow book for the history the candles need, and each candle's flow. One copy, so the strip and the pane can never disagree on a candle.
+ * The part of the Delta pane's work that the volume profile along the top of the map does too: which markets the delta is taken over, asking
+ * the flow book for the history the candles need, and each candle's flow. One copy, so the profile and the pane always count the same markets.
  */
 
 /** What loading the flow needs of the hub: the flow book and its two loaders (each a no-op once what was asked for is held). */

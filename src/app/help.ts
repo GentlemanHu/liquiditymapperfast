@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'measures' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'barStats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'barStats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane';
 
 export interface HelpTopic {
   title: string;
@@ -32,11 +32,12 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   traded: {
     title: t('Volume profile'), guide: 'profile',
-    tip: t('A column beside the profile: how much was bought and sold at market at each price over the time on the map, on the exchanges the flow column counts. Next to the resting liquidity, it shows which levels have actually changed hands.'),
+    tip: t('A column beside the profile and the same profile along the top of the chart: how much was bought and sold at market at each price, and in each stretch of time, over the time on the map. Next to the resting liquidity, it shows which levels have actually changed hands, and when.'),
     body: [t('The point of control is the price that traded the most; the value area is the band around it that holds 70% of the volume (the share is a setting), with its top and bottom the value area high and low (VAH, VAL). They are read from every price that traded, on rows of a fixed size, so zooming the price axis does not move them.'),
       t('In the settings they can be drawn as lines on the chart. The column always adds up what is on the chart; days, weeks, months and sessions you set in any market\'s time zone are drawn on the chart itself, each over its own time, with their lines and names and, for one kind, their profiles. Hover a row for what traded there and the market orders that began at those prices, or the header for the figures of the whole window; drag on the column, or click a row, for everything about those prices in the Range panel.'),
       t('Days, weeks and sessions come from the recording, as far back as it keeps trades (a week; a day on a page that reads the exchanges itself), or from the candles of the most traded market: an estimate, marked ≈, that reaches back months.'),
-      t('An order is counted at the price it began at, so a row inside a sweep can have volume and no orders of its own.')],
+      t('An order is counted at the price it began at, so a row inside a sweep can have volume and no orders of its own.'),
+      t('Along the top of the chart the same profile is laid on the time axis: one bar for each stretch, from a second to a day as the zoom allows, growing down from the top, with the busiest stretch as its point of control and the value area around it. Its measure is chosen in the settings, on the columns\' markets: traded volume, the change in open interest, absorption or liquidations. Point at a bar for its figures; click its header for its settings.')],
   },
   keyLevels: {
     title: t('Key levels'), guide: 'profile',
@@ -131,14 +132,6 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     title: t('Volume'), guide: 'chart',
     tip: t('Volume bars along the bottom of the chart. Unusually large ones are drawn stronger (see Highlights).'),
     body: [],
-  },
-  measures: {
-    title: t('Measure strip'), guide: 'chart',
-    tip: t('A strip along the top of the chart: one bar per candle for its delta (bought minus sold at market) or its change in open interest, above the zero line for more and below it for less.'),
-    body: [t('The columns right of the chart show measures by price; this strip shows them by time, one bar per candle, as the volume bars along the bottom do. Its button switches it on or off, and its key chooses the measure.'),
-      t('Delta is what was bought at market minus what was sold in each candle, in dollars, over the same markets as the Delta pane and worked out the same way: ten minutes or more with no trade on any of them counts as not recorded.'),
-      t('OI change is how much the open interest of the OI pane\'s markets rose or fell in each candle, in coins: up means positions were opened, down that they were closed, never who bought. Most exchanges report it every minute or every five, so on a fine timeframe one change stands for several candles and the candles between have none; the strip says how often it is read.'),
-      t('Every bar is scaled against the largest in view, above and below zero alike. A candle with no data has no bar and a dotted zero line, and says why when you point at it: it is not a zero.')],
   },
   bubbles: {
     title: t('Trades'), guide: 'trades',

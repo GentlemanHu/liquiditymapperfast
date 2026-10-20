@@ -73,8 +73,18 @@ export const VOLUME_WORDS: ColumnWords = { buy: t('Bought at market'), sell: t('
  * these prices, where the row stands against the point of control and the value area (`levels`), and how far back the recording goes.
  */
 export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
-  const low = (rows.bin0 + index) * rows.step, b = rows.buy[index] ?? 0, s = rows.sell[index] ?? 0, v = b + s;
-  const lines: InfoLine[] = [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(low + rows.step, rows.step)}`, bold: true }];
+  const low = (rows.bin0 + index) * rows.step, high = low + rows.step;
+  const where = !levels ? null : levels.poc >= low && levels.poc < high ? t('Point of control') : high > levels.val && low < levels.vah ? t('In the value area') : low >= levels.vah ? t('Above the value area') : t('Below the value area');
+  return [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(high, rows.step)}`, bold: true }, ...rowBody(rows, index, words, where)];
+}
+
+/**
+ * The body of a row's box under its first line, which says where the row is (its prices on the column, its time span on the profile along
+ * the top): its two sides and their difference, its share of the window, the market orders that began in it where they are counted, where
+ * it stands against the point of control and the value area (`where`, in the words of its axis), and how far back the recording goes.
+ */
+export function rowBody(rows: TradedRows, index: number, words: ColumnWords, where: string | null): InfoLine[] {
+  const b = rows.buy[index] ?? 0, s = rows.sell[index] ?? 0, v = b + s, lines: InfoLine[] = [];
   if (!(v > 0)) lines.push({ text: words.none, color: 'muted', wrap: true });
   else {
     lines.push({ label: words.buy, text: `$${usd(b)}`, color: 'buy' }, { label: words.sell, text: `$${usd(s)}`, color: 'sell' });
@@ -86,11 +96,7 @@ export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels
       if (rows.counted < rows.minutes) lines.push({ text: t('Orders are counted for {n} of the {total} minutes.', { n: rows.counted, total: rows.minutes }), color: 'muted', wrap: true });
     }
   }
-  if (levels) {
-    const high = low + rows.step;
-    const where = levels.poc >= low && levels.poc < high ? t('Point of control') : high > levels.val && low < levels.vah ? t('In the value area') : low >= levels.vah ? t('Above the value area') : t('Below the value area');
-    lines.push({ label: t('Profile'), text: where, rule: true });
-  }
+  if (where) lines.push({ label: t('Profile'), text: where, rule: true });
   if (rows.partial && rows.recordedSince !== null) lines.push({ text: t('Recorded since {time}: the window reaches back further than the recording.', { time: when(rows.recordedSince) }), color: 'muted', wrap: true });
   return lines;
 }

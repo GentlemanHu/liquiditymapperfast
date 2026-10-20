@@ -11,7 +11,8 @@ import { PROFILE_METRICS, type ProfileMetric } from './metrics.ts';
  *   up, which is always what is on the chart, and on it the periods chosen (each day, week or month of a zone, or sessions) with their past
  *   ones, the profiles of one kind of them, what they are worked out from (the recording, as far back as it keeps trades, or the most traded
  *   venue's candles, an estimate that reaches back further), and whether a point of control nobody has traded through since (a naked one)
- *   runs on to the right.
+ *   runs on to the right;
+ * - the profile along the top of the chart: the same measures over the same stretch, by time instead of by price (measures/).
  */
 /** A kind of window drawn on the chart. */
 export type LineKind = 'day' | 'week' | 'month' | 'sessions';
@@ -24,6 +25,8 @@ export interface TradedSettings {
    */
   metrics: ProfileMetric[];
   bars: 'split' | 'delta';
+  /** Split bars draw the stronger side of each row a little brighter and the weaker dimmer, the more one-sided the more (traded/emphasis.ts). */
+  emphasis: boolean;
   valueArea: boolean;
   /** The value area's share of the volume, in percent. */
   share: number;
@@ -51,6 +54,12 @@ export interface TradedSettings {
   /** Whether the lines that reach the right edge (the window under way, an untouched point of control running on) are named on the price axis. */
   tags: boolean;
   sessions: SessionDef[];
+  /**
+   * The profile along the top of the chart (measures/): one of the columns' measures added up by time over what is on the chart, with the
+   * columns' bars, value area and share, switched with them (`show.traded`). Karl, 2026-10-20: the measure strip, rebuilt as the profile
+   * turned onto the time axis, and set where the profile is set.
+   */
+  top: { on: boolean; metric: ProfileMetric };
 }
 
 export const ROW_MULTIPLES = [0.25, 0.5, 1, 2, 5, 10] as const;
@@ -109,10 +118,11 @@ export const SESSION_PRESETS: readonly Omit<SessionDef, 'id' | 'on'>[] = [
 const preset = (i: number, id: string): SessionDef => ({ ...SESSION_PRESETS[i]!, id, on: true });
 
 export const TRADED_DEFAULTS: Readonly<TradedSettings> = {
-  metrics: ['volume'], bars: 'split', valueArea: true, share: 70, rows: 1, poc: true, va: true, labels: true, tags: true,
+  metrics: ['volume'], bars: 'split', emphasis: true, valueArea: true, share: 70, rows: 1, poc: true, va: true, labels: true, tags: true,
   // Each day on the chart, its lines and its profile, from the first visit (Karl, 2026-10-20: what is new must show without hunting for it).
   lines: ['day'], profiles: 'day', source: 'recorded', zone: 'page', count: 5, naked: true,
   sessions: [preset(0, 's1'), preset(1, 's2'), preset(2, 's3')],
+  top: { on: true, metric: 'volume' },
 };
 
 /** The IANA name of a stored zone: `page` follows the page's clock setting, `local` is this computer's. */
@@ -156,15 +166,37 @@ export function readTraded(saved: unknown): TradedSettings {
   return {
     // A save from when the column showed one measure (`metric`) reads as that one column.
     metrics: readMetrics(Array.isArray(s.metrics) ? s.metrics : [s.metric]) ?? [...d.metrics],
-    bars: oneOf(['split', 'delta'] as const, s.bars, d.bars),
+    bars: oneOf(['split', 'delta'] as const, s.bars, d.bars), emphasis: flag(s.emphasis, d.emphasis),
     valueArea: flag(s.valueArea, d.valueArea), share: oneOf(SHARES, s.share, d.share), rows: oneOf(ROW_MULTIPLES, s.rows, d.rows),
     poc: flag(s.poc, d.poc), va: flag(s.va, d.va), labels: flag(s.labels, d.labels), tags: flag(s.tags, d.tags),
     lines: LINE_KINDS.filter(k => wanted.includes(k) || k === old),
     profiles: s.profiles === null ? null : kind(s.profiles) ?? (s.pastProfiles === true ? old : s.profiles === undefined ? d.profiles : null),
     source: oneOf(['recorded', 'candles'] as const, s.source, d.source),
     zone: zoneOk(s.zone) ? s.zone : d.zone, count, naked: flag(s.naked, d.naked), sessions,
+    top: readTop(s.top) ?? { ...d.top },
   };
 }
+
+/** A stored profile along the top, or null when there is none to read (a save from before it, or junk). */
+function readTop(saved: unknown): TradedSettings['top'] | null {
+  if (!saved || typeof saved !== 'object') return null;
+  const s = saved as Record<string, unknown>;
+  return { on: flag(s.on, TRADED_DEFAULTS.top.on), metric: PROFILE_METRICS.includes(s.metric as ProfileMetric) ? s.metric as ProfileMetric : TRADED_DEFAULTS.top.metric };
+}
+
+/**
+ * The profile along the top from the measure strip it replaced (`measureStrip`, saved from 2026-10-19 to 2026-10-20), or null when a save
+ * has none: its switch as it was, open interest as open interest, and delta as traded volume (the bars' Delta setting draws the delta, and
+ * `bars` is left as it was chosen).
+ */
+export function topFromStrip(saved: unknown): TradedSettings['top'] | null {
+  if (!saved || typeof saved !== 'object') return null;
+  const s = saved as Record<string, unknown>;
+  return { on: s.on === true, metric: s.kind === 'oi' ? 'oi' : 'volume' };
+}
+
+/** Whether stored Volume profile settings carry the profile along the top already (then a measure strip beside them is not read). */
+export const hasTop = (saved: unknown): boolean => !!saved && typeof saved === 'object' && (saved as Record<string, unknown>).top !== undefined;
 
 /** A new session's id: one no session in the list has. */
 export function newSessionId(sessions: readonly SessionDef[]): string {

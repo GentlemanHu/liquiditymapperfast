@@ -125,6 +125,12 @@ export class AbsorptionBook {
    */
   readonly cut = new Map<string, number>();
   /**
+   * Each instrument's highest minute floor over the window the last history answer covers (`cover`): the base floor, or raised to the peak of a
+   * group a busy minute left out. Judged against a threshold as the absorption column judges it (shared/absorption.ts `AbsorptionProfile`), it
+   * says where a minute kept only its largest groups and marks may be missing.
+   */
+  readonly floors = new Map<string, number>();
+  /**
    * Every group that is a mark at the thresholds last asked for, with the time it started, in the order the groups came: judged again only
    * when the groups, the thresholds (a new map from the caller) or the instruments change, so a frame that only moves the pointer, or the
    * map, reads a list instead of judging tens of thousands of groups. Two are kept, the one used last first: the map's and the Range panel's
@@ -209,7 +215,8 @@ export class AbsorptionBook {
    */
   load(answer: AbsorptionAnswer, cover: AbsorptionCover | null = null): void {
     if (cover) {
-      this.#cover = cover; this.cut.clear();
+      this.#cover = cover; this.cut.clear(); this.floors.clear();
+      for (const [id, floor] of Object.entries(answer.floors)) if (Number.isFinite(floor)) this.floors.set(id, floor);
       for (const id of answer.capped) {
         let least = Infinity; for (const g of answer.groups) if (g.id === id) least = Math.min(least, peakOf(g));
         if (Number.isFinite(least)) this.cut.set(id, least);
@@ -257,6 +264,13 @@ export class AbsorptionBook {
     const out: AbsorptionMark[] = [], from = t0 - ABSORPTION_WINDOW_MS;
     for (const { t0: start, mark } of judged.marks) if (start >= from && start <= t1 && mark.price >= p0 && mark.price <= p1) out.push(mark);
     return out;
+  }
+
+  /** The highest floor of `id` over [from, to): the last answer's (`floors`) with the minutes held there, the live stream's among them. */
+  floorIn(id: string, from: number, to: number): number | undefined {
+    let top = this.floors.get(id);
+    for (const [t, m] of this.#minutes.get(id) ?? []) if (t >= from && t < to && (top === undefined || m.floor > top)) top = m.floor;
+    return top;
   }
 
   /** The lowest threshold of these instruments, never under the recorder's floor: what a history question needs to ask for. */

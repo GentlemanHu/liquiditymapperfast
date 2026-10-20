@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_THEME, initialState } from '../src/app/store.ts';
 import { CAUTION, FRAMES, FRAME_STRENGTH, PALETTES, THEME_ORDER, chromeFor, mixHex, resolveThemeId, rgb, textOn, themeColorOf, themeVars, type Palette } from '../src/app/theme.ts';
+import { WEAK_ALPHA, emphasisRamps } from '../src/app/traded/emphasis.ts';
 
 const luminance = (hex: string): number => {
   const [r, g, b] = rgb(hex).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)) as [number, number, number];
@@ -160,5 +161,21 @@ test('a page opens in Light, and a saved Terminal that was never picked (written
     assert.deepEqual(load({ theme: 'no-such-theme' }), { theme: 'light', themePicked: false });
   } finally {
     if (real === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real;
+  }
+});
+
+test('the stronger side of a split bar, fully one-sided, keeps its contrast in every theme, and the weaker side stays in sight', () => {
+  for (const id of THEME_ORDER) {
+    const p = PALETTES[id]!, ramps = emphasisRamps(p);
+    for (const side of ['bid', 'ask'] as const) {
+      const strong = ramps[side][ramps[side].length - 1]!;
+      for (const surface of [p.bg, p.panel]) {
+        // Toward the text colour, away from the background: never less contrast than the side's own colour, which the rule above holds at 3.
+        assert.ok(contrast(strong, surface) >= Math.max(3, contrast(p[side], surface) - 0.01), `${id}: the stronger ${side} ${strong} at ${contrast(strong, surface).toFixed(2)} on ${surface}`);
+      }
+      // The weaker side at its dimmest (0.35) over the panel: faint, never gone.
+      const weak = mixHex(p.panel, p[side], WEAK_ALPHA);
+      assert.ok(contrast(weak, p.panel) >= 1.2, `${id}: the weaker ${side} at ${WEAK_ALPHA} is ${contrast(weak, p.panel).toFixed(2)} on the panel`);
+    }
   }
 });

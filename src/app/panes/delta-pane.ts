@@ -112,7 +112,7 @@ export class DeltaPane extends TimePane {
     if (key !== this.#divKey) { this.#divKey = key; this.onDivergences(); }
   }
 
-  /** Ask the flow book for what candles from `from` need (delta/flows.ts, shared with the measure strip over the map). */
+  /** Ask the flow book for what candles from `from` need (delta/flows.ts, shared with the volume profile along the top of the map). */
   #ensure(loadIds: string[], from: number, now: number): void { ensureDeltaFlow(this.hub, loadIds, from, now); }
 
   /** The candles of the view: the flow book asked for what they need, the closed ones worked out once, the open one every time. */

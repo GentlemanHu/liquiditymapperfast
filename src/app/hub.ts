@@ -49,9 +49,10 @@ interface AskedWindow { base: string; from: number; to: number }
 
 /**
  * The part of a column's window a source can be asked about: all of it up to `MAX_PROFILE_SPAN_MS`, else its newest part, up to now for one
- * still under way (a month under way asked whole ends next month, and its newest eight days would lie in the future).
+ * still under way (a month under way asked whole ends next month, and its newest eight days would lie in the future). The profile along the
+ * top adds up the same window.
  */
-function askedSpan(from: number, to: number): { from: number; to: number } {
+export function askedSpan(from: number, to: number): { from: number; to: number } {
   if (!(to - from > MAX_PROFILE_SPAN_MS)) return { from, to };
   const end = Math.min(to, (Math.floor(Date.now() / MINUTE) + 1) * MINUTE);
   return { from: Math.max(from, end - MAX_PROFILE_SPAN_MS), to: end };
@@ -478,6 +479,25 @@ export class Hub {
     return promise;
   }
   #oiInflight: { key: string; generation: number; promise: Promise<void> } | null = null;
+  /** What the open-interest markets were last checked against (`refreshOiMarkets`), so a check with nothing new costs a comparison. */
+  #oiChecked: readonly unknown[] = [];
+
+  /**
+   * Load open interest again when the markets it adds up are no longer those it was asked for. They are worked out from the flow book and
+   * the books on the map, which a fresh page learns only after its candles have come: the first question then named no market, and nothing
+   * asked again until the 20-second clock, so open interest (its pane, its column, the profile along the top) came about 20 s after
+   * everything else (measured 2026-10-20). Safe to call on every flow push and frame: it only compares until what the markets are worked out
+   * from changes, and waits for the candles of the chart on screen, whose load asks for open interest itself.
+   */
+  refreshOiMarkets(): void {
+    const state = this.store.state, own = state.seriesInstrument || state.marketId;
+    if (!own || state.oiMarkets === 'chart' || this.#loaded?.key !== this.#series) return;
+    const inputs = [own, state.timeframe, state.oiMarkets, state.customMarkets, state.markets, state.disabledVenues, state.scope, state.bookGone, this.flow.ids.length, this.flow.loads, state.levels?.books.map(b => b.venue).join(',') ?? null];
+    if (inputs.length === this.#oiChecked.length && inputs.every((v, i) => v === this.#oiChecked[i])) return;
+    this.#oiChecked = inputs;
+    const key = `${own}|${state.timeframe}|${state.oiMarkets}|${(oiMarketIds(state, this.flow) ?? []).join(',')}`;
+    if (key !== this.#oiKey && this.#oiInflight?.key !== key) void this.loadOi();
+  }
 
   async #loadOi(own: string, key: string, added: string[] | null, venues: string[]): Promise<void> {
     const state = this.store.state, { timeframe } = state;

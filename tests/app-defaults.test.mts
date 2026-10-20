@@ -28,19 +28,35 @@ test('a save written under the old defaults (Depth and Open interest both on, no
   saved({ defaultsRev: DEFAULTS_REV, show: { ...DEFAULT_SHOW, depth: true, oi: true } }, () => assert.deepEqual([initialState().show.depth, initialState().show.oi], [true, true]));
 });
 
-test('a save from before revision 2 shows what was new: days on the chart with their profiles, and the measure strip on a desktop', () => {
-  // A save of the day before: the volume profile on, no period on the chart and no profile (the choice came that day), the strip off.
-  const before = { defaultsRev: 1, show: { ...DEFAULT_SHOW, traded: true }, traded: { lines: [], profiles: null, metrics: ['volume', 'oi'] }, measureStrip: { on: false, kind: 'oi' } };
+test('a save from before revision 2 shows what was new: days on the chart with their profiles, and the strip, now the profile along the top', () => {
+  // A save of the day before: the volume profile off, no period on the chart and no profile (the choice came that day), the strip off.
+  const before = { defaultsRev: 1, show: { ...DEFAULT_SHOW, traded: false }, traded: { lines: [], profiles: null, metrics: ['volume', 'oi'] }, measureStrip: { on: false, kind: 'oi' } };
   saved(before, () => {
     const s = initialState();
-    assert.deepEqual([s.traded.lines, s.traded.profiles, s.measureStrip.on, s.measureStrip.kind, s.defaultsRev], [['day'], 'day', true, 'oi', DEFAULTS_REV]);
+    assert.deepEqual([s.traded.lines, s.traded.profiles, s.traded.top, s.show.traded, s.defaultsRev], [['day'], 'day', { on: true, metric: 'oi' }, true, DEFAULTS_REV]);
     assert.deepEqual(s.traded.metrics, ['volume', 'oi'], 'the columns chosen stay');
   });
-  // Periods chosen before are kept as they were; and anything saved under revision 2 is a choice.
+  // Periods chosen before are kept as they were.
   saved({ ...before, traded: { lines: ['week'], profiles: null } }, () => assert.deepEqual([initialState().traded.lines, initialState().traded.profiles], [['week'], null]));
-  saved({ ...before, defaultsRev: DEFAULTS_REV }, () => assert.deepEqual([initialState().traded.lines, initialState().measureStrip.on], [[], false]));
-  // A first visit: the strip on (a desktop), the days ready for when the volume profile is switched on.
-  saved(null, () => { const s = initialState(); assert.deepEqual([s.measureStrip.on, s.traded.lines, s.traded.profiles], [true, ['day'], 'day']); });
+  // A first visit: the profile along the top on (a desktop), and with it the Volume profile and its days.
+  saved(null, () => { const s = initialState(); assert.deepEqual([s.traded.top, s.show.traded, s.traded.lines, s.traded.profiles], [{ on: true, metric: 'volume' }, true, ['day'], 'day']); });
+});
+
+test('revision 3: a save of revision 2 carries its measure strip into the profile along the top, and the Volume profile where it showed', () => {
+  const rev2 = { defaultsRev: 2, show: { ...DEFAULT_SHOW, traded: false }, traded: { lines: [], profiles: null, bars: 'delta' }, measureStrip: { on: true, kind: 'delta' } };
+  saved(rev2, () => {
+    const s = initialState();
+    assert.deepEqual([s.traded.top, s.show.traded, s.traded.bars, s.traded.lines, s.defaultsRev], [{ on: true, metric: 'volume' }, true, 'delta', [], DEFAULTS_REV]);
+    assert.ok(!('measureStrip' in s), 'the strip is not kept');
+  });
+  // A strip switched off stays off, and the Volume profile as it was; a save of revision 3 is read as it is.
+  saved({ ...rev2, measureStrip: { on: false, kind: 'oi' } }, () => { const s = initialState(); assert.deepEqual([s.traded.top, s.show.traded], [{ on: false, metric: 'oi' }, false]); });
+  saved({ ...rev2, defaultsRev: DEFAULTS_REV, measureStrip: undefined, traded: { top: { on: false, metric: 'absorption' } } }, () => { const s = initialState(); assert.deepEqual([s.traded.top, s.show.traded], [{ on: false, metric: 'absorption' }, false]); });
+  // A save holding a strip that showed and no Volume profile settings at all keeps the profile along the top: the old "no settings, so
+  // off" rule does not switch off what the strip carried in.
+  saved({ defaultsRev: 2, show: { ...DEFAULT_SHOW, traded: false }, measureStrip: { on: true, kind: 'oi' } }, () => { const s = initialState(); assert.deepEqual([s.traded.top, s.show.traded], [{ on: true, metric: 'oi' }, true]); });
+  saved({ defaultsRev: 2, show: { ...DEFAULT_SHOW, traded: true }, measureStrip: { on: false, kind: 'oi' } }, () => assert.equal(initialState().show.traded, false, 'with the strip off, the old rule stands'));
+  assert.equal(DEFAULTS_REV, 3);
 });
 
 test('the columns begin at the golden section of the window, as wide as before at the least', () => {
