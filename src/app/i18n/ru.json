@@ -1605,7 +1605,7 @@
  "Click to take this pane": "Нажмите, чтобы взять эту панель",
  "Candle, OI and liquidations": "Свеча, ОИ и ликвидации",
  "The newest candle in view: the running sum from the start of its day.": "Самая новая видимая свеча: накопленная сумма с начала её дня.",
- "≈ Only the largest 5,000 liquidations of this window are counted.": "≈ Учтены только 5 000 крупнейших ликвидаций этого окна.",
+ "≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.": "≈ В один из дней этих свечей было больше 5 000 ликвидаций: учтены только 5 000 крупнейших за тот день.",
  "venues agree %": "рынки согласны %",
  "How much of the candle's volume traded on markets whose own delta had the sign of the total: 100 % every market pressed the same way, low where they pulled against each other. Needs several markets added together.": "Какая доля объёма свечи прошла на рынках, чья собственная дельта имела знак общей: 100 % — все рынки давили в одну сторону, мало — где они тянули друг против друга. Нужно несколько сложенных рынков.",
  "liq": "ликв.",

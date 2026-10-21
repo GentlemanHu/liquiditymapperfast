@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FlowBook } from '../src/app/flow-book.ts';
+import { Asked } from '../src/app/measures/measure.ts';
 import type { DeltaTrack } from '../src/app/delta/candles.ts';
 import type { OiPart } from '../src/app/oi-change.ts';
 import { LAYOUT_KEYS, readSettings, type AppState, type OiBar } from '../src/app/store.ts';
@@ -420,4 +421,26 @@ test('the strip\'s own words are gone from every language pack', () => {
     for (const key of ['Profile by time', 'Time profile (along the top)', 'Columns (by price)']) assert.ok(!(key in pack), `${file} still has "${key}"`);
     for (const key of ['Where each measure is drawn', 'Emphasise the bigger side', 'Before the value area', 'After the value area', 'VA start', 'VA end']) assert.ok(key in pack, `${file} lacks "${key}"`);
   }
+});
+
+test('a question whose end only creeps on with a running clock is asked again after its spacing, a widened one at once, and the answer says what it read', async () => {
+  const real = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const held = new Asked<number>(), settle = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+    let asked = 0;
+    const load = async () => ++asked;
+    held.ensure('', 1_000, 2_000, false, load, () => {}); await settle();
+    assert.deepEqual(held.answered, { from: 1_000, to: 2_000 });
+    for (let i = 1; i <= 30; i++) { clock += 33; held.ensure('', 1_000, 2_000 + i * 33, false, load, () => {}); await settle(); }
+    assert.equal(asked, 1, 'thirty frames of a clock-cut end: one question');
+    clock += 5_000; held.ensure('', 1_000, 2_000 + 31 * 33 + 5_000, false, load, () => {}); await settle();
+    assert.equal(asked, 2, 'asked again once its spacing has passed');
+    assert.equal(held.answered!.to, 2_000 + 31 * 33 + 5_000);
+    held.ensure('', 1_000, 3_600_000, false, load, () => {}); await settle();
+    assert.equal(asked, 3, 'widened by a zoom: asked at once');
+    held.ensure('', 500, 3_600_000, false, load, () => {}); await settle();
+    assert.equal(asked, 4, 'moved back: asked at once');
+  } finally { Date.now = real; }
 });

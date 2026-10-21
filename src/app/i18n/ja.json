@@ -1527,7 +1527,7 @@
  "Click to take this pane": "クリックしてこのペインを撮影",
  "Candle, OI and liquidations": "足・建玉・清算",
  "The newest candle in view: the running sum from the start of its day.": "表示中で最新のローソク足：その日の始まりからの累計。",
- "≈ Only the largest 5,000 liquidations of this window are counted.": "≈ このウィンドウの最大5,000件の清算だけを数えています。",
+ "≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.": "≈ これらの足のある日に清算が5,000件を超えました：その日の最大5,000件だけを数えています。",
  "venues agree %": "市場一致 %",
  "How much of the candle's volume traded on markets whose own delta had the sign of the total: 100 % every market pressed the same way, low where they pulled against each other. Needs several markets added together.": "ローソク足の出来高のうち、自身のデルタが合計と同じ符号だった市場で約定した割合：100 %はすべての市場が同じ方向に押したこと、低いほど逆方向に引き合ったことを示します。複数の市場の合算が必要です。",
  "liq": "清算",

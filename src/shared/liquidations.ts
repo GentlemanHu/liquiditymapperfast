@@ -28,7 +28,8 @@ export type WireLiquidation = [number, string, LiquidatedSide, number, number, n
 export const LIQUIDATION_FLOOR_USD = 100;
 /** The most liquidations one answer carries (the largest of its window when more match). */
 export const LIQUIDATIONS_PER_ANSWER = 5_000;
-const RETENTION_MS = 7 * 24 * 3_600_000;
+/** How long liquidations are kept (the server's and the browser engine's): an older one is not known, not absent. */
+export const LIQUIDATION_RETENTION_MS = 7 * 24 * 3_600_000;
 const MEMORY_MAX = 20_000;
 const SEEN_MAX = 20_000;
 /** A last traded price further than this from a liquidation's own time is not taken for where the market was then. */
@@ -83,7 +84,7 @@ export class LiquidationStream {
   /** The smallest liquidation kept (LIQUIDATION_FLOOR_USD; smaller for a coin that trades less than BTC). */
   readonly floorUsd: number;
 
-  constructor(store: LiquidationStore | null = null, protected now: () => number = Date.now, retentionMs: number = RETENTION_MS, floorUsd: number = LIQUIDATION_FLOOR_USD) {
+  constructor(store: LiquidationStore | null = null, protected now: () => number = Date.now, retentionMs: number = LIQUIDATION_RETENTION_MS, floorUsd: number = LIQUIDATION_FLOOR_USD) {
     this.#store = store; this.#retentionMs = retentionMs; this.floorUsd = floorUsd;
     if (store) for (const row of store.load(now() - retentionMs, MEMORY_MAX)) { this.#recent.push(row); this.#seen.add(liquidationKey(row)); }
   }

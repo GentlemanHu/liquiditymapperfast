@@ -11,12 +11,11 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, pinnedLines, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, DAY_MS, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type LiquidationDay, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
-import { Asked } from '../measures/measure.ts';
-import { LIQUIDATIONS_PER_ANSWER, type Liquidation } from '../../shared/liquidations.ts';
-import { MAX_PROFILE_SPAN_MS } from '../../shared/footprint.ts';
+import { LIQUIDATIONS_PER_ANSWER, LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
+import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
@@ -650,9 +649,16 @@ export class BarStatsPane extends TimePane {
    */
   #pinned: { t: number; on: string } | null = null;
   #pinContext(state: AppState): string { return `${state.marketId}|${state.timeframe}|${this.heat.footprintMarkets(state).join(',')}`; }
-  /** The liquidations of the markets counted over the table's candles, every size the record keeps (as the Liquidations measure asks them). */
-  #liquidations = new Asked<Liquidation[]>();
-  #liqHeld: { ids: string; from: number; to: number; rows: readonly Liquidation[]; version: number } | null = null;
+  /**
+   * Liquidations of the markets counted, every size the record keeps, by UTC day: each day asked on its own, so an answer holds a whole day
+   * (BTC: 900 to 3,500) rather than the largest 5,000 of a week; the day under way asked again every half minute; two at a time, the newest first.
+   */
+  #liqDays = new Map<number, LiquidationDay & { at: number }>();
+  #liqIds = '';
+  #liqLoading = new Set<number>();
+  #liqVersion = 0;
+  /** A day whose question failed is asked again after its own pause, the others meanwhile. */
+  #liqRetry = new Map<number, number>();
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #button = document.createElement('button');
   #panel: Panel | null = null;
@@ -769,20 +775,39 @@ export class BarStatsPane extends TimePane {
     this.invalidate();
   }
 
-  /** The liquidations by candle over the table's candles, from the window last answered (0 in a candle it covers with none). */
-  #liquidationsFor(ids: readonly string[], times: readonly number[], tfMs: number): StatInput['liquidations'] {
-    const held = this.#liqHeld; if (!held || held.ids !== ids.join(',')) return undefined;
-    const key = `${held.version}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}`;
-    if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const buy = new Map<number, number>(), sell = new Map<number, number>(), wanted = new Set(ids);
-    for (const start of times) if (start >= held.from && start + tfMs <= held.to) { buy.set(start, 0); sell.set(start, 0); }
-    for (const l of held.rows) {
-      if (!wanted.has(l.id)) continue;
-      const start = Math.floor(l.t / tfMs) * tfMs, side = l.side === 'short' ? buy : sell, sum = side.get(start);
-      // Shorts liquidated are forced buys, longs liquidated forced sells, as in the Liquidations column.
-      if (sum !== undefined) side.set(start, sum + l.usd);
+  /**
+   * Ask for the UTC days of [from, to) not held, and again a day not answered to its end (the day under way, or one asked before its midnight)
+   * once what is held of it is half a minute old.
+   */
+  #ensureLiquidations(ids: string, from: number, to: number): void {
+    const source = this.hub.source; if (!source.liquidations) return;
+    // Other markets counted: what is held is not theirs, and an answer still out for the old ones is dropped when it comes.
+    if (ids !== this.#liqIds) { this.#liqIds = ids; this.#liqDays = new Map(); this.#liqRetry = new Map(); this.#liqVersion++; }
+    const now = Date.now();
+    for (let day = Math.floor((to - 1) / DAY_MS) * DAY_MS; day >= Math.floor(from / DAY_MS) * DAY_MS && this.#liqLoading.size < 2; day -= DAY_MS) {
+      const held = this.#liqDays.get(day);
+      if (this.#liqLoading.has(day) || now < (this.#liqRetry.get(day) ?? 0) || (held && (held.to >= day + DAY_MS || now - held.at < 30_000))) continue;
+      this.#liqLoading.add(day);
+      const asked = Date.now();
+      source.liquidations(day, day + DAY_MS).then(rows => {
+        if (ids !== this.#liqIds) return;
+        this.#liqRetry.delete(day);
+        this.#liqDays.set(day, { rows, cut: rows.length >= LIQUIDATIONS_PER_ANSWER, to: Math.min(day + DAY_MS, asked), at: Date.now() }); this.#liqVersion++;
+      }, () => { if (ids === this.#liqIds) this.#liqRetry.set(day, Date.now() + 15_000); })
+        // Drawn again whatever came back: the slot it held is free for the next day, an answer dropped for other markets included.
+        .finally(() => { this.#liqLoading.delete(day); this.invalidate(); });
     }
-    const value = { buy, sell, cut: held.rows.length >= LIQUIDATIONS_PER_ANSWER };
+    // Only the days around the window are kept.
+    for (const day of [...this.#liqDays.keys()]) if (day + DAY_MS < from - DAY_MS || day > to + DAY_MS) this.#liqDays.delete(day);
+  }
+
+  /** The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change). */
+  #liquidationsFor(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
+    if (ids.join(',') !== this.#liqIds) return undefined;
+    // By the minute too: the candle under way counts once the minute it starts in has been asked about.
+    const key = `${this.#liqVersion}|${this.#liqIds}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
+    const value = liquidationBuckets(this.#liqDays, ids, times, tfMs, coverFrom, Date.now());
     this.#liqBuckets = { key, value };
     return value;
   }
@@ -814,14 +839,15 @@ export class BarStatsPane extends TimePane {
     if (!times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once executions are recorded for the visible candles.'), 12, ph / 2); this.#table = null; return null; }
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
     const taker = defs.some(def => def.id === 'takerDelta') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
-    // Liquidations of the markets counted, every size the record keeps, over the table's candles to the view's end (steady through a replay, whose
-    // candles after its moment are not slots), and no longer than the source answers whole (its newest eight days): a candle before is not known.
-    const source = this.hub.source, liqTo = Math.ceil((v.t1 + tfMs) / tfMs) * tfMs, liqFrom = Math.max(times[0]!, liqTo - MAX_PROFILE_SPAN_MS);
+    // Liquidations of the markets counted, a UTC day per answer, over the days of the table's candles (none after now). A candle before the
+    // record reaches is not known: the source keeps a week (a page's own engine a day), and only since the recording started. The edge is
+    // taken to the next whole minute (a candle half expired is not known either), which also keeps it from changing on every frame.
+    const retention = this.hub.source.kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
+    const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = Math.max(Math.ceil((Date.now() - retention) / 60_000) * 60_000, this.hub.recordedSince > 0 ? this.hub.recordedSince : 0);
     let liquidations: StatInput['liquidations'];
-    if (source.liquidations && defs.some(def => def.id === 'liq' || def.id === 'liqNet') && markets.length) {
-      const ids = markets.join(','), live = liqTo >= Date.now();
-      this.#liquidations.ensure(ids, liqFrom, liqTo, live, () => source.liquidations!(liqFrom, liqTo).then(rows => { this.#liqHeld = { ids, from: liqFrom, to: liqTo, rows, version: (this.#liqHeld?.version ?? 0) + 1 }; return rows; }), () => this.invalidate());
-      liquidations = this.#liquidationsFor(markets, times, tfMs);
+    if (this.hub.source.liquidations && defs.some(def => def.id === 'liq' || def.id === 'liqNet') && markets.length) {
+      this.#ensureLiquidations(markets.join(','), Math.max(times[0]!, liqCover), liqTo);
+      liquidations = this.#liquidationsFor(markets, times, tfMs, liqCover);
     }
     const restart = daily ? resetKeys(times, 'day', zone) : undefined;
     // Worked out again only when what it is worked out from changes: a pointer move redraws from what is held. The clock counts by the minute

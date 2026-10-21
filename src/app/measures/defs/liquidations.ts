@@ -67,7 +67,8 @@ function liquidationWorker(): TimeWorker {
       // Shorts liquidated are forced buys (bid colour), longs liquidated forced sells (ask colour), as in the column.
       for (const l of rows) if (wanted.has(l.id)) events.push({ t: l.t, side: l.side === 'short' ? 0 : 1, usd: l.usd });
       const got = held.held !== null;
-      return worked(q, key, [], eventRows(events, q.from, q.to, step, got ? { from: -Infinity, to: Infinity } : null), limit,
+      // Read only as far as the answer held reaches: a window grown since waits for its own answer, not counted as quiet.
+      return worked(q, key, [], eventRows(events, q.from, q.to, step, got ? held.answered : null), limit,
         { flags: { cut: rows.length >= LIQUIDATIONS_PER_ANSWER, incomplete: false }, unavailable: !source.liquidations || (held.failed && !got) });
     },
   };

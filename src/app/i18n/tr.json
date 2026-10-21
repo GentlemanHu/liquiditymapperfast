@@ -1573,7 +1573,7 @@
  "Click to take this pane": "Bu paneli almak için tıklayın",
  "Candle, OI and liquidations": "Mum, AP ve likidasyonlar",
  "The newest candle in view: the running sum from the start of its day.": "Görünen en yeni mum: gününün başından itibaren kümülatif toplam.",
- "≈ Only the largest 5,000 liquidations of this window are counted.": "≈ Bu pencerenin yalnızca en büyük 5.000 likidasyonu sayılır.",
+ "≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.": "≈ Bu mumların bir gününde 5.000’den fazla likidasyon vardı: yalnızca o günün en büyük 5.000’i sayılır.",
  "venues agree %": "piyasa uyumu %",
  "How much of the candle's volume traded on markets whose own delta had the sign of the total: 100 % every market pressed the same way, low where they pulled against each other. Needs several markets added together.": "Mumun hacminin, kendi deltası toplamla aynı işarette olan piyasalarda işlem gören kısmı: %100 tüm piyasalar aynı yöne bastı, düşükse birbirine karşı çektiler. Birden çok piyasanın toplanması gerekir.",
  "liq": "likid.",

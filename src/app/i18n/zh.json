@@ -1527,7 +1527,7 @@
  "Click to take this pane": "点击以截取此窗格",
  "Candle, OI and liquidations": "K 线、持仓与清算",
  "The newest candle in view: the running sum from the start of its day.": "可见的最新一根 K 线：从当天开始起的累计值。",
- "≈ Only the largest 5,000 liquidations of this window are counted.": "≈ 只统计此窗口中最大的 5,000 笔清算。",
+ "≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.": "≈ 这些 K 线中有一天的清算超过 5,000 笔：只统计当天最大的 5,000 笔。",
  "venues agree %": "市场一致 %",
  "How much of the candle's volume traded on markets whose own delta had the sign of the total: 100 % every market pressed the same way, low where they pulled against each other. Needs several markets added together.": "K 线成交量中，自身 delta 与合计同号的市场所占的比例：100 % 表示所有市场朝同一方向推动，越低表示越相互拉扯。需要多个市场合计。",
  "liq": "清算",

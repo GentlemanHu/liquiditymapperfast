@@ -137,10 +137,14 @@ export interface MeasureDef<Id extends string = string> {
 /**
  * One question at a time for what a band reads by time and the page does not hold, as the columns ask theirs (`Hub.ensureTraded`): again
  * when it changes, and while it reaches the present at most every five seconds, twenty times what the last answer took, five minutes at the
- * longest; a question that only slid with the live edge waits for that spacing. The last answer is kept, and drawn, while the next comes.
+ * longest; a question that only slid with the live edge waits for that spacing, and so does one whose end only crept on, followed live or not
+ * (a window cut at a clock that runs: the page's while the view is scrolled back from the live edge, or a replay's), which used to be asked
+ * again on every frame. The last answer is kept, and drawn, while the next comes.
  */
 export class Asked<T> {
   held: T | null = null;
+  /** The window `held` answers: what the band may count as read (a window grown since is not, until its own answer comes). */
+  answered: { from: number; to: number } | null = null;
   /** Bumped with each answer, so what was worked out from the last one is known to be stale. */
   version = 0;
   failed = false;
@@ -152,10 +156,12 @@ export class Asked<T> {
     if (this.#loading || now < this.#retryAt) return;
     const same = a !== null && a.base === base && a.from === from && a.to === to;
     const slid = live && a !== null && a.base === base && from >= a.from && to >= a.to && from - a.from <= spacing && to - a.to <= spacing;
-    if ((same || slid) && !(live && now - a!.at >= spacing)) return;
+    // Crept: by about the clock's run since (not a window widened by a zoom or a jump, which is asked at once).
+    const crept = a !== null && a.base === base && a.from === from && to > a.to && to - a.to <= spacing;
+    if ((same || slid || crept) && !((live || crept) && now - a!.at >= spacing)) return;
     this.#loading = true; this.#asked = { base, from, to, at: now };
     const started = performance.now();
-    load().then(value => { this.#ms = performance.now() - started; this.held = value; this.failed = false; this.version++; loaded(); },
+    load().then(value => { this.#ms = performance.now() - started; this.held = value; this.answered = { from, to }; this.failed = false; this.version++; loaded(); },
       () => { this.failed = true; this.#asked = null; this.#retryAt = Date.now() + 60_000; this.version++; loaded(); })
       .finally(() => { this.#loading = false; });
   }

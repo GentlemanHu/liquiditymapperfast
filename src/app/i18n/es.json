@@ -1589,7 +1589,7 @@
  "Click to take this pane": "Clic para tomar este panel",
  "Candle, OI and liquidations": "Vela, OI y liquidaciones",
  "The newest candle in view: the running sum from the start of its day.": "La vela más reciente a la vista: la suma acumulada desde el inicio de su día.",
- "≈ Only the largest 5,000 liquidations of this window are counted.": "≈ Solo se cuentan las 5.000 liquidaciones más grandes de esta ventana.",
+ "≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.": "≈ Un día de estas velas tuvo más de 5.000 liquidaciones: solo se cuentan sus 5.000 más grandes.",
  "venues agree %": "mercados de acuerdo %",
  "How much of the candle's volume traded on markets whose own delta had the sign of the total: 100 % every market pressed the same way, low where they pulled against each other. Needs several markets added together.": "Cuánto del volumen de la vela se negoció en mercados cuyo propio delta tuvo el signo del total: 100 % todos los mercados empujaron en el mismo sentido, bajo donde tiraron unos contra otros. Necesita varios mercados sumados.",
  "liq": "liq",

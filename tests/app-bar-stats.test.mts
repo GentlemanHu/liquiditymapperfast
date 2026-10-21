@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, dayStartOf, deviation, diagonalImbalances, pinnedLines, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
+import type { Liquidation } from '../src/shared/liquidations.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
 
 const MIN = 60_000;
@@ -277,4 +278,24 @@ test('the View figure of venue agreement needs every candle in view to say its m
   assert.equal(def.view!(slots, [0, 1], def.compute(slots)), null, 'a heavy candle without them would turn the total');
   const alone: StatInput = { ...input(), bars: [parted] };
   assert.ok(def.view!(alone, [0], def.compute(alone)), 'with them, a figure');
+});
+
+test('liquidations by day: a candle counts where its day is answered and the record reaches it, ≈ only from a day that was cut', () => {
+  const D = DAY_MS, H = 3_600_000, liq = (t: number, side: 'short' | 'long', usd: number, id = 'a') => ({ t, id, side, price: 1, usd, reported: 1, kind: 'single' }) as unknown as Liquidation;
+  const days = new Map([[0, { rows: [liq(H + 5, 'short', 300), liq(H + 9, 'long', 100), liq(2 * H, 'short', 50, 'other')], cut: false, to: D }], [D, { rows: [liq(D + 1, 'long', 70)], cut: true, to: 2 * D }]]);
+  const times = [0, H, D, D + H, 2 * D];
+  const later = 10 * D, all = liquidationBuckets(days, ['a'], times, H, 0, later);
+  assert.deepEqual(times.map(t => all.buy.get(t) ?? null), [0, 300, 0, 0, null], 'shorts liquidated are forced buys; another market is not counted; the third day is not answered');
+  assert.deepEqual(times.map(t => all.sell.get(t) ?? null), [0, 100, 70, 0, null]);
+  assert.equal(all.cut, true, 'the second day held more than an answer carries');
+  const firstDay = liquidationBuckets(days, ['a'], [0, H], H, 0, later);
+  assert.equal(firstDay.cut, false, 'candles of the whole first day only: no ≈');
+  const recorded = liquidationBuckets(days, ['a'], times, H, H, later);
+  assert.equal(recorded.buy.get(0), undefined, 'before the record reaches, not known');
+  assert.equal(recorded.buy.get(H), 300);
+  // The day under way, asked at 01:30: the candle under way at 01:40 counts as far as the answer reaches; one that closed after it, or started
+  // after it, waits for the next answer.
+  const running = new Map([[0, { rows: [liq(H + 5, 'short', 300)], cut: false, to: H + H / 2 }]]);
+  assert.deepEqual([0, H, 2 * H].map(t => liquidationBuckets(running, ['a'], [0, H, 2 * H], H, 0, H + 40 * 60_000).buy.get(t) ?? null), [0, 300, null]);
+  assert.equal(liquidationBuckets(running, ['a'], [H], H, 0, 2 * H + 60_000).buy.get(H), undefined, 'closed after the answer: not known yet');
 });
