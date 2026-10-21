@@ -838,7 +838,8 @@ export class BarStatsPane extends TimePane {
     const times = [...starts].sort((a, b) => a - b);
     if (!times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once executions are recorded for the visible candles.'), 12, ph / 2); this.#table = null; return null; }
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
-    const taker = defs.some(def => def.id === 'takerDelta') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
+    // The exchange's own candles (Binance's): the candle delta and the fills read them.
+    const taker = defs.some(def => def.id === 'takerDelta' || def.id === 'fills' || def.id === 'avgFill') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
     // Liquidations of the markets counted, a UTC day per answer, over the days of the table's candles (none after now). A candle before the
     // record reaches is not known: the source keeps a week (a page's own engine a day), and only since the recording started. The edge is
     // taken to the next whole minute (a candle half expired is not known either), which also keeps it from changing on every frame.

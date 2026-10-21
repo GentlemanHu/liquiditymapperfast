@@ -5,7 +5,8 @@ import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
-import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripLevels, stripLines, type StripBar } from '../measures/volume-strip.ts';
+import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripLines, type StripBar } from '../measures/volume-strip.ts';
+import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
 import type { ValueLevels } from '../../shared/profile.ts';
@@ -36,7 +37,7 @@ import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
-import { FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
+import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
 import { layoutInfo, paintInfoBox, type InfoLine } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
@@ -63,7 +64,7 @@ import { draftLabel } from '../range/stats.ts';
 import type { RangePoint, RangeTool } from '../range/tool.ts';
 import { paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { TopBands, topMarks, type TopProfile } from '../measures/strip.ts';
-import { BAND_GAP, flowRows, volumeBand, type TimeLevels, type TimeRows } from '../measures/model.ts';
+import { BAND_GAP, flowRows, volumeBand, type TimeRows } from '../measures/model.ts';
 import { countdown, lineSide } from '../price-line.ts';
 import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../replay/clock.ts';
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
@@ -180,6 +181,9 @@ export function priceQuestions(state: AppState): ProfileMetric[] {
 interface VolumeAnalysis { candles: AppState['candles']; key: string; found: Anomalies }
 
 /** The main chart: GL heatmap texture, candles, volume, axes, price profile and crosshair. */
+/** What the volume strip drew last: its bars, the recorded rows, the markets they add up, and what its box needs. */
+interface StripState { bars: StripBar[]; rows: TimeRows | null; ids: string[]; tf: number; top: number; market: string; tfName: string; reports: boolean; total: number }
+
 export class HeatPane {
   readonly root = document.createElement('section');
   readonly gl: HeatGL;
@@ -242,8 +246,10 @@ export class HeatPane {
   #profileHits: ProfileHit[] = [];
   /** The volume strip's recorded rows (kept while what they come from is), and what it drew last frame, for the pointer. */
   #stripRows: { key: string; rows: TimeRows } | null = null;
-  #takerShares: { key: string; shares: Map<number, number>; rows: Map<number, CandleRow> } | null = null;
-  #strip: { bars: StripBar[]; rows: TimeRows | null; levels: TimeLevels | null; tf: number; top: number; market: string; tfName: string; reports: boolean; total: number } | null = null;
+  #takerRows: { key: string; rows: Map<number, CandleRow> } | null = null;
+  #strip: StripState | null = null;
+  /** The market orders of the strip's candles pointed at (the footprint's statistics of the strip's markets, read on hover). */
+  #orders = new StripOrderCache();
   /** The volume profile's tags on the price axis, placed with the key levels' and the VWAP's. */
   #valueTags: KeyTag[] = [];
   /** The names put at the lines' right ends this frame (Volume profile, key levels, VWAP). */
@@ -683,25 +689,24 @@ export class HeatPane {
   }
 
   /**
-   * Each candle's share of its volume bought by takers, by start, from `from` on: from the exchange's own candles of the series the chart reads,
-   * where the exchange says them (Binance); null for a market that does not. Loaded on demand; the chart is drawn again when it lands. The
-   * volume strip splits its candles by it.
+   * The exchange's own candles of the series the chart reads, by start, from `from` on, with their taker buys (index 7) and, where it reports
+   * them, their trades and quote volumes (8 to 10): Binance's; null for a market that does not say who bought. Loaded on demand; the chart is
+   * drawn again when they land. The volume strip's candle bars read them, and the Bar stats table's candle delta and fills (buys, volume and
+   * price of one snapshot: the chart's candle under way moves on between the minutes it is read).
    */
-  takerShares(state: AppState, tf: number, from: number): Map<number, number> | null { return this.#taker(state, tf, from)?.shares ?? null; }
-  /** The same candles themselves, by start, with their taker buys (index 7): the Bar stats table's candle delta reads buys, volume and price of one snapshot. */
-  takerRows(state: AppState, tf: number, from: number): Map<number, CandleRow> | null { return this.#taker(state, tf, from)?.rows ?? null; }
-  #taker(state: AppState, tf: number, from: number): { shares: Map<number, number>; rows: Map<number, CandleRow> } | null {
+  takerRows(state: AppState, tf: number, from: number): Map<number, CandleRow> | null {
     const series = state.seriesInstrument || state.marketId, target = historyTarget(series, currentCoin()), venue = target?.id.slice(0, target.id.indexOf(':')) ?? '';
     if (!target || !target.own || (venue !== 'binance' && venue !== 'binancespot')) return null;
     const h = this.hub.candleTaker(tf);
     h.ensure(target, from, tf, () => this.invalidate());
     const key = `${tf}|${h.id}|${h.version}`;
-    if (this.#takerShares?.key !== key) {
-      const shares = new Map<number, number>(), rows = new Map<number, CandleRow>();
-      for (const b of h.bars) { const tb = (b as readonly (number | undefined)[])[7]; if (tb !== undefined && b[5] > 0) { shares.set(b[0], tb / b[5]); rows.set(b[0], b); } }
-      this.#takerShares = { key, shares, rows };
+    if (this.#takerRows?.key !== key) {
+      const rows = new Map<number, CandleRow>();
+      // A candle with nothing traded is one too (its trades and quote volume 0): its readers guard their own division by its volume.
+      for (const b of h.bars) { const tb = (b as readonly (number | undefined)[])[7]; if (tb !== undefined && b[5] >= 0) rows.set(b[0], b); }
+      this.#takerRows = { key, rows };
     }
-    return this.#takerShares;
+    return this.#takerRows.rows;
   }
 
   /** The Delta pane's divergences on the price: the two swings joined above the highs (sellers', ask colour) or below the lows (buyers', bid colour). */
@@ -1125,19 +1130,40 @@ export class HeatPane {
     const series = state.seriesInstrument || state.marketId, target = historyTarget(series, currentCoin()), venue = target?.id.slice(0, target.id.indexOf(':')) ?? '';
     const binance = !!target && target.own && (venue === 'binance' || venue === 'binancespot'), market = venueLabel(target?.own ? target.id : series);
     const earliest = state.candles.find(c => c[0] + tf >= v.t0 - margin)?.[0] ?? v.t0;
-    let shares: Map<number, number> | null = null;
-    if (binance && (since === null || earliest < since)) shares = this.takerShares(state, tf, earliest);
+    let own: Map<number, CandleRow> | null = null;
+    if (binance && (since === null || earliest < since)) own = this.takerRows(state, tf, earliest);
     const place = (start: number): { x: number; w: number } => { const xc = v.xOf(start + tf / 2, pw); return { x: xc + (v.xOf(start, pw) + layout.candleCenter - xc) * narrowing, w: body }; };
-    const all = stripBars(state.candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => shares?.get(start), replaying());
+    const all = stripBars(state.candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying());
     const first = all.findIndex(b => b.t + tf >= v.t0), cut = first < 0 ? all.length : first, bars = all.slice(cut);
     const found = state.highlight.on ? stripHighlights(all, state.highlight) : null, highlights = found ? { flag: found.flag.slice(cut), threshold: found.threshold.slice(cut) } : null;
-    const height = volumeBand(ph), top = ph - height - 6, levels = state.traded.valueArea ? stripLevels(bars, state.traded.share / 100) : null;
+    const height = volumeBand(ph), top = ph - height - 6;
     const total = bars.reduce((sum, b) => b.source === 'recorded' ? sum + b.buy + b.sell : sum, 0);
     const hv = state.hover, hy = hv && hv.source === 'heat' && hv.price !== null ? v.yOf(hv.price, ph) : NaN, hx = hv ? v.xOf(hv.t, pw) : NaN;
     const hovered = hy >= top && hy <= ph ? bars.findIndex(b => Math.abs(hx - b.x) <= Math.max(b.w, slot) / 2) : -1;
-    paintVolumeStrip(ctx, bars, { pw, ph, height, palette: p, bars: state.traded.bars, emphasis: state.traded.emphasis, highlights, levels,
-      recorded: `${t('Volume')} · ${state.timeframe}`, candles: t('≈ {market} {tf} candles', { market, tf: state.timeframe }), hovered });
-    this.#strip = { bars, rows, levels, tf, top, market, tfName: state.timeframe, reports: binance, total };
+    // The candles' part named ≈ while any of its bars is an estimate (its volume at its typical price), plainly where all are as reported.
+    const estimated = bars.some(b => b.source === 'candle' && !b.exact);
+    paintVolumeStrip(ctx, bars, { pw, ph, height, palette: p, bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
+      recorded: `${t('Volume')} · ${state.timeframe}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: state.timeframe }) : t('{market} {tf} candles', { market, tf: state.timeframe }), hovered });
+    this.#strip = { bars, rows, ids, tf, top, market, tfName: state.timeframe, reports: binance, total };
+  }
+
+  /**
+   * The market orders of a recorded strip bar, from the footprint's statistics of the strip's own markets for that candle (one request, rows
+   * of the whole range, the whale size as a line, each market's part), read once the pointer rests on it; undefined for a bar of no recording
+   * or with too many markets for one question. In a replay only the minutes before the replay's time are asked. An answer without the bar
+   * fails (asked again later): a bar the recording holds has its minutes, so its absence is not a candle without statistics.
+   */
+  #stripOrders(state: AppState, s: StripState, bar: StripBar, whale: number): ReturnType<StripOrderCache['want']> | undefined {
+    const to = replaying() ? Math.min(bar.t + s.tf, Math.floor(pageNow() / 60_000) * 60_000) : bar.t + s.tf;
+    if (bar.source === 'candle' || bar.source === 'gap' || !s.ids.length || s.ids.length > MAX_PROFILE_INSTRUMENTS || !(to > bar.t)) { this.#orders.rest(); return undefined; }
+    // The whale size is part of the question: another size is other whale dollars, even where neither is asked as a line.
+    const cuts = linesToAsk([state.barStatOptions.whaleUsd], scaledUsd), index = cuts.findIndex(c => Math.abs(c - whale) <= 1e-6 * whale), inst = s.ids.join(',');
+    const key = `${inst}|${state.timeframe}|${bar.t}|${cuts.join(',')}|${whale}`, open = bar.t + s.tf + FOOTPRINT_SETTLE_MS > Date.now();
+    return this.#orders.want(key, { to, open }, at => this.hub.footprint(inst, state.timeframe, bar.t, at, WHOLE_RANGE_STEP, cuts, undefined, s.ids.length > 1).then(body => {
+      const raw = body.bars.find(b => b.t === bar.t);
+      if (!raw) throw new Error('the candle is not in the answer');
+      return stripOrdersOf(readBar(raw, cuts.length, body.venues), { size: whale, index }, s.tf);
+    }), () => this.invalidate());
   }
 
   /** The volume strip's bar under the pointer, while it is over the strip (the strip owns its rectangle). */
@@ -2052,7 +2078,7 @@ export class HeatPane {
   }
 
   #paintCrosshair(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    const hv = state.hover; if (!hv) return;
+    const hv = state.hover; if (!hv) { this.#orders.rest(); return; }
     const p = this.#palette, v = this.view;
     const x = v.xOf(hv.t, pw), inX = x >= 0 && x <= pw, ownY = hv.source === 'heat' && hv.price !== null;
     // Replay: right of its moment everything is covered, so nothing there answers the pointer.
@@ -2071,9 +2097,10 @@ export class HeatPane {
     const absorbed = ownY && here && stripped < 0 ? this.#absorptionAt(x, y) : null;
     const forced = ownY && here && stripped < 0 && !absorbed ? this.#diamondAt(x, y) : null;
     const hit = ownY && here && stripped < 0 && !absorbed && !forced ? this.#bubbleAt(x, y) : null;
+    if (stripped < 0) this.#orders.rest();
     if (stripped >= 0) { // a bar of the volume strip: it owns its rectangle, over whatever is drawn there
-      const s = this.#strip!, bar = s.bars[stripped]!;
-      const lines = stripLines(bar, { rows: s.rows, tf: s.tf, now: pageNow(), levels: s.levels, levelsIn: i => s.bars[i]!.i, market: s.market, tfName: s.tfName, reports: s.reports, total: s.total });
+      const s = this.#strip!, bar = s.bars[stripped]!, whale = scaledUsd(state.barStatOptions.whaleUsd);
+      const lines = stripLines(bar, { rows: s.rows, tf: s.tf, now: pageNow(), market: s.market, tfName: s.tfName, reports: s.reports, total: s.total, orders: this.#stripOrders(state, s, bar, whale), whaleUsd: whale });
       paintInfoBox(ctx, lines, x, s.top - 8, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'up' });
     } else if (forced) { // a liquidation under the pointer: which positions were closed, where, and what the exchange reported
       const long = forced.liq.side === 'long';

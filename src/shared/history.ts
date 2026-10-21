@@ -57,13 +57,22 @@ const takerBuy = (buy: unknown, volume: number): number | null => {
   const n = typeof buy === 'number' ? buy : typeof buy === 'string' && buy.trim() !== '' ? Number(buy) : NaN;
   return Number.isFinite(n) && n >= 0 && Number.isFinite(volume) && n <= volume * (1 + 1e-9) ? n : null;
 };
-const row = (start: unknown, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown, buy?: unknown): CandleRow => {
+/** A number, or a numeric string that is not empty; anything else NaN (`Number` would read null, '' and false as 0). */
+const figure = (value: unknown): number => typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+const row = (start: unknown, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown, buy?: unknown, quote?: unknown, trades?: unknown, buyQuote?: unknown): CandleRow => {
   const v = num(volume), b = buy === undefined ? null : takerBuy(buy, v);
-  return { start: num(start), open: num(open), high: num(high), low: num(low), close: num(close), volume: v, ...(b === null ? {} : { buy: b }) };
+  // The trades and the quote volume with its part bought at market, together or not at all: a figure that is not one (null, '', false, a
+  // word) leaves all three out, never reads as 0.
+  const q = figure(quote), n = figure(trades), bq = buyQuote === undefined || !(q >= 0) ? null : takerBuy(buyQuote, q);
+  const detail = q >= 0 && Number.isSafeInteger(n) && n >= 0 && bq !== null ? { trades: n, quote: q, buyQuote: bq } : {};
+  return { start: num(start), open: num(open), high: num(high), low: num(low), close: num(close), volume: v, ...(b === null ? {} : { buy: b }), ...detail };
 };
 
-/** Binance's klines, the perpetual's and the spot market's alike: the tenth field is the taker buy volume, the part bought at market. */
-const binanceRows = (json: unknown): CandleRow[] => list(json).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5), at(r, 9)));
+/**
+ * Binance's klines, the perpetual's and the spot market's alike: the tenth field is the taker buy volume, the part bought at market; the
+ * eighth the quote volume, the ninth the number of trades and the eleventh the taker buy quote volume.
+ */
+const binanceRows = (json: unknown): CandleRow[] => list(json).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5), at(r, 9), at(r, 7), at(r, 8), at(r, 10)));
 const BINANCE = { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1h', 14_400_000: '4h', 86_400_000: '1d' } as const;
 
 const SPECS: Readonly<Record<string, CandleSpec>> = {

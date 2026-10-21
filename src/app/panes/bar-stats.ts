@@ -379,6 +379,22 @@ export const BAR_STATS: readonly StatDef[] = [
   tradeStat('sells', 'sells', t('Number of market sells in the bar'), 'sequential', count, stats => stats.sellN, sumView(count, false)),
   tradeStat('avgTrade', t('avg order'), t('Average market order size: volume divided by the number of market orders (USD)'), 'sequential', volText, stats => stats.buyN + stats.sellN > 0 ? orderUsd(stats) / (stats.buyN + stats.sellN) : null,
     ratioView(volText, () => 'text', bars => { let usd = 0, n = 0; for (const b of bars) if (b.stats) { usd += orderUsd(b.stats); n += b.stats.buyN + b.stats.sellN; } return n > 0 ? usd / n : null; })),
+  tradeStat('avgBuy', t('avg buy'), t('Average market buy: the dollars of the market buys divided by their number (USD)'), 'sequential', volText, stats => stats.buyN > 0 ? sumBuckets(stats.buy, 0, 7) / stats.buyN : null,
+    ratioView(volText, () => 'text', bars => { let usd = 0, n = 0; for (const b of bars) if (b.stats) { usd += sumBuckets(b.stats.buy, 0, 7); n += b.stats.buyN; } return n > 0 ? usd / n : null; })),
+  tradeStat('avgSell', t('avg sell'), t('Average market sell: the dollars of the market sells divided by their number (USD)'), 'sequential', volText, stats => stats.sellN > 0 ? sumBuckets(stats.sell, 0, 7) / stats.sellN : null,
+    ratioView(volText, () => 'text', bars => { let usd = 0, n = 0; for (const b of bars) if (b.stats) { usd += sumBuckets(b.stats.sell, 0, 7); n += b.stats.sellN; } return n > 0 ? usd / n : null; })),
+  // The exchange's own candle (Binance's) counts trades, not orders: a fill each, so one market order is often several. One market, the chart's.
+  { id: 'fills', label: t('fills'), group: 'trades', source: 'market', scale: 'sequential', format: count,
+    title: t('Trades in the chart market\'s own candle as the exchange counts them: every fill counts, so one market order filled against several resting orders counts several times. Binance reports them, so the row fills for a Binance chart market, before the recording too, and stays empty for others.'),
+    compute: input => input.bars.map((_, i) => input.taker?.get(slotTime(input, i))?.[8] ?? null), view: sumView(count, false) },
+  { id: 'avgFill', label: t('avg fill'), group: 'trades', source: 'market', scale: 'sequential', format: volText,
+    title: t('Average fill in the chart market\'s own candle: its quote volume divided by its trades (USDT for a USDT market). A fill, not an order: on one market an order is often several fills, so a fill averages less than an order there; avg order may count other markets too.'),
+    compute: input => input.bars.map((_, i) => { const c = input.taker?.get(slotTime(input, i)), q = c?.[9], n = c?.[8]; return q !== undefined && n !== undefined && n > 0 ? q / n : null; }),
+    view: (input, at) => {
+      let q = 0, n = 0;
+      for (const i of at) { const c = input.taker?.get(slotTime(input, i)); if (c?.[9] !== undefined && c[8] !== undefined) { q += c[9]; n += c[8]; } }
+      return n > 0 ? { value: volText(q / n), tone: 'text', how: t('Worked out from the candles in view added together.') } : null;
+    } },
   { ...tradeStat('sizeSkew', t('size skew'), t('The average market buy against the average market sell: ×2 in green, buy orders were twice the size of sell orders; in red, sell orders were'), 'diverging', v => `×${(2 ** Math.abs(v)).toFixed(1)}`,
     stats => { const buy = sumBuckets(stats.buy, 0, 7), sell = sumBuckets(stats.sell, 0, 7); return stats.buyN > 0 && stats.sellN > 0 && buy > 0 && sell > 0 ? Math.log2((buy / stats.buyN) / (sell / stats.sellN)) : null; },
     ratioView(v => `×${(2 ** Math.abs(v)).toFixed(1)}`, signTone, bars => { let buy = 0, sell = 0, nb = 0, ns = 0; for (const b of bars) if (b.stats) { buy += sumBuckets(b.stats.buy, 0, 7); sell += sumBuckets(b.stats.sell, 0, 7); nb += b.stats.buyN; ns += b.stats.sellN; } return nb > 0 && ns > 0 && buy > 0 && sell > 0 ? Math.log2((buy / nb) / (sell / ns)) : null; })),

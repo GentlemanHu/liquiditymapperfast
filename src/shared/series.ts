@@ -6,9 +6,17 @@ export const timeframeMs = (name: unknown): number | null => typeof name === 'st
 
 export interface CandleRow { start: number; open: number; high: number; low: number; close: number; volume?: number;
   /** The part of the volume bought at market (taker buys), in the same unit, where the venue reports it (Binance). */
-  buy?: number }
-/** [start, open, high, low, close, volume, sourceRows, takerBuys] — the last only where asked for and every row it was built from had one. */
-export type Candle = [number, number, number, number, number, number, number, number?];
+  buy?: number;
+  /**
+   * Where the venue reports them (Binance): its trades (fills: one market order filled against several resting ones counts several times),
+   * its quote volume (USDT for a USDT market) and the part of that bought at market. In the quote currency, never scaled by a listing's unit.
+   */
+  trades?: number; quote?: number; buyQuote?: number }
+/**
+ * [start, open, high, low, close, volume, sourceRows, takerBuys, trades, quoteVolume, quoteBought]: the taker buys only where asked for and
+ * every row it was built from had them, and the last three likewise, only beside them.
+ */
+export type Candle = [number, number, number, number, number, number, number, number?, number?, number?, number?];
 
 /**
  * Candles of `tfMs` built from smaller ones. A minute that appears more than once (history and a live copy, or two pages that overlap) counts
@@ -16,7 +24,7 @@ export type Candle = [number, number, number, number, number, number, number, nu
  * row it is built from had them (the wire form leaves them out).
  */
 export function aggregateCandles(rows: Iterable<CandleRow>, tfMs: number, withBuy = false): Candle[] {
-  const buckets = new Map<number, Candle & { first: number; last: number; buy: number | null }>();
+  const buckets = new Map<number, Candle & { first: number; last: number; buy: number | null; detail: [number, number, number] | null }>();
   const once = new Map<number, CandleRow>();
   for (const row of rows) if (Number.isFinite(row.start)) once.set(row.start, row);
   for (const row of [...once.values()].sort((a, b) => a.start - b.start)) {
@@ -25,17 +33,20 @@ export function aggregateCandles(rows: Iterable<CandleRow>, tfMs: number, withBu
     const key = Math.floor(start / tfMs) * tfMs;
     const bucket = buckets.get(key);
     const volume = Number.isFinite(row.volume) ? row.volume! : 0, buy = withBuy && Number.isFinite(row.buy) ? row.buy! : null;
+    const detail: [number, number, number] | null = withBuy && Number.isFinite(row.trades) && Number.isFinite(row.quote) && Number.isFinite(row.buyQuote) ? [row.trades!, row.quote!, row.buyQuote!] : null;
     if (!bucket) {
-      const created = [key, open, high, low, close, volume, 1] as Candle as Candle & { first: number; last: number; buy: number | null };
-      created.first = start; created.last = start; created.buy = buy; buckets.set(key, created);
+      const created = [key, open, high, low, close, volume, 1] as Candle as Candle & { first: number; last: number; buy: number | null; detail: [number, number, number] | null };
+      created.first = start; created.last = start; created.buy = buy; created.detail = detail; buckets.set(key, created);
     } else {
       bucket.buy = bucket.buy === null || buy === null ? null : bucket.buy + buy;
+      bucket.detail = bucket.detail === null || detail === null ? null : [bucket.detail[0] + detail[0], bucket.detail[1] + detail[1], bucket.detail[2] + detail[2]];
       if (start < bucket.first) { bucket[1] = open; bucket.first = start; }
       if (start >= bucket.last) { bucket[4] = close; bucket.last = start; }
       bucket[2] = Math.max(bucket[2], high); bucket[3] = Math.min(bucket[3], low); bucket[5] += volume; bucket[6] += 1;
     }
   }
-  return [...buckets.values()].sort((a, b) => a[0] - b[0]).map(({ 0: t, 1: o, 2: h, 3: l, 4: c, 5: v, 6: n, buy }) => (withBuy && buy !== null ? [t, o, h, l, c, v, n, buy] : [t, o, h, l, c, v, n]) as Candle);
+  return [...buckets.values()].sort((a, b) => a[0] - b[0]).map(({ 0: t, 1: o, 2: h, 3: l, 4: c, 5: v, 6: n, buy, detail }) =>
+    (withBuy && buy !== null ? (detail !== null ? [t, o, h, l, c, v, n, buy, ...detail] : [t, o, h, l, c, v, n, buy]) : [t, o, h, l, c, v, n]) as Candle);
 }
 
 /** [start, open, high, low, close] of base open interest per bucket. */

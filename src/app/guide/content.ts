@@ -130,7 +130,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'chart', title: 'Candles and volume',
     blocks: [
-      { t: 'p', text: 'Each candle is one period of price: the thin line is the full range, the body runs from open to close, green when price rose and red when it fell. The buttons at the top (1m to 1d) set the length of a candle, and the footprint, bar stats and open-interest bars follow it. **Volume** bars sit along the bottom, and unusually large ones are drawn stronger.' },
+      { t: 'p', text: 'Each candle is one period of price: the thin line is the full range, the body runs from open to close, green when price rose and red when it fell. The buttons at the top (1m to 1d) set the length of a candle, and the footprint, bar stats and open-interest bars follow it. **Volume** bars sit along the bottom, split into what was bought and sold at market; hover one for its shares, its market orders and their average size. Unusually large ones are drawn stronger.' },
     ],
   },
   {
