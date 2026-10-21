@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DEFAULT_STAT_OPTIONS, PRESETS, diagonalImbalances, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, dayStartOf, deviation, diagonalImbalances, pinnedLines, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
@@ -123,9 +123,9 @@ test('colour scale: log between the visible 2nd and 99th percentile, so one outl
 
 test('bar statistics options from storage or a file: each within what the settings allow, else its default', () => {
   assert.deepEqual(readStatOptions(undefined), DEFAULT_STAT_OPTIONS);
-  const good = { imbRatio: 2.5, imbMinUsd: 10_000, stackedN: 4, imbZeros: true, retailUsd: 75_000, whaleUsd: 2_000_000, oiUnits: 'usd', cells: 'text' } as const;
+  const good = { imbRatio: 2.5, imbMinUsd: 10_000, stackedN: 4, imbZeros: true, retailUsd: 75_000, whaleUsd: 2_000_000, oiUnits: 'usd', cells: 'unusual', grouped: true, folded: ['trades', 'market'], cvdFrom: 'day' };
   assert.deepEqual(readStatOptions(good), good);
-  const bad = readStatOptions({ imbRatio: 0.5, imbMinUsd: -1, stackedN: 2.5, imbZeros: 'yes', retailUsd: 9, whaleUsd: -1, oiUnits: 'eur', cells: 'neon', extra: 1 });
+  const bad = readStatOptions({ imbRatio: 0.5, imbMinUsd: -1, stackedN: 2.5, imbZeros: 'yes', retailUsd: 9, whaleUsd: -1, oiUnits: 'eur', cells: 'neon', grouped: 'yes', folded: ['nope', 3], cvdFrom: 'week', extra: 1 });
   assert.deepEqual(bad, DEFAULT_STAT_OPTIONS);
   const crossed = readStatOptions({ retailUsd: 1_000_000, whaleUsd: 100_000 });
   assert.deepEqual([crossed.retailUsd, crossed.whaleUsd], [100_000, 500_000], 'whales may not start under retail');
@@ -135,4 +135,146 @@ test('bar statistics options from storage or a file: each within what the settin
   assert.deepEqual([old.retailUsd, old.whaleUsd], [50_000, 1_000_000]);
   assert.deepEqual([readStatOptions({ retailMax: 7, whaleMin: 0 }).retailUsd, readStatOptions({ retailMax: 7, whaleMin: 0 }).whaleUsd], [100_000, 500_000], 'box numbers with no such edge are the defaults');
   assert.equal(readStatOptions({ stackedN: 1 }).stackedN, 3);
+});
+
+test('a candle without executions is a slot: the rows read from candles still show there, those read from executions do not', () => {
+  const withGap = new Map(candles); withGap.set(MIN, [MIN, 105, 106, 104, 105.5, 10, 1]);
+  const slots: StatInput = { bars: [bars[0]!, null, bars[2]!], times: [0, MIN, 2 * MIN], step: 5, candles: withGap, oi, options: { ...DEFAULT_STAT_OPTIONS } };
+  assert.deepEqual(statDef('vol')!.compute(slots), [65, null, 92]);
+  assert.deepEqual(statDef('cvd')!.compute(slots), [5, null, 13], 'the running sum carries over a slot without a bar');
+  assert.deepEqual(statDef('range')!.compute(slots), [13, 2, 10], 'the candle without executions still has its range');
+});
+
+test('the candle rows: where it closed in its range, and the effort per basis point of it', () => {
+  const close = compute('closePos'), effort = compute('effort');
+  assert.ok(Math.abs(close[0]! - 6 / 13 * 100) < 1e-9);
+  assert.equal(close[1], null, 'no candle there');
+  assert.equal(close[2], 80);
+  assert.ok(Math.abs(effort[0]! - 55 * (112 + 99 + 105) / 3 / 1300) < 1e-9, 'its dollars at the typical price over 1300 bp');
+  assert.ok(Math.abs(effort[2]! - 92 * 114 / (10 / 110 * 10_000)) < 1e-9);
+});
+
+test('the footprint rows: the point of control in the candle and how far it moved', () => {
+  const pos = compute('pocPos');
+  assert.ok(Math.abs(pos[0]! - 3.5 / 13 * 100) < 1e-9, 'row 100 (its middle 102.5) in 99 to 112');
+  assert.ok(Math.abs(pos[2]! - 45) < 1e-9);
+  assert.deepEqual(compute('pocMove'), [null, 0, 10], 'none for the first; 102.5 to 102.5, then to 112.5');
+});
+
+test('delta against the candle marks buying into a fall and selling into a rise, from 5 % of the volume', () => {
+  assert.deepEqual(compute('divergence'), [0, null, 0], 'both bars bought into a rising candle');
+  const falling = new Map(candles); falling.set(0, [0, 112, 112, 99, 100, 55, 1]);
+  assert.deepEqual(statDef('divergence')!.compute({ ...input(), candles: falling }), [1, null, 0], 'net buying while the candle fell: ▲');
+  assert.equal(statDef('divergence')!.format(1), '▲');
+  assert.equal(statDef('divergence')!.format(0), '', 'nothing to mark');
+  const thin = bar(0, [[100, 51, 49]]);
+  assert.deepEqual(statDef('divergence')!.compute({ ...input(), bars: [thin], candles: falling }), [0], 'a delta of 2 % is not marked');
+});
+
+test('open interest against delta: the quadrant of the two signs', () => {
+  assert.deepEqual(compute('oiQuad'), [null, null, 3], 'the last bar bought while open interest fell: −▲');
+  assert.equal(statDef('oiQuad')!.format(3), '−▲');
+  assert.equal(statDef('oiQuad')!.tone!(3), 'buy');
+  assert.equal(statDef('oiQuad')!.tone!(2), 'sell');
+});
+
+test('whale share and the size skew of market buys against sells', () => {
+  const share = compute('whaleShare');
+  assert.ok(Math.abs(share[0]! - 5_000_000 / 5_060_100 * 100) < 1e-9);
+  assert.equal(share[1], null);
+  assert.ok(Math.abs(share[2]! - 80_000 / 105_000 * 100) < 1e-9);
+  const skew = compute('sizeSkew');
+  assert.ok(Math.abs(skew[0]! - Math.log2((5_000_100 / 2) / 60_000)) < 1e-9);
+  assert.ok(Math.abs(skew[2]! - Math.log2(80_000 / 25_000)) < 1e-9);
+  assert.equal(statDef('sizeSkew')!.format(Math.log2(3.2)), '×3.2');
+});
+
+test('coverage is the minutes recorded over the candle, or over what of it has passed while it runs', () => {
+  const hour = 3_600_000, closed = { ...bar(0, [[100, 1, 1]]), minutes: 30 }, live = { ...bar(hour, [[100, 1, 1]]), minutes: 10 };
+  const values = statDef('cover')!.compute({ ...input(), bars: [closed, live], tfMs: hour, now: hour + 20 * MIN });
+  assert.deepEqual(values, [50, 50]);
+  assert.equal(statDef('cover')!.format(100), '', 'a whole candle is not marked');
+  assert.equal(statDef('cover')!.format(50), '50%');
+  assert.deepEqual(statDef('cover')!.compute({ ...input(), bars: [bar(0, [[100, 1, 1]])], tfMs: hour, now: hour }), [null], 'a source that does not say');
+});
+
+test('the candle delta reads the exchange\'s taker buys, and is empty without them', () => {
+  // The exchange's own candle, 33 of its 55 coins bought by takers: its buys, volume and price are one snapshot, whatever the chart's candle says.
+  const values = statDef('takerDelta')!.compute({ ...input(), taker: new Map<number, CandleRow>([[0, [0, 100, 112, 99, 105, 55, 1, 33]]]) });
+  assert.ok(Math.abs(values[0]! - 0.2 * 55 * (112 + 99 + 105) / 3) < 1e-9, 'bought 60 %: delta is a fifth of its dollars');
+  assert.deepEqual(values.slice(1), [null, null]);
+  assert.deepEqual(statDef('takerDelta')!.compute(input()), [null, null, null], 'a market that does not report them');
+});
+
+test('the View column: each statistic over the candles in view, taken as it should be', () => {
+  const slots: StatInput = { bars: [bars[0]!, null, bars[2]!], times: [0, MIN, 2 * MIN], step: 5, candles, oi, options: { ...DEFAULT_STAT_OPTIONS } };
+  const view = (id: string) => { const def = statDef(id)!; return def.view!(slots, [0, 1, 2], def.compute(slots)); };
+  assert.equal(view('vol')!.value, statDef('vol')!.format(157), 'a sum');
+  assert.equal(view('cvd')!.value, statDef('cvd')!.format(13), 'a running sum shows its newest');
+  assert.equal(view('deltaPct')!.value, statDef('deltaPct')!.format(13 / 157 * 100), 'the shares of the sums, not a sum of shares');
+  assert.equal(view('range')!.value, statDef('range')!.format(118 - 99), 'the highest high less the lowest low');
+  assert.equal(view('poc')!.value, statDef('poc')!.format(112.5), 'the busiest row of the rows added together');
+  assert.equal(view('divergence'), null, 'nothing marked, nothing to say');
+  for (const def of BAR_STATS) assert.ok(def.view, `${def.id} has a View figure`);
+});
+
+test('the View position of the point of control pairs the candles and the rows of the same candles', () => {
+  const onlyCandle = new Map<number, CandleRow>([[0, [0, 100, 200, 100, 150, 10, 1]]]);
+  const apart: StatInput = { bars: [null, bar(MIN, [[300, 5, 5]])], times: [0, MIN], step: 5, candles: onlyCandle, oi, options: { ...DEFAULT_STAT_OPTIONS } };
+  const def = statDef('pocPos')!;
+  assert.deepEqual(def.compute(apart), [null, null], 'neither slot has both');
+  assert.equal(def.view!(apart, [0, 1], def.compute(apart)), null, 'a row from one candle is not set in the range of another');
+});
+
+test('Highlights read a share around 50 % by its distance from 50, both ways alike', () => {
+  const def = statDef('closePos')!;
+  assert.equal(deviation(def, 0), deviation(def, 100));
+  assert.equal(deviation(statDef('delta')!, -7), 7);
+});
+
+test('liquidations by candle: their sum and shorts less longs, none outside the window loaded, ≈ when the answer was cut', () => {
+  const liquidations = { buy: new Map([[0, 300], [MIN, 0]]), sell: new Map([[0, 100], [MIN, 0]]), cut: false };
+  assert.deepEqual(statDef('liq')!.compute({ ...input(), liquidations }), [400, 0, null], 'the third candle is outside the window loaded');
+  assert.deepEqual(statDef('liqNet')!.compute({ ...input(), liquidations }), [200, 0, null], 'shorts liquidated (forced buys) less longs liquidated');
+  assert.deepEqual(statDef('liq')!.compute(input()), [null, null, null], 'a source without liquidations');
+  assert.equal(statDef('liq')!.approx!({ ...input(), liquidations: { ...liquidations, cut: true } }), true);
+  assert.equal(statDef('liq')!.source, 'market', 'shown before the recording too');
+});
+
+test('venue agreement: the share of the volume on markets pressing the way the total did', () => {
+  const parted = { ...bar(0, [[100, 70, 30], [105, 20, 40]]), parts: [[['a', 60, 10], ['b', 10, 20]], [['a', 10, 10], ['b', 10, 30]]] as Bar['parts'] };
+  // a: bought 70, sold 20 (+50); b: bought 20, sold 50 (−30); the total is +20, so a's 90 of the 160 agree.
+  assert.deepEqual(statDef('venueAgree')!.compute({ ...input(), bars: [parted] }), [90 / 160 * 100]);
+  assert.equal(agreement(new Map([['a', [5, 1] as const]])), null, 'one market agrees with itself: nothing to say');
+  assert.deepEqual(statDef('venueAgree')!.compute(input()), [null, null, null], 'bars without the markets\' parts');
+});
+
+test('the running sums start again at each day\'s start when asked', () => {
+  const days: StatInput = { ...input(), restart: [0, 0, 1] };
+  assert.deepEqual(statDef('cvd')!.compute(days), [5, 5, 8], 'the third candle opens a new day');
+  assert.deepEqual(statDef('cvd')!.compute(input()), [5, 5, 13]);
+  assert.equal(dayStartOf(Date.UTC(2026, 9, 20, 15, 30), 'UTC'), Date.UTC(2026, 9, 20));
+});
+
+test('rows grouped by kind under headers, a folded kind\'s rows left out, and the pane sized for them', () => {
+  const defs = enabledStats(['delta', 'liq', 'vol', 'poc']);
+  assert.deepEqual(tableBands(defs, { grouped: false, folded: [] }).map(b => b.kind === 'row' ? b.def.id : b.group), ['delta', 'liq', 'vol', 'poc'], 'as chosen');
+  assert.deepEqual(tableBands(defs, { grouped: true, folded: [] }).map(b => b.kind === 'row' ? b.def.id : `[${b.group}]`), ['[volume]', 'delta', 'vol', '[footprint]', 'poc', '[market]', 'liq'], 'by kind, the order chosen within each');
+  assert.deepEqual(tableBands(defs, { grouped: true, folded: ['volume'] }).map(b => b.kind === 'row' ? b.def.id : `[${b.group}]`), ['[volume]', '[footprint]', 'poc', '[market]', 'liq']);
+  assert.equal(tableHeight(['delta', 'liq', 'vol', 'poc'], { grouped: false, folded: [] }), 12 + 4 * 24);
+  assert.equal(tableHeight(['delta', 'liq', 'vol', 'poc'], { grouped: true, folded: ['volume'] }), 12 + 2 * 24 + 3 * 14);
+});
+
+test('a pinned candle\'s card lists every statistic for it', () => {
+  const lines = pinnedLines('Oct 20 14:00', [{ label: 'vol', value: '1.2B', tone: 'text' }, { label: 'delta', value: '-3.1M', tone: 'sell' }]);
+  assert.deepEqual(lines.map(l => l.label ? `${l.label}: ${l.text}` : l.text).slice(0, 4), ['Pinned', 'Candle: Oct 20 14:00', 'vol: 1.2B', 'delta: -3.1M']);
+  assert.equal(lines[3]!.color, 'sell');
+});
+
+test('the View figure of venue agreement needs every candle in view to say its markets', () => {
+  const parted = { ...bar(0, [[100, 70, 30]]), parts: [[['a', 60, 10], ['b', 10, 20]]] as Bar['parts'] }, bare = bar(MIN, [[100, 0, 1_000]]);
+  const def = statDef('venueAgree')!, slots: StatInput = { ...input(), bars: [parted, bare] };
+  assert.equal(def.view!(slots, [0, 1], def.compute(slots)), null, 'a heavy candle without them would turn the total');
+  const alone: StatInput = { ...input(), bars: [parted] };
+  assert.ok(def.view!(alone, [0], def.compute(alone)), 'with them, a figure');
 });

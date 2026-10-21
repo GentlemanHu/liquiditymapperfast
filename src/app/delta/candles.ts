@@ -100,8 +100,10 @@ export function resetKeys(starts: readonly number[], reset: ResetMode, zone: str
 }
 
 /**
- * The candles from their flows (null: nothing recorded, left out and restarting the sum after it), the CVD adding up each one's delta and
- * restarting at 0 where `keys` change (a new day or week).
+ * The candles from their flows (null: nothing recorded, left out), the CVD adding up each one's delta and restarting at 0 where `keys` change
+ * (a new day or week). After a stretch with nothing recorded it carries on from where it stopped, in a run of its own: what traded in the
+ * stretch is not counted, so the line breaks there and divergences do not reach across it, but the two sides stay on one level (started
+ * again at 0, the part after a gap sat at a level of its own that moved against the rest whenever the left edge did).
  */
 export function deltaCandles(starts: readonly number[], flows: readonly (CandleFlow | null)[], keys: readonly number[]): DeltaCandle[] {
   const out: DeltaCandle[] = [];
@@ -109,8 +111,8 @@ export function deltaCandles(starts: readonly number[], flows: readonly (CandleF
   for (let i = 0; i < starts.length; i++) {
     const f = flows[i];
     if (!f) { gap = true; continue; }
-    // A new day or week, or the first candle after one with nothing recorded (what happened in between is not known): the CVD starts again.
-    if (keys[i] !== key || gap) { cvd = 0; key = keys[i]!; gap = false; run++; }
+    if (keys[i] !== key) { cvd = 0; key = keys[i]!; gap = false; run++; }
+    else if (gap) { gap = false; run++; }
     out.push({ t: starts[i]!, delta: f.delta, open: cvd, high: cvd + f.high, low: cvd + f.low, close: cvd + f.delta, run });
     cvd += f.delta;
   }
@@ -119,19 +121,28 @@ export function deltaCandles(starts: readonly number[], flows: readonly (CandleF
 
 /**
  * The flows of every candle, kept: a closed candle's is worked out once (until older flow is loaded, `loads`, or the instruments change),
- * the candles still open (ending within `liveMs` of now) every time.
+ * the candles still open (ending within `liveMs` of now) every time. An open candle keeps the lowest and highest it has been seen at: its
+ * samples move on with every second, and read afresh its wick shrank and grew as a sample fell on a spike or missed it. A replay moved
+ * back before what was seen forgets it (it would show what came later).
  */
 export class FlowCache {
   #key = '';
   #closed = new Map<number, CandleFlow | null>();
+  #open = new Map<number, { flow: CandleFlow; at: number }>();
   get(key: string, tracks: readonly DeltaTrack[], starts: readonly number[], tfMs: number, now: number, liveMs = 5_000): (CandleFlow | null)[] {
-    if (key !== this.#key) { this.#key = key; this.#closed = new Map(); }
-    return starts.map(t => {
-      const closed = t + tfMs <= now - liveMs;
-      if (closed && this.#closed.has(t)) return this.#closed.get(t)!;
-      const f = candleFlow(tracks, t, tfMs, now);
-      if (closed) this.#closed.set(t, f);
+    if (key !== this.#key) { this.#key = key; this.#closed = new Map(); this.#open = new Map(); }
+    // A replay moved back: what was seen after its moment is not known yet, wherever it was.
+    for (const [t, seen] of this.#open) if (seen.at > now) this.#open.delete(t);
+    const merge = (f: CandleFlow | null, t: number): CandleFlow | null => { const seen = this.#open.get(t); return f && seen ? { ...f, low: Math.min(f.low, seen.flow.low), high: Math.max(f.high, seen.flow.high) } : f; };
+    // A candle closes with what was seen of it while it was open, whether it is read then or not (panned out of view).
+    const close = (t: number, f: CandleFlow | null): CandleFlow | null => { const final = merge(f, t); this.#closed.set(t, final); this.#open.delete(t); return final; };
+    const out = starts.map(t => {
+      if (t + tfMs <= now - liveMs) return close(t, this.#closed.has(t) ? this.#closed.get(t)! : candleFlow(tracks, t, tfMs, now));
+      const f = merge(candleFlow(tracks, t, tfMs, now), t);
+      if (f) this.#open.set(t, { flow: f, at: now });
       return f;
     });
+    for (const t of [...this.#open.keys()]) if (t + tfMs <= now - liveMs) close(t, this.#closed.get(t) ?? candleFlow(tracks, t, tfMs, now));
+    return out;
   }
 }

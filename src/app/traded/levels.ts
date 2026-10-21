@@ -89,26 +89,42 @@ export function candleBarMs(s: Pick<KindSettings, 'period' | 'sessions'>): numbe
  * does not say where inside its range it traded. Only bars that lie wholly inside the window count; `heldTo` is how far the candles are
  * known, so a window under way is worked out up to there. Null levels when nothing traded. `covered` is the share of the window's bars, up
  * to `heldTo`, that are there (a venue that sends no bar for a minute nobody traded has one missing). `rows` is the estimate itself: USD by
- * row (the row's index on `step`), what a past window's profile on the chart draws.
+ * row (the row's index on `step`), what a past window's profile on the chart draws; `buys` the part of it bought at market, each bar's taker
+ * buys spread as its volume is, or null where a bar with volume did not say (a venue that does not report them).
  */
-export function candleLevels(bars: readonly CandleRow[], from: number, to: number, barMs: number, step: number, share: number, heldTo: number): { levels: ValueLevels | null; covered: number; rows: Map<number, number> } {
-  const rows = new Map<number, number>(), end = Math.min(to, Math.floor(heldTo / barMs) * barMs);
-  let n = 0;
+export interface CandleProfile { levels: ValueLevels | null; covered: number; rows: Map<number, number>; buys: Map<number, number> | null }
+export function candleLevels(bars: readonly CandleRow[], from: number, to: number, barMs: number, step: number, share: number, heldTo: number): CandleProfile {
+  const rows = new Map<number, number>(), buys = new Map<number, number>(), end = Math.min(to, Math.floor(heldTo / barMs) * barMs);
+  let n = 0, split = true, any = false;
   for (const b of bars) {
     const [t, , high, low, close, volume] = b;
     if (t < from || t + barMs > end) continue;
     n++;
     if (!(volume > 0) || !(high >= low) || !(low > 0)) continue;
-    const usd = volume * (high + low + close) / 3;
+    const usd = volume * (high + low + close) / 3, taker = (b as readonly (number | undefined)[])[7];
+    any = true;
+    if (taker === undefined || !Number.isFinite(taker)) split = false;
+    const bought = split ? usd * Math.min(1, Math.max(0, taker! / volume)) : 0;
     const a = rowOf(low, step), z = rowOf(high, step);
-    if (a === z) { rows.set(a, (rows.get(a) ?? 0) + usd); continue; }
+    if (a === z) { rows.set(a, (rows.get(a) ?? 0) + usd); if (split) buys.set(a, (buys.get(a) ?? 0) + bought); continue; }
     for (let k = a; k <= z; k++) {
       const part = (Math.min(high, (k + 1) * step) - Math.max(low, k * step)) / (high - low);
-      if (part > 0) rows.set(k, (rows.get(k) ?? 0) + usd * part);
+      if (part > 0) { rows.set(k, (rows.get(k) ?? 0) + usd * part); if (split) buys.set(k, (buys.get(k) ?? 0) + bought * part); }
     }
   }
   const expected = Math.max(0, Math.floor((end - from) / barMs));
-  return { levels: levelsOf(rows, step, share), covered: expected > 0 ? Math.min(1, n / expected) : 0, rows };
+  return { levels: levelsOf(rows, step, share), covered: expected > 0 ? Math.min(1, n / expected) : 0, rows, buys: split && any ? buys : null };
+}
+
+/**
+ * Two markets' candle profiles of one window as one (the perpetual's and the spot market's): their rows and buys added up, the levels read
+ * from the sum, as covered as the less covered; buys only where both have them.
+ */
+export function mergeCandleProfiles(a: CandleProfile, b: CandleProfile, step: number, share: number): CandleProfile {
+  const rows = new Map(a.rows), buys = a.buys && b.buys ? new Map(a.buys) : null;
+  for (const [k, v] of b.rows) rows.set(k, (rows.get(k) ?? 0) + v);
+  if (buys) for (const [k, v] of b.buys!) buys.set(k, (buys.get(k) ?? 0) + v);
+  return { levels: levelsOf(rows, step, share), covered: Math.min(a.covered, b.covered), rows, buys };
 }
 
 /** The zone a window's dates are read in: a session's own (its start is a date there), else the zone days and weeks start in. */

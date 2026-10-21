@@ -74,8 +74,42 @@ export const VOLUME_WORDS: ColumnWords = { buy: t('Bought at market'), sell: t('
  */
 export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
   const low = (rows.bin0 + index) * rows.step, high = low + rows.step;
-  const where = !levels ? null : levels.poc >= low && levels.poc < high ? t('Point of control') : high > levels.val && low < levels.vah ? t('In the value area') : low >= levels.vah ? t('Above the value area') : t('Below the value area');
-  return [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(high, rows.step)}`, bold: true }, ...rowBody(rows, index, words, where)];
+  return [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(high, rows.step)}`, bold: true }, ...rowBody(rows, index, words, whereIn(levels, low, high))];
+}
+
+/** Where the prices [low, high) stand against a profile's point of control and value area, in words (null without levels). */
+const whereIn = (levels: ValueLevels | null, low: number, high: number): string | null => !levels ? null
+  : levels.poc >= low && levels.poc < high ? t('Point of control') : high > levels.val && low < levels.vah ? t('In the value area') : low >= levels.vah ? t('Above the value area') : t('Below the value area');
+
+/** A row of a day's, week's, month's or session's profile on the chart, as its box shows it (`periodRowLines`). */
+export interface PeriodRow {
+  /** Whose profile ("Oct 20", "≈ Oct" from candles), and the row's prices on rows of `step`. */
+  name: string; low: number; high: number; step: number;
+  /** What was bought and sold at market on the row (all of it in `buy` where the candles do not say), and in the whole profile. */
+  buy: number; sell: number; total: number;
+  /** Whether the row's two sides are known (the recording's trades, candles with taker buys). */
+  split: boolean;
+  levels: ValueLevels | null;
+  /** Where an estimate comes from, said under the figures (null for the recording's own trades). */
+  source: string | null;
+}
+
+/**
+ * The box of a period profile's row: whose it is and its prices, its two sides and their difference where they are known (else its whole
+ * volume), its share of the period, where it stands against the period's point of control and value area, and where an estimate comes from.
+ */
+export function periodRowLines(r: PeriodRow, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
+  const v = r.buy + r.sell, lines: InfoLine[] = [{ text: r.name, bold: true }, { text: `${fmtPrice(r.low, r.step)} – ${fmtPrice(r.high, r.step)}` }];
+  if (r.split) {
+    const net = r.buy - r.sell;
+    lines.push({ label: words.buy, text: `$${usd(r.buy)}`, color: 'buy' }, { label: words.sell, text: `$${usd(r.sell)}`, color: 'sell' },
+      { label: words.net, text: `${net > 0 ? '+' : net < 0 ? '−' : ''}$${usd(Math.abs(net))}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+  } else lines.push({ label: t('Volume'), text: `$${usd(v)}` });
+  if (r.total > 0) lines.push({ label: words.share, text: `${(v / r.total * 100).toFixed(1)} %` });
+  const where = whereIn(r.levels, r.low, r.high);
+  if (where) lines.push({ label: t('Profile'), text: where, rule: true });
+  if (r.source) lines.push({ text: r.source, color: 'muted', wrap: true });
+  return lines;
 }
 
 /**

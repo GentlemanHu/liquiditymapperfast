@@ -9,7 +9,7 @@ import { levelsOf, pointOfControl, valueArea } from '../src/shared/profile.ts';
 import { FootprintRecorder, parseProfile, parseValueAreas } from '../src/shared/footprint.ts';
 import { dayWindows, fromWall, lastWindows, offsetMs, sessionWindows, weekWindows, type SessionDef } from '../src/app/traded/sessions.ts';
 import { TRADED_DEFAULTS, chartKinds, linesCount, linesSource, readTraded, recordedCount, resolveZone } from '../src/app/traded/settings.ts';
-import { answerLevels, candleBarMs, candleLevels, linesWindows, recordedShare, recordedWindows, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
+import { answerLevels, candleBarMs, candleLevels, linesWindows, mergeCandleProfiles, recordedShare, recordedWindows, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
 import { TradeCoverage, recordedMinutes } from '../src/shared/coverage.ts';
 import { tradedRows } from '../src/app/traded.ts';
 import { initialState } from '../src/app/store.ts';
@@ -309,6 +309,18 @@ test('candles give a value area with each bar\'s volume spread evenly over its r
   assert.equal(candleLevels([bars[0]!, bars[2]!], T, T + 3 * B, B, 20, 0.7, T + 3 * B).covered, 2 / 3);
   assert.equal(candleLevels(bars, T, T + 3 * B, B, 20, 0.7, T + B + 30_000).covered, 1, 'one bar ended by then, and it is there');
   assert.equal(candleLevels([], T, T + 3 * B, B, 20, 0.7, T + 3 * B).levels, null);
+  assert.equal(r.buys, null, 'candles that do not say who bought: no split');
+  // With taker buys (Binance): each bar's bought part spread as its volume is.
+  const split = bars.map(b => [...b, 0, b[5] * 0.75] as [number, number, number, number, number, number, number, number]);
+  const s = candleLevels(split, T, T + 3 * B, B, 20, 0.7, T + 3 * B);
+  assert.ok(s.buys, 'split');
+  for (const [k, usd] of s.rows) assert.ok(Math.abs(s.buys!.get(k)! - usd * 0.75) < 1e-6, `row ${k}: three quarters bought`);
+  assert.equal(candleLevels([split[0]!, bars[1]!, split[2]!], T, T + 3 * B, B, 20, 0.7, T + 3 * B).buys, null, 'one bar without them: no split at all');
+  // The perpetual's and the spot market's together: rows and buys added up, levels read from the sum.
+  const both = mergeCandleProfiles(s, s, 20, 0.7);
+  for (const [k, usd] of s.rows) { assert.ok(Math.abs(both.rows.get(k)! - 2 * usd) < 1e-6); assert.ok(Math.abs(both.buys!.get(k)! - 2 * s.buys!.get(k)!) < 1e-6); }
+  assert.deepEqual(both.levels, s.levels, 'twice the same: the same levels');
+  assert.equal(mergeCandleProfiles(s, r, 20, 0.7).buys, null, 'one without buys: none');
   const session = (start: string, on = true) => ({ id: 's', name: 'S', zone: 'UTC', start, end: '18:00', on, weekdays: false });
   assert.equal(candleBarMs({ period: 'week', sessions: [session('09:17')] }), B, 'days and weeks start on five minutes');
   assert.equal(candleBarMs({ period: 'sessions', sessions: [session('09:30'), session('13:17')] }), MIN, 'a session at :17');

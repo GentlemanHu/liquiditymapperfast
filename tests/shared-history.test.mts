@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchCandles, fetchOiHistory, fetchOiSample, nativeInterval, venueOf, type Fetcher } from '../src/shared/history.ts';
+import { aggregateCandles } from '../src/shared/series.ts';
 
 const MINUTE = 60_000, HOUR = 3_600_000;
 const T0 = Math.floor(Date.UTC(2026, 9, 1) / HOUR) * HOUR;
@@ -67,6 +68,27 @@ test('asked for, a page that fails after others came keeps them: the newest part
   assert.equal(kept[kept.length - 1]![0], T0 + 4499 * MINUTE, 'the newest bar'); assert.equal(kept[0]![0], T0 + 1500 * MINUTE, 'unbroken back to where the pages reached');
   calls.length = 0;
   await assert.rejects(fetchCandles('binance:BTCUSDT', MINUTE, T0, T0 + all, async () => { throw new Error('down'); }, undefined, 12, { partial: true }), /down/, 'nothing came: it throws');
+});
+
+test('asked for, Binance candles carry their taker buys (the tenth field), summed when aggregated, and never on the wire form', async () => {
+  // Bar k: volume 1 coin, of which (k % 4) / 4 bought at market.
+  const get: Fetcher = async url => {
+    const q = new URL(url).searchParams, end = Number(q.get('endTime')), limit = Number(q.get('limit')), rows = [];
+    for (let k = 0; k < 120; k++) { const b = bar(k); if (b.start <= end) rows.push([b.start, String(b.open), String(b.high), String(b.low), String(b.close), '1', b.start + MINUTE - 1, '100', 5, String((k % 4) / 4), '25', '0']); }
+    return rows.slice(-limit);
+  };
+  const plain = await fetchCandles('binance:BTCUSDT', 5 * MINUTE, T0, T0 + 119 * MINUTE, get);
+  assert.ok(plain.every(c => c.length === 7), 'not asked: the seven fields, as the wire form has them');
+  const withBuy = await fetchCandles('binance:BTCUSDT', 5 * MINUTE, T0, T0 + 119 * MINUTE, get, undefined, 12, { buy: true });
+  assert.equal(withBuy[0]![5], 5, 'five minutes of one coin');
+  assert.equal(withBuy[0]![7], (0 + 0.25 + 0.5 + 0.75 + 0) , 'their taker buys summed');
+  assert.equal(aggregateCandles([{ start: T0, open: 1, high: 1, low: 1, close: 1, volume: 1, buy: 0.5 }, { start: T0 + MINUTE, open: 1, high: 1, low: 1, close: 1, volume: 1 }], 5 * MINUTE, true)[0]![7], undefined, 'a row without them: the candle has none');
+  // A taker figure that is no number from nothing to the volume is none, never a zero that would draw the bar all sold.
+  for (const bad of [null, '', false, 'x', '-1', '2']) {
+    const odd: Fetcher = async () => [[T0, '1', '1', '1', '1', '1', T0 + MINUTE - 1, '1', 1, bad, '1', '0']];
+    const [c] = await fetchCandles('binance:BTCUSDT', MINUTE, T0, T0 + 1, odd, undefined, 1, { buy: true });
+    assert.equal(c![7], undefined, `taker buys ${JSON.stringify(bad)}: none`);
+  }
 });
 
 test('a misbehaving endpoint that keeps returning the same page cannot loop', async () => {

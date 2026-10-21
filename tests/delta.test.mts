@@ -26,13 +26,13 @@ test('a candle\'s delta is exact at its close; its high and low are sampled thro
   assert.deepEqual(candleFlow([minuteHeld], T, 5 * MIN, T + 150_000)!.delta, a.cumDelta(s0 + 119) - a.cumDelta(s0 - 1), 'minute history: up to the last minute over, not into the one under way');
 });
 
-test('the CVD adds up each candle\'s delta and starts again each day, or after a candle with nothing recorded', () => {
+test('the CVD adds up each candle\'s delta and starts again each day; after a candle with nothing recorded it carries on, in a run of its own', () => {
   const starts = [T - 2 * HOUR, T - HOUR, T, T + HOUR];
   const flow = (delta: number) => ({ delta, low: Math.min(0, delta), high: Math.max(0, delta), gross: Math.abs(delta) + 1 });
   const none = deltaCandles(starts, [flow(5), flow(-2), flow(4), flow(1)], resetKeys(starts, 'none', 'UTC'));
   assert.deepEqual(none.map(c => [c.open, c.close]), [[0, 5], [5, 3], [3, 7], [7, 8]]);
   const gap = deltaCandles(starts, [flow(5), null, flow(4), flow(1)], resetKeys(starts, 'none', 'UTC'));
-  assert.deepEqual(gap.map(c => [c.t, c.open, c.close, c.run]), [[T - 2 * HOUR, 0, 5, 0], [T, 0, 4, 1], [T + HOUR, 4, 5, 1]], 'what happened in the gap is not known: it starts again');
+  assert.deepEqual(gap.map(c => [c.t, c.open, c.close, c.run]), [[T - 2 * HOUR, 0, 5, 0], [T, 5, 9, 1], [T + HOUR, 9, 10, 1]], 'the gap is not counted: the CVD goes on from 5, in a run of its own (the line breaks, divergences stop there)');
   const midnight = Date.UTC(2026, 9, 10), days = [midnight - 2 * HOUR, midnight - HOUR, midnight, midnight + HOUR];
   const daily = deltaCandles(days, [flow(5), flow(5), flow(5), flow(5)], resetKeys(days, 'day', 'UTC'));
   assert.deepEqual(daily.map(c => c.open), [0, 5, 0, 5], 'a new day starts at 0');
@@ -80,6 +80,29 @@ test('closed candles are worked out once; the one under way every time; new olde
   assert.ok(calls - first > 0 && calls - first < first / 2, 'only the open candle again');
   const before = calls; cache.get('k2', [counting], starts, MIN, T + 32_000);
   assert.equal(calls - before, first, 'a new key: all of them');
+});
+
+test('the candle under way keeps the highest and lowest it was seen at, and a replay moved back forgets them', () => {
+  const s0 = T / 1000, spike = track(s0 - 100, sec => sec === s0 + 19 ? 1_000 : 0), cache = new FlowCache();
+  // At 160 s a sample falls on the spike (second 19); at 168 s none does.
+  assert.equal(cache.get('k', [spike], [T], HOUR, T + 160_000)[0]!.high, 1_000);
+  assert.equal(candleFlow([spike], T, HOUR, T + 168_000)!.high, 0, 'read afresh, the wick would vanish');
+  assert.equal(cache.get('k', [spike], [T], HOUR, T + 168_000)[0]!.high, 1_000, 'kept');
+  assert.equal(cache.get('k', [spike], [T], HOUR, T + 100_000)[0]!.high, 0, 'a replay moved back before the spike was seen');
+});
+
+test('a candle closes with the wick seen while it was open, read at its close or not, and a replay moved back drops later sightings everywhere', () => {
+  const s0 = T / 1000, spike = track(s0 - 100, sec => sec === s0 + 19 ? 1_000 : 0), after = T + HOUR + 10_000;
+  assert.equal(candleFlow([spike], T, HOUR, after)!.high, 0, 'its samples at the close miss the spike');
+  const read = new FlowCache(); read.get('k', [spike], [T], HOUR, T + 160_000);
+  assert.equal(read.get('k', [spike], [T], HOUR, after)[0]!.high, 1_000, 'read at its close');
+  const away = new FlowCache(); away.get('k', [spike], [T], HOUR, T + 160_000); away.get('k', [spike], [], HOUR, after);
+  assert.equal(away.get('k', [spike], [T], HOUR, after + 1_000)[0]!.high, 1_000, 'panned out of view until it closed');
+  const replay = new FlowCache(); replay.get('k', [spike], [T], HOUR, after);
+  replay.get('k', [spike], [T], HOUR, T + 160_000);
+  assert.equal(replay.get('k', [spike], [T], HOUR, after)[0]!.high, 1_000, 'held closed before a replay saw the spike');
+  const back = new FlowCache(); back.get('k', [spike], [T], HOUR, T + 160_000); back.get('k', [spike], [T - 2 * HOUR], HOUR, T - HOUR);
+  assert.equal(back.get('k', [spike], [T], HOUR, T + 168_000)[0]!.high, 0, 'a seek back before it, to other candles, forgot it');
 });
 
 test('settings, and the popup of a candle', () => {

@@ -161,7 +161,7 @@ export class Hub {
   /** The hourly candles the key levels are read from, straight from the exchange (keylevels/history.ts). */
   readonly keyHistory = new KeyLevelHistory(webGet);
   readonly #vwapHistories = new Map<number, KeyLevelHistory>();
-  readonly #profileHistories = new Map<number, KeyLevelHistory>();
+  readonly #profileHistories = new Map<string, KeyLevelHistory>();
   /**
    * The whale VWAP's sums: the whole minutes answered (`rows`, before `to`) and since then the minutes added from the orders pushed live
    * (`tail`, from `to` on), so neither counts an order the other has. `since`: where the recording's count of large orders begins.
@@ -216,11 +216,23 @@ export class Hub {
   }
   /**
    * The volume profile's candles of one bar size (`traded/levels.ts` `candleBarMs`: five minutes, or one for sessions off the five), for
-   * days, weeks and sessions worked out from candles: as far back as twenty weeks reach, the newest asked again every minute.
+   * days, weeks and sessions worked out from candles: as far back as twenty weeks reach, the newest asked again every minute, with their taker
+   * buys. `spot`: the spot market's that join them (`profileCompanion`).
    */
-  profileHistory(barMs: number): KeyLevelHistory {
-    let h = this.#profileHistories.get(barMs);
-    if (!h) { h = new KeyLevelHistory(webGet, Date.now, 60_000, PROFILE_CANDLES_BACK_MS); this.#profileHistories.set(barMs, h); }
+  profileHistory(barMs: number, market: 'main' | 'spot' = 'main'): KeyLevelHistory {
+    const key = `${barMs}|${market}`;
+    let h = this.#profileHistories.get(key);
+    if (!h) { h = new KeyLevelHistory(webGet, Date.now, 60_000, PROFILE_CANDLES_BACK_MS); h.withBuy = true; this.#profileHistories.set(key, h); }
+    return h;
+  }
+  /**
+   * The chart market's candles of one timeframe with their taker buys (Binance's), for the volume strip's bars before the recording reaches:
+   * the share of each candle bought at market.
+   */
+  candleTaker(tfMs: number): KeyLevelHistory {
+    const key = `taker|${tfMs}`;
+    let h = this.#profileHistories.get(key);
+    if (!h) { h = new KeyLevelHistory(webGet, Date.now, 60_000, 3 * 365 * 86_400_000); h.withBuy = true; this.#profileHistories.set(key, h); }
     return h;
   }
   onLiquidationsChanged: () => void = () => {};

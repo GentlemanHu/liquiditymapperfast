@@ -54,6 +54,16 @@ export function profileTarget(coin: Coin): HistoryTarget | null {
   return null;
 }
 
+/**
+ * The spot market whose candles join the perpetual's in the volume profile: Binance spot beside Binance's perpetual, more of the coin's
+ * trading split the same way by its taker buys. Null where the target is another venue's or the coin has no Binance spot market.
+ */
+export function profileCompanion(coin: Coin, target: HistoryTarget | null): HistoryTarget | null {
+  if (!target || !target.id.startsWith('binance:')) return null;
+  const listing = coin.markets.binancespot, id = instrumentIdFor('binancespot', coin);
+  return CANDLE_VENUES.includes('binancespot') && listing && id ? { id, listing, own: false } : null;
+}
+
 export class KeyLevelHistory {
   #key = '';
   #id = '';
@@ -70,6 +80,8 @@ export class KeyLevelHistory {
   #retryAt = 0;
   /** Bumped whenever the bars change, for the pane's cache. */
   version = 0;
+  /** Whether the bars carry their taker buys where the venue reports them (the volume profile's, for its split). */
+  withBuy = false;
   state: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
 
   /**
@@ -105,7 +117,7 @@ export class KeyLevelHistory {
     // A page that fails after others came keeps them, the next call asking on back from where they reach: on the first load and the walks
     // further back, never on a refresh of the newest bars, where what came could lie apart from what is held and leave a hole.
     const partial = !forward || !this.#bars.length;
-    void fetchCandles(target.id, barMs, a, b, this.get, target.listing, MAX_PAGES, { pageSize: 1500, partial }).then(rows => {
+    void fetchCandles(target.id, barMs, a, b, this.get, target.listing, MAX_PAGES, { pageSize: 1500, partial, buy: this.withBuy }).then(rows => {
       if (asked !== this.#key) return;
       if (forward) this.#refreshedAt = this.now();
       if (rows.length) { this.#merge(rows as CandleRow[]); if (forward) this.#heldTo = Math.max(this.#heldTo, b); }

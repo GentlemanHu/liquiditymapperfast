@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'barStats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane';
 
 export interface HelpTopic {
   title: string;
@@ -31,11 +31,12 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('Hover it and the Mirror comparison appears (switch that off with the Mirror button).')],
   },
   traded: {
-    title: t('Volume profile'), guide: 'profile',
+    title: t('Volume profile'), guide: 'volume-profile',
     tip: t('Profiles of what traded, beside the map and along the top of the chart: how much was bought and sold at market at each price, and in each stretch of time, over the time on the map. Next to the resting liquidity, it shows which levels have actually changed hands, and when.'),
     body: [t('The point of control is the price that traded the most; the value area is the band around it that holds 70% of the volume (the share is a setting), with its top and bottom the value area high and low (VAH, VAL). They are read from every price that traded, on rows of a fixed size, so zooming the price axis does not move them.'),
       t('In the settings they can be drawn as lines on the chart. The column always adds up what is on the chart; days, weeks, months and sessions you set in any market\'s time zone are drawn on the chart itself, each over its own time, with their lines and names and, for one kind, their profiles. Hover a row for what traded there and the market orders that began at those prices, or the header for the figures of the whole window; drag on the column, or click a row, for everything about those prices in the Range panel.'),
       t('Days, weeks and sessions come from the recording, as far back as it keeps trades (a week; a day on a page that reads the exchanges itself), or from the candles of the most traded market: an estimate, marked ≈, that reaches back months.'),
+      t("Months, and days, weeks or sessions worked out from candles, come from the 5-minute candles (one-minute for sessions off the five) of the most traded market, Binance's perpetual with its spot market where the coin has one: each candle's volume spread evenly over its range and split into buys and sells by its taker buys. Those profiles are an estimate, so they are outlined in the profile colour and labelled ≈ with where they come from; where a market's candles do not say who bought, they are drawn grey. Point at a row of any profile on the chart for its figures."),
       t('An order is counted at the price it began at, so a row inside a sweep can have volume and no orders of its own.'),
       t('In the settings a grid sets where each measure is drawn (traded volume, the change in open interest, absorption or liquidations): as a column right or left of the map, the left ones mirrored so both face the chart, or as a band along the top, where the same profile is laid on the time axis: one bar for each stretch, from a second to a day as the zoom allows, growing down from the top, with the busiest stretch as its point of control and the value area around it. Up to three bands stack. What has no room stays switched on and is said, in the panel and on the map. Point at a bar for its figures; click a band\'s header for these settings.')],
   },
@@ -69,7 +70,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     tip: t('What taker buys outweighed sells by in each candle, over the exchanges the flow column adds up.'),
     body: [t('Each candle\'s delta is what was bought at market minus what was sold, in dollars, over the same markets as the flow column\'s ALL VENUES lines (the exchanges switched on, inside Spot / Perp). As bars it is each candle on its own; as CVD candles it adds up from the left edge of the chart, or starts again each day or week, and a dotted line marks where it starts again.'),
       t('A CVD candle opens and closes where the running delta was at the candle\'s start and end. Its high and low are sampled sixteen times through the candle, since the extremes of a sum over several exchanges are not kept, so a wick can be a little short.'),
-      t('It comes from the flow the page holds: a day a second at a time, and older minutes where the server keeps them. Candles before that have none, and the CVD starts again after a stretch with nothing recorded.'),
+      t('It comes from the flow the page holds: a day a second at a time, and older minutes where the server keeps them. Candles before that have none. After a stretch with nothing recorded the CVD carries on from where it stopped, past a dotted line: what traded in the stretch is not counted.'),
       t('Divergences join two swing highs in a row where the price made the higher high and the CVD the lower one (in the sell colour, above the highs), or two swing lows where the price made the lower low and the CVD the higher one (in the buy colour, below the lows), on the CVD candles and on the map. A swing must stand beyond the chosen number of closed candles each side, so a divergence appears that many candles after its newer swing, and swings on either side of a restart of the CVD are not compared. They need the chart to show the market\'s own candles. They show where buying or selling faded against the price; they have not been tested as a signal.'),
       t('NL/NS (in Show) estimates who opened and closed positions: each candle\'s change of open interest of the OI pane\'s market, given to the side that traded at market there (its taker delta, or the way its price went where its flow is not recorded). Up with buyers: new longs; up with sellers: new shorts; down with sellers: longs closed; down with buyers: shorts closed. Bars are solid where positions were opened and hollow where they were closed, and the line is their running sum, restarting where the CVD does. Every position has a long and a short holder, so this is an estimate, in coins and for that one market; it has not been tested as a signal.'),
       t('With the OI pane\'s Venues on All perpetuals (the default), each venue\'s change of open interest is given to the side that traded at market on that venue, and the venues are then added up: one venue\'s buyers say nothing about who opened positions on another.'),
@@ -130,7 +131,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   volume: {
     title: t('Volume'), guide: 'chart',
-    tip: t('Volume bars along the bottom of the chart. Unusually large ones are drawn stronger (see Highlights).'),
+    tip: t("Volume bars along the bottom of the chart. Where the recording reaches, each is what the exchanges switched on inside the Spot / Perp filter traded in that candle; before it, the chart's own candle, outlined and named ≈ with its market (split by taker buys on Binance, grey elsewhere). They follow the volume profile's Bars and value area settings. Unusually large ones are drawn stronger (see Highlights)."),
     body: [],
   },
   bubbles: {
@@ -192,11 +193,15 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('Bid above ask means more support close under the price than resistance above it. Switch the view to imbalance to see (bid - ask) / (bid + ask) as one line between -100 % and +100 %. The options set the half-life, the smallest and largest bin that counts, and whether to average per level.'),
       t("Each minute is measured at every sample the recording takes, so zooming out shows the average of its minutes, not a different measure. ≈ before the numbers means part of the line was worked out from the minutes' average books instead: when a size filter is set, or for minutes recorded before the tracker was kept. That is an estimate, rougher the further you zoom out.")],
   },
-  barStats: {
+  stats: {
     title: t('Bar stats'), guide: 'footprint',
-    tip: t('One row of numbers per statistic under each candle: volume, delta (buys minus sells), cumulative delta and more. Click Stats to choose.'),
+    tip: t('A table under the chart: one row per statistic, one cell per candle (volume, delta, cumulative delta and more). Press Stats in its header to choose the rows.'),
     body: [t('Each row is one statistic, one cell per candle, shaded by size. The defaults are volume, delta (buy volume minus sell volume) and cvd (the running sum of delta).'),
-      t('Press Stats to add statistics such as the point of control, stacked imbalances or market orders by size. These come from the executions recorded while the page was open, so they start empty and fill with time.')],
+      t('Press Stats to add statistics such as the point of control, stacked imbalances or market orders by size. These come from the executions recorded while the page was open, so they start empty and fill with time.'),
+      t("It has its own switch and counts the markets the footprint counts (set in either panel). Its point of control and imbalances are read on rows of the size its header shows: the footprint's at this zoom, whether the footprint shows or not."),
+      t('The View column, right of the table under the price axis, gives each row over the candles in view: a sum, the newest value of a running sum, or a figure worked out from those candles added together. Point at it to see which.'),
+      t('Rows read from the candles and open interest (range, close in range, vol / bp, oi chg, candle delta) fill the candles before the recording too. Rows read from executions are drawn faint where the recording holds only part of a candle (rec % says how much). Order flow picks the rows an order-flow reading starts from; Export CSV saves the candles in view.'),
+      t("Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.")],
   },
   cvd: {
     title: t('Flow'), guide: 'flow',

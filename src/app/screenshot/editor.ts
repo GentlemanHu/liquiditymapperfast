@@ -108,13 +108,18 @@ function openEditor(snap: Snapshot): { close(): void } {
   dialog.showModal();
   const ctx = stage.getContext('2d')!;
 
-  // The panes that can be taken whole, found now while the page is as it was captured.
-  const snapTargets: { rect: Rect; label: string }[] = [];
-  for (const [selector, label] of [['.pane.heat', t('Click to take the chart')], ['.pane.depth', t('Click to take Depth')], ['.pane.oi', t('Click to take Open interest')], ['.pane.lt', t('Click to take the Liquidity Tracker')], ['.pane.bars', t('Click to take Bar stats')], ['.side-col', t('Click to take the order book')], ['.pane.cvd', t('Click to take the flow column')]] as const) {
-    const node = document.querySelector(selector) as HTMLElement | null; if (!node || node.hidden) continue;
+  // The panes that can be taken whole, found now while the page is as it was captured: those named here, then any other pane (one added
+  // later is never left out, as Delta and L/S were).
+  const snapTargets: { rect: Rect; label: string }[] = [], named = new Set<Element>();
+  const take = (node: HTMLElement, label: string): void => {
+    named.add(node); if (node.hidden) return;
     const r = node.getBoundingClientRect();
     if (r.width > 40 && r.height > 20) snapTargets.push({ rect: { x: r.left, y: r.top, w: r.width, h: r.height }, label });
+  };
+  for (const [selector, label] of [['.pane.heat', t('Click to take the chart')], ['.pane.depth', t('Click to take Depth')], ['.pane.oi', t('Click to take Open interest')], ['.pane.delta', t('Click to take Delta')], ['.pane.ls', t('Click to take Long/Short')], ['.pane.lt', t('Click to take the Liquidity Tracker')], ['.pane.bars', t('Click to take Bar stats')], ['.side-col', t('Click to take the order book')], ['.pane.cvd', t('Click to take the flow column')]] as const) {
+    const node = document.querySelector(selector) as HTMLElement | null; if (node) take(node, label);
   }
+  for (const node of document.querySelectorAll<HTMLElement>('.pane')) if (!named.has(node) && !node.closest('.side-col')) take(node, t('Click to take this pane'));
   // Anything on the page that is not a pane (above all the top bar, which is not a picture worth taking alone) takes the whole page: every pane that is open.
   snapTargets.push({ rect: { x: 0, y: 0, w: W, h: H }, label: t('Click to take the whole page') });
 

@@ -37,7 +37,7 @@ test('a rule adds height once, above the first row of a wrapped sentence only', 
 });
 
 test('a bar-stat popup names the statistic, the candle and the value, and only adds what is known', () => {
-  const cell: StatCell = { label: 'delta', title: 'Buy minus sell volume of the bar (USD)', value: '-2.1M', tone: 'sell', time: 'Oct 5 21:00', previous: '+0.4M', rank: 3, of: 24, sigma: 2.14 };
+  const cell: StatCell = { label: 'delta', title: 'Buy minus sell volume of the bar (USD)', value: '-2.1M', tone: 'sell', time: 'Oct 5 21:00', previous: '+0.4M', rank: 3, of: 24, sigma: 2.14, partial: null };
   const lines = statCellLines(cell);
   assert.deepEqual(texts(lines).slice(0, 6), ['delta', 'Candle: Oct 5 21:00', 'Value: -2.1M', 'Candle before: +0.4M', 'Rank in view: 3 of 24', 'Unusual: 2.1σ above its baseline']);
   assert.equal(lines[2]!.color, 'sell');
@@ -47,6 +47,7 @@ test('a bar-stat popup names the statistic, the candle and the value, and only a
   assert.equal(last.color, 'muted');
   assert.deepEqual(texts(statCellLines({ ...cell, previous: null, rank: null, sigma: null })), ['delta', 'Candle: Oct 5 21:00', 'Value: -2.1M', cell.title]);
   assert.ok(!texts(statCellLines({ ...cell, of: 1 })).some(l => l.startsWith('Rank')), 'a rank among one is not a rank');
+  assert.ok(texts(statCellLines({ ...cell, partial: 62 })).some(l => l.startsWith('Recorded: 62 %')), 'a candle recorded in part says how much');
 });
 
 const bar: Bar = { t: Date.UTC(2026, 9, 5, 21), rows: [[85700, 1e6, 3e6], [85750, 3e6, 1e6], [85800, 0.5e6, 0.5e6]], buyUsd: 4.5e6, sellUsd: 4.5e6 };

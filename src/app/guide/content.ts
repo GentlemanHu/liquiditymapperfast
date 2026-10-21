@@ -1,6 +1,6 @@
 /**
  * The guide's text, as data. Inline markup in any string: `**bold**`, `code` between backticks, and `[[Key]]` for a keyboard key.
- * Figures are named animations drawn by `figures.ts`. The aim is a page that can be read in ten to fifteen minutes and leaves the reader
+ * Figures are named animations drawn by `figures.ts`. The aim is a page that can be read in ten to sixteen minutes and leaves the reader
  * with a working picture of what each part is for; anything deeper lives in the "?" panels, which share their text with the tooltips.
  */
 export type FigureId = 'anatomy' | 'colours' | 'recording' | 'zoom-price' | 'zoom-time' | 'pan' | 'flow' | 'mirror' | 'footprint';
@@ -146,10 +146,18 @@ export const SECTIONS: readonly Section[] = [
     id: 'footprint', title: 'The footprint',
     blocks: [
       { t: 'p', text: 'Zoom into the time axis until each candle is wide and the **footprint** appears. At every price inside the candle it shows how much traded **at the bid** (sellers hitting it, the left number) and **at the ask** (buyers lifting it, the right number). Bars show each row\'s volume, coloured where one side was 15% bigger. The heatmap fades as the footprint takes over: both answer the same question at different scales.' },
-      { t: 'p', text: '**Delta** is buys minus sells. A candle that rose on mostly sellers\' volume is more fragile than one that rose on buyers\'. The strip under the chart (**Bar stats**) shows one number per candle, by default volume, delta and cumulative delta (cvd). **Stats** adds more.' },
+      { t: 'p', text: '**Delta** is buys minus sells. A candle that rose on mostly sellers\' volume is more fragile than one that rose on buyers\'. The table under the chart (**Bar stats**, shown with **Stats** among the panels, apart from the footprint) has one number per candle, by default volume, delta and cumulative delta (cvd); Stats in its header adds more.' },
       { t: 'p', text: '**Rejected aggressive buying or selling.** When a candle\'s wick holds more net aggressive buying than any equally tall slice of the rest of the candle, and the candle then closed at least one average range below where those buyers paid, the wick\'s busiest cells glow amber and slowly pulse. Hover them for the numbers. A lower wick works the same way for sellers.' },
       { t: 'fig', id: 'footprint', caption: 'Zooming in reveals the rows, then the imbalances, then a candle with rejected buying.' },
       { t: 'note', kind: 'warn', text: 'This describes a closed candle and says nothing about who holds what. It needs a footprint that holds the candle\'s whole volume (about an hour of recording at 5 minutes, longer at slower timeframes), and nobody has shown that it predicts anything. Treat it as a place to look, never as a signal.' },
+    ],
+  },
+  {
+    id: 'volume-profile', title: 'The volume profile',
+    blocks: [
+      { t: 'p', text: 'The **volume profile** adds up what traded at each price. In its settings (≡ beside **Volume profile**), tick where each measure goes: a column right or left of the map adds it up by price, a band along the top by time, each over what is on the chart.' },
+      { t: 'p', text: '**Traded volume by period** draws days, weeks, months or sessions on the chart over their own time, as lines or bar profiles. Point at a row of a profile for its figures.' },
+      { t: 'note', text: '**Months** come from 5-minute candles of the most traded market (Binance\'s perpetual, with its spot market where the coin has one), split by their taker buys: an estimate, so they are outlined in the profile colour and labelled ≈ with their source. Days, weeks and sessions come from the recorded trades unless set to candles.' },
     ],
   },
   {
@@ -160,9 +168,9 @@ export const SECTIONS: readonly Section[] = [
         '**Open Interest** is the number of contracts currently open, which is not volume. It rises when positions are opened and falls when they are closed, and it cannot tell you who is long or short. The small bars are its change per candle.',
         '**Delta** is each candle\'s market buys minus sells, as bars or as CVD candles, with divergences and **NL/NS**, an estimate of who opened and closed positions.',
         '**Liquidity Tracker** (LT) draws bid and ask liquidity near the price as two lines, the closest counting most. Bid above ask means more support below the price than resistance above.',
-        '**Bar stats** is the strip of numbers per candle described above.',
+        '**Bar stats** is the table of numbers per candle described above.',
       ] },
-      { t: 'p', text: 'Each has a **?** in its header, and the toolbar buttons (Depth, OI, Delta, LT) show or hide them.' },
+      { t: 'p', text: 'Each has a **?** in its header, and the toolbar buttons (Depth, OI, Delta, LT, Stats) show or hide them.' },
     ],
   },
   {

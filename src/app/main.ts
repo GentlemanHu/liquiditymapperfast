@@ -28,7 +28,7 @@ import { matchShortcut, togglePatch } from './shortcuts.ts';
 import { ReplayBar } from './replay/bar.ts';
 import { replaying } from './replay/clock.ts';
 import { topShown } from './measures/strip.ts';
-import { enabledStats } from './panes/bar-stats.ts';
+import { tableHeight } from './panes/bar-stats.ts';
 import { Layout } from './layout.ts';
 import { Dock } from './dock.ts';
 import { RangeTool } from './range/tool.ts';
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
 
   const heat = new HeatPane(chart, store, hub, kernels);
   toolbar.placeRecenter(heat.root);
-  const bars = new BarStatsPane(chart, store, heat.view, heat);
+  const bars = new BarStatsPane(chart, store, heat.view, heat, hub);
   const depth = new DepthPane(chart, store, heat.view, hub);
   const oi = new OiPane(chart, store, heat.view, hub.flow);
   const delta = new DeltaPane(chart, store, heat.view, hub);
@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   const layout = () => {
     const s = store.state;
     gutters();
-    depth.root.hidden = !s.show.depth; oi.root.hidden = !s.show.oi; delta.root.hidden = !s.show.delta; ls.root.hidden = !s.show.ls; lt.root.hidden = !s.show.lt; bars.root.hidden = !s.show.footprint;
+    depth.root.hidden = !s.show.depth; oi.root.hidden = !s.show.oi; delta.root.hidden = !s.show.delta; ls.root.hidden = !s.show.ls; lt.root.hidden = !s.show.lt; bars.root.hidden = !s.show.stats;
     // The two side panels vanish and return at once: nothing is rebuilt, a hidden column is simply not laid out.
     cvd.root.hidden = !s.show.cvd; ladder.root.hidden = !s.show.book;
     arrange.columns({ flow: s.show.cvd, book: s.show.book });
@@ -236,6 +236,8 @@ async function main(): Promise<void> {
     dock.sync(s.show);
   };
 
+  /** The Bar stats rows the pane was last sized for: which, grouped or not, which kinds folded. */
+  let tableShape = `${store.state.barStats.join(',')}|${store.state.barStatOptions.grouped}|${store.state.barStatOptions.folded.join(',')}`;
   store.subscribe((state, changed) => {
     if (changed.has('keepAwake')) wake.set(state.keepAwake);
     // Every time on the page is written from the one setting: say it changed, and have what shows times draw again.
@@ -266,8 +268,10 @@ async function main(): Promise<void> {
     if (changed.has('oi') || changed.has('show')) { oi.invalidate(); bars.invalidate(); }
     if (changed.has('lt') || changed.has('show') || changed.has('sounds')) lt.refresh();
     if (changed.has('sounds')) depth.syncSound();
-    if (changed.has('barStatOptions') && !changed.has('barStats')) bars.refresh();
-    if (changed.has('barStats')) { arrange.setPaneHeight('bars', 12 + Math.max(1, enabledStats(state.barStats).length) * 24); bars.refresh(); }
+    // The pane is sized again only when its rows change (which, or grouped and folded), not for every option: a height set by hand stays.
+    const shape = `${state.barStats.join(',')}|${state.barStatOptions.grouped}|${state.barStatOptions.folded.join(',')}`;
+    if (shape !== tableShape) { tableShape = shape; arrange.setPaneHeight('bars', tableHeight(state.barStats, state.barStatOptions)); }
+    if (changed.has('barStatOptions') || changed.has('footprint') || changed.has('barStats')) bars.refresh();
     if (changed.has('grouping') || changed.has('ladderMode') || changed.has('ladderShow') || changed.has('ladderCurves') || changed.has('cvd') || changed.has('pullStack') || changed.has('ladderVenue') || changed.has('ladderVenues') || changed.has('disabledVenues') || changed.has('scope')) { ladder.invalidate(); ladder.syncControls(); }
     if (changed.has('range')) { heat.invalidate(); oi.invalidate(); depth.invalidate(); lt.invalidate(); bars.invalidate(); cvd.invalidate(); }
     if (changed.has('hover')) { heat.invalidate(); oi.invalidate(); delta.invalidate(); ls.invalidate(); depth.invalidate(); lt.invalidate(); bars.invalidate(); cvd.syncHover(); }
@@ -283,7 +287,7 @@ async function main(): Promise<void> {
 
   for (const p of [heat, ladder, depth, oi, delta, ls, lt, bars, cvd, candle]) p.setPalette(store.state.theme);
   layout(); ladder.syncControls(); lt.refresh();
-  arrange.setPaneHeight('bars', 12 + Math.max(1, enabledStats(store.state.barStats).length) * 24);
+  arrange.setPaneHeight('bars', tableHeight(store.state.barStats, store.state.barStatOptions));
   toolbar.sync(store.state, heat.window);
   await hub.start();
   await hub.loadSeries(true);

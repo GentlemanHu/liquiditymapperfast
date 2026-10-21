@@ -9,7 +9,7 @@ import type { FlowBook } from '../flow-book.ts';
 import { marketPicker } from '../market-picker.ts';
 
 /**
- * The Footprint panel: its first row shows or hides the footprint (and the bar statistics under the map); then what each row prints, and the
+ * The Footprint panel: its first row shows or hides the footprint (the Bar stats table has its own switch); then what each row prints, and the
  * imbalances: whether diagonal ones are outlined, and the ratio, minimum, empty-row rule and stacked rows, which are the bar statistics' too.
  */
 export function buildFootprintPanel(store: Store, flow: FlowBook | null, tools: HTMLElement, body: HTMLElement, rebuild: () => void): void {
@@ -18,7 +18,7 @@ export function buildFootprintPanel(store: Store, flow: FlowBook | null, tools: 
   const setOptions = (change: Partial<StatOptions>): void => { store.set({ barStatOptions: { ...store.state.barStatOptions, ...change } }); };
   tools.append(helpButton('footprint'));
   body.append(
-    switchRow(t('Show the footprint'), t('Zoom in on the candles to see, at each price, what was sold and bought at market; the bar statistics show under the map.'), store.state.show.footprint, on => { store.set({ show: { ...store.state.show, footprint: on } }); rebuild(); }),
+    switchRow(t('Show the footprint'), t('Zoom in on the candles to see, at each price, what was sold and bought at market.'), store.state.show.footprint, on => { store.set({ show: { ...store.state.show, footprint: on } }); rebuild(); }),
     heading(t('Markets')),
     selectRow(t('Count'), t('Whose market orders the footprint and the bar statistics count.'), [['all', t('Aggregated: every market switched on')], ['chart', t('The chart market')], ['custom', t('Chosen markets')]], fp.markets, v => { set({ markets: v === 'chart' || v === 'custom' ? v : 'all' }); rebuild(); }),
     ...(fp.markets === 'custom'

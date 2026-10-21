@@ -7,7 +7,7 @@ import { t } from './i18n.ts';
  * The phone's tab bar. The map is always on screen; the bar picks which one other pane sits beside it (below in portrait, to the right
  * in landscape), or none ("Map" gives the map the whole screen). The panes themselves are the same elements the desktop arranges as a
  * column; the choice is only a `data-tab` attribute on `<main>` that the phone stylesheet reads, so nothing is rebuilt when it changes.
- * A tab exists only while its pane is switched on in Settings (Footprint is what brings the bar-stats pane, "Stats").
+ * A tab exists only while its pane is switched on in Settings.
  * A handle between the map and the pane resizes it, and the size is remembered per tab and orientation.
  */
 export type DockTab = 'map' | 'candle' | 'flow' | 'book' | 'depth' | 'oi' | 'delta' | 'ls' | 'lt' | 'stats';
@@ -34,7 +34,7 @@ export const DOCK_TABS: readonly TabSpec[] = [
     icon: svg('<path d="M3.5 12h17" stroke-dasharray="2 2.5"/><path d="M3.5 9h5v-2h5v3h7"/><path d="M3.5 16h6v1.5h4v-2h7"/>') },
   { id: 'lt', label: 'LT', tip: t('The Liquidity Tracker: bid and ask liquidity near the price as two lines.'), needs: 'lt',
     icon: svg('<path d="M3.5 9c3-4 5 4 8 0s5-2 9-2"/><path d="M3.5 17c3-4 5 4 8 0s5-2 9-2"/>') },
-  { id: 'stats', label: t('Stats'), tip: t('Statistics for each candle, beneath the footprint.'), needs: 'footprint',
+  { id: 'stats', label: t('Stats'), tip: t('The Bar stats table: a row of numbers per statistic, a cell per candle.'), needs: 'stats',
     icon: svg('<path d="M5 20V11M12 20V5M19 20V13"/>') },
 ];
 

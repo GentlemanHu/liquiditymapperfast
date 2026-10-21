@@ -317,7 +317,8 @@ export function bandCaption(step: number, limit: BucketLimit, metric: ProfileMet
 }
 
 /** The volume strip's height along the bottom of the map (`#paintVolume` in heat-pane.ts), which the band at the top keeps clear of. */
-const volumeBand = (ph: number): number => Math.max(34, Math.min(ph * 0.17, 150));
+/** The volume strip's height along the bottom of the map (heat-pane.ts `#paintVolume`), which the bands along the top keep clear of. */
+export const volumeBand = (ph: number): number => Math.max(34, Math.min(ph * 0.17, 150));
 /** Space between the band and what is above it. */
 export const BAND_GAP = 6;
 /** The band's height on a tall map: the column's width (TRADED_W in heat-pane.ts), so the profile reads the same either way it lies. */

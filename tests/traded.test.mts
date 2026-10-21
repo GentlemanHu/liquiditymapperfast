@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { FootprintRecorder, parseProfile, type ProfileAnswer } from '../src/shared/footprint.ts';
-import { tradedFigures, tradedHeader, tradedLines, tradedNetLine, tradedRowAt, tradedRows } from '../src/app/traded.ts';
+import { periodRowLines, tradedFigures, tradedHeader, tradedLines, tradedNetLine, tradedRowAt, tradedRows } from '../src/app/traded.ts';
 import { createLocalServer } from '../src/server/http.mts';
 import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
@@ -199,4 +199,16 @@ test('the header\'s box gives the whole window in numbers: sides, levels, mean, 
   assert.equal(value('Above the point of control'), '33.3 %'); assert.equal(value('Below the point of control'), '16.7 %');
   assert.equal(value('Price now'), '85,031.0 · Above the value area', 'as the price axis writes it');
   assert.deepEqual(tradedFigures(tradedRows({ ...answer, instruments: [] }, 10, 85_000, 85_049), null, 0, 'Oct 19').map(l => l.text), ['Oct 19', 'Nothing traded at these prices in this window.']);
+});
+
+test('a period profile\'s row says whose it is, its prices, its two sides where they are known, its share, where it stands and where an estimate comes from', () => {
+  const levels = { poc: 85_000, vah: 85_100, val: 84_900 };
+  const split = periodRowLines({ name: '≈ Oct', low: 85_000, high: 85_020, step: 20, buy: 750, sell: 250, total: 10_000, split: true, levels, source: 'Binance 5-minute candles: an estimate.' });
+  assert.equal(split[0]!.text, '≈ Oct'); assert.equal(split[0]!.bold, true);
+  assert.ok(split.some(l => l.color === 'buy' && l.text === '$750'), 'bought'); assert.ok(split.some(l => l.color === 'sell' && l.text === '$250'), 'sold');
+  assert.ok(split.some(l => l.text === '+$500'), 'the difference'); assert.ok(split.some(l => l.text === '10.0 %'), 'the share of the period');
+  assert.ok(split.some(l => l.text === 'Point of control'), 'where it stands'); assert.equal(split[split.length - 1]!.color, 'muted', 'the source last');
+  const grey = periodRowLines({ name: '≈ Oct', low: 86_000, high: 86_020, step: 20, buy: 300, sell: 0, total: 10_000, split: false, levels, source: null });
+  assert.ok(!grey.some(l => l.color === 'buy' || l.color === 'sell'), 'no sides where the candles do not say');
+  assert.ok(grey.some(l => l.text === '$300'), 'its whole volume'); assert.ok(grey.some(l => l.text === 'Above the value area'));
 });

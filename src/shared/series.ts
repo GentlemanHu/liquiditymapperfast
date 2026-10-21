@@ -4,16 +4,19 @@ export const TIMEFRAMES: Readonly<Record<string, number>> = Object.freeze(Object
 /** The length of the timeframe named `name`, or null when there is none (whatever the name is: a request can say anything). */
 export const timeframeMs = (name: unknown): number | null => typeof name === 'string' && Object.hasOwn(TIMEFRAMES, name) ? TIMEFRAMES[name]! : null;
 
-export interface CandleRow { start: number; open: number; high: number; low: number; close: number; volume?: number }
-/** [start, open, high, low, close, volume, sourceRows] */
-export type Candle = [number, number, number, number, number, number, number];
+export interface CandleRow { start: number; open: number; high: number; low: number; close: number; volume?: number;
+  /** The part of the volume bought at market (taker buys), in the same unit, where the venue reports it (Binance). */
+  buy?: number }
+/** [start, open, high, low, close, volume, sourceRows, takerBuys] — the last only where asked for and every row it was built from had one. */
+export type Candle = [number, number, number, number, number, number, number, number?];
 
 /**
  * Candles of `tfMs` built from smaller ones. A minute that appears more than once (history and a live copy, or two pages that overlap) counts
- * once, as the row that came last: summing its volume again would double it.
+ * once, as the row that came last: summing its volume again would double it. `withBuy`: each candle also carries its taker buys, where every
+ * row it is built from had them (the wire form leaves them out).
  */
-export function aggregateCandles(rows: Iterable<CandleRow>, tfMs: number): Candle[] {
-  const buckets = new Map<number, Candle & { first: number; last: number }>();
+export function aggregateCandles(rows: Iterable<CandleRow>, tfMs: number, withBuy = false): Candle[] {
+  const buckets = new Map<number, Candle & { first: number; last: number; buy: number | null }>();
   const once = new Map<number, CandleRow>();
   for (const row of rows) if (Number.isFinite(row.start)) once.set(row.start, row);
   for (const row of [...once.values()].sort((a, b) => a.start - b.start)) {
@@ -21,17 +24,18 @@ export function aggregateCandles(rows: Iterable<CandleRow>, tfMs: number): Candl
     if (![start, open, high, low, close].every(Number.isFinite)) continue;
     const key = Math.floor(start / tfMs) * tfMs;
     const bucket = buckets.get(key);
-    const volume = Number.isFinite(row.volume) ? row.volume! : 0;
+    const volume = Number.isFinite(row.volume) ? row.volume! : 0, buy = withBuy && Number.isFinite(row.buy) ? row.buy! : null;
     if (!bucket) {
-      const created = [key, open, high, low, close, volume, 1] as Candle as Candle & { first: number; last: number };
-      created.first = start; created.last = start; buckets.set(key, created);
+      const created = [key, open, high, low, close, volume, 1] as Candle as Candle & { first: number; last: number; buy: number | null };
+      created.first = start; created.last = start; created.buy = buy; buckets.set(key, created);
     } else {
+      bucket.buy = bucket.buy === null || buy === null ? null : bucket.buy + buy;
       if (start < bucket.first) { bucket[1] = open; bucket.first = start; }
       if (start >= bucket.last) { bucket[4] = close; bucket.last = start; }
       bucket[2] = Math.max(bucket[2], high); bucket[3] = Math.min(bucket[3], low); bucket[5] += volume; bucket[6] += 1;
     }
   }
-  return [...buckets.values()].sort((a, b) => a[0] - b[0]).map(({ 0: t, 1: o, 2: h, 3: l, 4: c, 5: v, 6: n }) => [t, o, h, l, c, v, n] as Candle);
+  return [...buckets.values()].sort((a, b) => a[0] - b[0]).map(({ 0: t, 1: o, 2: h, 3: l, 4: c, 5: v, 6: n, buy }) => (withBuy && buy !== null ? [t, o, h, l, c, v, n, buy] : [t, o, h, l, c, v, n]) as Candle);
 }
 
 /** [start, open, high, low, close] of base open interest per bucket. */

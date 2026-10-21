@@ -50,9 +50,18 @@ interface CandleSpec {
   page(interval: string, intervalMs: number, endMs: number, get: Fetcher, symbol: string, limit?: number): Promise<CandleRow[]>;
 }
 
-const row = (start: unknown, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown): CandleRow => ({ start: num(start), open: num(open), high: num(high), low: num(low), close: num(close), volume: num(volume) });
+/** A taker-buy figure that is a number from nothing to the volume, or none: null, '', false or a figure past the volume is not a zero. */
+const takerBuy = (buy: unknown, volume: number): number | null => {
+  const n = typeof buy === 'number' ? buy : typeof buy === 'string' && buy.trim() !== '' ? Number(buy) : NaN;
+  return Number.isFinite(n) && n >= 0 && Number.isFinite(volume) && n <= volume * (1 + 1e-9) ? n : null;
+};
+const row = (start: unknown, open: unknown, high: unknown, low: unknown, close: unknown, volume: unknown, buy?: unknown): CandleRow => {
+  const v = num(volume), b = buy === undefined ? null : takerBuy(buy, v);
+  return { start: num(start), open: num(open), high: num(high), low: num(low), close: num(close), volume: v, ...(b === null ? {} : { buy: b }) };
+};
 
-const binanceRows = (json: unknown): CandleRow[] => list(json).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5)));
+/** Binance's klines, the perpetual's and the spot market's alike: the tenth field is the taker buy volume, the part bought at market. */
+const binanceRows = (json: unknown): CandleRow[] => list(json).map(r => row(at(r, 0), at(r, 1), at(r, 2), at(r, 3), at(r, 4), at(r, 5), at(r, 9)));
 const BINANCE = { 60_000: '1m', 300_000: '5m', 900_000: '15m', 1_800_000: '30m', 3_600_000: '1h', 14_400_000: '4h', 86_400_000: '1d' } as const;
 
 const SPECS: Readonly<Record<string, CandleSpec>> = {
@@ -124,9 +133,10 @@ export function nativeInterval(spec: Pick<CandleSpec, 'intervals'>, tfMs: number
  * Candles for `instrumentId` at `tfMs` over [from, to], oldest first, built from the venue's native bars (a coarser timeframe is
  * aggregated from a finer one) by walking back page by page from `to`. Returns [] for a venue it does not know. A page that fails throws,
  * unless `partial` is asked for and pages came before it: then what came is returned, the newest part of [from, to] unbroken, for the
- * caller to ask on from where it got to (a timeout on the fifteenth page of four months of five-minute bars threw the fourteen away).
+ * caller to ask on from where it got to (a timeout on the fifteenth page of four months of five-minute bars threw the fourteen away). `buy`:
+ * each candle carries its taker buys where the venue reports them (Binance), for the volume profile's split.
  */
-export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12, options?: { pageSize?: number; strict?: boolean; partial?: boolean }): Promise<Candle[]> {
+export async function fetchCandles(instrumentId: string, tfMs: number, from: number, to: number, get: Fetcher, listing?: HistoryListing, maxPages = 12, options?: { pageSize?: number; strict?: boolean; partial?: boolean; buy?: boolean }): Promise<Candle[]> {
   const spec = SPECS[venueOf(instrumentId)], market = listingOf(venueOf(instrumentId), listing);
   const native = spec ? nativeInterval(spec, tfMs) : null;
   if (!spec || !market || native === null) return [];
@@ -148,7 +158,7 @@ export async function fetchCandles(instrumentId: string, tfMs: number, from: num
     end = oldest - 1;
   }
   const u = market.unit, kept = [...rows.values()].filter(r => r.start >= from - tfMs && r.start <= to);
-  return aggregateCandles(u === 1 ? kept : kept.map(r => ({ ...r, open: r.open / u, high: r.high / u, low: r.low / u, close: r.close / u, ...(r.volume === undefined ? {} : { volume: r.volume * u }) })), tfMs);
+  return aggregateCandles(u === 1 ? kept : kept.map(r => ({ ...r, open: r.open / u, high: r.high / u, low: r.low / u, close: r.close / u, ...(r.volume === undefined ? {} : { volume: r.volume * u }), ...(r.buy === undefined ? {} : { buy: r.buy * u }) })), tfMs, options?.buy === true);
 }
 
 /**

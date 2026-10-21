@@ -5,10 +5,10 @@ import { parseInline, plain } from '../src/app/guide/markup.ts';
 import { SCENES } from '../src/app/guide/figures.ts';
 import { HELP } from '../src/app/help.ts';
 
-test('the guide reads in ten to fifteen minutes', () => {
+test('the guide reads in ten to sixteen minutes (the volume profile added the sixteenth, 2026-10-20)', () => {
   const words = SECTIONS.reduce((sum, s) => sum + wordsIn(s), 0), minutes = readingMinutes();
   assert.ok(words >= 2200 && words <= 3800, `${words} words`);
-  assert.ok(minutes >= 10 && minutes <= 15, `${minutes} minutes`);
+  assert.ok(minutes >= 10 && minutes <= 16, `${minutes} minutes`);
 });
 
 test('sections have unique ids and every figure and help link points at something that exists', () => {

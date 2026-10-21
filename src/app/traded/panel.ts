@@ -105,7 +105,7 @@ export function buildTradedPanel(store: Store, tools: HTMLElement, body: HTMLEle
     } else {
       // The candle size the lines use (five minutes, or one for a session off the five).
       const fine = candleBarMs(k) === 60_000;
-      body.append(note(t('From the {minutes}-minute candles of {market}, each one\'s volume spread evenly over its range: one market, and an estimate, marked ≈. On six recorded days the value area high and low mostly came within a row or two of the recording\'s (the low once 4 and once 10 rows off); where two prices traded almost the same, the point of control can sit on the other.', { minutes: fine ? 1 : 5, market })));
+      body.append(note(t('From the {minutes}-minute candles of {market}, with its spot market\'s where it has one, each one\'s volume spread evenly over its range and split by its taker buys: an estimate, marked ≈. On six recorded days, measured on the perpetual alone, the value area high and low mostly came within a row or two of the recording\'s (the low once 4 and once 10 rows off); where two prices traded almost the same, the point of control can sit on the other.', { minutes: fine ? 1 : 5, market })));
       if (sources.candles?.(fine ? 60_000 : 300_000).state === 'unavailable') body.append(note(t('Its history could not be read just now; trying again in a minute.')));
     }
     body.append(note(t('A day, week or session is drawn only when nine in ten of it is held: of the candles\' bars, or of the recording\'s trades, estimated from each venue\'s volume while it was recorded. Whether a point of control was traded through is read from the candles of the market on the chart.')));
@@ -171,7 +171,7 @@ function periodGrid(store: Store, set: (change: Partial<TradedSettings>, again?:
     el('label', { tip: `${windowName} · ${linesHead}` }, windowBox), el('span', { class: 'none', textContent: '—' }));
   for (const k of LINE_KINDS) {
     const name = PERIOD_ROWS[k], on = s.sessions.filter(x => x.on).map(x => x.name).join(', ');
-    const desc = k === 'month' ? t('From candles, an estimate (≈)') : k === 'sessions' ? on : '';
+    const desc = k === 'month' ? t('From candles, split by taker buys (≈)') : k === 'sessions' ? on : '';
     grid.append(el('span', { class: 'what', ...(k === 'month' ? { tip: t('A month is longer than the recording keeps: its lines come from candles, an estimate marked ≈.') } : {}) },
       el('span', { class: 'name', textContent: name }), ...(desc ? [el('span', { class: 'desc', textContent: desc })] : [])));
     const box = el('input', { type: 'checkbox', checked: s.lines.includes(k), ariaLabel: `${name} · ${linesHead}` });

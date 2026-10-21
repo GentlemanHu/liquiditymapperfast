@@ -94,3 +94,11 @@ test('applying a layout sets only what differs, so the same timeframe does not r
   const next = settingsToApply(settingsOf(state({ timeframe: '15m', ladderMode: 'single' })), now);
   assert.deepEqual(Object.keys(changedSettings(next, now)), ['ladderMode']);
 });
+
+test('the Bar stats table keeps showing for a save from before its own switch where the footprint was on, and an explicit choice stands', () => {
+  assert.equal(readSettings({ show: { footprint: true } }).show.stats, true, 'it showed with the footprint');
+  assert.equal(readSettings({ show: { footprint: false } }).show.stats, false);
+  assert.equal(readSettings({ show: { footprint: true, stats: false } }).show.stats, false, 'switched off on its own since');
+  assert.equal(readSettings({ show: { footprint: false, stats: true } }).show.stats, true, 'on without the footprint');
+  assert.equal(readSettings({}).show.stats, false, 'a first visit starts without it');
+});

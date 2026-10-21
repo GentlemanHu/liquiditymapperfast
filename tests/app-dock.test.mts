@@ -15,3 +15,8 @@ test('the Tape is always among the tabs, so the phone default is never turned ba
   // A chosen tab whose pane was switched off still falls back to the map.
   assert.equal(resolveTab('flow', { ...DEFAULT_SHOW, cvd: false }), 'map');
 });
+
+test('the Stats tab follows the table\'s own switch, not the footprint\'s', () => {
+  assert.ok(tabsFor({ ...DEFAULT_SHOW, stats: true }).includes('stats'));
+  assert.ok(!tabsFor({ ...DEFAULT_SHOW, footprint: true, stats: false }).includes('stats'));
+});

@@ -18,15 +18,27 @@ export interface StatOptions {
   whaleUsd: number;
   /** Open interest change in the series' own units (base coin) or as USD (change times the bar's close). */
   oiUnits: 'base' | 'usd';
-  /** Filled cells shaded by magnitude, or text only coloured by sign. */
-  cells: 'filled' | 'text';
+  /**
+   * Filled cells shaded by magnitude among the candles in view, shaded by how unusual each is against its own recent candles (the Highlights'
+   * baseline, in σ), each row drawn as a line, or text only coloured by sign.
+   */
+  cells: 'filled' | 'unusual' | 'line' | 'text';
+  /** Rows gathered under a header per kind (Volume, Footprint rows, ...) in the order chosen within each, a header folding its rows away. */
+  grouped: boolean;
+  /** The kinds whose rows are folded under their header. */
+  folded: StatGroupId[];
+  /** Where the running sums (cvd, cvd retail, cvd whales) start: the chart's left edge, or each day's start in the chart's time zone. */
+  cvdFrom: 'view' | 'day';
 }
-export const DEFAULT_STAT_OPTIONS: Readonly<StatOptions> = Object.freeze({ imbRatio: 3, imbMinUsd: 0, stackedN: 3, imbZeros: false, retailUsd: 100_000, whaleUsd: 500_000, oiUnits: 'base', cells: 'filled' });
+/** The kinds of statistic (panes/bar-stats.ts `StatGroup`). */
+export type StatGroupId = 'volume' | 'footprint' | 'trades' | 'market';
+export const STAT_GROUP_IDS: readonly StatGroupId[] = ['volume', 'footprint', 'trades', 'market'];
+export const DEFAULT_STAT_OPTIONS: Readonly<StatOptions> = Object.freeze({ imbRatio: 3, imbMinUsd: 0, stackedN: 3, imbZeros: false, retailUsd: 100_000, whaleUsd: 500_000, oiUnits: 'base', cells: 'filled', grouped: false, folded: [], cvdFrom: 'view' });
 
 /**
  * Options from storage or a layouts file, field by field, within what the settings allow: a ratio from 1, no negative size, stacks of two
  * rows or more, retail and whale sizes from the floor with whales not under retail (a save from before the sizes were free holds box
- * numbers, read as their edges), and the units and cell styles there are.
+ * numbers, read as their edges), and the units, cell styles, kinds and starts there are.
  */
 export function readStatOptions(raw: unknown): StatOptions {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>, d = DEFAULT_STAT_OPTIONS;
@@ -37,6 +49,8 @@ export function readStatOptions(raw: unknown): StatOptions {
     imbRatio: num(r.imbRatio, 1, 100, d.imbRatio), imbMinUsd: num(r.imbMinUsd, 0, 1e12, d.imbMinUsd),
     stackedN: typeof r.stackedN === 'number' && Number.isInteger(r.stackedN) && r.stackedN >= 2 && r.stackedN <= 50 ? r.stackedN : d.stackedN,
     imbZeros: typeof r.imbZeros === 'boolean' ? r.imbZeros : d.imbZeros, retailUsd, whaleUsd,
-    oiUnits: r.oiUnits === 'usd' ? 'usd' : 'base', cells: r.cells === 'text' ? 'text' : 'filled',
+    oiUnits: r.oiUnits === 'usd' ? 'usd' : 'base', cells: r.cells === 'text' || r.cells === 'unusual' || r.cells === 'line' ? r.cells : 'filled',
+    grouped: r.grouped === true, folded: Array.isArray(r.folded) ? STAT_GROUP_IDS.filter(g => (r.folded as unknown[]).includes(g)) : [],
+    cvdFrom: r.cvdFrom === 'day' ? 'day' : 'view',
   };
 }

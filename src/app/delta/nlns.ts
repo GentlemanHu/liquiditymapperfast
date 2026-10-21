@@ -85,7 +85,9 @@ export function nlnsModel(starts: readonly number[], markets: readonly NlnsMarke
   let cum = 0, cumLongs = 0, cumShorts = 0, key = NaN, gap = true, run = -1;
   starts.forEach((s, i) => {
     if (!covered[i]) { gap = true; return; }
-    if (keys[i] !== key || gap) { cum = 0; cumLongs = 0; cumShorts = 0; key = keys[i]!; gap = false; run++; }
+    // As the CVD: a new day or week starts the sums again; after a candle not covered they carry on, in a run of their own.
+    if (keys[i] !== key) { cum = 0; cumLongs = 0; cumShorts = 0; key = keys[i]!; gap = false; run++; }
+    else if (gap) { gap = false; run++; }
     const p = parts[i]!, longs = p.lo - p.lc, shorts = p.so - p.sc, v = longs - shorts;
     const named: [NlnsKind, number][] = [['newLongs', p.lo], ['longsClosed', p.lc], ['newShorts', p.so], ['shortsClosed', p.sc]];
     const nonzero = named.filter(([, x]) => x > 0), bothWays = (p.lo + p.sc > 0) && (p.so + p.lc > 0);
