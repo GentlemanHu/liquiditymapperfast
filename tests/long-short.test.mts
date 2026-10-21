@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LongShortCache, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsReading, parseLsSeries, shareOfRatio } from '../src/shared/long-short.ts';
+import { LongShortCache, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsReading, lsWindowPeriod, parseLsSeries, shareOfRatio } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
-import { fetchOiHistory, type Fetcher } from '../src/shared/history.ts';
+import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
 import { atOnePrice } from '../src/app/oi-change.ts';
 
@@ -55,13 +55,73 @@ test("the venues' answers as they come (measured 2026-10-13): Binance pages back
   assert.deepEqual((await fetchLongShort('bybit', 'BTCUSDT', 'accounts', 5 * M, NOW - H, NOW, get, NOW)).points.map(p => p.long), [0.5945, 0.594]);
   const { points: okx } = await fetchLongShort('okx', 'BTC-USDT-SWAP', 'accounts', 5 * M, NOW - H, NOW, get, NOW);
   assert.equal(okx.length, 1, 'a ratio that is not a number is left out'); assert.ok(Math.abs(okx[0]!.long - 0.5494) < 1e-3);
-  assert.deepEqual((await fetchLongShort('bitget', 'BTCUSDT', 'accounts', 5 * M, NOW - H, NOW, get, NOW)).points.map(p => p.long), [0.6174]);
+  assert.deepEqual((await fetchLongShort('bitget', 'BTCUSDT', 'topAccounts', 5 * M, NOW - H, NOW, get, NOW)).points.map(p => p.long), [0.6174]);
   await assert.rejects(fetchLongShort('bybit', 'BTCUSDT', 'topPositions', 5 * M, NOW - H, NOW, get, NOW), /no such series/, "only Binance publishes its top traders'");
   // Binance keeps 30 days: nothing older is asked for.
   const old = fake({ 'https://fapi.binance.com/': () => [] });
   await fetchLongShort('binance', 'BTCUSDT', 'topAccounts', H, NOW - 60 * 24 * H, NOW - 40 * 24 * H, old, NOW);
   assert.equal(old.asked.length, 0);
   await assert.rejects(fetchLongShort('bybit', 'BTCUSDT', 'accounts', 5 * M, NOW - H, NOW, fake({ 'https://api.bybit.com/': () => ({ retCode: 10001, retMsg: 'bad' }) }), NOW), /bybit/, 'a changed API fails, not empty');
+});
+
+test('Bitget: each series its own endpoint and fields (2026-10-21), a day is 1Dutc, and the cache asks it at most once a second', async () => {
+  const get = fake({
+    'https://api.bitget.com/api/v2/mix/market/long-short': () => ({ code: '00000', data: [{ longRatio: '0.6965', shortRatio: '0.3035', longShortRatio: '2.2948', ts: String(NOW - 10 * M) }] }),
+    'https://api.bitget.com/api/v2/mix/market/account-long-short': () => ({ code: '00000', data: [{ longAccountRatio: '0.6906', shortAccountRatio: '0.3094', longShortAccountRatio: '2.232', ts: String(NOW - 10 * M) }] }),
+    'https://api.bitget.com/api/v2/mix/market/position-long-short': () => ({ code: '00000', data: [{ longPositionRatio: '0.4922', shortPositionRatio: '0.5078', longShortPositionRatio: '0.9692', ts: String(NOW - 10 * M) }] }),
+  });
+  assert.deepEqual((await fetchLongShort('bitget', 'BTCUSDT', 'accounts', 5 * M, NOW - H, NOW, get, NOW)).points.map(p => p.long), [0.6965], 'all users');
+  assert.deepEqual((await fetchLongShort('bitget', 'BTCUSDT', 'topPositions', 5 * M, NOW - H, NOW, get, NOW)).points.map(p => p.long), [0.4922], 'its big traders by position');
+  assert.equal(lsPopulationOf('bitget', 'topPositions'), 'topPositions', 'Bitget follows the series chosen');
+  await fetchLongShort('bitget', 'BTCUSDT', 'topAccounts', 24 * H, NOW - 40 * 24 * H, NOW, get, NOW);
+  assert.ok(get.asked.at(-1)!.endsWith('period=1Dutc'), 'Bitget refuses 1d');
+  // Three series asked at once (a round and its warming): one request a second, never two within the venue's gap.
+  const times: number[] = [];
+  const timed = fake({ 'https://api.bitget.com/': url => { times.push(Date.now()); const path = url.pathname.split('/').pop(); return { code: '00000', data: path === 'long-short' ? [{ longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5', ts: String(NOW - 10 * M) }] : path === 'account-long-short' ? [{ longAccountRatio: '0.6', shortAccountRatio: '0.4', longShortAccountRatio: '1.5', ts: String(NOW - 10 * M) }] : [{ longPositionRatio: '0.6', shortPositionRatio: '0.4', longShortPositionRatio: '1.5', ts: String(NOW - 10 * M) }] }; } });
+  const cache = new LongShortCache(timed, true, () => NOW, 48, 10_000, 20_000, { bitget: 150 });
+  const answers = await Promise.all((['accounts', 'topAccounts', 'topPositions'] as const).map(m => cache.series('bitget:BTCUSDT', m, 5 * M, NOW - H, NOW)));
+  assert.deepEqual(answers.map(a => a.status), ['ok', 'ok', 'ok']);
+  assert.ok(times.length === 3 && times[1]! - times[0]! >= 140 && times[2]! - times[1]! >= 140, `spaced: ${times.map(t => t - times[0]!).join(', ')}`);
+});
+
+/** A fake Bitget answering every series in its own shape, recording what went out and when. */
+function bitgetFake(): Fetcher & { asked: string[]; sent: { what: string; at: number }[] } {
+  const sent: { what: string; at: number }[] = [];
+  const get = fake({ 'https://api.bitget.com/': url => {
+    const path = url.pathname.split('/').pop()!, ts = String(NOW - 10 * M);
+    sent.push({ what: `${path}@${url.searchParams.get('period')}`, at: Date.now() });
+    return { code: '00000', data: [path === 'long-short' ? { longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5', ts } : path === 'account-long-short' ? { longAccountRatio: '0.6', shortAccountRatio: '0.4', longShortAccountRatio: '1.5', ts } : { longPositionRatio: '0.6', shortPositionRatio: '0.4', longShortPositionRatio: '1.5', ts }] };
+  } });
+  return Object.assign(get, { sent });
+}
+
+test('Bitget pacing: one lane, first come first served, a gap from the request that really went out, even after the page was busy', async () => {
+  const get = bitgetFake(), cache = new LongShortCache(get, true, () => NOW, 48, 10_000, 20_000, { bitget: 100 });
+  const id = 'bitget:BTCUSDT', asked = [cache.series(id, 'accounts', 5 * M, NOW - H, NOW), cache.series(id, 'topAccounts', 5 * M, NOW - H, NOW), cache.series(id, 'topPositions', 5 * M, NOW - H, NOW)];
+  // The page busy for longer than the queue's gaps: timers set for the later two would all fire at once, and a request asked now went first.
+  const until = Date.now() + 350; while (Date.now() < until) { /* busy */ }
+  asked.push(cache.series(id, 'accounts', 15 * M, NOW - H, NOW));
+  assert.deepEqual((await Promise.all(asked)).map(a => a.status), ['ok', 'ok', 'ok', 'ok']);
+  assert.deepEqual(get.sent.map(s => s.what), ['long-short@5m', 'account-long-short@5m', 'position-long-short@5m', 'long-short@15m'], 'in the order asked');
+  for (let i = 1; i < get.sent.length; i++) assert.ok(get.sent[i]!.at - get.sent[i - 1]!.at >= 95, `a gap apart: ${get.sent.map(s => s.at - get.sent[0]!.at).join(', ')}`);
+});
+
+test('Bitget pacing: at most VENUE_WAITING_MAX wait for their turn; one more fails at once instead of going out long after its round', async () => {
+  const get = bitgetFake(), cache = new LongShortCache(get, true, () => NOW, 48, 10_000, 20_000, { bitget: 20 });
+  const id = 'bitget:BTCUSDT', asked: Promise<{ status: string }>[] = [];
+  for (const tf of [5 * M, 15 * M, 30 * M, H]) for (const m of ['accounts', 'topAccounts', 'topPositions'] as const) asked.push(cache.series(id, m, tf, NOW - 2 * H, NOW));
+  const statuses = (await Promise.all(asked)).map(a => a.status);
+  assert.equal(statuses.filter(s => s === 'ok').length, VENUE_WAITING_MAX);
+  assert.equal(statuses.filter(s => s === 'failed').length, 12 - VENUE_WAITING_MAX, 'the rest read as failed, asked again with the minute');
+  assert.equal(get.sent.length, VENUE_WAITING_MAX);
+});
+
+test('the popup says Bitget publishes only its newest 30 readings where it has none, without placing where they begin', () => {
+  const bitget = (points: { t: number; long: number }[]) => ({ id: 'bitget:BTCUSDT', population: 'accounts' as const, periodMs: 5 * M, points, status: 'ok' as const });
+  const say = (s: ReturnType<typeof bitget>, at: number) => lsCardLines([s], at, '5m').map(l => l.text).join('\n');
+  assert.match(say(bitget([{ t: NOW - 10 * M, long: 0.6 }]), NOW - 2 * H), /newest 30 readings/);
+  assert.doesNotMatch(say(bitget([{ t: NOW - 10 * M, long: 0.6 }]), NOW - 8 * M), /newest 30 readings/, 'not where it has a reading');
+  assert.match(say(bitget([]), NOW), /newest 30 readings/, 'an answer with none for the window too');
 });
 
 test('the cache: one request per series at a time, the newest stretch again at most once a period, OKX server only in a page, failures reported', async () => {
@@ -405,4 +465,84 @@ test('the popup explains a ratio by who it counts: accounts, or the top traders\
   assert.match(positions, /position size/); assert.doesNotMatch(positions, /long accounts for each short one/);
   const accounts = text([{ id: 'bybit:BTCUSDT', population: 'accounts', periodMs: 5 * M, points: point, status: 'ok' }]);
   assert.match(accounts, /long accounts for each short one/); assert.doesNotMatch(accounts, /position size/);
+});
+
+test('OKX reads its top traders by accounts and by positions from their own endpoints, the shares from its ratio', async () => {
+  const get = fake({ 'https://www.okx.com/api/v5/rubik/stat/contracts/': url => ({ code: '0', data: [[String(NOW - 5 * M), url.pathname.includes('position') ? '0.99' : '1.0574561403508772']] }) });
+  const positions = await fetchLongShort('okx', 'BTC-USDT-SWAP', 'topPositions', 5 * M, NOW - H, NOW, get, NOW);
+  assert.ok(get.asked.at(-1)!.includes('/long-short-position-ratio-contract-top-trader?'));
+  assert.ok(Math.abs(positions.points[0]!.long - 0.99 / 1.99) < 1e-9);
+  await fetchLongShort('okx', 'BTC-USDT-SWAP', 'topAccounts', 5 * M, NOW - H, NOW, get, NOW);
+  assert.ok(get.asked.at(-1)!.includes('/long-short-account-ratio-contract-top-trader?'));
+  assert.equal(lsPopulationOf('okx', 'topPositions'), 'topPositions', 'OKX follows the series chosen');
+  assert.equal(lsPopulationOf('bybit', 'topPositions'), 'accounts', 'Bybit publishes one');
+});
+
+test('Gate: every series from one answer, its counts or sizes checked against its ratio, paged forward; a coin it does not list publishes none', async () => {
+  // Gate's own answer for BTC_USDT (2026-10-21), the fields read.
+  const row = (t: number) => ({ time: t / 1000, lsr_account: 1.0164918488563124, long_users: 16087, short_users: 15826, top_lsr_account: 0.6266666666666667, top_long_account: 47, top_short_account: 75, top_lsr_size: 1.221354101019112, top_long_size: 32945851, top_short_size: 26974856 });
+  const get = fake({ 'https://api.gateio.ws/api/v4/futures/usdt/contract_stats': url => { const from = Number(url.searchParams.get('from')) * 1000; return [row(from), row(from + 5 * M)].filter(r => r.time * 1000 < NOW); } });
+  const all = await fetchLongShort('gateio', 'BTC_USDT', 'accounts', 5 * M, NOW - 10 * M, NOW, get, NOW);
+  assert.ok(Math.abs(all.points[0]!.long - 16087 / (16087 + 15826)) < 1e-9, 'users holding long against short');
+  assert.ok(get.asked[0]!.includes('contract=BTC_USDT') && get.asked[0]!.includes('interval=5m') && get.asked[0]!.includes(`from=${(NOW - 15 * M) / 1000}`), 'from the period before the window, in seconds');
+  const top = await fetchLongShort('gateio', 'BTC_USDT', 'topAccounts', 5 * M, NOW - 10 * M, NOW, get, NOW);
+  assert.ok(Math.abs(top.points[0]!.long - 47 / 122) < 1e-9, 'large holders by account: mostly short');
+  const size = await fetchLongShort('gateio', 'BTC_USDT', 'topPositions', 5 * M, NOW - 10 * M, NOW, get, NOW);
+  assert.ok(Math.abs(size.points[0]!.long - 32945851 / (32945851 + 26974856)) < 1e-9);
+  const missing = fake({ 'https://api.gateio.ws/': () => ({ label: 'CONTRACT_NOT_FOUND' }) });
+  await assert.rejects(fetchLongShort('gateio', 'NOPE_USDT', 'accounts', 5 * M, NOW - H, NOW, missing, NOW), LsNoMarket);
+  const cache = new LongShortCache(missing, false, () => NOW);
+  assert.equal((await cache.series('gateio:NOPE_USDT', 'accounts', 5 * M, NOW - H, NOW)).status, 'unsupported', 'not a failure to read');
+  // Gate says so with a 400: `webGet` keeps the body on its error.
+  const http400 = fake({ 'https://api.gateio.ws/': () => { throw Object.assign(new Error('HTTP 400'), { status: 400, body: '{"label":"CONTRACT_NOT_FOUND"}' }); } });
+  await assert.rejects(fetchLongShort('gateio', 'NOPE_USDT', 'accounts', 5 * M, NOW - H, NOW, http400, NOW), LsNoMarket);
+  const other400 = fake({ 'https://api.gateio.ws/': () => { throw Object.assign(new Error('HTTP 400'), { status: 400, body: '{"label":"INVALID_PARAM_VALUE"}' }); } });
+  await assert.rejects(fetchLongShort('gateio', 'BTC_USDT', 'accounts', 5 * M, NOW - H, NOW, other400, NOW), (e: unknown) => !(e instanceof LsNoMarket), 'any other error is a failure');
+});
+
+test('Gate: a market listed after it was not is published once it answers; a full page that does not move on fails, never held as read', async () => {
+  let now = NOW, listed = false;
+  const row = (t: number) => ({ time: t / 1000, lsr_account: 1.5, long_users: 600, short_users: 400 });
+  const get = fake({ 'https://api.gateio.ws/': url => listed ? [row(Number(url.searchParams.get('from')) * 1000)] : { label: 'CONTRACT_NOT_FOUND' } });
+  const cache = new LongShortCache(get, false, () => now);
+  assert.equal((await cache.series('gateio:NEW_USDT', 'accounts', 5 * M, NOW - H, NOW)).status, 'unsupported');
+  listed = true; now += 2 * M;
+  const after = await cache.series('gateio:NEW_USDT', 'accounts', 5 * M, NOW - H, now);
+  assert.equal(after.status, 'ok', 'asked again after the minute, and published');
+  // 1,000 readings asked; the venue gives the same 500 again and again.
+  const same = Array.from({ length: 500 }, (_, i) => row(NOW - 1000 * 5 * M + i * 5 * M));
+  const stuck = fake({ 'https://api.gateio.ws/': () => same });
+  await assert.rejects(fetchLongShort('gateio', 'BTC_USDT', 'accounts', 5 * M, NOW - 1000 * 5 * M, NOW, stuck, NOW), /does not move on/);
+  assert.equal(stuck.asked.length, 2, 'the second page shows it: no twelve requests');
+  // One overflowing time in a full page ("1e400" is Infinity) moves nothing: the cursor follows the valid times and the window is read to
+  // its end, so an older stretch of it is held, not answered empty unread.
+  const pages = fake({ 'https://api.gateio.ws/': url => {
+    const from = Number(url.searchParams.get('from')) * 1000;
+    return Array.from({ length: 500 }, (_, i) => i === 250 ? { ...row(from + i * 5 * M), time: '1e400' } : row(from + i * 5 * M)).filter(r => r.time === '1e400' || Number(r.time) * 1000 < NOW);
+  } });
+  const held = new LongShortCache(pages, false, () => NOW);
+  const whole = await held.series('gateio:BTC_USDT', 'accounts', 5 * M, NOW - 1000 * 5 * M, NOW);
+  assert.equal(whole.status, 'ok');
+  // Two full pages (one bad time each), then the short page at the live edge.
+  assert.equal(pages.asked.length, 3, 'read on past the overflowing time');
+  assert.ok(whole.points.length >= 997, `the whole window read (${whole.points.length})`);
+  const older = await held.series('gateio:BTC_USDT', 'accounts', 5 * M, NOW - 700 * 5 * M, NOW - 600 * 5 * M);
+  assert.equal(older.status, 'ok'); assert.equal(pages.asked.length, 3, 'held, not asked again');
+});
+
+test('Gate through the real fetcher: its 400 saying CONTRACT_NOT_FOUND is a market it does not list', async () => {
+  const real = globalThis.fetch;
+  globalThis.fetch = (async () => new Response('{"label":"CONTRACT_NOT_FOUND"}', { status: 400, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+  try {
+    await assert.rejects(fetchLongShort('gateio', 'NOPE_USDT', 'accounts', 5 * M, NOW - H, NOW, webGet, NOW), LsNoMarket);
+  } finally { globalThis.fetch = real; }
+});
+
+test('the period of a window is what the cache reads it in: the chart\'s own, coarser for a long window, daily from 30 days', () => {
+  const D = 24 * H;
+  assert.equal(lsWindowPeriod('binance', H, NOW - 20 * D, NOW), H);
+  assert.equal(lsWindowPeriod('binance', H, NOW - 30 * D, NOW), D);
+  assert.equal(lsWindowPeriod('gateio', 15 * M, NOW - 20 * D, NOW), 15 * M, 'Gate keeps 2,000 readings a window like Binance: 20 days fit fifteen-minutely');
+  assert.equal(lsWindowPeriod('bitget', 15 * M, NOW - 20 * D, NOW), 2 * H, 'Bitget, with 288 a window, takes two-hourly readings');
+  assert.equal(lsWindowPeriod('hyperliquid', H, NOW - D, NOW), 0);
 });

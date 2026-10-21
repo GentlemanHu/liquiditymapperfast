@@ -14,7 +14,7 @@ import { AXIS_W } from './heat-pane.ts';
 import { TimePane, setHtml } from './lower-panes.ts';
 import { LS_ROUND_MS, lsLanded, lsMessage, lsWindow, type LsHeld } from './ls-window.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
-import { LS_VENUES, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
+import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, lsWindowPeriod, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
 
 const HOUR = 3_600_000;
 /** One colour per venue, apart from each other on either theme (the brands' own are black on two of them); the venue's mark ends its line. */
@@ -24,7 +24,12 @@ const HOLD_PERIODS = 3;
 
 /** The markets the pane shows: the OI pane's markets (those it adds together, or its one market) on a venue that publishes a ratio. */
 export function lsIds(state: AppState, hub: Hub): string[] {
-  const ids = oiMarketIds(state, hub.flow) ?? [state.oiInstrument || state.seriesInstrument || state.marketId];
+  const oi = oiMarketIds(state, hub.flow);
+  // Gate publishes its long/short ratios but no open interest the page reads: with every market counted (and its chip on, perpetuals in the
+  // filter) its perpetual joins the lines, where the page's markets have one (a coin Gate does not list has none, and is never asked).
+  const listed = state.markets.find(m => m.venue === 'gateio' && m.marketType === 'perpetual' && m.instrumentId)?.instrumentId;
+  const gate = listed && oi && state.oiMarkets === 'all' && state.scope !== 'spot' && !state.disabledVenues.includes('gateio') ? [listed] : [];
+  const ids = [...(oi ?? [state.oiInstrument || state.seriesInstrument || state.marketId]), ...gate];
   const venue = (id: string): number => LS_VENUES.indexOf(id.split(':')[0]!);
   return [...new Set(ids)].filter(id => venue(id) >= 0).sort((a, b) => venue(a) - venue(b));
 }
@@ -63,14 +68,18 @@ export function shareText(long: number): string {
 /** The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
   const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true }];
+  let noBitget = false;
   for (const s of series) {
     const label = venueLabel(s.id);
-    if (s.status === 'serverOnly') { lines.push({ label, text: t('read by the server only'), color: 'muted', mark: s.id }); continue; }
+    if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id }); continue; }
     if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
     const p = lsAt(s.points, time, s.periodMs);
+    if (!p && s.id.startsWith('bitget:')) noBitget = true;
     lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id } : { label, text: t('no reading'), color: 'muted', mark: s.id });
     if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true });
   }
+  // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
+  if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true });
   // Who each line counts, the venues of one population together: "Binance: top traders, by positions · Bybit, OKX: all accounts".
   const groups = new Map<LsPopulation, string[]>();
   for (const s of series) if (s.population) groups.set(s.population, [...(groups.get(s.population) ?? []), venueLabel(s.id)]);
@@ -94,10 +103,12 @@ export class LsPane extends TimePane {
   /** What the series held are of (markets, series, timeframe), the window last asked for and when it was answered; and a round under way. */
   #held: LsHeld | null = null;
   #loading = false; #generation = 0;
-  /** Which Binance series and timeframe `#series` are of (each market's lines are kept while those stay, whatever other markets come and go). */
+  /** Which series and timeframe `#series` are of (each market's lines are kept while those stay, whatever other markets come and go). */
   #seriesOf = '';
   /** Cancels the requests of the round under way that have not answered. */
   #round: AbortController | null = null;
+  /** The window the other series (of the venues that follow the one chosen) were last read for in the background, and whether that read is under way. */
+  #warmed = ''; #warming: AbortController | null = null;
   #sync: (() => void)[] = [];
 
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
@@ -106,8 +117,8 @@ export class LsPane extends TimePane {
     this.head.querySelector('strong')!.after(helpButton('lsPane'));
     setTip(this.head.querySelector('strong')!, t('The share of each exchange\'s accounts that is net long, as the exchange publishes it.'));
     const group = document.createElement('span'); group.className = 'ctl ctl-group'; this.head.append(group);
-    const wrap = document.createElement('label'); wrap.className = 'ctl'; wrap.append('Binance');
-    setTip(wrap, t('Which of Binance\'s three series: every account, its top traders counted by account, or its top traders counted by the size of their positions.'));
+    const wrap = document.createElement('label'); wrap.className = 'ctl'; wrap.append(t('Series'));
+    setTip(wrap, t('Which series Binance, OKX, Bitget and Gate show: every account, their top traders counted by account, or their top traders counted by the size of their positions. Bybit publishes one.'));
     const control = document.createElement('select');
     for (const [value, text] of [['accounts', t('All accounts')], ['topAccounts', t('Top traders, accounts')], ['topPositions', t('Top traders, positions')]] as const) control.append(new Option(text, value));
     control.value = store.state.lsMetric;
@@ -117,7 +128,7 @@ export class LsPane extends TimePane {
   }
 
   /** Reflect the settings in the header and read again (a round under way is for what was shown: dropped). */
-  settingsChanged(): void { for (const sync of this.#sync) sync(); this.#generation++; this.#round?.abort(); this.#round = null; this.#held = null; this.#loading = false; this.invalidate(); }
+  settingsChanged(): void { for (const sync of this.#sync) sync(); this.#generation++; this.#round?.abort(); this.#round = null; this.#warming?.abort(); this.#held = null; this.#loading = false; this.invalidate(); }
 
   /**
    * Ask for the readings when `lsWindow` says so (ls-window.ts). What is held stays drawn while the next answer comes (the readings of a wider
@@ -130,10 +141,16 @@ export class LsPane extends TimePane {
     const ask = lsWindow(this.#held, this.#loading, ident, this.view, tfMs, now);
     if (!ask) return;
     const { from, to } = ask, generation = ++this.#generation, source = this.hub.source;
-    // Another round (other markets, series or timeframe) cancels what the last one still waits for.
-    this.#round?.abort();
+    // Another round (other markets, series or timeframe) cancels what the last one still waits for, its background warming included.
+    this.#round?.abort(); this.#warming?.abort();
     const round = this.#round = new AbortController(), answers = new Map<string, LsSeries>();
-    if (this.#seriesOf !== of) { this.#series = []; this.#seriesOf = of; }
+    // Another series: Bybit publishes one population, so its line stays drawn while the others are read (every line used to blank, the pane
+    // looking slow to switch); another timeframe is other readings for all of them.
+    if (this.#seriesOf !== of) {
+      const sameTimeframe = this.#seriesOf.endsWith(`|${state.timeframe}`);
+      this.#series = sameTimeframe ? this.#series.filter(s => s.population === lsPopulationOf(s.id.slice(0, s.id.indexOf(':')), state.lsMetric)) : [];
+      this.#seriesOf = of;
+    }
     this.#held = { ident, from, to, at: now }; this.#loading = true;
     let over = false;
     const land = (final: boolean): void => {
@@ -144,6 +161,7 @@ export class LsPane extends TimePane {
         if (this.#round === round) this.#round = null;
         this.#loading = false;
         if (this.#held) this.#held.at = Date.now();
+        this.#warm(ids, state, from, to);
       }
       this.invalidate();
     };
@@ -153,6 +171,31 @@ export class LsPane extends TimePane {
         .catch((): LsSeries => ({ id, population: null, periodMs: 0, points: [], status: 'failed' }))
         .then(series => { if (over || generation !== this.#generation) return; answers.set(id, series); land(answers.size === ids.length); });
     }
+  }
+
+  /**
+   * Read the other series for the window just answered, quietly, once a window: the source keeps them (its long/short cache), so switching to
+   * one draws at once instead of waiting for the venues' pages. Only Binance's, OKX's and Gate's change with the series; one read at a time,
+   * nothing drawn.
+   */
+  #warm(ids: readonly string[], state: AppState, from: number, to: number): void {
+    // Not for a pane that is off or a page that is away.
+    if (this.root.hidden || !state.show.ls || document.hidden) return;
+    // Keyed by the period each venue's cache takes for this window (shared/long-short.ts `lsWindowPeriod`): a window that crosses into another
+    // is another series of the cache, warmed again; one whose end only moved on by minutes is the same.
+    const tfMs = TIMEFRAMES[state.timeframe] ?? HOUR, chosen = ids.filter(id => LS_CHOSEN_VENUES.includes(id.slice(0, id.indexOf(':'))));
+    const key = `${chosen.map(id => `${id}@${lsWindowPeriod(id.slice(0, id.indexOf(':')), tfMs, from, to)}`).join(',')}|${state.timeframe}|${Math.floor(from / HOUR)}`;
+    if (!chosen.length || this.#warming || this.#warmed === key) return;
+    // Its own lifetime: cancelled with the pane's settings, and given up with the round's deadline, so it never holds a connection for good.
+    const warming = this.#warming = new AbortController(), timer = window.setTimeout(() => warming.abort(), LS_ROUND_MS);
+    const source = this.hub.source, others = LS_METRICS.filter(m => m !== state.lsMetric);
+    // Warmed only once every series came back read: one cancelled (a new round, the pane's settings, the deadline) or failed is warmed again
+    // with the next round (the source's cache keeps a failing venue to one question a minute).
+    void Promise.allSettled(chosen.flatMap(id => others.map(metric => source.longShort(id, metric, state.timeframe, from, to, warming.signal))))
+      .then(results => { if (!warming.signal.aborted && results.every(r => r.status === 'fulfilled' && r.value.status !== 'failed')) this.#warmed = key; })
+      .finally(() => { window.clearTimeout(timer); if (this.#warming === warming) this.#warming = null; });
+    // An abort settles the requests at once (their promises reject): the gate opens with it.
+    warming.signal.addEventListener('abort', () => { if (this.#warming === warming) this.#warming = null; }, { once: true });
   }
 
   protected draw(): void {
@@ -169,7 +212,7 @@ export class LsPane extends TimePane {
     const ids = lsIds(state, this.hub);
     if (!ids.length) {
       ctx.fillStyle = p.muted; ctx.textAlign = 'left';
-      ctx.fillText(t('None of the open-interest markets is on an exchange that publishes a long/short ratio (Binance, Bybit, OKX, Bitget).'), 12, ph / 2);
+      ctx.fillText(t('None of the open-interest markets is on an exchange that publishes a long/short ratio (Binance, Bybit, OKX, Bitget, Gate).'), 12, ph / 2);
       setHtml(readout, ''); return;
     }
     this.#load(state, ids, tf);
@@ -223,7 +266,7 @@ export class LsPane extends TimePane {
     if (hover && this.pointer) this.#lines = lsCardLines(series, time, state.timeframe);
     const parts = series.map(s => {
       const q = lsAt(s.points, time, s.periodMs), name = venueLabel(s.id);
-      if (s.status === 'serverOnly') return `<span class="muted">${name} ${t('server only')}</span>`;
+      if (s.status === 'serverOnly') return `<span class="muted">${name} ${t('not readable here')}</span>`;
       if (s.status === 'stale' && q) return `${name} <b class="muted">${pct(q.long)}</b>`;
       return q ? `${name} <b class="${q.long > 0.5 ? 'bid' : q.long < 0.5 ? 'ask' : ''}">${pct(q.long)}</b>` : `<span class="muted">${name} –</span>`;
     });

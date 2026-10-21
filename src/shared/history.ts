@@ -32,7 +32,9 @@ export const webGet: Fetcher = async (url, init) => {
   if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', 15_000);
   const timeout = AbortSignal.timeout(15_000);
   const response = await fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  // The status and the start of the answer go with the error: a venue may say why in it (Gate answers a contract it does not list with a
+  // 400 that says `CONTRACT_NOT_FOUND`).
+  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body: (await response.text().catch(() => '')).slice(0, 500) });
   return response.json();
 };
 

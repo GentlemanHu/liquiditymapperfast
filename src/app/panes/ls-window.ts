@@ -12,7 +12,15 @@ import type { LsSeries } from '../../shared/long-short.ts';
  */
 export interface LsHeld { ident: string; from: number; to: number; at: number }
 
-const MINUTE = 60_000, HOUR = 3_600_000;
+const MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
+/**
+ * The longest window the venues are read in readings as fine as the candles: from 30 days on the long/short cache takes daily readings, for
+ * month-scale context (shared/long-short.ts). A view shorter than that asks less around it so the window stays under it: asking a view and a
+ * half before a 12-day view had every venue's lines turn to steps a day wide once the chart showed a little more history (2026-10-21). Up to
+ * 29 days in view the window, its tail of a candle (four hours at most where the readings are finer than daily) and its rounding to the hour
+ * fit; a view longer than that is month-scale and may be read daily.
+ */
+const FINE_SPAN_MS = 30 * DAY - 2 * HOUR;
 /**
  * How long a round waits for the venues. Each venue's answer is drawn as it comes; one still missing then is given up and reads as failed, or
  * stale over the readings held before. A server's request is cancelled then, so it does not hold one of the browser's six connections to the
@@ -33,12 +41,15 @@ export function lsMessage(series: readonly LsSeries[], loading: boolean): 'readi
 
 /** The window to ask for now, or null when nothing need be asked. */
 export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, view: { t0: number; t1: number }, tfMs: number, now: number): { from: number; to: number } | null {
-  const span = view.t1 - view.t0, needFrom = view.t0 - span / 2, needTo = Math.min(view.t1 + tfMs, now + tfMs);
+  // Around the view: a view and a half before it and half a view after, as far as a window under FINE_SPAN_MS allows (a month-long view
+  // and more is read as it is, in daily readings); what must be held before it is never more than what is asked.
+  const span = view.t1 - view.t0, after = Math.min(span / 2 + tfMs, Math.max(tfMs, (FINE_SPAN_MS - span) / 3)), before = Math.min(1.5 * span, Math.max(0, FINE_SPAN_MS - span - after));
+  const needFrom = view.t0 - Math.min(span / 2, before), needTo = Math.min(view.t1 + tfMs, now + tfMs);
   if (held && held.ident === ident) {
     if (loading) return null;
     if (held.from <= needFrom && held.to >= needTo - MINUTE && now - held.at < MINUTE) return null;
   }
-  return { from: Math.floor((view.t0 - 1.5 * span) / HOUR) * HOUR, to: Math.ceil(Math.min(view.t1 + span / 2 + tfMs, now + tfMs) / MINUTE) * MINUTE };
+  return { from: Math.floor((view.t0 - before) / HOUR) * HOUR, to: Math.ceil(Math.min(view.t1 + after, now + tfMs) / MINUTE) * MINUTE };
 }
 
 /**

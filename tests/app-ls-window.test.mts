@@ -63,3 +63,27 @@ test('with no line to draw the pane says why: still reading, a venue that could 
   assert.equal(lsMessage([S('binance:BTCUSDT', 'stale', 3)], false), 'failed', 'readings held for another time, the update for this one failed');
   assert.equal(lsMessage([S('binance:BTCUSDT', 'ok', 3)], false), 'none', 'readings for another time, none for this one');
 });
+
+test('a view shorter than a month asks a window under 30 days, so the venues are read as finely as the candles', () => {
+  const DAY = 24 * HOUR;
+  for (const days of [12, 25]) {
+    const wide = { t0: NOW - days * DAY, t1: NOW + HOUR }, ask = lsWindow(null, false, 'k', wide, TF, NOW)!;
+    assert.ok(ask.to - ask.from < 30 * DAY, `${days} days in view: a window of ${(ask.to - ask.from) / DAY} days (from 30 the cache reads daily)`);
+    assert.ok(ask.from <= wide.t0, 'the view itself is always asked');
+    const held: LsHeld = { ident: 'k', ...ask, at: NOW };
+    assert.equal(lsWindow(held, false, 'k', wide, TF, NOW + 1_000), null, 'what is held is enough for it: asked again only with the minute refresh');
+  }
+  const month = { t0: NOW - 40 * DAY, t1: NOW + HOUR }, ask = lsWindow(null, false, 'k', month, TF, NOW)!;
+  assert.ok(ask.from <= month.t0 && ask.to >= NOW, 'a month-long view is read whole (in daily readings)');
+});
+
+test('up to 29 days in view, at any timeframe finer than daily, the window and its rounding stay under 30 days', () => {
+  const DAY = 24 * HOUR;
+  for (const tf of [MIN, 5 * MIN, 15 * MIN, 30 * MIN, HOUR, 4 * HOUR]) for (const days of [1, 7, 19, 20, 21, 28, 29]) {
+    const live = { t0: NOW - days * DAY, t1: NOW + tf }, back = { t0: NOW - 40 * DAY - days * DAY, t1: NOW - 40 * DAY };
+    for (const v of [live, back]) {
+      const ask = lsWindow(null, false, 'k', v, tf, NOW)!;
+      assert.ok(ask.to - ask.from < 30 * DAY && ask.from <= v.t0, `${days} days on ${tf / MIN}-minute candles: ${(ask.to - ask.from) / HOUR} hours`);
+    }
+  }
+});
