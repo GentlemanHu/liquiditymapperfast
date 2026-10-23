@@ -128,3 +128,92 @@ test('Bybit open interest stored as both sides is halved once, and only once', (
   assert.equal(close(twice, 'bybit:BTCUSDT'), 30_000, 'not halved again');
   twice.close(); rmSync(dir, { recursive: true, force: true });
 });
+
+test('a reading keeps the venue\'s own clock, failures are counted and logged at most every ten minutes, and fast venues are read every five seconds', async () => {
+  let clock = NOW, failing = false;
+  const applied: OiSampleMessage[] = [], logs: string[] = [];
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('open-interest?category')) return { result: { list: [] } };
+    if (url.includes('tickers')) { if (failing) throw new Error('HTTP 500'); return { result: { list: [{ openInterest: '20', singleOpenInterest: '10' }] }, time: 1_700_000_000_000 }; }
+    throw new Error(url);
+  };
+  const sampler = new OiSampler((message, venue) => applied.push(message), () => {}, get, () => clock, 60_000, message => logs.push(message));
+  sampler.sync(['bybit:BTCUSDT']);
+  await sampler.round();
+  assert.equal(applied[0]!.sourceTimestamp, 1_700_000_000_000, 'the venue\'s own clock rides the sample');
+  assert.equal(sampler.status().bybit.lastSuccess, NOW); assert.equal(sampler.status().bybit.failures, 0); assert.equal(sampler.status().bybit.fast, false);
+  sampler.setFast(['bybit']);
+  assert.equal(sampler.status().bybit.fast, true);
+  clock += 5_000; await sampler.roundFast();
+  assert.equal(applied.length, 2, 'a fast round reads the venue');
+  await sampler.roundFast();
+  assert.equal(applied.length, 2, 'not again within five seconds');
+  clock += 5_000; failing = true;
+  await sampler.roundFast();
+  assert.equal(sampler.status().bybit.failures, 1); assert.match(String(sampler.status().bybit.lastError), /500/); assert.equal(logs.length, 1, 'logged once');
+  clock += 5_000; await sampler.roundFast();
+  assert.equal(sampler.status().bybit.failures, 2); assert.equal(logs.length, 1, 'at most once every ten minutes');
+  clock += 10 * 60_000 + 5_000; await sampler.roundFast();
+  assert.equal(logs.length, 2, 'logged again after ten minutes');
+  sampler.setFast([]);
+  assert.equal(sampler.status().bybit.fast, false);
+  sampler.close();
+});
+
+test('an instrument is read once at a time: the fast round neither starts its history again nor reads beside a read under way', async () => {
+  let clock = NOW, historyAsks = 0, tickerAsks = 0, release: () => void = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('open-interest?category')) { historyAsks++; await held; return { result: { list: [] } }; }
+    if (url.includes('tickers')) { tickerAsks++; return { result: { list: [{ singleOpenInterest: '10' }] } }; }
+    throw new Error(url);
+  };
+  const applied: OiSampleMessage[] = [];
+  const sampler = new OiSampler(message => applied.push(message), () => {}, get, () => clock, 60_000, () => {});
+  sampler.sync(['bybit:BTCUSDT']);
+  sampler.setFast(['bybit']);
+  const slow = sampler.round();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(historyAsks, 1, 'the minute round is reading the history');
+  clock += 5_000; await Promise.race([sampler.roundFast(), new Promise<void>(resolve => setImmediate(resolve))]);
+  assert.equal(historyAsks, 1, 'the fast round did not start it again');
+  assert.equal(tickerAsks, 0, 'nor read beside it');
+  release(); await slow;
+  assert.equal(tickerAsks, 1); assert.equal(applied.length, 1);
+  const read = historyAsks;
+  clock += 5_000; await sampler.roundFast();
+  assert.equal(historyAsks, read, 'a fast read is of the live value only');
+  assert.equal(tickerAsks, 2);
+  sampler.close();
+});
+
+test('an answer with no reading in it (an error body sent with 200) is counted and said as a failure', async () => {
+  const logs: string[] = [];
+  const get = async (url: string): Promise<unknown> => url.includes('open-interest?category') ? { result: { list: [] } } : { retCode: 10006, retMsg: 'Too many visits', result: {} };
+  const sampler = new OiSampler(() => {}, () => {}, get, () => NOW, 60_000, message => logs.push(message));
+  sampler.sync(['bybit:BTCUSDT']);
+  await sampler.round();
+  assert.equal(sampler.status().bybit.failures, 1);
+  assert.match(String(sampler.status().bybit.lastError), /no reading/);
+  assert.equal(logs.length, 1);
+  sampler.close();
+});
+
+test('a failed history read is tried again when due even while the fast round keeps meeting the minute round', async () => {
+  let clock = NOW, historyAsks = 0;
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('open-interest?category')) { historyAsks++; throw new Error('HTTP 500'); }
+    if (url.includes('tickers')) return { result: { list: [{ singleOpenInterest: '10' }] } };
+    throw new Error(url);
+  };
+  const sampler = new OiSampler(() => {}, () => {}, get, () => clock, 60_000, () => {});
+  sampler.sync(['bybit:BTCUSDT']); await sampler.round();
+  assert.equal(historyAsks, 1, 'the first history read failed; it is due again a minute later');
+  sampler.setFast(['bybit']);
+  // A fast read under way each time the minute's round comes: the round must still read the history after it.
+  clock += 61_000;
+  const fast = sampler.roundFast(), minute = sampler.round();
+  await Promise.all([fast, minute]);
+  assert.equal(historyAsks, 2, 'the history read was not lost to the fast read');
+  sampler.close();
+});

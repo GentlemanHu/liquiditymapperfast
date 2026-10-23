@@ -10,6 +10,7 @@ import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-sho
 import { webGet, type Fetcher } from '../../shared/history.ts';
 import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing } from '../../shared/price-history.ts';
 import { BTC } from '../../shared/coins.ts';
+import type { OiEvent as OiPushItem } from '../../shared/connector.ts';
 import { TOUCH_HINT_MS } from '../../shared/levels.ts';
 import { COLUMNS_PER_REQUEST } from '../../shared/columns.ts';
 import { DepthRecorder, COLUMN_MS, HOT_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
@@ -187,6 +188,17 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   // Only a market the registry calls a perpetual (a spot book of a venue that has perpetuals too has no open interest).
   const perpetual = (id: string): boolean => (app.state.markets ?? []).some(m => String((m as { instrumentId?: unknown; id?: unknown }).instrumentId ?? (m as { id?: unknown }).id) === id && (m as { marketType?: unknown }).marketType === 'perpetual');
   const oiSampler = oiSampling ? new OiSampler((message, venue) => { app.applyMessage(message, venue); }, oiHistoryWriter(app.history)) : null;
+  // The sampler's per-venue outcomes (failures in a row, last error, the fast fallback mode) on the diagnostics route.
+  if (oiSampler) app.setOiSamplerStatus(() => oiSampler.status());
+  /**
+   * Bybit's and OKX's WebSocket OI feeds, by their feed ids: while one is not live its venue is read by the sampler every five seconds
+   * instead of once a minute (the WebSocket returns, the minute cadence does too).
+   */
+  const oiFeedIds = new Map<string, string>([['bybit', 'bybit-ticker'], ['okx', 'okx-oi']]);
+  const oiFastVenues = (): string[] => {
+    const statuses = app.state.feedStatuses ?? {};
+    return [...oiFeedIds.entries()].filter(([venue, id]) => String((statuses as Record<string, { state?: unknown }>)[id]?.state) !== 'live').map(([venue]) => venue);
+  };
   const farBooks = new Map<string, FarPoller>();
   const syncFar = (ids: readonly string[]): void => {
     const wanted = new Set<string>(), now = Date.now();
@@ -206,6 +218,27 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   const degraded = new Map<string, string>();
   let levelsDirty = true;
   let lastSample = 0, lastPrune = 0, lastFlush = 0, lastBeat = 0, lastFlowPush = 0, lastSources = 0;
+  // Open-interest pushes. The reducer appends each reading to `state.oi` (a copy keeping the newest 20 000 rows, each row the same object),
+  // so a pass looks only at the rows after the last one it saw. Per instrument only the newest reading by its own time goes out, and only
+  // when it is newer than the last one sent: a socket reading and a REST one can land in either order. The first pass marks what is there.
+  let oiLastRow: unknown = undefined;
+  const oiSent = new Map<string, number>();
+  const oiTime = (row: { observationTimestamp?: unknown; sourceTimestamp?: unknown; receivedAt?: unknown }): number => Number(row.observationTimestamp ?? row.sourceTimestamp ?? row.receivedAt);
+  const newOi = (): OiPushItem[] => {
+    const rows = app.state.oi ?? [], first = oiLastRow === undefined;
+    let start = rows.length;
+    while (start > 0 && rows[start - 1] !== oiLastRow) start--;
+    oiLastRow = rows[rows.length - 1] ?? null;
+    const newest = new Map<string, OiPushItem>();
+    for (let i = start; i < rows.length; i++) {
+      const row = rows[i]!, id = String(row.instrumentId ?? ''), t = oiTime(row), base = Number(row.base);
+      if (!id || !(t > 0) || !(base > 0) || !Number.isFinite(base) || t <= (oiSent.get(id) ?? 0) || t <= (newest.get(id)?.t ?? 0)) continue;
+      const quote = Number(row.quote ?? NaN);
+      newest.set(id, { instrumentId: id, t, base, ...(quote > 0 && Number.isFinite(quote) ? { quote } : {}) });
+    }
+    for (const item of newest.values()) oiSent.set(item.instrumentId, item.t);
+    return first ? [] : [...newest.values()];
+  };
   let lastTick = '', lastLayers = '';
   /** Which books were on the map when the levels were last published, so one that ages out is published as gone. */
   let lastMembers = '';
@@ -289,7 +322,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     detect(orders.add(trades));
     takeOrders(false);
     absorption.step();
-    if (now - lastSources >= 5_000) { lastSources = now; flowSources.sync(new Set([...Object.keys(app.state.books ?? {}), ...extra.enabledInstrumentIds])); syncFar(Object.keys(app.state.books ?? {})); oiSampler?.sync(Object.keys(app.state.books ?? {}).filter(perpetual)); }
+    if (now - lastSources >= 5_000) { lastSources = now; flowSources.sync(new Set([...Object.keys(app.state.books ?? {}), ...extra.enabledInstrumentIds])); syncFar(Object.keys(app.state.books ?? {})); oiSampler?.sync(Object.keys(app.state.books ?? {}).filter(perpetual)); oiSampler?.setFast(oiFastVenues()); }
     // Each store on its own: one that cannot write (a full disk) keeps its rows for the next round and does not stop the others or the rest of this pass.
     if (now - lastFlush >= 30_000) { lastFlush = now; for (const store of [footprint, prints, liquidations, flow, absorption, coverage]) { try { store.flush(); } catch (error) { fault('recordings could not be saved; will try again:', error); } } }
     if (now - lastPrune >= 3_600_000) { lastPrune = now; recorder.prune(now); }
@@ -298,8 +331,12 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const flowItems = now - lastFlowPush >= FLOW_SEC ? flow.take() : [];
     if (flowItems.length || now - lastFlowPush >= FLOW_SEC) lastFlowPush = now;
     const tape = tapeOut; tapeOut = [];
+    // Open interest: what the reducer took since the last pass is pushed to the pages the moment it lands, so the OI pane follows the
+    // exchanges instead of a clock. The first pass only marks what is there (the fixture's or a restart's rows) as seen.
+    const oiItems = newOi();
     if (wss.clients.size === 0) return;
     if (now - lastBeat >= heartbeatMs) { lastBeat = now; broadcast(JSON.stringify({ t: 'hb', now })); }
+    if (oiItems.length) broadcast(JSON.stringify({ t: 'oi', items: oiItems }));
     if (fresh.length) broadcast(JSON.stringify({ t: 'prints', items: fresh.map(toWire) }));
     if (forced.length) broadcast(JSON.stringify({ t: 'liquidations', items: forced.map(liquidationWire) }));
     if (found.groups.length || found.minutes.length) broadcast(JSON.stringify({ t: 'absorption', groups: found.groups, minutes: found.minutes }));

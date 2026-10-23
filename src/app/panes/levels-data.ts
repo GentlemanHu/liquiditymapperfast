@@ -24,11 +24,32 @@ function concat(sides: SideArrays[]): { lo: Float64Array; hi: Float64Array; usd:
   return { lo, hi, usd, inst };
 }
 
+/**
+ * What `groupLevels` made for a frame, by what was asked (the venues, the step and the bins). A frame's levels never change, but a pane draws
+ * again for a pointer move, a palette or a cue's decay, each time grouping the same frame the same way: a pointer-only draw spent 8 to 44 % of
+ * its time on regrouping (study 2026-10-22, `Research_Findings.md`). The answers are shared, so callers read them and never write. At most
+ * `GROUP_MEMO` are kept for one frame (a pane asks for one or two, the Tape and pull/stack for one each), and they go with the frame.
+ */
+const grouped = new WeakMap<LevelsFrame, Map<string, Grouped>>();
+const GROUP_MEMO = 8;
+
 /** Group the selected instruments' live levels onto a display grid covering [p0, p1]. */
 export function groupLevels(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, p0: number, p1: number): Grouped {
-  const books = ids.map(id => frame.books.find(book => book.id === id)).filter((book): book is NonNullable<typeof book> => !!book);
   const bin0 = Math.floor(p0 / step);
   const nBins = Math.max(1, Math.min(MAX_BINS, Math.ceil(p1 / step) - bin0 + 1));
+  const key = `${ids.join('\u0001')}\u0002${step}\u0002${bin0}\u0002${nBins}`;
+  let memo = grouped.get(frame);
+  const hit = memo?.get(key);
+  if (hit) return hit;
+  const made = groupFresh(kernels, frame, ids, step, bin0, nBins);
+  if (!memo) { memo = new Map(); grouped.set(frame, memo); }
+  if (memo.size >= GROUP_MEMO) memo.delete(memo.keys().next().value!);
+  memo.set(key, made);
+  return made;
+}
+
+function groupFresh(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, bin0: number, nBins: number): Grouped {
+  const books = ids.map(id => frame.books.find(book => book.id === id)).filter((book): book is NonNullable<typeof book> => !!book);
   const totalBid = new Float32Array(nBins), totalAsk = new Float32Array(nBins);
   const run = (pick: (book: (typeof books)[number]) => SideArrays, total: Float32Array): Float32Array[] => {
     const c = concat(books.map(pick));
@@ -54,18 +75,27 @@ export function groupSpan(p0: number, p1: number, mark: number, step: number): {
 /** What a venue's book reaches: its lowest and highest price, and whether the highest is a single price (`hiPoint`) or the end of a band. */
 export interface Cover { lo: number; hi: number; hiPoint?: boolean }
 
-/** The price range a venue's book actually reaches, so a feed limit reads as "no data" rather than an empty book. */
-export function coverage(book: LevelsFrame['books'][number] | undefined, mark: number): (Cover & { bp: number; levels: number }) | null {
-  if (!book || !(mark > 0) || book.bids.usd.length + book.asks.usd.length === 0) return null;
+/** A book's reach by its own prices (Infinity and -Infinity for a side without levels), found once a book: `coverage` finishes it against the mark. */
+interface Reach { lo: number; hi: number; hiPoint: boolean }
+const reaches = new WeakMap<LevelsFrame['books'][number], Reach>();
+function reachOf(book: LevelsFrame['books'][number]): Reach {
+  let reach = reaches.get(book);
+  if (reach) return reach;
   let lo = Infinity, hi = -Infinity;
   for (const v of book.bids.lo) if (v < lo) lo = v;
   for (const v of book.asks.hi) if (v > hi) hi = v;
-  if (!Number.isFinite(lo)) lo = mark;
-  if (!Number.isFinite(hi)) hi = mark;
   // A level that is one price (lo = hi) sits at its price; a band (several prices merged) stops short of its upper edge.
   let hiPoint = false;
   for (let i = 0; i < book.asks.hi.length; i++) if (book.asks.hi[i] === hi && book.asks.lo[i]! >= hi) { hiPoint = true; break; }
-  return { lo, hi, hiPoint, bp: Math.round((hi - lo) / mark * 1e4), levels: book.bids.usd.length + book.asks.usd.length };
+  reach = { lo, hi, hiPoint }; reaches.set(book, reach);
+  return reach;
+}
+
+/** The price range a venue's book actually reaches, so a feed limit reads as "no data" rather than an empty book. */
+export function coverage(book: LevelsFrame['books'][number] | undefined, mark: number): (Cover & { bp: number; levels: number }) | null {
+  if (!book || !(mark > 0) || book.bids.usd.length + book.asks.usd.length === 0) return null;
+  const reach = reachOf(book), lo = Number.isFinite(reach.lo) ? reach.lo : mark, hi = Number.isFinite(reach.hi) ? reach.hi : mark;
+  return { lo, hi, hiPoint: reach.hiPoint, bp: Math.round((hi - lo) / mark * 1e4), levels: book.bids.usd.length + book.asks.usd.length };
 }
 
 /**
@@ -85,19 +115,32 @@ export function pastReach(cover: Cover, rowLo: number, step: number, ask: boolea
   return ask ? (cover.hiPoint ? rowLo > cover.hi : rowLo >= cover.hi) : rowLo + step <= cover.lo;
 }
 
-/** Cumulative USD walking away from the mark: bids downward, asks upward; the mark's own bin counts for both sides. */
+/** The running totals made for a grouping, by the mark's bin: the mark moves a little at a time, so a grouping seldom meets more than a few. */
+const cumulated = new WeakMap<Grouped, Map<number, Cumulative>>();
+const CUMULATIVE_MEMO = 4;
+
+/** Cumulative USD walking away from the mark: bids downward, asks upward; the mark's own bin counts for both sides. Shared like a grouping: read, never written. */
 export function cumulative(grouped: Grouped, mark: number): { bid: Float32Array; ask: Float32Array; maxBid: number; maxAsk: number } {
   const { nBins, bin0, step } = grouped;
-  const bid = new Float32Array(nBins), ask = new Float32Array(nBins);
   const markBin = Math.floor(mark / step) - bin0;
+  let memo = cumulated.get(grouped);
+  const hit = memo?.get(markBin);
+  if (hit) return hit;
+  const bid = new Float32Array(nBins), ask = new Float32Array(nBins);
   let run = 0;
   for (let i = Math.min(nBins - 1, markBin); i >= 0; i--) { run += grouped.totalBid[i]!; bid[i] = run; }
   const maxBid = run; run = 0;
   for (let i = Math.max(0, markBin); i < nBins; i++) { run += grouped.totalAsk[i]!; ask[i] = run; }
-  return { bid, ask, maxBid, maxAsk: run };
+  const made = { bid, ask, maxBid, maxAsk: run };
+  if (!memo) { memo = new Map(); cumulated.set(grouped, memo); }
+  if (memo.size >= CUMULATIVE_MEMO) memo.delete(memo.keys().next().value!);
+  memo.set(markBin, made);
+  return made;
 }
 
 export type Cumulative = ReturnType<typeof cumulative>;
+
+const imbalances = new WeakMap<Cumulative, Map<string, Float32Array>>();
 
 /**
  * Which side holds more liquidity at each distance from the mark, as (bid - ask) / (bid + ask) of the cumulative liquidity within that
@@ -105,13 +148,23 @@ export type Cumulative = ReturnType<typeof cumulative>;
  * the value at `minRows`, since the ratio of the very top of the book is mostly noise. All zeros when the mark is outside the grid.
  */
 export function imbalanceByDistance(grouped: Pick<Grouped, 'nBins'>, cum: Cumulative, markBin: number, minRows = 4): Float32Array {
-  const { nBins } = grouped, out = new Float32Array(nBins);
-  if (!(markBin >= 0 && markBin < nBins)) return out;
-  for (let i = 0; i < nBins; i++) {
-    const d = Math.max(Math.abs(i - markBin), minRows);
-    const b = cum.bid[Math.max(0, markBin - d)]!, a = cum.ask[Math.min(nBins - 1, markBin + d)]!, total = b + a;
-    out[i] = total > 0 ? (b - a) / total : 0;
+  const { nBins } = grouped;
+  // Shared like the totals it is made from (a draw for a pointer move asks the same thing again): read, never written.
+  const key = `${nBins}\u0002${markBin}\u0002${minRows}`;
+  let memo = imbalances.get(cum);
+  const hit = memo?.get(key);
+  if (hit) return hit;
+  const out = new Float32Array(nBins);
+  if (markBin >= 0 && markBin < nBins) {
+    for (let i = 0; i < nBins; i++) {
+      const d = Math.max(Math.abs(i - markBin), minRows);
+      const b = cum.bid[Math.max(0, markBin - d)]!, a = cum.ask[Math.min(nBins - 1, markBin + d)]!, total = b + a;
+      out[i] = total > 0 ? (b - a) / total : 0;
+    }
   }
+  if (!memo) { memo = new Map(); imbalances.set(cum, memo); }
+  if (memo.size >= CUMULATIVE_MEMO) memo.delete(memo.keys().next().value!);
+  memo.set(key, out);
   return out;
 }
 

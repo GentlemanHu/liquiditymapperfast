@@ -3,7 +3,7 @@ import { activeIds, emptyScopeMessage, kindOf } from '../scope.ts';
 import { el } from '../dom.ts';
 import { setTip } from '../tip.ts';
 import { helpButton } from '../help.ts';
-import { button, checkRow, note, togglePanel, type Panel } from '../ui.ts';
+import { button, checkRow, note, selectRow, switchRow, togglePanel, type Panel } from '../ui.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, textOn } from '../theme.ts';
 import { niceStep } from '../view.ts';
@@ -11,14 +11,18 @@ import { price as fmtPrice, usd } from '../format.ts';
 import { LADDER_CURVES, type Store, type AppState } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import { RANK_MS } from '../cvd/settings.ts';
-import { CurveRanking, curveColors, curveLines, lineFraction, lineTicks, nearestCurve, rankCurveVenues, reachRows, reachText, venueCumulative, CURVE_HIT_PX, CURVE_MIN_ROWS, type CurveVenue } from './ladder-curves.ts';
+import { CurveRanking, curveColors, curveLines, cutAtBars, lineFraction, lineTicks, nearestCurve, rankCurveVenues, reachRows, reachText, venueCumulative, CURVE_HIT_PX, CURVE_MIN_ROWS, CURVE_OVER_BAR_SHARE, type CurveVenue, type LineStep } from './ladder-curves.ts';
 import { beyondCover, coverage, cumulative, pastReach, dominanceWeight, groupLevels, groupSpan, imbalanceByDistance, liquidityInView, type Cover, type Grouped } from './levels-data.ts';
 import { GROUPS, groupsFor, holdsMark, ladderWheel, offsetKeepingPrice, priceAtRow, stepBy } from './ladder-zoom.ts';
 import { currentCoin } from '../coin.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorStats } from '../mirror.ts';
 import { paintInfoBox, type InfoLine } from '../infobox.ts';
-import { levelLines, smallerVenuesLines, venueCellLines, type LevelFacts } from './ladder-info.ts';
+import { byPublication, gutterLines, latestRowChange, levelLines, smallerVenuesLines, venueCellLines, type ChangeFact, type HeatFact, type LevelFacts } from './ladder-info.ts';
+import { CueLayer } from './ladder-cue-layer.ts';
+import { meanwhile, tradedInRow, type Cell, type CueBoard } from './ladder-cues.ts';
+import { heatTone, paintStrip } from './ladder-cue-paint.ts';
+import type { CueLookSetting, HeatKind, Sense } from './ladder-cue-settings.ts';
 import { barPieces, pieceAt, pieceLabel, rankVenues, type BarPiece } from './ladder-pieces.ts';
 import { drawVenueMark } from '../venue-marks.ts';
 import { PullHistory, pullBase, readPullWindow, type PullRows } from './pull-stack.ts';
@@ -34,18 +38,26 @@ const BALANCE_H = 16;
 const PRICE_W = 58, USD_W = 54, MIN_BAR_W = 90, CELL_MAX = 26, CELL_MIN = 5;
 /** The pull/stack column beside LEVEL USD, while it is on. */
 const PS_W = 58;
+/** The gutter before the bars that holds each row's signed mark (the cues' still face); drawn while the cues are not Off. */
+const GUT_W = 12;
+/** How long the pointer still finds a change at a row, so a cell that went quiet reads "a minute ago" and not nothing. */
+const CHANGE_HOVER_MS = 120_000;
 /** A window as the popup says it: "15 s", "1 min". */
 const windowText = (s: number): string => s < 60 ? t('{n} s', { n: s }) : t('{n} min', { n: s / 60 });
 const signedUsd = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}${usd(Math.abs(v))}`;
 /** Dragging the price column zooms; this is the width of that column's hit area, and how far to drag per zoom step. */
 const AXIS_W = PRICE_W + 6, AXIS_DRAG_PX = 26;
 const BOOK_MIN_W = 250;
+/** A pane narrower than this draws no book (it is hidden: it has no size), and lights nothing. */
+const MIN_BOOK_W = 80;
 /** A step as the Group list writes it: as it is, or in decimals once it is small enough that it would read "2e-9". */
 const stepText = (step: number): string => step >= 1e-4 ? String(step) : fmtPrice(step, step);
 
 const VENUE_TINT = [1, 0.62, 0.38, 0.8, 0.5, 0.7, 0.3, 0.9];
 /** A Compact bar's piece narrower than this joins the smaller venues' piece at the end of the bar. */
 const PIECE_MIN_PX = 3;
+/** No bars at all: a line cut against it is all in the clear. */
+const NO_BARS: readonly number[] = [];
 /** How long the Compact bar keeps its venue order while the venues stay the same (it is made again when they change). */
 const ORDER_HOLD_MS = 300_000;
 /** The venue a book belongs to, as a popup names it: "Binance BTCUSDT". */
@@ -75,8 +87,20 @@ export class LadderPane {
   readonly root = document.createElement('section');
   readonly controls = document.createElement('div');
   #scroller = document.createElement('div');
+  /**
+   * Two canvases laid over each other: the material (the bars, cells, running-total area and what lies under the bars) below, and the ink (every
+   * word, mark, line and box, and the pointer) above. A cue lights the material and the words stay clear above it: a wash laid over the
+   * words would have washed them too (Sol, 2026-10-22), and repainting only a cell's material under still ink costs a fraction of a repaint of
+   * both. Stacked, they look exactly as one canvas drew them: the pointer and the touch handlers are the ink's.
+   */
+  #matCanvas = document.createElement('canvas');
   #canvas = document.createElement('canvas');
+  #mat: CanvasRenderingContext2D;
   #ctx: CanvasRenderingContext2D;
+  /** What lights when a venue's displayed depth changes, the heat under each cell, and the gutter's marks (panes/ladder-cue-layer.ts). */
+  #cues: CueLayer;
+  #cuesButton = document.createElement('button');
+  #cuesPanel: Panel | null = null;
   #w = 0; #h = 0; #dpr = 1; #frame = 0;
   #offsetRows = 0;
   #palette = PALETTES.light!;
@@ -110,17 +134,24 @@ export class LadderPane {
   #curvesControl: HTMLLabelElement | null = null;
   /** The venue line under the pointer in the last frame (its place in the ranking), read by tests. */
   hoveredCurve: number | null = null;
+  /** The share of its strength a venue line keeps over a bar (`CURVE_OVER_BAR_SHARE`; 1 draws it as strong over the bars as in the clear, for a comparison). */
+  curveOverBars = CURVE_OVER_BAR_SHARE;
   /** The line that was under the pointer in the frame before this one (`hoveredCurve` is cleared as a frame starts): its dashes are drawn, so they answer the pointer. */
   #heldCurve: number | null = null;
 
-  constructor(host: HTMLElement, private store: Store, private kernels: Kernels, private hub: Pick<Hub, 'flow' | 'ensureFlow'> | null = null) {
+  constructor(host: HTMLElement, private store: Store, private kernels: Kernels, private hub: Pick<Hub, 'flow' | 'ensureFlow' | 'tape'> | null = null) {
     this.root.className = 'pane ladder';
     this.controls.className = 'pane-head';
     this.#scroller.className = 'ladder-scroll';
-    this.#scroller.append(this.#canvas);
+    this.#canvas.className = 'ink';
+    this.#scroller.append(this.#matCanvas, this.#canvas);
     this.root.append(this.controls, this.#scroller);
     host.append(this.root);
+    this.#mat = this.#matCanvas.getContext('2d')!;
     this.#ctx = this.#canvas.getContext('2d')!;
+    this.#cues = new CueLayer({ mat: this.#mat, canvas: this.#matCanvas, dpr: () => this.#dpr, palette: () => this.#palette, shown: () => this.#cueShown(),
+      view: () => ({ x0: this.#scroller.scrollLeft, x1: this.#scroller.scrollLeft + this.#w }) });
+    this.#cues.setLook(this.store.state.ladderCues.look); this.#cues.setSense(this.store.state.ladderCues.sense);
     new ResizeObserver(() => this.#resize()).observe(this.#scroller);
     this.#bindInput();
     this.#buildControls();
@@ -264,14 +295,47 @@ export class LadderPane {
   invalidate(): void { if (this.#suspended) { this.#owed = true; return; } if (!this.#frame) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#render(); }); }
   /** Covered by a view of its own (the phone's Candle tab): nothing is drawn until it shows again (pull/stack still takes its snapshots as the frames arrive). */
   #suspended = false; #owed = false;
-  setSuspended(on: boolean): void { if (on === this.#suspended) return; this.#suspended = on; if (!on && this.#owed) { this.#owed = false; this.invalidate(); } }
   /**
-   * A new levels frame: pull/stack takes its snapshot here when one is due, not when the book is drawn. A hidden or covered window draws
-   * nothing (the browser stops animation frames) while the frames keep coming, and the first draw after more than `GAP_MS` started the
-   * window again, so a book looked at after a while away always said "Loading…" (Karl, 2026-10-15).
+   * Covered (the phone's Tape tab) or not. A covered book lights nothing and what was lit is let go; it is drawn again when it shows, whether or not
+   * data came meanwhile, so no cue is left painted on the canvas for the first look at it (it may have been covered with cells lit).
+   */
+  setSuspended(on: boolean): void { if (on === this.#suspended) return; this.#suspended = on; if (on) this.#cues.stop(); else { this.#owed = false; this.invalidate(); } }
+  /** Whether the book is on screen and live, which is when it may light anything: the page is visible, the pane is shown and not covered, no replay runs. */
+  /** Whether the book is on screen and live: the page is visible, the pane is not covered, hidden (switched off, or by the phone's tabs: it has no size then) or in replay. */
+  #cueShown(): boolean { return !document.hidden && !this.#suspended && !this.root.hidden && this.#w >= MIN_BOOK_W && !replaying(); }
+  /** The cue settings changed (or another coin's book begins): the layer takes the look, and the book is drawn with or without the gutter and the strips. */
+  cuesChanged(): void { this.#cues.setLook(this.store.state.ladderCues.look); this.#cues.setSense(this.store.state.ladderCues.sense); this.invalidate(); }
+  /**
+   * The book was away: the socket closed or opened again, or the pane was switched off. What was seen before is not compared with what comes
+   * after (a reconnect is a new book, not a burst of changes, and a pane switched on again is not shown what happened while it was off).
+   */
+  interrupted(): void { this.#cues.reset(); }
+  /** Market orders arrived (the trade tape): the large ones ripple on the venues' cells they reached, without the book being drawn again. */
+  tapeArrived(): void {
+    const state = this.store.state, cues = state.ladderCues;
+    // Not reading the tape (contacts off, the pane away): the next reading starts where the tape stands, not at the orders that came meanwhile.
+    if (!cues.contact || cues.look === 'off' || !state.show.book || !(state.mark.price > 0) || !this.#cueShown()) { this.#cues.forgetTape(); return; }
+    const ids = new Set(state.ladderMode === 'single' ? this.#singleIds(state) : activeIds(state));
+    if (this.#cues.readContacts(this.hub?.tape ?? null, ids) > 0) this.#cues.lightNow();
+  }
+  /**
+   * What the cues are doing now (read by tests and from the console): cues running, of which showing light (`bright`), marks held, changes waiting,
+   * the area they cost at their peak (`used`) and the area showing now (`light`), and what the tracker has counted.
+   */
+  cueState(): { lit: number; bright: number; light: number; marks: number; waiting: number; used: number; maxArea: number; board: CueBoard['stats']; tracker: CueLayer['tracker']['stats'] } {
+    const c = this.#cues, now = performance.now();
+    return { lit: c.board.active.length, bright: c.board.brightCount(now), light: c.board.litArea(now), marks: c.board.marks.size, waiting: c.board.waiting, used: c.board.used, maxArea: c.board.maxArea, board: { ...c.board.stats, strengths: [...c.board.stats.strengths] }, tracker: { ...c.tracker.stats } };
+  }
+  /**
+   * A new levels frame: the cues' tracker sees it (whatever pull/stack is doing: the two are separate), and pull/stack takes its snapshot here
+   * when one is due, not when the book is drawn. A hidden or covered window draws nothing (the browser stops animation frames) while the
+   * frames keep coming, and the first draw after more than `GAP_MS` started the window again, so a book looked at after a while away always
+   * said "Loading…" (Karl, 2026-10-15).
    */
   levelsArrived(): void {
     const state = this.store.state, frame = state.levels, mark = state.mark.price, windowS = state.pullStack;
+    if (replaying() || !(mark > 0)) this.#cues.reset();
+    else this.#cues.feed(frame, state.ladderMode === 'single' ? this.#singleIds(state) : activeIds(state), state.ladderCues.heat !== 'off');
     if (!windowS) { this.#pull.clear(); return; }
     if (!frame || !(mark > 0) || replaying()) return;
     const base = pullBase(this.#groups[0] ?? 0.1);
@@ -304,14 +368,34 @@ export class LadderPane {
     setTip(pull, t('How much resting liquidity each price gained (+, stacked) or lost (−, pulled) over this window. Grey: the price traded there in the window, where a fill takes liquidity away just as a pull does.'));
     const curves = this.#curvesControl = this.#select(t('Venue lines'), LADDER_CURVES.map(n => [String(n), n === 0 ? t('off') : t('top {n}', { n })] as [string, string]), () => String(s().ladderCurves), v => this.store.set({ ladderCurves: Number(v) as AppState['ladderCurves'] }));
     setTip(curves, t('Compact: a running-total line for each of the largest venues, ranked by traded volume over the flow column\'s ranking window. Hover a line to see it alone.'));
+    this.#cuesButton.className = 'cues-btn'; this.#cuesButton.textContent = t('Cues');
+    setTip(this.#cuesButton, t('What lights in the book when a venue\'s displayed depth changes, and the heat strip under each cell. Hover a cell, or the mark beside a row, to see what changed.'));
+    this.#cuesButton.onclick = () => { this.#cuesPanel = togglePanel(this.#cuesButton, { title: t('Order book cues'), width: 340, align: 'right', onClose: () => { this.#cuesPanel = null; } }, (_tools, body) => this.#buildCues(body)); };
     this.controls.append(title, helpButton('orderBook'),
       this.#select(t('Mode'), [['aggregated', t('Aggregated')], ['single', t('Single')], ['compact', t('Compact')]], () => s().ladderMode, v => this.store.set({ ladderMode: v as AppState['ladderMode'] })),
       // The header's one action is on its first line, beside the title, the "?" and the mode: alone on the last line it read as an afterthought.
       recenter,
       group, curves,
       this.#select(t('Show'), [['both', t('Levels + cum')], ['levels', t('Levels')], ['cumulative', t('Cumulative')]], () => s().ladderShow, v => this.store.set({ ladderShow: v as AppState['ladderShow'] })),
-      pull, this.#booksButton);
+      pull, this.#cuesButton, this.#booksButton);
     this.syncVenues();
+  }
+
+  /** The cue settings the book is drawn from, changed from the Cues panel. */
+  #setCues(patch: Partial<AppState['ladderCues']>): void { this.store.set({ ladderCues: { ...this.store.state.ladderCues, ...patch } }); }
+  #buildCues(body: HTMLElement): void {
+    const cues = this.store.state.ladderCues;
+    const flash: [CueLookSetting, string][] = [['off', t('off')], ['wash', t('Wash')], ['rim', t('Rim')], ['deposit', t('Deposit')], ['marks', t('Signs')]];
+    const heat: [HeatKind, string][] = [['off', t('off')], ['added', t('Recent adds')], ['activity', t('Activity')]];
+    body.append(
+      selectRow(t('Flash'), t('What lights when a venue\'s displayed depth at a price changes.'), flash, cues.look, v => this.#setCues({ look: v as CueLookSetting })),
+      note(t('Wash lights the venue\'s cell and runs a front through it: outward when depth was added, back inward when it was removed. Rim lights only the cell\'s outer edge. Deposit shows the layer an addition made. Signs lights nothing and leaves a small mark beside each row for a few seconds. Light is limited so that a busy book stays readable: a change that gets none still leaves its mark.')),
+      selectRow(t('Sensitivity'), t('How large a change must be to light a cell.'), [['calm', t('Calm')], ['normal', t('Normal')], ['lively', t('Lively')]] as [Sense, string][], cues.sense, v => this.#setCues({ sense: v as Sense })),
+      switchRow(t('Trade contact'), t('A quick ripple on a venue\'s cell when a large market order reaches it.'), cues.contact, on => this.#setCues({ contact: on })),
+      note(t('A ripple says an order met the depth at that price. It does not say the depth changed: a change has its own light.')),
+      selectRow(t('Heat'), t('A strip under each venue\'s part of a level.'), heat, cues.heat, v => this.#setCues({ heat: v as HeatKind })),
+      note(t('Recent adds: the share of the cell that is estimated recent net increase, fading over 45 seconds. Activity: how much it changed lately, additions and removals, against its size. Neither is the age of an order: the exchanges do not send one.')),
+    );
   }
 
   /** Reflect state changed elsewhere (persistence, other controls) in the header selects without disturbing an open popup. */
@@ -355,10 +439,10 @@ export class LadderPane {
     this.invalidate();
   }
   #setCanvas(width: number): void {
-    if (this.#canvas.width !== Math.round(width * this.#dpr) || this.#canvas.height !== Math.round(this.#h * this.#dpr)) {
-      this.#canvas.width = Math.round(width * this.#dpr); this.#canvas.height = Math.round(this.#h * this.#dpr);
+    for (const c of [this.#matCanvas, this.#canvas]) {
+      if (c.width !== Math.round(width * this.#dpr) || c.height !== Math.round(this.#h * this.#dpr)) { c.width = Math.round(width * this.#dpr); c.height = Math.round(this.#h * this.#dpr); }
+      c.style.width = `${width}px`; c.style.height = `${this.#h}px`;
     }
-    this.#canvas.style.width = `${width}px`; this.#canvas.style.height = `${this.#h}px`;
     // Single mode puts several books side by side: a sideways swipe scrolls them (the browser's job), up and down stays ours.
     const touchAction = width > this.#w + 1 ? 'pan-x' : 'none';
     if (this.#canvas.style.touchAction !== touchAction) this.#canvas.style.touchAction = touchAction;
@@ -372,22 +456,22 @@ export class LadderPane {
     const columns = state.ladderMode === 'single' ? Math.max(1, books.length) : 1;
     const width = Math.max(this.#w, columns * BOOK_MIN_W);
     this.#setCanvas(width);
-    const ctx = this.#ctx, h = this.#h;
-    ctx.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0); ctx.clearRect(0, 0, width, h);
+    const ctx = this.#ctx, mat = this.#mat, h = this.#h;
+    for (const c of [mat, ctx]) { c.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0); c.clearRect(0, 0, width, h); }
     // The context keeps the last frame's alignment (the columns are right-aligned): a message starts at the left.
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-    if (!frame || !(mark > 0) || width < 80) { ctx.fillStyle = p.muted; ctx.fillText(t('Waiting for order book…'), 12, 20); return; }
+    if (!frame || !(mark > 0) || width < MIN_BOOK_W) { ctx.fillStyle = p.muted; ctx.fillText(t('Waiting for order book…'), 12, 20); this.#cues.stop(); return; }
     // Replay: the books are recorded a minute at a time (the map's columns), not as a ladder; this one is the live book, which would mislead.
-    if (replaying()) { ctx.fillStyle = p.muted; ctx.fillText(t('Replay: the order book is live only.'), 12, 20); return; }
+    if (replaying()) { ctx.fillStyle = p.muted; ctx.fillText(t('Replay: the order book is live only.'), 12, 20); this.#cues.stop(); return; }
     // Pull/stack: its snapshots are taken as the frames arrive (`levelsArrived`); here only the price between them is noted.
     const pullS = state.pullStack;
     if (pullS) this.#pull.noteMark(mark);
     else this.#pull.clear();
     const ids = state.ladderMode === 'single' ? books : activeIds(state);
     // With every venue switched off (or the Spot / Perp filter leaving none) there is nothing to list: say so, not a column of bare prices.
-    if (!ids.length) { ctx.fillStyle = p.muted; ctx.fillText(emptyScopeMessage(state) ?? (frame.books.length ? t('No venues are enabled.') : t('Waiting for order book…')), 12, 20); return; }
+    if (!ids.length) { ctx.fillStyle = p.muted; ctx.fillText(emptyScopeMessage(state) ?? (frame.books.length ? t('No venues are enabled.') : t('Waiting for order book…')), 12, 20); this.#cues.stop(); return; }
     const cells = state.ladderMode === 'aggregated' && ids.length > 1;
-    const cellW = cells ? Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor((width - PRICE_W - USD_W - (pullS ? PS_W : 0) - 8 - MIN_BAR_W) / ids.length))) : 0;
+    const cellW = cells ? Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor((width - PRICE_W - USD_W - (pullS ? PS_W : 0) - 8 - (this.#cues.gutter ? GUT_W : 0) - MIN_BAR_W) / ids.length))) : 0;
     const balanceH = state.highlight.on ? BALANCE_H : 0;
     const head = (cells && cellW < 20 ? HEAD_TALL : HEAD_H) + balanceH;
     const rows = Math.max(6, Math.floor((h - head) / ROW_H));
@@ -404,12 +488,13 @@ export class LadderPane {
     const span = groupSpan(p0, p1, mark, step), withMark = span !== null;
     const g = groupLevels(this.kernels, frame, ids, step, span?.lo ?? p0, span?.hi ?? p1);
     const markBin = Math.floor(mark / step) - g.bin0;
+    this.#cues.begin({ top: centerBin + Math.floor(rows / 2), rows, head, rowH: ROW_H, step, perVenue: state.ladderMode === 'single' });
     if (state.ladderMode === 'single') {
       const colW = width / columns;
       ids.forEach((id, k) => {
         const idx = g.ids.indexOf(id); if (idx < 0) return;
-        const own: Grouped = { ...g, totalBid: g.bid[idx]!, totalAsk: g.ask[idx]! };
-        this.#drawBook(ctx, state, own, { x: k * colW, w: colW, title: `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`, markId: id, pullIds: [id], cells: null, order: null, cellW: 0, head, balanceH, cover: coverage(frame.books.find(b => b.id === id), mark), totals: withMark, centerBin, rows, markBin, mark, step });
+        const own = this.#own(g, idx);
+        this.#drawBook(mat, ctx, state, own, { x: k * colW, w: colW, title: `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`, markId: id, pullIds: [id], cells: null, order: null, cellW: 0, head, balanceH, cover: coverage(frame.books.find(b => b.id === id), mark), totals: withMark, centerBin, rows, markBin, mark, step });
         if (k > 0) { ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(k * colW + 0.5, 0); ctx.lineTo(k * colW + 0.5, h); ctx.stroke(); }
       });
     } else {
@@ -417,8 +502,19 @@ export class LadderPane {
       const order = state.ladderMode === 'compact' && ids.length > 1 ? this.#venueOrder(g, hiBin - rows + 1, hiBin) : null;
       this.#curvesLeftOut = [];
       const curves = withMark && state.ladderMode === 'compact' && state.ladderShow !== 'levels' && state.ladderCurves > 0 ? this.#curves(state, g, frame, markBin, hiBin - rows + 1, hiBin) : null;
-      this.#drawBook(ctx, state, g, { x: 0, w: width, title: '', pullIds: ids, cells: cells ? ids : null, order, curves, cellW, head, balanceH, cover: null, totals: withMark, centerBin, rows, markBin, mark, step });
+      // The cell columns are the grouping's own venues, in its order (`g.ids`): the arrays the cells are read from are indexed by it.
+      this.#drawBook(mat, ctx, state, g, { x: 0, w: width, title: '', pullIds: ids, cells: cells ? g.ids : null, order, curves, cellW, head, balanceH, cover: null, totals: withMark, centerBin, rows, markBin, mark, step });
     }
+    // The cues go over what was just drawn (the resting material is copied for them, the lit cells are laid over it, and a frame loop runs only while any is lit).
+    this.#cues.end();
+  }
+
+  /** One book's grouping for Single mode (its own rows as the totals), made once for a grouping so the running totals made from it are shared too. */
+  #owns = new WeakMap<Grouped, Grouped[]>();
+  #own(g: Grouped, index: number): Grouped {
+    let list = this.#owns.get(g);
+    if (!list) { list = []; this.#owns.set(g, list); }
+    return list[index] ??= { ...g, totalBid: g.bid[index]!, totalAsk: g.ask[index]! };
   }
 
   /**
@@ -471,14 +567,14 @@ export class LadderPane {
    * A Compact bar's pieces: each venue's part in the bar's order, the shade alternating with its place (so neighbours stay apart) and a hair
    * of background between them; the smaller venues' piece at the end lighter. A piece wide enough says whose it is, and its size when it fits.
    */
-  #paintPieces(ctx: CanvasRenderingContext2D, pieces: readonly BarPiece[], y: number, color: string, f: number): void {
+  #paintPieces(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, pieces: readonly BarPiece[], y: number, color: string, f: number): void {
     const p = this.#palette;
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'left';
     const measure = (text: string): number => ctx.measureText(text).width;
     for (const piece of pieces) {
       const alpha = Math.min(1, (piece.rank < 0 ? 0.4 : piece.rank % 2 === 0 ? 0.92 : 0.62) * f), w = Math.max(1, piece.w - (piece.w >= 3 ? 1 : 0));
-      ctx.globalAlpha = alpha; ctx.fillStyle = color; ctx.fillRect(piece.x, y + 2, w, ROW_H - 4);
-      ctx.globalAlpha = 1;
+      mat.globalAlpha = alpha; mat.fillStyle = color; mat.fillRect(piece.x, y + 2, w, ROW_H - 4);
+      mat.globalAlpha = 1;
       // A piece wide enough starts with its venue's mark, and says what fits after it.
       const marked = piece.id !== null && w >= 15, MARK = 11, after = marked ? MARK + 4 : 0;
       if (marked) drawVenueMark(ctx, piece.id!, piece.x + 2 + MARK / 2, y + ROW_H / 2, MARK);
@@ -493,8 +589,8 @@ export class LadderPane {
    * level, and the USD column or a plain bar says the whole level. Null over the price column, empty space and the cumulative area.
    */
   #cellUnder(state: AppState, g: Grouped, cum: ReturnType<typeof cumulative>,
-    o: { x: number; w: number; title: string; cells: string[] | null; order: string[] | null; head: number; cover: Cover | null; centerBin: number; rows: number; markBin: number; mark: number; step: number },
-    k: { priceW: number; usdW: number; cw: number; barX: number; barW: number; maxLevel: number; pull: PullRows | null }): { lines: InfoLine[]; x: number; y: number; w: number; h: number } | null {
+    o: { x: number; w: number; title: string; markId?: string; cells: string[] | null; order: string[] | null; head: number; cover: Cover | null; centerBin: number; rows: number; markBin: number; mark: number; step: number },
+    k: { priceW: number; usdW: number; cw: number; barX: number; barW: number; maxLevel: number; pull: PullRows | null; gut: number }): { lines: InfoLine[]; x: number; y: number; w: number; h: number } | null {
     const hv = this.#hover; if (!hv || this.#drag) return null;
     const { x: x0, w, rows, markBin, step, centerBin, head } = o;
     if (hv.x < x0 || hv.x >= x0 + w || hv.y < head || hv.y >= head + rows * ROW_H) return null;
@@ -503,17 +599,32 @@ export class LadderPane {
     const rowLo = (g.bin0 + bin) * step;
     if (o.cover && beyondCover(o.cover, rowLo, step)) return null;
     const bid = g.totalBid[bin]!, ask = g.totalAsk[bin]!, isAsk = bin > markBin || (bin === markBin && ask > bid), size = isAsk ? ask : bid;
+    // The gutter answers for a row whose level may have emptied (the mark of a cell that went to nothing has no bar to point at), so it comes before the size is asked.
+    const rowIds = o.markId ? [o.markId] : g.ids;
+    if (k.gut > 0 && hv.x >= k.barX - k.gut && hv.x < k.barX) {
+      // The mark in the box is what is pointed at, and it says the side it was made on (the row may show the other side by now); a box with none answers for the side the row shows.
+      const mark = this.#cues.board.markAt(g.bin0 + bin, o.markId ?? ''), markAsk = mark ? mark.side === 'ask' : isAsk;
+      const changes = this.#changesAt(rowIds, markAsk, rowLo, rowLo + step, g, bin);
+      return changes.length ? { lines: gutterLines({ low: rowLo, step, mark: o.mark, ask: markAsk, changes, ...(o.title ? { title: o.title } : {}) }), x: k.barX - k.gut, y: head + r * ROW_H, w: k.gut, h: ROW_H } : null;
+    }
     if (!(size > 0)) return null;
     const y = head + r * ROW_H, ids = o.cells, at = (i: number): number => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0;
     const order = o.order, orderIdx = order ? order.map(id => g.ids.indexOf(id)) : null;
     const venues = ids ? ids.map((id, i) => ({ name: bookName(id), usd: at(i), id })) : order && orderIdx ? order.map((id, n) => ({ name: bookName(id), usd: at(orderIdx[n]!), id })) : [];
     const change = k.pull ? (isAsk ? k.pull.ask[bin]! : k.pull.bid[bin]!) : NaN;
     const facts: LevelFacts = { low: rowLo, step, mark: o.mark, ask: isAsk, size, cumulative: (isAsk ? cum.ask : cum.bid)[bin] ?? size, venues: venues.filter(v => v.usd > 0), ...(o.title ? { title: o.title } : {}),
-      ...(change === change && k.pull ? { pull: { usd: change, touched: k.pull.touched[bin] === 1, window: windowText(state.pullStack) } } : {}) };
+      ...(change === change && k.pull ? { pull: { usd: change, touched: k.pull.touched[bin] === 1, window: windowText(state.pullStack) } } : {}), changes: this.#changesAt(rowIds, isAsk, rowLo, rowLo + step, g, bin) };
+    // A venue's part of the level says its own changes and its heat.
+    const heatKind = state.ladderCues.heat;
+    const cellFacts = (id: string): LevelFacts => {
+      const h = heatKind === 'off' ? null : this.#cues.tracker.heat(id, isAsk ? 'ask' : 'bid', rowLo, rowLo + step, Date.now());
+      const heat: HeatFact | null = h && heatKind !== 'off' ? { kind: heatKind, ...h } : null;
+      return { ...facts, changes: this.#changesAt([id], isAsk, rowLo, rowLo + step, g, bin), ...(heat ? { heat } : {}) };
+    };
     const cellsX = x0 + k.priceW + k.usdW + 8;
     if (ids && hv.x >= cellsX && hv.x < cellsX + ids.length * k.cw) {
       const i = Math.floor((hv.x - cellsX) / k.cw);
-      return at(i) > 0 ? { lines: venueCellLines(facts, venues[i]!), x: cellsX + i * k.cw, y: y + 3, w: Math.max(2, k.cw - 2), h: ROW_H - 6 } : null;
+      return at(i) > 0 ? { lines: venueCellLines(cellFacts(venues[i]!.id), venues[i]!), x: cellsX + i * k.cw, y: y + 3, w: Math.max(2, k.cw - 2), h: ROW_H - 6 } : null;
     }
     // Compact names every venue of the level (its bar has a piece for each); Aggregated the largest four beside its columns.
     if (hv.x >= x0 + k.priceW && hv.x < x0 + k.priceW + k.usdW) return { lines: levelLines(facts, order ? 12 : 4), x: x0 + k.priceW, y, w: k.usdW, h: ROW_H };
@@ -521,7 +632,7 @@ export class LadderPane {
     if (order && orderIdx) {
       const piece = pieceAt(barPieces(order, orderIdx.map(i => at(i)), k.maxLevel, k.barX, k.barW, PIECE_MIN_PX), hv.x);
       if (!piece) return null;
-      const lines = piece.id ? venueCellLines(facts, { name: bookName(piece.id), usd: piece.usd, id: piece.id }) : smallerVenuesLines(facts, piece.merged.map(m => ({ name: bookName(m.id), usd: m.usd, id: m.id })));
+      const lines = piece.id ? venueCellLines(cellFacts(piece.id), { name: bookName(piece.id), usd: piece.usd, id: piece.id }) : smallerVenuesLines({ ...facts, changes: this.#changesAt(piece.merged.map(m => m.id), isAsk, rowLo, rowLo + step, g, bin) }, piece.merged.map(m => ({ name: bookName(m.id), usd: m.usd, id: m.id })));
       return { lines, x: piece.x, y: y + 2, w: Math.max(1, piece.w - 0.5), h: ROW_H - 4 };
     }
     if (ids) {
@@ -529,13 +640,45 @@ export class LadderPane {
       for (let i = 0; i < ids.length; i++) {
         const vv = at(i); if (vv <= 0) continue;
         const seg = vv / k.maxLevel * k.barW, len = Math.max(1, seg - 0.5);
-        if (hv.x < sx + len) return { lines: venueCellLines(facts, venues[i]!), x: sx, y: y + 2, w: len, h: ROW_H - 4 };
+        if (hv.x < sx + len) return { lines: venueCellLines(cellFacts(venues[i]!.id), venues[i]!), x: sx, y: y + 2, w: len, h: ROW_H - 4 };
         sx += seg;
       }
       return null;
     }
     const len = Math.max(1, size / k.maxLevel * k.barW);
     return hv.x < k.barX + len ? { lines: levelLines(facts), x: k.barX, y: y + 2, w: len, h: ROW_H - 4 } : null;
+  }
+
+  /**
+   * The latest changes the cues saw at a price row, newest first: each of the books' `ids` own (the last two minutes), named as a popup names a book.
+   * Each is the row's change as the light made it (`rowEvents` over the events of the newest publication that touched the row: shared over the row
+   * and added up), so the figure the pointer reads is the one the cell was lit with, and a row of several bins that changed together says their sum.
+   */
+  #changesAt(ids: readonly string[], ask: boolean, lo: number, hi: number, g: Grouped, bin: number): ChangeFact[] {
+    // The grouping's own step, never `hi - lo` (the difference of two products is not the step at a decimal one: 0.10000000000582077 for 0.1).
+    const now = Date.now(), out: ChangeFact[] = [], step = g.step, scale = this.#cues.scale;
+    // What a venue shows in the row now: a row is emptied only if it holds nothing (the change is the part of the row that it touched).
+    const held = (id: string): number => { const i = g.ids.indexOf(id); return (ask ? g.ask[i] : g.bid[i])?.[bin] ?? 0; };
+    for (const id of ids) {
+      const events = this.#cues.tracker.recentEvents(id, ask ? 'ask' : 'bid', lo, hi);
+      const r = events.length ? latestRowChange(byPublication(events), g.bin0 + bin, step, scale) : null;
+      if (!r || now - r.wall > CHANGE_HOVER_MS) continue;
+      const traded = this.#tradedMeanwhile(id, ask, lo, hi, r.prevWall, r.wall);
+      out.push({ name: bookName(id), id, usd: r.usd, ageMs: Math.max(0, now - r.wall), removed: r.removed && held(id) === 0, pair: r.pair, ...(traded !== null ? { traded } : {}) });
+    }
+    return out.sort((a, b) => a.ageMs - b.ageMs);
+  }
+
+  /** What traded on `id` at a row around a change seen between the snapshots at `prevWall` and `wall` (null: the tape does not say). Held a second, so a pointer moving over the row does not read the tape again for every draw. */
+  #traded = new Map<string, { at: number; usd: number | null }>();
+  #tradedMeanwhile(id: string, ask: boolean, lo: number, hi: number, prevWall: number, wall: number): number | null {
+    const ring = this.hub?.tape; if (!ring) return null;
+    const key = `${id}|${ask ? 1 : 0}|${lo}|${hi}|${prevWall}|${wall}`, now = performance.now(), held = this.#traded.get(key);
+    if (held && now - held.at < 1_000) return held.usd;
+    if (this.#traded.size > 64) this.#traded.clear();
+    const usd = tradedInRow(ring, { id, ask, lo, hi, ...meanwhile(prevWall, wall), now: Date.now() });
+    this.#traded.set(key, { at: now, usd });
+    return usd;
   }
 
   /** A venue line under the pointer: a dot where it crosses the pointer's row, and what it says there (on the key: the venue and its volume). */
@@ -662,40 +805,53 @@ export class LadderPane {
   }
 
   /**
-   * The venue lines, over the bars: each a crisp step outline in its colour; with one under the pointer, that one stronger and the rest faded.
-   * Where its book stops reaching, a short bar across marks the end; the line under the pointer goes on dashed and fainter at the total it
-   * reached (so does one with no book of its own in view on that side, where nothing else of it would show).
+   * The venue lines: each a crisp step outline in its colour; with one under the pointer, that one stronger and the rest faded. Where a line lies over
+   * a bar (`ends`: where each row's bar ends) it is a faint trace on the material, under the labels, so the bars stay readable; in the clear it is whole,
+   * on the ink, and the line under the pointer is whole everywhere. Where its book stops reaching, a short bar across marks the end; the line under
+   * the pointer goes on dashed and fainter at the total it reached (so does one with no book of its own in view on that side, where nothing else of it
+   * would show).
    */
-  #paintCurves(ctx: CanvasRenderingContext2D, g: Grouped, curves: readonly Curve[], o: { head: number; rows: number; centerBin: number; markBin: number }, barX: number, scale: CurveScale, hovered: number | null): void {
+  #paintCurves(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, g: Grouped, curves: readonly Curve[], o: { head: number; rows: number; centerBin: number; markBin: number }, barX: number, scale: CurveScale, hovered: number | null, ends: ArrayLike<number>): void {
     const xAt = scale.x;
     const half = Math.floor(o.rows / 2), top = o.centerBin + half - g.bin0, bottom = top - o.rows + 1;
     const markAsk = (g.totalAsk[o.markBin] ?? 0) > (g.totalBid[o.markBin] ?? 0), askFrom = markAsk ? o.markBin : o.markBin + 1, bidFrom = markAsk ? o.markBin - 1 : o.markBin;
     const yOf = (bin: number): number => o.head + (top - bin) * ROW_H;
-    ctx.save(); ctx.lineJoin = 'miter';
+    const strokeRuns = (c: CanvasRenderingContext2D, runs: readonly number[][]): void => {
+      if (!runs.length) return;
+      c.beginPath();
+      for (const run of runs) { c.moveTo(run[0]!, run[1]!); for (let i = 2; i < run.length; i += 2) c.lineTo(run[i]!, run[i + 1]!); }
+      c.stroke();
+    };
+    ctx.save(); mat.save(); ctx.lineJoin = 'miter'; mat.lineJoin = 'miter';
     // The hovered line last, so it lies on top.
     const order = curves.map((_, k) => k).sort((a, b) => (a === hovered ? 1 : 0) - (b === hovered ? 1 : 0));
     for (const k of order) {
       const c = curves[k]!;
       const alpha = hovered === null || k === hovered ? 0.95 : 0.22, width = k === hovered ? 2.5 : 1.5;
       ctx.strokeStyle = c.color; ctx.lineWidth = width; ctx.globalAlpha = alpha;
+      mat.strokeStyle = c.color; mat.lineWidth = width; mat.globalAlpha = alpha * this.curveOverBars;
       for (const up of [true, false]) {
-        ctx.beginPath(); let started = false, end: { x: number; y: number; cap: boolean } | null = null;
+        const steps: LineStep[] = []; let axis: number | null = null, end: { x: number; y: number; cap: boolean } | null = null;
         for (let bin = up ? Math.max(askFrom, bottom) : Math.min(bidFrom, top); up ? bin <= top : bin >= bottom; bin += up ? 1 : -1) {
           // Rows its book does not reach before the line starts are passed over (a shallow book can begin above or below the mark).
-          const x = xAt(c, bin); if (x === null) { if (started) break; continue; }
+          const x = xAt(c, bin); if (x === null) { if (steps.length) break; continue; }
           const y = yOf(bin), near = up ? y + ROW_H : y, far = up ? y : y + ROW_H;
           // Scrolled past the reach, the view holds only the dashed part (no end mark: the end is off screen).
-          if (scale.carried(c, bin)) { end = { x, y: near, cap: started }; break; }
+          if (scale.carried(c, bin)) { end = { x, y: near, cap: steps.length > 0 }; break; }
           // From the axis at the mark; from its own place when the mark is scrolled out of view.
-          if (!started) { ctx.moveTo(bin === (up ? askFrom : bidFrom) ? barX : x, near); started = true; }
-          ctx.lineTo(x, near); ctx.lineTo(x, far);
+          if (!steps.length && bin === (up ? askFrom : bidFrom)) axis = barX;
+          steps.push({ r: top - bin, x, near, far });
         }
-        if (started) ctx.stroke();
+        if (steps.length) {
+          // Over a bar a trace on the material (under the labels), in the clear the line on the ink; the line under the pointer meets no bar.
+          const cut = cutAtBars(steps, axis, k === hovered ? NO_BARS : ends, up ? -1 : 1);
+          strokeRuns(mat, cut.over); strokeRuns(ctx, cut.free);
+        }
         // Past the reach: the end of the book across the line, always. The total it reached, held, dashed, to the edge of the view, only for the
         // line under the pointer (a dashed line from every shallow venue's cap, over the bars and in no place on the scale, read as unexplained
         // dashes, Karl 2026-10-19), or when the end is off screen and the dashes are all of the line there is.
         if (end) {
-          if (end.cap) { ctx.beginPath(); ctx.moveTo(end.x - 4, end.y); ctx.lineTo(end.x + 4, end.y); ctx.lineWidth = width + 0.5; ctx.stroke(); }
+          if (end.cap) { ctx.beginPath(); ctx.moveTo(end.x - 4, end.y); ctx.lineTo(end.x + 4, end.y); ctx.lineWidth = width + 0.5; ctx.stroke(); ctx.lineWidth = width; }
           if (k === hovered || !end.cap) {
             ctx.save(); ctx.setLineDash([3, 3]); ctx.lineWidth = Math.max(1, width - 0.5); ctx.globalAlpha = alpha * 0.55;
             ctx.beginPath(); ctx.moveTo(end.x, end.y); ctx.lineTo(end.x, up ? o.head : o.head + o.rows * ROW_H); ctx.stroke();
@@ -704,7 +860,7 @@ export class LadderPane {
         }
       }
     }
-    ctx.restore();
+    mat.restore(); ctx.restore();
   }
 
   /** The lines' key in the header row: a stroke of each colour and its venue's mark, as many as fit in `room`. Each entry's span across, for the pointer. */
@@ -767,7 +923,7 @@ export class LadderPane {
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
   }
 
-  #drawBook(ctx: CanvasRenderingContext2D, state: AppState, g: Grouped,
+  #drawBook(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, state: AppState, g: Grouped,
     o: { x: number; w: number; title: string; markId?: string; pullIds: string[]; cells: string[] | null; order: string[] | null; curves?: Curve[] | null; cellW: number; head: number; balanceH: number; cover: Cover | null; totals: boolean; centerBin: number; rows: number; markBin: number; mark: number; step: number }): void {
     const p = this.#palette, { x: x0, w, rows, markBin, step, centerBin } = o;
     const cum = cumulative(g, o.mark);
@@ -777,7 +933,9 @@ export class LadderPane {
     // The pull/stack column sits after LEVEL USD, so everything right of it moves along by its width.
     const pull = state.pullStack ? this.#pull.view(o.pullIds, step, g.bin0, g.nBins, state.pullStack) : null;
     const priceW = PRICE_W, usdW = USD_W + (pull ? PS_W : 0), cellIds = o.cells, cw = o.cellW, head = o.head - o.balanceH, venueW = cellIds ? cellIds.length * cw + 2 : 0;
-    const barX = x0 + priceW + usdW + venueW + 8, barW = Math.max(20, x0 + w - barX - 6);
+    // The gutter for the rows' signed marks sits between the venue columns and the bars, while the cues are on.
+    const gut = this.#cues.gutter ? GUT_W : 0, barX = x0 + priceW + usdW + venueW + 8 + gut, barW = Math.max(20, x0 + w - barX - 6);
+    if (gut) this.#cues.addGutter(o.markId ?? null, barX - gut, gut);
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     if (o.title) {
       const indent = o.markId ? 17 : 0;
@@ -826,18 +984,30 @@ export class LadderPane {
     if (pullRows) for (let i = shownLo; i <= shownHi; i++) if (!pullRows.touched[i]) for (const v of [pullRows.bid[i]!, pullRows.ask[i]!]) if (v === v) maxPull = Math.max(maxPull, Math.abs(v));
     // The venue lines' scale, and round values on it as faint gridlines behind the bars (it is not the bars' scale, so it needs its own).
     const curves = o.curves ?? [], scale = curves.length ? this.#curveX(g, curves, o, barX, barW) : null, xAt = scale?.x ?? null;
+    // Where each row's bar ends (NaN: none), for the lines to fade over: a faint trace over a bar, whole in the clear.
+    const ends = scale ? new Float32Array(rows).fill(Number.NaN) : null;
     // With the lines on they are the running totals and the whole book's area is left out: on their scale it filled the width a few rows
     // from the mark (the total is several times the largest venue: Karl, 2026-10-14), and on a scale of its own a venue's line stood beyond
     // the total it is part of (2026-10-13).
-    if (state.ladderShow !== 'levels' && !scale && o.totals) this.#paintCumulative(ctx, g, cum, o, barX, barW, maxCum, weight);
+    if (state.ladderShow !== 'levels' && !scale && o.totals) this.#paintCumulative(mat, g, cum, o, barX, barW, maxCum, weight);
     const ticks = scale ? lineTicks(scale.full).map(v => ({ v, x: Math.round(barX + lineFraction(v, scale.full) * barW) + 0.5 })) : [];
     if (ticks.length) {
       // Solid, like the map's own grid: a dash here would be read as the lines' "past its book" dashes (the key says what those mean).
-      ctx.save(); ctx.strokeStyle = p.line; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
-      for (const tick of ticks) { ctx.beginPath(); ctx.moveTo(tick.x, o.head); ctx.lineTo(tick.x, o.head + rows * ROW_H); ctx.stroke(); }
-      ctx.restore();
+      // Under the bars, so on the material.
+      mat.save(); mat.strokeStyle = p.line; mat.globalAlpha = 0.6; mat.lineWidth = 1;
+      for (const tick of ticks) { mat.beginPath(); mat.moveTo(tick.x, o.head); mat.lineTo(tick.x, o.head + rows * ROW_H); mat.stroke(); }
+      mat.restore();
     }
     if (o.balanceH > 0) this.#paintBalance(ctx, g, cum, o, x0, w);
+    // Each venue's part of a row is placed for the cues (where it is, so a cue can light it) and gets its heat strip.
+    const cues = this.#cues, heatKind = state.ladderCues.heat, tone = heatKind === 'off' ? '' : heatTone(p), wall = Date.now();
+    const share = (h: { fresh: number; activity: number }): number => heatKind === 'added' ? h.fresh : h.activity;
+    const place = (id: string, r: number, ask: boolean, cell: Cell, lo: number): void => {
+      cues.cells.set(id, r, ask ? 1 : 0, cell.x, cell.y, cell.w, cell.h, cell.usd);
+      if (heatKind === 'off') return;
+      const h = cues.tracker.heat(id, ask ? 'ask' : 'bid', lo, lo + step, wall);
+      if (h) paintStrip(mat, cell, share(h), tone);
+    };
     for (let r = 0; r < rows; r++) {
       const bin = centerBin + Math.floor(rows / 2) - r - g.bin0;
       if (bin < 0 || bin >= g.nBins) continue;
@@ -845,13 +1015,14 @@ export class LadderPane {
       const rowLo = (g.bin0 + bin) * step;
       if (o.cover && beyondCover(o.cover, rowLo, step)) {
         // Beyond what this venue's feed reaches: shade the row instead of showing a misleading empty book.
-        ctx.globalAlpha = 0.5; ctx.fillStyle = p.line; ctx.fillRect(x0, y, w, ROW_H); ctx.globalAlpha = 1;
+        mat.globalAlpha = 0.5; mat.fillStyle = p.line; mat.fillRect(x0, y, w, ROW_H); mat.globalAlpha = 1;
         ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(fmtPrice(rowLo, step), x0 + 6, mid);
         continue;
       }
       const bid = g.totalBid[bin]!, ask = g.totalAsk[bin]!, isAsk = bin > markBin || (bin === markBin && ask > bid);
       const value = isAsk ? ask : bid, color = isAsk ? p.ask : p.bid, f = weight(bin, !isAsk);
-      if (bin === markBin) { ctx.fillStyle = p.line; ctx.fillRect(x0, y, w, ROW_H); }
+      if (ends && value > 0 && state.ladderShow !== 'cumulative') ends[r] = barX + Math.max(1, value / maxLevel * barW);
+      if (bin === markBin) { mat.fillStyle = p.line; mat.fillRect(x0, y, w, ROW_H); }
       ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(fmtPrice((g.bin0 + bin) * step, step), x0 + 6, mid);
       ctx.fillStyle = value > 0 ? p.text : p.muted; ctx.textAlign = 'right'; ctx.fillText(value > 0 ? usd(value) : '', x0 + priceW + USD_W, mid);
       if (pullRows) {
@@ -861,21 +1032,43 @@ export class LadderPane {
           ctx.fillText(signedUsd(change), x0 + priceW + usdW, mid); ctx.globalAlpha = 1;
         }
       }
-      if (cellIds) cellIds.forEach((_, k) => {
+      if (cellIds) cellIds.forEach((id, k) => {
         const vv = (isAsk ? g.ask[k] : g.bid[k])?.[bin] ?? 0;
-        if (vv > 0) { ctx.globalAlpha = Math.min(1, (0.18 + 0.82 * Math.sqrt(vv / maxLevel)) * f); ctx.fillStyle = color; ctx.fillRect(x0 + priceW + usdW + 8 + k * cw, y + 3, Math.max(2, cw - 2), ROW_H - 6); ctx.globalAlpha = 1; }
+        if (vv > 0) {
+          const cx = x0 + priceW + usdW + 8 + k * cw, cwid = Math.max(2, cw - 2);
+          mat.globalAlpha = Math.min(1, (0.18 + 0.82 * Math.sqrt(vv / maxLevel)) * f); mat.fillStyle = color; mat.fillRect(cx, y + 3, cwid, ROW_H - 6); mat.globalAlpha = 1;
+          place(id, r, isAsk, { x: cx, y: y + 3, w: cwid, h: ROW_H - 6, usd: vv }, rowLo);
+        }
       });
       if (state.ladderShow !== 'cumulative' && value > 0) {
         if (orderIdx && o.order) {
-          this.#paintPieces(ctx, barPieces(o.order, orderIdx.map(i => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0), maxLevel, barX, barW, PIECE_MIN_PX), y, color, f);
+          const pieces = barPieces(o.order, orderIdx.map(i => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0), maxLevel, barX, barW, PIECE_MIN_PX);
+          this.#paintPieces(mat, ctx, pieces, y, color, f);
+          for (const piece of pieces) {
+            const rect: Cell = { x: piece.x, y: y + 2, w: Math.max(1, piece.w - (piece.w >= 3 ? 1 : 0)), h: ROW_H - 4, usd: piece.usd };
+            if (piece.id) { place(piece.id, r, isAsk, rect, rowLo); continue; }
+            // The smaller venues' piece is one block of material that none of them owns: a change of one of them lights nothing there (it leaves its
+            // mark and its hover), and the piece's strip is theirs added up (by size).
+            let fresh = 0, total = 0;
+            for (const m of piece.merged) {
+              const h = heatKind === 'off' ? null : cues.tracker.heat(m.id, isAsk ? 'ask' : 'bid', rowLo, rowLo + step, wall);
+              if (h) fresh += share(h) * m.usd;
+              total += m.usd;
+            }
+            if (heatKind !== 'off' && total > 0) paintStrip(mat, rect, fresh / total, tone);
+          }
         } else if (cellIds) {
           let x = barX;
           cellIds.forEach((_, k) => {
             const vv = (isAsk ? g.ask[k] : g.bid[k])?.[bin] ?? 0; if (vv <= 0) return;
-            const seg = vv / maxLevel * barW; ctx.globalAlpha = Math.min(1, (0.35 + 0.5 * (VENUE_TINT[k % VENUE_TINT.length] ?? 1)) * f); ctx.fillStyle = color; ctx.fillRect(x, y + 2, Math.max(1, seg - 0.5), ROW_H - 4); x += seg;
+            const seg = vv / maxLevel * barW; mat.globalAlpha = Math.min(1, (0.35 + 0.5 * (VENUE_TINT[k % VENUE_TINT.length] ?? 1)) * f); mat.fillStyle = color; mat.fillRect(x, y + 2, Math.max(1, seg - 0.5), ROW_H - 4); x += seg;
           });
-          ctx.globalAlpha = 1;
-        } else { ctx.globalAlpha = Math.min(1, 0.75 * f); ctx.fillStyle = color; ctx.fillRect(barX, y + 2, Math.max(1, value / maxLevel * barW), ROW_H - 4); ctx.globalAlpha = 1; }
+          mat.globalAlpha = 1;
+        } else {
+          const len = Math.max(1, value / maxLevel * barW);
+          mat.globalAlpha = Math.min(1, 0.75 * f); mat.fillStyle = color; mat.fillRect(barX, y + 2, len, ROW_H - 4); mat.globalAlpha = 1;
+          place(o.markId ?? o.pullIds[0] ?? '', r, isAsk, { x: barX, y: y + 2, w: len, h: ROW_H - 4, usd: value }, rowLo);
+        }
       }
       // The price row's line in the colour of the map's price line (the candle under way rising or falling).
       if (bin === markBin) { const side = lineSide(state.candles, state.seriesInstrument, state.marketId); ctx.fillStyle = side === 'up' ? p.candleUp : side === 'down' ? p.candleDown : p.ask; ctx.fillRect(x0, y + ROW_H - 1, w, 1); }
@@ -900,7 +1093,7 @@ export class LadderPane {
     }
     this.hoveredCurve = curveHit?.k ?? null;
     if (xAt) {
-      this.#paintCurves(ctx, g, curves, o, barX, scale!, this.hoveredCurve);
+      this.#paintCurves(mat, ctx, g, curves, o, barX, scale!, this.hoveredCurve, ends!);
       // The gridlines' values on the bottom row, each on a patch of the background so the bars under it do not hide it.
       ctx.save(); ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace'; ctx.textAlign = 'center';
       const ly = o.head + rows * ROW_H - ROW_H / 2;
@@ -912,7 +1105,7 @@ export class LadderPane {
       if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve, dashesAlone || runsPast(curves[this.hoveredCurve]!)); }
     }
     if (pull?.kind === 'filling') this.#paintPullFilling(ctx, pull.share, pull.waitS, x0 + priceW + USD_W, o.head, rows, centerBin + Math.floor(rows / 2) - g.bin0 - markBin);
-    const cell = curveHit ? null : this.#cellUnder(state, g, cum, o, { priceW, usdW, cw, barX, barW, maxLevel, pull: pullRows });
+    const cell = curveHit ? null : this.#cellUnder(state, g, cum, o, { priceW, usdW, cw, barX, barW, maxLevel, pull: pullRows, gut });
     // On a venue line the Mirror comparison is left out: its dimming would wash out the lines being looked at.
     if (!curveHit) this.#paintMirror(ctx, state, g, cum, o, o.head, rows, cell !== null);
     if (cell) this.#paintCell(ctx, cell, o, rows);

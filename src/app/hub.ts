@@ -10,6 +10,8 @@ import type { CellShare } from './cell-sources.ts';
 import type { Bounds } from './view.ts';
 import type { LtParams, LtSeries } from './lt.ts';
 import { pickOi, weakOi, type OiCandidate } from './oi-source.ts';
+import { takeOiPushes, withOiPushes, type OiPush } from './oi-push.ts';
+import { replaying } from './replay/clock.ts';
 import { atOnePrice, inverseOi, oiSumOf, type OiPart } from './oi-change.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
@@ -96,6 +98,14 @@ export const windowProfileKey = (ids: readonly string[], step: number, w: { from
 
 /** The perpetuals whose open interest is added together with every venue on (market-choice.ts). */
 export { oiVenueIds } from './market-choice.ts';
+
+/** At most this many pushed readings are held to be put on a load's answer (a load that takes longer may lose its oldest: the next push puts them right). */
+const OI_DURING_MAX = 512;
+/** One market's part with the pushed readings of that market in it; the same part when none changed it. */
+function withPushed(part: OiPart, readings: readonly OiPush[], tfMs: number): OiPart {
+  const bars = withOiPushes(part.bars, readings.filter(reading => reading.instrumentId === part.id), tfMs, part.usdAt);
+  return bars ? { ...part, bars } : part;
+}
 
 /**
  * The market the page starts on: Binance's perpetual, the most liquid of the venues, where the page reads one (Karl, 2026-10-17: not
@@ -417,6 +427,8 @@ export class Hub {
         const fresh = this.liquidations.add(items.flatMap(row => { const l = liquidationFromWire(row); return l ? [l] : []; }));
         if (fresh.length) this.onLiquidationsChanged();
       },
+      // Open interest is pushed the moment the source has a reading: the pane follows the exchanges, not the clock.
+      onOiPush: items => this.#oiPush(items),
     });
     this.#live.tape(this.#tapeOn);
   }
@@ -505,11 +517,44 @@ export class Hub {
     // page) is still coming would make every answer stale before it came, and the pane would never get one.
     const held = this.#oiInflight;
     if (held && held.key === key && held.generation === this.#oiGen) return held.promise;
-    const promise: Promise<void> = this.#loadOi(own, key, added, venues).finally(() => { if (this.#oiInflight?.promise === promise) this.#oiInflight = null; });
+    const promise: Promise<void> = this.#loadOi(own, key, added, venues).finally(() => { if (this.#oiInflight?.promise === promise) { this.#oiInflight = null; this.#oiDuring = []; } });
     this.#oiInflight = { key, generation: this.#oiGen, promise };
     return promise;
   }
   #oiInflight: { key: string; generation: number; promise: Promise<void> } | null = null;
+  /**
+   * The source pushes each new open-interest reading the moment it lands, so the pane moves with the exchanges instead of waiting for the
+   * 20 s clock (which stays as the reconciliation: history, venues switched, a reading the push missed). A reading goes in the bucket of its
+   * own time, in the units of the bars it joins (`withOiPushes`: an inverse market's USD at the bars' one price), and only when it is newer
+   * than the last one taken for its market. A load answers with what the source held when it was asked, so the readings pushed while it was
+   * under way are put on its answer again (`#oiDuring`), or a push would be taken back until the next one. A replay is the past (pushes say
+   * nothing it did not know then), and a hidden page draws nothing: the next load catches up.
+   */
+  #oiPush(items: unknown[]): void {
+    if (replaying() || (typeof document !== 'undefined' && document.hidden)) return;
+    const readings = takeOiPushes(items).filter(reading => reading.t > (this.#oiPushed.get(reading.instrumentId) ?? 0));
+    if (!readings.length) return;
+    for (const reading of readings) this.#oiPushed.set(reading.instrumentId, reading.t);
+    if (this.#oiInflight) {
+      const at = Date.now();
+      for (const reading of readings) this.#oiDuring.push({ at, reading });
+      if (this.#oiDuring.length > OI_DURING_MAX) this.#oiDuring.splice(0, this.#oiDuring.length - OI_DURING_MAX);
+    }
+    const { state } = this.store, tf = this.#oiTf;
+    if (state.oiParts.length > 1) {
+      const parts = state.oiParts.map(part => withPushed(part, readings, tf));
+      if (parts.some((part, i) => part !== state.oiParts[i])) this.store.set({ oiParts: parts, oi: oiSumOf(parts, tf).bars });
+    } else if (state.oiInstrument) {
+      const bars = withOiPushes(state.oi, readings.filter(reading => reading.instrumentId === state.oiInstrument), tf, state.oiPrice);
+      if (bars) this.store.set({ oi: bars });
+    }
+  }
+  /** The newest reading taken per market, by its own time. */
+  readonly #oiPushed = new Map<string, number>();
+  /** The readings taken while a load was under way, with when (put on its answer again when it lands). */
+  #oiDuring: { at: number; reading: OiPush }[] = [];
+  /** The timeframe of the bars on screen: a push goes into those, whatever timeframe a load under way is asking for. */
+  #oiTf = 3_600_000;
   /** What the open-interest markets were last checked against (`refreshOiMarkets`), so a check with nothing new costs a comparison. */
   #oiChecked: readonly unknown[] = [];
 
@@ -535,12 +580,19 @@ export class Hub {
     this.#oiKey = key;
     const generation = ++this.#oiGen;
     const tf = TIMEFRAMES[timeframe] ?? 3_600_000, now = Date.now(), from = now - 500 * tf, to = now + tf;
+    // The readings pushed since this load was asked for, put on its answer (it holds what the source had when asked). A server's push that
+    // left before the question and reached the page after the answer (it waits behind levels frames on the socket) is not told apart: an
+    // answer says nothing of when its newest reading was taken, and the server's clock is not the exchanges'. It shows a reading a few
+    // seconds old until the next push.
+    const late = (): OiPush[] => this.#oiDuring.filter(entry => entry.at >= now).map(entry => entry.reading);
     // Added together: every venue's bars, asked for at once; only the venues the filter and the chips let through count, or the markets
     // picked ('custom', whatever the chips say). With one answering its own bars are shown, with none nothing (never a market left out
     // standing in, never the chart market in place of an empty list).
     if (added) {
-      const parts: OiPart[] = (await Promise.all(venues.map(async id => ({ id, ...await this.oiSeries(id, timeframe, from, to).catch(() => ({ bars: [] as OiBar[] })) })))).filter(part => part.bars.length);
+      const answered: OiPart[] = (await Promise.all(venues.map(async id => ({ id, ...await this.oiSeries(id, timeframe, from, to).catch(() => ({ bars: [] as OiBar[] })) })))).filter(part => part.bars.length);
       if (this.#oiKey !== key || generation !== this.#oiGen) return;
+      const pushed = late(), parts = answered.map(part => withPushed(part, pushed, tf));
+      this.#oiTf = tf;
       if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiInstrument: '', oiParts: parts, oiPrice: 0 });
       else this.store.set({ oi: [...(parts[0]?.bars ?? [])], oiInstrument: parts[0]?.id ?? '', oiParts: [], oiPrice: parts[0]?.usdAt ?? 0 });
       return;
@@ -554,7 +606,10 @@ export class Hub {
     }
     if (this.#oiKey !== key || generation !== this.#oiGen) return;
     const chosen = pickOi(candidates, now, tf);
-    if (chosen) this.store.set({ oi: chosen.bars, oiInstrument: chosen.inst, oiParts: [], oiPrice: prices.get(chosen.inst) ?? 0 });
+    if (!chosen) return;
+    const usdAt = prices.get(chosen.inst);
+    this.#oiTf = tf;
+    this.store.set({ oi: [...withPushed({ id: chosen.inst, bars: chosen.bars, ...(usdAt ? { usdAt } : {}) }, late(), tf).bars], oiInstrument: chosen.inst, oiParts: [], oiPrice: usdAt ?? 0 });
   }
 
   /**

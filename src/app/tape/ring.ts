@@ -30,6 +30,8 @@ export class TapeRing {
   t0 = 0; p0 = 0;
   /** Market ids by the index stored in each record. */
   readonly ids: string[] = [];
+  /** The greatest exchange time (absolute ms) of an order the ring has overwritten: nothing at or before it is whole any more, whatever order the orders came in. */
+  lostThrough = -Infinity;
   readonly #index = new Map<string, number>();
   segments: TapeSegment[] = [];
   /** The last batch's `seq`, and the connection it came on (a new one starts a new segment). */
@@ -91,6 +93,7 @@ export class TapeRing {
     const from = this.written;
     for (const i of rows) {
       const at = (this.written % this.capacity) * STRIDE, d = this.data, p = batch.price[i]!;
+      if (this.written >= this.capacity) { const lost = this.t0 + d[at]!; if (lost > this.lostThrough) this.lostThrough = lost; }
       d[at] = batch.t[i]! - this.t0; d[at + 1] = p - this.p0; d[at + 2] = batch.usd[i]!; d[at + 3] = local[batch.inst[i]!]!;
       d[at + 4] = batch.lo[i]! - this.p0; d[at + 5] = batch.hi[i]! - this.p0;
       // A block's first write starts its time range (its entry last served the block two laps ago, long overwritten).
@@ -119,7 +122,7 @@ export class TapeRing {
   }
 
   /** Let go of everything (another coin's prices must never be drawn on this one's). */
-  clear(): void { this.#blockLo.fill(Infinity); this.#blockHi.fill(-Infinity); this.written = 0; this.segments = []; this.arrivals = []; this.#seq = null; this.#connection = -1; this.ids.length = 0; this.#index.clear(); this.epoch++; }
+  clear(): void { this.lostThrough = -Infinity; this.#blockLo.fill(Infinity); this.#blockHi.fill(-Infinity); this.written = 0; this.segments = []; this.arrivals = []; this.#seq = null; this.#connection = -1; this.ids.length = 0; this.#index.clear(); this.epoch++; }
 
   /** The record at write number `k`: absolute time, price, signed USD, market id, lowest and highest price. */
   at(k: number): { t: number; price: number; usd: number; id: string; lo: number; hi: number } {

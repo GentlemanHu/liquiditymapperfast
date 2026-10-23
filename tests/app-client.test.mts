@@ -50,6 +50,44 @@ test('server frames decode on the client to identical arrays', () => {
   assert.throws(() => decodeColumns(new ArrayBuffer(3)), RangeError);
 });
 
+/** A levels frame's JSON header, parsed. */
+const headerOf = (frame: Buffer): { instruments: Record<string, unknown>[] } => JSON.parse(frame.subarray(4, 4 + frame.readUInt32LE(0)).toString());
+/** The frame with its JSON header text rewritten (a malformed field no server of ours sends), the parts after it as they were. */
+function withHeader(frame: Buffer, edit: (text: string) => string): Buffer {
+  const length = frame.readUInt32LE(0), oldEnd = (4 + length + 7) & ~7;
+  const json = Buffer.from(edit(frame.subarray(4, 4 + length).toString()));
+  const end = (4 + json.length + 7) & ~7, out = Buffer.alloc(end + frame.length - oldEnd);
+  out.writeUInt32LE(json.length, 0); json.copy(out, 4); frame.copy(out, end, oldEnd);
+  return out;
+}
+
+test('levels frames carry the step a book was merged on, and a page takes only a usable one', () => {
+  const merged: ValuedBook = { instrumentId: 'x:BTC', venue: 'x', timestamp: T0, coarse: false, bids: side([[100, 100, 5]]), asks: side([[101, 101, 7]]), step: 20 };
+  const grouped: ValuedBook = { instrumentId: 'y:BTC', venue: 'y', timestamp: T0, coarse: true, bids: side([[90, 100, 6]]), asks: side([[100, 110, 8]]) };
+  const wire = encodeLevels([merged, grouped], T0);
+  const header = headerOf(wire);
+  assert.equal(header.instruments[0]!.step, 20, 'the header names the step, beside the book\'s other fields');
+  assert.ok(!('step' in header.instruments[1]!), 'a book with none says none');
+  const levels = decodeLevels(exactBuffer(wire));
+  assert.deepEqual(levels.books.map(b => b.step), [20, undefined]);
+  assert.ok(!('step' in levels.books[1]!), 'and the page\'s book has no such key');
+  assert.deepEqual([...levels.books[0]!.bids.usd, ...levels.books[0]!.asks.usd, ...levels.books[1]!.bids.usd], [5, 7, 6], 'the arrays are read as before');
+  // The server leaves a step that is not a usable number off the frame (JSON would write NaN and Infinity as null) ...
+  for (const unusable of [NaN, Infinity, -Infinity, 0, -20]) {
+    const sent = headerOf(encodeLevels([{ ...merged, step: unusable }], T0));
+    assert.ok(!('step' in sent.instruments[0]!), `step ${unusable} is not sent`);
+  }
+  // ... and the page leaves one out that it is given: a frame from an older server has none, a malformed one is dropped, not thrown on.
+  for (const literal of ['null', '0', '-20', '"20"', '1e999', '-1e999', 'true', '[20]', '{}']) {
+    const bad = decodeLevels(exactBuffer(withHeader(wire, text => text.replace('"step":20', `"step":${literal}`))));
+    assert.equal(bad.books[0]!.step, undefined, `step ${literal}`);
+    assert.ok(!('step' in bad.books[0]!));
+    assert.equal(bad.books[0]!.bids.usd[0], 5, 'and the book is read as before');
+  }
+  const older = decodeLevels(exactBuffer(withHeader(wire, text => text.replace(',"step":20', ''))));
+  assert.equal(older.books[0]!.step, undefined, 'an older server\'s frame has no step at all');
+});
+
 test('wasm spread_levels agrees with the server recorder on random banded books', async () => {
   const kernels = await loadWasm();
   let seed = 12345; const rand = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;

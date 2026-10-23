@@ -102,6 +102,7 @@ export const SECTIONS: readonly Section[] = [
         '**Mode**: *Aggregated* adds the exchanges together, *Single* gives each its own book, *Compact* squeezes them.',
         '**Group** is the price step per row. Scroll over the book, pinch it, or drag its price column, to zoom it; drag the book to move it; double-click or double-tap to reset.',
         '**Show** picks levels, the cumulative total, or both.',
+        '**Cues**, in the book\'s header, light an exchange\'s cell when the size it shows at a price changes: outward for added depth, back inward for removed. Point at a cell for what changed and what traded meanwhile; it says what was *shown*, never an order.',
       ] },
     ],
   },

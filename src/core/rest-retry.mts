@@ -25,6 +25,9 @@ export const DEFAULT_REST_POLICIES: Readonly<Record<string, Readonly<RestRetryPo
   bybit: Object.freeze({ maxAttempts: 3, maxAttemptsPerWindow: 12, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 4_000, jitterRatio: .2 }),
   okx: Object.freeze({ maxAttempts: 3, maxAttemptsPerWindow: 12, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 4_000, jitterRatio: .2 }),
   bitget: Object.freeze({ maxAttempts: 3, maxAttemptsPerWindow: 12, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 4_000, jitterRatio: .2 }),
+  // Binance's open-interest poll (every 5 s, LiveFeedManager.pollOpenInterest) on a budget of its own: on Binance's it took every attempt
+  // of the minute, and the depth snapshots and candles failed with the budget exhausted. One attempt a poll: the next poll is the retry.
+  'binance-openInterest': Object.freeze({ maxAttempts: 1, maxAttemptsPerWindow: 15, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 4_000, jitterRatio: .2 }),
   default: Object.freeze({ maxAttempts: 2, maxAttemptsPerWindow: 8, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 2_000, jitterRatio: .2 }),
 });
 

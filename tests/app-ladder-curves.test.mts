@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CURVE_HOLD_MS, CURVE_MIN_ROWS, CurveRanking, curveColors, curveLines, lineFraction, lineTicks, nearestCurve, rankCurveVenues, reachRows, reachText, venueCumulative } from '../src/app/panes/ladder-curves.ts';
+import { CURVE_HOLD_MS, CURVE_MIN_ROWS, CURVE_OVER_BAR_SHARE, CurveRanking, curveColors, curveLines, cutAtBars, lineFraction, lineTicks, nearestCurve, rankCurveVenues, reachRows, reachText, venueCumulative } from '../src/app/panes/ladder-curves.ts';
 import { beyondCover, cumulative, groupSpan, pastReach, type Grouped } from '../src/app/panes/levels-data.ts';
 import { PALETTES, contrastRatio } from '../src/app/theme.ts';
 import { nearDirection } from '../src/app/cvd/colors.ts';
@@ -145,4 +145,54 @@ test('the book groups the view, the mark and as far on the mark\'s other side, s
   // Grouped like that, a venue's running total at the view's lowest row counts the rows between it and the mark.
   const g = book(), c = venueCumulative(g, 0, 4);
   assert.equal(c.ask[9], [1, 1, 2, 3, 4, 5].reduce((a, b) => a + b, 0), 'from the mark, not from the view');
+});
+
+// ---- Where a line crosses the bars ----
+
+/** Rows of 20 px: screen row r spans y 20r to 20r + 20. The asks run up the screen from the mark (dr -1), the bids down (dr 1). */
+const stepAt = (r: number, x: number, up: boolean) => ({ r, x, near: up ? r * 20 + 20 : r * 20, far: up ? r * 20 : r * 20 + 20 });
+
+test('a line over the bars: strokes over a bar are told from those in the clear, a seam by the clearer of its two sides, neighbours joined into runs', () => {
+  // The asks, up from the mark's side (row 5): rows 4, 3 and 2 at x 30, 50 and 90. The bars end at 40 (row 5), 60 (row 4) and 20 (row 3); row 2 has none.
+  const ends = [Number.NaN, Number.NaN, Number.NaN, 20, 60, 40];
+  const cut = cutAtBars([stepAt(4, 30, true), stepAt(3, 50, true), stepAt(2, 90, true)], 10, ends, -1);
+  assert.deepEqual(cut.over, [[10, 100, 30, 100, 30, 80, 50, 80]], 'from the axis, across row 4 (x 30 is short of 60) and along the seam to row 3, where row 4\'s bar still reaches');
+  assert.deepEqual(cut.free, [[50, 80, 50, 60, 90, 60, 90, 40]], 'across row 3 (its bar ends at 20, short of the line) and on, past the last bar');
+});
+
+test('a stroke along a seam is cut where the bars stop: over them before, in the clear after, in the order the line runs', () => {
+  const ends = [Number.NaN, Number.NaN, Number.NaN, 20, 60];
+  const cut = cutAtBars([stepAt(4, 30, true), stepAt(3, 90, true)], null, ends, -1);
+  assert.deepEqual(cut.over, [[30, 100, 30, 80, 60, 80]], 'a line that starts on its own row has no stroke from the axis');
+  assert.deepEqual(cut.free, [[60, 80, 90, 80, 90, 60]]);
+});
+
+test('the bids run down the screen: the row on the mark\'s side of the first is the one above it', () => {
+  // Rows 2 and 3 at x 40 and 70; the mark's side of row 2 is row 1 (a bar to 100); the bars on rows 2 and 3 end at 50 and 30.
+  const ends = [Number.NaN, 100, 50, 30];
+  const cut = cutAtBars([stepAt(2, 40, false), stepAt(3, 70, false)], 10, ends, 1);
+  assert.deepEqual(cut.over, [[10, 40, 40, 40, 40, 60, 50, 60]]);
+  assert.deepEqual(cut.free, [[50, 60, 70, 60, 70, 80]], 'the seam between rows 2 and 3 is over until the longer bar ends at 50');
+});
+
+test('with no bar anywhere the whole line is one run in the clear, the polyline as it was drawn before', () => {
+  const steps = [stepAt(4, 30, true), stepAt(3, 50, true), stepAt(2, 90, true)];
+  for (const ends of [[], [Number.NaN, Number.NaN, Number.NaN, Number.NaN, Number.NaN]]) {
+    const cut = cutAtBars(steps, 10, ends, -1);
+    assert.deepEqual(cut.over, []);
+    assert.deepEqual(cut.free, [[10, 100, 30, 100, 30, 80, 50, 80, 50, 60, 90, 60, 90, 40]]);
+  }
+  assert.deepEqual(cutAtBars([stepAt(3, 50, true)], null, [], -1), { over: [], free: [[50, 80, 50, 60]] });
+  assert.deepEqual(cutAtBars([], 10, [], -1), { over: [], free: [] });
+});
+
+test('a line wholly over the bars is one faint run, and a line that does not move along a seam draws no seam', () => {
+  const ends = [Number.NaN, 200, 200, 200, 200];
+  const cut = cutAtBars([stepAt(3, 50, true), stepAt(2, 50, true)], 10, ends, -1);
+  assert.deepEqual(cut.free, []);
+  assert.deepEqual(cut.over, [[10, 80, 50, 80, 50, 60, 50, 40]], 'the second row is straight above the first: no horizontal between them, one vertical');
+});
+
+test('over a bar a line keeps a part of its strength', () => {
+  assert.ok(CURVE_OVER_BAR_SHARE > 0 && CURVE_OVER_BAR_SHARE < 1);
 });

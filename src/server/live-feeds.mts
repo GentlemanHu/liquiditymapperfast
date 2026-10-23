@@ -45,6 +45,8 @@ import {
   normalizeBybitDepth,
   normalizeBybitDepthDelta,
   normalizeBybitInstrumentInfo,
+  normalizeBybitTicker,
+  type BybitTickerHeld,
   createBybitDepthSession,
   applyBybitDepthSessionMessage,
   invalidateBybitDepthSession,
@@ -52,6 +54,7 @@ import {
   buildOkxRequest,
   normalizeOkxDepth,
   normalizeOkxInstrumentInfo,
+  normalizeOkxOpenInterest,
   buildBitgetSubscription,
   buildBitgetRequest,
   normalizeBitgetDepth,
@@ -163,6 +166,7 @@ import {
   reconnectDelay,
 } from '../adapters/index.mts';
 import { logicalRetainedBytes, logicalRetainedComponents } from '../core/retained-bytes.mts';
+import { unitOf, type CoinVenue } from '../shared/coins.ts';
 import { EXCHANGE_REST_MEMORY_ADMISSION_WAITER_LOGICAL_BYTES, MAX_EXCHANGE_REST_MEMORY_ADMISSION_WAITERS } from './rest-transport.mts';
 import { assertNativeCandleInterval, assertSupportedCandleInterval, candleMatchesInterval, NATIVE_CANDLE_INTERVAL } from '../core/candle-source.mts';
 import { bookKey } from '../core/book-key.mts';
@@ -206,6 +210,8 @@ export interface LiveFeedSpec {
   instrumentId?: string; bookKey?: string; resolutionKey?: string; resolution?: string; nSigFigs?: unknown; mantissa?: unknown;
   sourceGrouping?: unknown; sourceDepth?: unknown; sourceInterval?: unknown; request: LiveFeedRequest;
   publicDepth?: boolean; serverHeartbeat?: boolean; configurationGeneration?: number;
+  /** Parse each frame before the routing checks, as a public depth feed's are (they read its topic, symbol and control events). */
+  decodeFirst?: boolean;
   decode: (raw: unknown) => LiveNormalizedMessage | LiveNormalizedMessage[] | null;
 }
 export interface LiveFeedTransportOptions { id?: string; venue?: string; channel?: string | null; marketType?: string; request: LiveFeedRequest; instrumentId?: string; resolutionKey?: string; bookKey?: string; handshakeTimeoutMs?: number; }
@@ -639,7 +645,9 @@ export class LiveFeedManager {
     this.asterMetadata = null;
     this.rest = restTransport?.request ? createRestRequestCoordinator({
       transport: (request, context) => restTransport!.request(exchangeRestRequest(request), context),
-      policies: restRetryPolicies,
+      // The open-interest poll's own budget stands unless the given policies name it: a map of venue policies without it would put the
+      // poll on `default` (8 attempts a minute), under its 12.
+      policies: { 'binance-openInterest': DEFAULT_REST_POLICIES['binance-openInterest']!, ...restRetryPolicies },
       random: restRandom,
       schedule: this.schedule,
       now: this.now,
@@ -858,6 +866,18 @@ export class LiveFeedManager {
       const request = buildOkxSubscription('depth', { instId: okxSymbol, instType: okxInstType, marketType: okxMarketType });
       specs.push(['okx-depth', { venue: 'okx', channel: 'depth', symbol: okxSymbol, instType: okxInstType, marketType: okxMarketType, topic: request.topic, instrumentId: 'okx:' + String(okxSymbol).toUpperCase(), request, decode: raw => this.#decodeOkxDepth(raw, { instId: okxSymbol, instType: okxInstType, marketType: okxMarketType, metadata: this.specs.get('okx-depth')?.metadata }), publicDepth: true }]);
     }
+    // Open interest rides the same exchange streams: Bybit's ticker (its delta carries open interest only when it changed) and OKX's
+    // open-interest channel. Each is its own feed, so its status and reconnects are its own; the REST samplers stay as the fallback.
+    if (bybitEnabled && bybitSymbol && bybitCategory !== 'spot') {
+      const unit = unitOf(coin, 'bybit' as CoinVenue)[1], held: BybitTickerHeld = { openInterest: null, openInterestValue: null };
+      const request = buildBybitSubscription('ticker', { symbol: bybitSymbol, category: bybitCategory });
+      specs.push(['bybit-ticker', { venue: 'bybit', channel: 'ticker', symbol: bybitSymbol, category: bybitCategory, marketType: 'perpetual', topic: request.topic, instrumentId: bybitInstrumentId(bybitSymbol, bybitCategory), request, decodeFirst: true, decode: raw => this.#decodeBybitTicker(raw, { symbol: bybitSymbol, category: bybitCategory, metadata: this.specs.get('bybit-ticker')?.metadata, unit, held }) }]);
+    }
+    if (okxEnabled && okxSymbol && okxMarketType === 'perpetual') {
+      const unit = unitOf(coin, 'okx' as CoinVenue)[1];
+      const request = buildOkxSubscription('open-interest', { instId: okxSymbol, instType: okxInstType, marketType: okxMarketType });
+      specs.push(['okx-oi', { venue: 'okx', channel: 'open-interest', symbol: okxSymbol, instType: okxInstType, marketType: okxMarketType, topic: request.topic, instrumentId: 'okx:' + String(okxSymbol).toUpperCase(), request, decodeFirst: true, decode: raw => this.#decodeOkxOpenInterest(raw, { instId: okxSymbol, instType: okxInstType, marketType: okxMarketType, unit }) }]);
+    }
     if (bitgetEnabled && bitgetSymbol) {
       const request = buildBitgetSubscription('depth', { symbol: bitgetSymbol, instType: bitgetInstType, category: bitgetInstType, marketType: bitgetMarketType });
       specs.push(['bitget-depth', { venue: 'bitget', channel: 'depth', symbol: bitgetSymbol, instType: bitgetInstType, category: bitgetInstType, marketType: bitgetMarketType, topic: request.topic, instrumentId: bitgetInstrumentId(bitgetSymbol, bitgetInstType), request, decode: raw => this.#decodeBitgetDepth(raw, { symbol: bitgetSymbol, instType: bitgetInstType, category: bitgetInstType, marketType: bitgetMarketType, metadata: this.specs.get('bitget-depth')?.metadata }), publicDepth: true }]);
@@ -1027,11 +1047,14 @@ export class LiveFeedManager {
       }
     }
     this.#publishActiveBookSets();
-    for (const [venue, enabled, marketType] of [
-      ['bybit', bybitEnabled, bybitCategory === 'spot' ? 'spot' : 'perpetual'],
-      ['okx', okxEnabled, okxMarketType], ['bitget', bitgetEnabled, bitgetMarketType],
+    // A venue whose open interest is wired (Bybit's ticker, OKX's open-interest channel) reports through its feed's own status; the rest
+    // are the REST samplers' (oi-sampler.mts), and only their absence of a wire is said here.
+    for (const [venue, enabled, marketType, wired] of [
+      ['bybit', bybitEnabled, bybitCategory === 'spot' ? 'spot' : 'perpetual', bybitEnabled && bybitCategory !== 'spot'],
+      ['okx', okxEnabled, okxMarketType, okxEnabled && okxMarketType === 'perpetual'],
+      ['bitget', bitgetEnabled, bitgetMarketType, false],
     ] as const) {
-      if (enabled) this.#setStatus(venue + '-openInterest', { state: 'unavailable', attempt: 0, nextRetryAt: null, lastError: marketType === 'spot' ? 'spot market has no open interest endpoint' : 'public open interest feed is not wired for this venue' });
+      if (enabled && !wired) this.#setStatus(venue + '-openInterest', { state: 'unavailable', attempt: 0, nextRetryAt: null, lastError: marketType === 'spot' ? 'spot market has no open interest endpoint' : 'public open interest feed is not wired for this venue' });
     }
     if (whitebitEnabled && whitebitSymbol) {
       const selectedWhitebit = (this.whitebitMetadata as ReturnType<typeof normalizeWhitebitMarkets> | null)?.assets?.find((asset) => String(asset.nativeSymbol).toUpperCase() === String(whitebitSymbol).toUpperCase());
@@ -1351,7 +1374,8 @@ export class LiveFeedManager {
     const requestGeneration = this.configurationGeneration;
     try {
       const request = buildBinanceRequest('openInterest', { symbol, marketType, family, metadata });
-      const payload = await this.#requestRest(request, 'binance');
+      // Its own REST budget (rest-retry.mts): polled every few seconds, it must never take the attempts Binance's depth snapshots need.
+      const payload = await this.#requestRest(request, 'binance-openInterest');
       if (requestGeneration !== this.configurationGeneration) return null;
       const message = normalizeBinanceOpenInterest(payload, { symbol, marketType, family, metadata, receivedAt: this.now(), markPrice: this.#lastPrices.get(binanceInstrumentId(symbol, marketType, family)) });
       if (this.#emit('binance-openInterest', 'binance', message) === false) { this.#setStatus('binance-openInterest', { state: 'unavailable', lastError: 'retained-data admission rejected' }); return null; }
@@ -2107,7 +2131,7 @@ export class LiveFeedManager {
           ...(Number.isFinite(Number(spec.request?.heartbeatTimeoutMs)) ? { heartbeatTimeoutMs: Number(spec.request.heartbeatTimeoutMs) } : {}),
         },
       } : this.transportPolicies;
-      feed = { id, socket, spec, generation, configurationGeneration: spec.configurationGeneration, retry: null, retired: false, sessionToken, connectionAcquired, transportReleased: false, subscriptionKey: id, subscriptionAcked: spec.venue === 'binance', preAckFrames: spec.venue === 'bybit' ? [] : null, preAckBytes: 0, channelId: null, serverHeartbeat: spec.serverHeartbeat === true || spec.venue === 'binance' || spec.venue === 'bitfinex' || spec.venue === 'cryptocom' || spec.venue === 'bitstamp', heartbeat: new VenueHeartbeatDeadline({ venue: spec.venue, now: this.transportNow, policies: heartbeatPolicies }), heartbeatTimer: null, heartbeatStarted: false, session: spec.venue === 'bybit' ? createBybitDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.venue === 'kraken' ? createKrakenDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, depth: spec.request.depth == null ? null : Number(spec.request.depth) }) : spec.venue === 'bitfinex' ? createBitfinexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.venue === 'bitmex' ? createBitmexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, table: spec.request.table }) : spec.venue === 'cryptocom' ? createCryptocomDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, instrumentName: String(spec.request.instrumentName ?? spec.symbol ?? ''), depth: spec.request.depth == null ? null : Number(spec.request.depth) }) : spec.venue === 'phemex' ? createPhemexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.publicDepth ? createPublicDepthSession({ venue: spec.venue, topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, depth: spec.venue === 'whitebit' ? (spec.request.depth == null ? null : Number(spec.request.depth)) : null, allowUnsequenced: spec.venue === 'kucoin' || spec.venue === 'bitstamp' }) : null };
+      feed = { id, socket, spec, generation, configurationGeneration: spec.configurationGeneration, retry: null, retired: false, sessionToken, connectionAcquired, transportReleased: false, subscriptionKey: id, subscriptionAcked: spec.venue === 'binance', preAckFrames: spec.venue === 'bybit' ? [] : null, preAckBytes: 0, channelId: null, serverHeartbeat: spec.serverHeartbeat === true || spec.venue === 'binance' || spec.venue === 'bitfinex' || spec.venue === 'cryptocom' || spec.venue === 'bitstamp', heartbeat: new VenueHeartbeatDeadline({ venue: spec.venue, now: this.transportNow, policies: heartbeatPolicies }), heartbeatTimer: null, heartbeatStarted: false, session: spec.venue === 'bybit' && spec.channel === 'depth' ? createBybitDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.venue === 'kraken' ? createKrakenDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, depth: spec.request.depth == null ? null : Number(spec.request.depth) }) : spec.venue === 'bitfinex' ? createBitfinexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.venue === 'bitmex' ? createBitmexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, table: spec.request.table }) : spec.venue === 'cryptocom' ? createCryptocomDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, instrumentName: String(spec.request.instrumentName ?? spec.symbol ?? ''), depth: spec.request.depth == null ? null : Number(spec.request.depth) }) : spec.venue === 'phemex' ? createPhemexDepthSession({ topic: spec.topic, instrumentId: spec.instrumentId, sessionToken }) : spec.publicDepth ? createPublicDepthSession({ venue: spec.venue, topic: spec.topic, instrumentId: spec.instrumentId, sessionToken, depth: spec.venue === 'whitebit' ? (spec.request.depth == null ? null : Number(spec.request.depth)) : null, allowUnsequenced: spec.venue === 'kucoin' || spec.venue === 'bitstamp' }) : null };
       connectionAcquired = false;
       this.feeds.set(id, feed);
       this.#bind(socket, id);
@@ -2401,7 +2425,7 @@ export class LiveFeedManager {
       // data and may be delivered as either text or a Buffer. Decode them
       // before the control-frame checks so a rejected subscription cannot be
       // mistaken for a data payload and leave its budget-owned socket live.
-      let envelope: unknown = publicDepthVenue || feed.spec.venue === 'hyperliquid' || feed.spec.venue === 'dydx' || feed.spec.venue === 'aster' ? this.#json(raw, { preserveKrakenDecimals: feed.spec.venue === 'kraken' }) : raw;
+      let envelope: unknown = publicDepthVenue || feed.spec.decodeFirst === true || feed.spec.venue === 'hyperliquid' || feed.spec.venue === 'dydx' || feed.spec.venue === 'aster' ? this.#json(raw, { preserveKrakenDecimals: feed.spec.venue === 'kraken' }) : raw;
       // Bitfinex public books use the server's channel-scoped [chanId, "hb"]
       // frame as their liveness signal. Do not let info, foreign-channel, or
       // malformed frames refresh that deadline before they are validated.
@@ -2545,7 +2569,8 @@ export class LiveFeedManager {
       if (feed.spec.venue === 'bybit' && feedRecord(envelope)?.success === false) throw new Error(`Bybit subscription rejected: ${feedRecord(envelope).ret_msg ?? feedRecord(envelope).retMsg ?? 'unknown error'}`);
       if (feed.spec.venue === 'bybit' && feedRecord(envelope)?.topic !== feed.spec.topic) return;
       if (feed.spec.venue === 'bybit') {
-        const wireSymbol = feedRecord(feedRecord(envelope)?.data)?.s;
+        // Depth frames name their symbol as `s`; ticker frames (the open-interest feed) as `symbol`.
+        const wireSymbol = feed.spec.channel === 'ticker' ? feedRecord(feedRecord(envelope)?.data)?.symbol : feedRecord(feedRecord(envelope)?.data)?.s;
         const expectedSymbol = String(feed.spec.symbol ?? '').replaceAll('-', '').toUpperCase();
         if (wireSymbol == null || String(wireSymbol).replaceAll('-', '').toUpperCase() !== expectedSymbol) return;
         // Some public sessions send their first snapshot before the subscribe
@@ -2965,7 +2990,20 @@ export class LiveFeedManager {
       }
     }
     catch (error) {
-      if (feed.spec.venue === 'bybit' && feed.session) { const reason = boundedDepthInvalidReason(feedError(error).message ?? 'malformed Bybit payload'); feed.retired = true; this.#releaseTransport(feed); retireLiveFeedSocket(feed.socket); this.#emitDepthSessionInvalidation(id, feed, invalidateBybitDepthSession(feedSession(feed, createBybitDepthSession, 'bybit'), reason), reason); this.#setStatus(id, { state: 'backoff', lastError: reason }); this.#scheduleReconnect(id); return; }
+      if (feed.spec.venue === 'bybit') {
+        const reason = feedError(error).message ?? 'malformed Bybit payload';
+        feed.retired = true;
+        this.#releaseTransport(feed);
+        retireLiveFeedSocket(feed.socket);
+        // The depth feed's session is invalidated with the reason; the ticker feed (open interest) has no session of its own.
+        if (feed.session) {
+          const bounded = boundedDepthInvalidReason(reason);
+          this.#emitDepthSessionInvalidation(id, feed, invalidateBybitDepthSession(feedSession(feed, createBybitDepthSession, 'bybit'), bounded), bounded);
+          this.#setStatus(id, { state: 'backoff', lastError: bounded });
+        } else this.#setStatus(id, { state: 'backoff', lastError: reason });
+        this.#scheduleReconnect(id);
+        return;
+      }
       if (feed.spec.venue === 'binance' && feed.spec.channel === 'depth' && feedError(error).transportFatal !== true) {
         const reason = `malformed Binance depth payload: ${feedError(error).message ?? String(error)}`;
         this.#invalidateBinanceDepth(id, feed.spec, reason);
@@ -2974,6 +3012,9 @@ export class LiveFeedManager {
         return;
       }
       if (feed.spec.venue === 'hyperliquid') { this.#fail(id, error, socket); return; }
+      // OKX's open-interest feed: a rejected subscription or a frame it cannot read reconnects it, so its status leaves 'live' and the
+      // sampler's fast fallback reads the venue meanwhile (as Bybit's ticker feed above).
+      if (feed.spec.venue === 'okx' && feed.spec.channel === 'open-interest') { this.#fail(id, error, socket); return; }
       if (feed.spec.publicDepth && feed.session) { this.#recoverPublicDepth(id, feed, feedError(error).message ?? 'malformed public depth payload'); return; }
       if (feedError(error).transportFatal) { this.#fail(id, error, socket); return; }
       this.#setStatus(id, { state: 'live', lastError: feedError(error).message ?? String(error) });
@@ -3411,7 +3452,7 @@ export class LiveFeedManager {
     this.#scheduleReconnect(id);
   }
   #oiPollStarted: number | null = null; #oiFailures = 0; #oiLoggedAt = -Infinity;
-  #scheduleOiPoll(params: AdapterOptions, generation = this.configurationGeneration) {
+  #scheduleOiPoll(params: AdapterOptions, generation = this.configurationGeneration, delay = this.oiPollMs) {
     if (!this.running || generation !== this.configurationGeneration || !(this.oiPollMs > 0)) return;
     this.oiTimer = this.schedule(async () => {
       if (!this.running || generation !== this.configurationGeneration) return;
@@ -3421,13 +3462,16 @@ export class LiveFeedManager {
       catch (error) { if (error instanceof FeedConfigurationRetired) return; throw error; }
       finally { this.#oiPollStarted = null; }
       if (generation !== this.configurationGeneration) return;
-      // A poll that fails says so in the log, at most every ten minutes (the status alone was nowhere a person would see it).
+      // A poll that fails says so in the log, at most every ten minutes (the status alone was nowhere a person would see it), and the next
+      // one waits twice the cadence, doubling to a minute (10, 20, 40, 60 s at 5 s), so a failing endpoint is not hammered at the fast
+      // cadence; a success returns to it at once.
       if (message === null) {
         this.#oiFailures++;
         if (this.now() - this.#oiLoggedAt >= OI_LOG_EVERY_MS) { this.#oiLoggedAt = this.now(); this.#log(`Binance open interest poll failed (${this.#oiFailures} in a row): ${this.#statuses.get('binance-openInterest')?.lastError ?? 'no reading'}`); }
       } else this.#oiFailures = 0;
-      this.#scheduleOiPoll(params, generation);
-    }, this.oiPollMs);
+      const next = message === null ? Math.min(this.oiPollMs * 2 ** Math.min(this.#oiFailures, 5), Math.max(60_000, this.oiPollMs)) : this.oiPollMs;
+      this.#scheduleOiPoll(params, generation, next);
+    }, delay);
   }
   #decodeHyperliquidBook(raw: unknown, coin: string, grouping: Pick<LiveFeedSpec, 'nSigFigs' | 'mantissa' | 'resolutionKey' | 'bookKey'>) {
     return normalizeHyperliquidBook(this.#json(raw), {
@@ -3471,6 +3515,17 @@ export class LiveFeedManager {
     const wire = feedRecord(feedRecord(payload).arg).instId ?? feedRecord(feedRecord(feedRecord(payload).data)[0]).instId;
     if (wire != null && String(wire).toUpperCase() !== String(options.instId ?? '').toUpperCase()) throw new TypeError('OKX payload instrument mismatch');
     return normalizeOkxDepth(payload, { ...options, receivedAt: this.now() });
+  }
+  /** A Bybit ticker push: `unit` converts the venue's listed units to one coin, as the sampler's readings are (1000PEPE and the like). */
+  #decodeBybitTicker(raw: unknown, { symbol, category, metadata, unit, held }: AdapterOptions & { unit: number; held: BybitTickerHeld }) {
+    const message = normalizeBybitTicker(this.#json(raw), { symbol, category, metadata, receivedAt: this.now() }, held);
+    if (message === null) return null;
+    return unit === 1 ? message : { ...message, base: message.base * unit, ...(message.quote !== undefined ? { quote: message.quote * unit } : {}) };
+  }
+  /** An OKX open-interest push, converted to one coin as the sampler's readings are. */
+  #decodeOkxOpenInterest(raw: unknown, { instId, instType, marketType, unit }: AdapterOptions & { unit: number }) {
+    const message = normalizeOkxOpenInterest(this.#json(raw), { instId, instType, marketType, receivedAt: this.now() });
+    return unit === 1 ? message : { ...message, base: message.base * unit };
   }
   #decodeBitgetDepth(raw: unknown, options: AdapterOptions) {
     const payload = this.#json(raw), arg = feedRecord(feedRecord(payload).arg);

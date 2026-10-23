@@ -306,6 +306,54 @@ export function normalizeBybitOpenInterest(payload: unknown, { symbol, category 
   if (mark != null) { sample.quote = quoteAmount!; sample.markPrice = mark; }
   return sample;
 }
+
+/**
+ * A Bybit `tickers.<symbol>` push: the snapshot that arrives on subscribing carries the whole ticker (open interest included) and each
+ * delta carries only the fields that changed — open interest among them only when it did. A delta without open-interest fields is no
+ * reading (null), never a zero. The one-sided figure is `singleOpenInterest` (`openInterest` counts both sides of every contract); a
+ * coin-margined perpetual's base is `singleOpenInterestValue` (coins at the mark) with `singleOpenInterest` (USD) as its quote, as the
+ * REST sampler reads them. `sourceTimestamp` is the exchange's own push time (`ts`); a push without one keeps the receipt basis.
+ *
+ * A reading is a push that carries open interest. A coin-margined delta may carry it without its value in coins (or the reverse, when only
+ * the mark moved, which is no reading): `held` is what the feed last heard of each, started afresh by every snapshot, so such a delta is
+ * read with the value it left unchanged.
+ */
+export interface BybitTickerHeld { openInterest: number | null; openInterestValue: number | null }
+export function normalizeBybitTicker(payload: unknown, { symbol, category = 'linear', metadata, receivedAt = Date.now() }: AdapterOptions = {}, held?: BybitTickerHeld): (OpenInterestSample & { units: 'base' | 'quote'; inverse: boolean }) | null {
+  const family = bybitCategory(category);
+  if (family === 'spot') throw new RangeError('Bybit spot does not provide open interest');
+  const data = dataOf(payload);
+  const row = recordValue(Array.isArray(recordValue(data).list) ? arrayValue(recordValue(data).list)[0] : data);
+  const topic = recordValue(payload).topic;
+  const nativeSymbol = bybitSymbol(symbol ?? row.symbol ?? recordValue(data).symbol);
+  if (topic != null && (typeof topic !== 'string' || bybitSymbol(topic.split('.').slice(1).join('.')) !== nativeSymbol)) throw new TypeError('Bybit ticker topic/instrument mismatch');
+  const declared = [recordValue(data).symbol, row.symbol].filter(value => value != null);
+  for (const value of declared) if (bybitSymbol(value) !== nativeSymbol) throw new TypeError('Bybit ticker instrument mismatch');
+  bybitMarket(nativeSymbol, family, metadata);
+  // One side, as every other venue reports: the `single…` fields, and half of the two-sided ones where a push has no `single…` field.
+  const singleField = (field: string): number | null => {
+    const raw = row[`single${field[0]!.toUpperCase()}${field.slice(1)}`];
+    if (raw !== undefined && raw !== null && raw !== '') return wireNumber(raw, `Bybit single ${field}`);
+    const both = row[field];
+    if (both === undefined || both === null || both === '') return null;
+    return wireNumber(both, `Bybit ${field}`) / 2;
+  };
+  const openInterest = singleField('openInterest'), value = family === 'inverse' ? singleField('openInterestValue') : null;
+  if (held) {
+    if (recordValue(payload).type === 'snapshot') { held.openInterest = null; held.openInterestValue = null; }
+    if (openInterest !== null) held.openInterest = openInterest;
+    if (value !== null) held.openInterestValue = value;
+  }
+  if (openInterest === null || !(openInterest > 0)) return null;
+  const wireTs = recordValue(payload).ts ?? row.ts ?? recordValue(data).ts;
+  const sourceTimestamp = wireTs == null ? null : sourceTime(wireTs, receivedAt);
+  if (family === 'inverse') {
+    const base = value ?? held?.openInterestValue ?? null;
+    if (base === null || !(base > 0)) return null;
+    return { kind: 'openInterest', instrumentId: bybitInstrumentId(nativeSymbol, family), sourceTimestamp, receivedAt, base, quote: openInterest, quality: 'native', units: 'quote' as const, inverse: true };
+  }
+  return { kind: 'openInterest', instrumentId: bybitInstrumentId(nativeSymbol, family), sourceTimestamp, receivedAt, base: openInterest, quality: 'native', units: 'base' as const, inverse: false };
+}
 export function normalizeBybitKline(row: unknown, { symbol, category = 'linear', metadata, interval = '1h', receivedAt = Date.now() }: AdapterOptions = {}): NormalizedAdapterCandle & { volumeUnits: 'base' | 'quote' } {
   assertSuccess(row);
   const family = bybitCategory(category), normalizedInterval = canonicalInterval(interval);

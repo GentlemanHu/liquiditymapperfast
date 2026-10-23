@@ -119,15 +119,16 @@ export function valueBook(instrumentId: string, book: BookLike | null | undefine
 function finish(instrumentId: string, book: BookLike, market: MarketLike | null, now: number, step: number | undefined, coarse: boolean, bidSide: SideLevels, askSide: SideLevels, hint?: number): ValuedBook {
   const stamp = Number(book.sourceTimestamp);
   const received = Number(book.receivedAt);
-  let bids = bidSide, asks = askSide, touch: ValuedBook['touch'];
+  let bids = bidSide, asks = askSide, touch: ValuedBook['touch'], merged: number | undefined;
   if (coarse) ({ bids, asks, touch } = splitTouch(bids, asks, hint));
   else if (bids.usd.length && asks.usd.length) {
     const mid = (bids.hi[0]! + asks.lo[0]!) / 2;
-    if (mid > 0) { const grid = step && step > 0 ? step : gridStepFor(mid); bids = mergeByDistance(bids, mid, grid, true); asks = mergeByDistance(asks, mid, grid, false); }
+    // The step the buckets were made on travels with the book (`ValuedBook.step`): a reader compares it over time on that grid.
+    if (mid > 0) { const grid = step && step > 0 ? step : gridStepFor(mid); bids = mergeByDistance(bids, mid, grid, true); asks = mergeByDistance(asks, mid, grid, false); merged = grid; }
   }
   return {
     instrumentId, venue: String(market?.venue ?? instrumentId.split(':')[0]),
     timestamp: Number.isFinite(stamp) && stamp > 0 ? stamp : Number.isFinite(received) && received > 0 ? received : now,
-    coarse, bids, asks, ...(touch ? { touch } : {}),
+    coarse, bids, asks, ...(touch ? { touch } : {}), ...(merged !== undefined ? { step: merged } : {}),
   };
 }

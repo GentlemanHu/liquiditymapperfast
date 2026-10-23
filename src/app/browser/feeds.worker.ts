@@ -2,11 +2,10 @@ import { BROWSER_RETENTION_MS, Engine } from '../../shared/engine.ts';
 import { browserVenues, restoreSelection } from '../../shared/venues.ts';
 import { setPageShown } from '../../shared/far-book.ts';
 import type { Coin } from '../../shared/coins.ts';
-import type { ValuedBook } from '../../shared/levels.ts';
 import type { Print } from '../../shared/prints.ts';
 import { openRecordings, type Recordings } from './idb.ts';
 import type { FeedsIn, FeedsOut, RpcCall } from './protocol.ts';
-import type { LevelsFrame, SideArrays } from '../wire.ts';
+import { frameOf } from './levels-frame.ts';
 
 /**
  * The data engine on its own thread: exchange sockets, book valuation, recording and the history requests all run here, and the page
@@ -15,17 +14,6 @@ import type { LevelsFrame, SideArrays } from '../wire.ts';
 
 const scope = self as unknown as { postMessage(message: FeedsOut, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<FeedsIn>) => void) | null };
 const post = (message: FeedsOut, transfer: Transferable[] = []): void => scope.postMessage(message, transfer);
-
-/** Structured clone keeps a typed array's whole buffer, so a view onto a larger one is copied out first. */
-const compact = (array: Float64Array): Float64Array => array.byteLength === array.buffer.byteLength ? array : array.slice();
-function side(levels: ValuedBook['bids']): SideArrays {
-  const lo = compact(levels.lo);
-  // Point levels share one array for both edges; keep it shared so it is sent once.
-  return { lo, hi: levels.hi === levels.lo ? lo : compact(levels.hi), usd: compact(levels.usd) };
-}
-function frameOf(books: readonly ValuedBook[], asOf: number): LevelsFrame {
-  return { asOf, books: books.map(b => ({ id: b.instrumentId, venue: b.venue, timestamp: b.timestamp, coarse: b.coarse, bids: side(b.bids), asks: side(b.asks), ...(b.touch ? { touch: b.touch } : {}) })) };
-}
 
 let engine: Engine | null = null;
 let recordings: Recordings | null = null;
@@ -85,6 +73,7 @@ async function init(selected: string[] | null, known: string[] | null, persist: 
   next.onPrints = (items: Print[]) => post({ type: 'prints', items });
   next.onLiquidations = items => post({ type: 'liquidations', items });
   next.onFlow = items => post({ type: 'flow', items });
+  next.onOiLive = (instrumentId, reading) => post({ type: 'oi', instrumentId, t: reading.t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) });
   next.onTape = batch => post({ type: 'tape', batch }, [batch.inst.buffer, batch.t.buffer, batch.price.buffer, batch.usd.buffer, batch.lo.buffer, batch.hi.buffer]);
   next.onAbsorption = found => post({ type: 'absorption', groups: found.groups, minutes: found.minutes });
   next.onStatus = venues => post({ type: 'status', venues });

@@ -14,7 +14,7 @@ import { OI_SAMPLE_VENUES, fetchCandles, fetchOiHistory, fetchOiReading, oiBars,
 import { inverseOiId, oiInstrument, oiProfileOf, type OiProfileAnswer, type OiSeries } from './oi-profile.ts';
 import { browserVenues, type BrowserVenue } from './venues.ts';
 import { BTC, SCALES, type Coin, type MarketVenue } from './coins.ts';
-import type { BookConnector, TradeEvent } from './connector.ts';
+import type { BookConnector, OiEvent, TradeEvent } from './connector.ts';
 import { packLt, type ColumnSet, type ColumnsFrame } from './columns.ts';
 import { MAX_COVERAGE_INSTRUMENTS, MAX_COVERAGE_SPAN_MS, TradeCoverage, coverageWindow, coveredMs, depthAnswer, recordedMinutes, tradeAnswer, type CoverageAnswer, type CoverageMetric, type CoverageStore } from './coverage.ts';
 import { RECOVERY_BUDGET, historySource, planRecovery, rebuildOrders, runRecovery, trimUnknown, webHistoryFetch, type HistoryFetch, type HistorySource, type HistoryTrade, type RecoveryBudget, type RecoveryResult } from './recovery.ts';
@@ -29,6 +29,13 @@ export { BROWSER_RETENTION_MS };
 /** How long after starting the absorption recorder reads the rest of its day back (the page asks its first questions meanwhile). */
 const HYDRATE_AFTER_MS = 5_000;
 const FLUSH_MS = 30_000, PRUNE_MS = 3_600_000, OI_SAMPLE_MS = 60_000, OI_KEEP_MS = 3 * 24 * 3_600_000, PROBE_AFTER_MS = 10_000, PROBE_AGAIN_MS = 5 * 60_000;
+/** Binance has no open-interest WebSocket: its REST endpoint is polled this often (one weight per call; 12 a minute is 0.5 % of the IP budget). */
+const OI_BINANCE_POLL_MS = 5_000;
+/**
+ * Bybit's and OKX's open interest arrives on the book socket, only when it changes. Their REST endpoint is asked, at the minute's cadence it
+ * always had, only once the socket has brought no reading for a minute: a quiet market with a healthy socket costs no more requests than before.
+ */
+const OI_WS_VENUES: ReadonlySet<string> = new Set(['bybit', 'okx']);
 /** A trade this recent is the venue's price; older than that the book's mid stands in. */
 const TRADE_PRICE_MS = 15_000;
 /** The page needs to see a venue's book no older than this. */
@@ -61,7 +68,8 @@ export interface EngineTick {
 export interface FootprintAnswer { step: number; fine: number; bars: ReturnType<FootprintRecorder['query']>['bars']; from: number; venues?: string[] }
 
 /** One open-interest reading as it is kept: the venue's perpetual, when it was read, its coins and (an inverse market) its own USD. */
-export interface OiReading { venue: string; t: number; base: number; quote?: number }
+/** A stored reading: `t` its minute (older builds stored each reading at its own time, with no `at`), `at` the reading's own time. */
+export interface OiReading { venue: string; t: number; base: number; quote?: number; at?: number }
 /** Where open-interest readings outlive the page (the browser's recordings): `load` is synchronous, saving may be queued. */
 export interface OiStore { load(since: number): OiReading[]; save(rows: OiReading[], expireBefore: number): void; close(): void }
 
@@ -145,6 +153,8 @@ export class Engine {
   readonly liquidationStream: LiquidationStream;
   /** Every market order completed since the last pass, for the trade dust (never stored); null when nobody draws it. */
   onTape: ((batch: TapeBatch) => void) | null = null;
+  /** A new open-interest reading, the moment it lands (the venue's socket or its REST poll): the page shows it at once instead of asking. */
+  onOiLive: (instrumentId: string, reading: { t: number; base: number; quote?: number }) => void = () => {};
   #tapeSeq = 0;
   /** The seconds whose taker flow changed, with their totals so far; about once a second. */
   onFlow: (items: FlowUpdate[]) => void = () => {};
@@ -175,6 +185,12 @@ export class Engine {
   readonly #oiStore: OiStore | null;
   readonly #retentionMs: number;
   readonly #oiAsked = new Map<string, number>();
+  /** When (on this clock) each venue's socket last brought an open-interest reading: the WS venues skip REST while this is fresh. */
+  readonly #oiTouched = new Map<string, number>();
+  /** Each venue's newest reading by its own time: an older one (the socket and REST land in either order) changes nothing. */
+  readonly #oiNewest = new Map<string, number>();
+  /** The venues whose REST open-interest request is under way. */
+  readonly #oiPolling = new Set<string>();
   readonly #oiCache = new Map<string, { at: number; rows: Promise<OiRow[]> }>();
   #lastSample = 0; #lastFlush = 0; #lastPrune = 0; #lastFlowPush = 0;
   #lastTick = ''; #lastStatus = '';
@@ -184,9 +200,18 @@ export class Engine {
   constructor({ coin = BTC, tier = coin.tier, venues = browserVenues(coin), now = Date.now, get = webGet, ping = defaultPing, columns = null, footprint = null, prints = null, flow = null, absorption = null, coverage = null, liquidations = null, oi = null, retentionMs = BROWSER_RETENTION_MS, historyFetch = webHistoryFetch, recoveryBudget = RECOVERY_BUDGET }: EngineOptions = {}) {
     this.#oiStore = oi; this.#retentionMs = retentionMs;
     if (oi) {
+      // One row per venue and minute, at the minute's start, as `#applyLiveOi` keeps them: of a minute's rows the newest reading by its
+      // own time (`at`; an older build's row has none and was stored at the reading's own time), whichever build or tab wrote it.
+      const minutes = new Map<string, { row: OiReading; at: number }>();
       for (const r of oi.load(now() - retentionMs)) {
+        const at = typeof r.at === 'number' && Number.isFinite(r.at) && r.at > 0 ? r.at : r.t;
+        const key = `${r.venue}|${Math.floor(r.t / 60_000) * 60_000}`, held = minutes.get(key);
+        if (!held || at > held.at) minutes.set(key, { row: r, at });
+      }
+      for (const { row: r, at } of minutes.values()) {
         let list = this.#oiLive.get(r.venue); if (!list) { list = []; this.#oiLive.set(r.venue, list); }
-        list.push({ observationTimestamp: r.t, base: r.base, ...(r.quote !== undefined ? { quote: r.quote } : {}) });
+        list.push({ observationTimestamp: Math.floor(r.t / 60_000) * 60_000, base: r.base, ...(r.quote !== undefined ? { quote: r.quote } : {}) });
+        this.#oiNewest.set(r.venue, Math.max(this.#oiNewest.get(r.venue) ?? 0, at));
       }
       for (const list of this.#oiLive.values()) list.sort((a, b) => Number(a.observationTimestamp) - Number(b.observationTimestamp));
     }
@@ -220,7 +245,7 @@ export class Engine {
       const running = this.#runs.get(venue.id);
       if (wanted.has(venue.id) && !running && venue.listed) {
         const made = venue.make(), feeds = [...made.feeds, ...(made.liquidations ?? [])], book = made.book;
-        for (const connector of [book, ...feeds]) { connector.onTrade = this.#trade; connector.onLiquidation = this.#liquidation; connector.start(); }
+        for (const connector of [book, ...feeds]) { connector.onTrade = this.#trade; connector.onLiquidation = this.#liquidation; connector.onOi = this.#oiReading; connector.start(); }
         this.#runs.set(venue.id, { venue, book, feeds, trades: made.feeds.length ? made.feeds : [book], startedAt: now, noBookSince: 0, probe: { ok: null, at: 0, pending: false } });
       } else if (!wanted.has(venue.id) && running) {
         for (const connector of [running.book, ...running.feeds]) connector.stop();
@@ -341,6 +366,9 @@ export class Engine {
 
   /** A liquidation a venue reported: placed at the instrument's last traded price when the venue gives a bankruptcy price. */
   readonly #liquidation = (event: LiquidationEvent): void => { this.liquidationStream.ingest([event], id => { const last = this.#last.get(id); return last ? { price: last.price, at: last.t } : null; }); };
+
+  /** An open-interest reading a venue's socket pushed (Bybit's ticker, OKX's open-interest channel): taken straight into the live series. */
+  readonly #oiReading = (event: OiEvent): void => { this.#applyLiveOi(venueOf(event.instrumentId), event, true, event.instrumentId); };
 
   // ---- Price ----------------------------------------------------------------------------------------------------------------------
 
@@ -529,20 +557,48 @@ export class Engine {
     return usd ? oiBars(quoteRows(await stored), quoteRows(live), tfMs) : oiBars(await stored, live, tfMs);
   }
 
+  /**
+   * One live reading into the venue's series, one row a minute (the minute's last value, placed at the minute's start): the WebSocket
+   * pushes several readings a minute and the REST fallbacks a few, and keeping every one would grow the three-day series with no new
+   * minute bars. The newest row updates in place, so the newest value the panes read moves with every push, and is written again (the
+   * store keeps one row per venue and minute, so the minute's last value is what a reload reads). A reading older than the venue's newest
+   * changes nothing: the socket and the REST fallback can land in either order. Only a socket reading proves the WebSocket is alive
+   * (`fromSocket`): the REST fallback must not keep itself quiet. `instrumentId` is the reading's market (`venue:symbol`), so the page can
+   * put it in the right series; a reading taken is handed to `onOiLive` the moment it lands.
+   */
+  #applyLiveOi(venue: string, reading: { t: number; base: number; quote?: number }, fromSocket = false, instrumentId?: string): void {
+    if (fromSocket) this.#oiTouched.set(venue, this.#now());
+    if (reading.t <= (this.#oiNewest.get(venue) ?? 0)) return;
+    this.#oiNewest.set(venue, reading.t);
+    const list = this.#oiLive.get(venue) ?? []; this.#oiLive.set(venue, list);
+    const minute = Math.floor(reading.t / 60_000) * 60_000, quote = reading.quote !== undefined ? { quote: reading.quote } : {};
+    const last = list[list.length - 1];
+    if (last && Number(last.observationTimestamp) === minute) { last.base = reading.base; if (reading.quote !== undefined) last.quote = reading.quote; }
+    else {
+      list.push({ observationTimestamp: minute, base: reading.base, ...quote });
+      while (list.length && Number(list[0]!.observationTimestamp) < reading.t - OI_KEEP_MS) list.shift();
+    }
+    this.#oiStore?.save([{ venue, t: minute, at: reading.t, base: reading.base, ...quote }], reading.t - this.#retentionMs);
+    if (instrumentId) this.onOiLive(instrumentId, { t: reading.t, base: reading.base, ...quote });
+  }
+
   #pollOi(now: number): void {
     for (const venue of OI_SAMPLE_VENUES) {
       const run = this.#runs.get(venue); if (!run) continue;
-      if (now - (this.#oiAsked.get(venue) ?? 0) < OI_SAMPLE_MS) continue;
+      // Bybit and OKX open interest arrives on the book socket: REST is asked only once that stream has brought none for a minute.
+      if (OI_WS_VENUES.has(venue) && now - (this.#oiTouched.get(venue) ?? 0) < OI_SAMPLE_MS) continue;
+      const interval = venue === 'binance' ? OI_BINANCE_POLL_MS : OI_SAMPLE_MS;
+      if (now - (this.#oiAsked.get(venue) ?? 0) < interval) continue;
+      // One request of a venue at a time: a slow answer (up to the fetcher's deadline) must not be overtaken by the next one's.
+      if (this.#oiPolling.has(venue)) continue;
       this.#oiAsked.set(venue, now);
       const listing = this.#coin.markets[venue as MarketVenue]; if (!listing) continue;
+      this.#oiPolling.add(venue);
       void fetchOiReading(venue, this.#get, listing).then(reading => {
         if (reading === null) return;
-        const list = this.#oiLive.get(venue) ?? [], t = this.#now(); this.#oiLive.set(venue, list);
-        list.push({ observationTimestamp: t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) });
-        while (list.length && Number(list[0]!.observationTimestamp) < this.#now() - OI_KEEP_MS) list.shift();
-        // Kept with the recordings, so a reload has the venues that keep no history of their own (Hyperliquid, Bitget, Deribit) too.
-        this.#oiStore?.save([{ venue, t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }], t - this.#retentionMs);
-      }, () => { /* the next minute asks again */ });
+        // The venue's own clock where the answer carries one, so the reading lands in the minute the exchange stamped.
+        this.#applyLiveOi(venue, { t: reading.sourceTimestamp ?? this.#now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }, false, `${venue}:${listing.symbol}`);
+      }, () => { /* the next tick asks again */ }).finally(() => { this.#oiPolling.delete(venue); });
     }
   }
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BookConnector, type TradeEvent } from '../src/shared/connector.ts';
-import { Engine, packColumns, type EngineTick, type VenueStatus } from '../src/shared/engine.ts';
+import { Engine, packColumns, type EngineTick, type OiReading, type OiStore, type VenueStatus } from '../src/shared/engine.ts';
 import type { BrowserVenue } from '../src/shared/venues.ts';
 import type { ValuedBook } from '../src/shared/levels.ts';
 import type { Print } from '../src/shared/prints.ts';
@@ -68,6 +68,19 @@ test('levels are sent when a book changes and not when nothing did', () => {
   fakes.get('binance')!.book(100.2, 101);
   engine.step();
   assert.equal(sent.length, 3);
+});
+
+test('levels carry the step each book was merged on: the recorder\'s for the instrument, else the grid for its mid', () => {
+  const { engine, fakes } = setup(['binance', 'bybit']);
+  const sent: ValuedBook[][] = [];
+  engine.onLevels = books => sent.push(books);
+  engine.recorder.steps.set('binance:BTCUSDT', 0.5);
+  engine.select(['binance', 'bybit']);
+  fakes.get('binance')!.book(100, 101);
+  fakes.get('bybit')!.book(100, 101);
+  engine.step();
+  const steps = Object.fromEntries(sent.at(-1)!.map(b => [b.instrumentId, b.step]));
+  assert.deepEqual(steps, { 'binance:BTCUSDT': 0.5, 'bybit:BTCUSDT': 0.02 }, 'the recorder\'s step where it has one, gridStepFor(100.5) where it has not');
 });
 
 test('a venue that is live but gives no usable book says so after a while, and recovers', () => {
@@ -259,6 +272,96 @@ test('open interest joins the venue history with the readings taken while the pa
   assert.ok(bars.some(b => b[4] === 100));
 });
 
+test('open interest pushed on a venue socket lands in its own minute and the newest push moves that minute in place', async () => {
+  const minute = 60_000, t0 = Math.floor(Date.now() / minute) * minute - 10 * minute;
+  const { engine, fakes } = setup(['bybit'], { now: () => t0 + 4 * minute });
+  engine.select(['bybit']);
+  const book = fakes.get('bybit')!;
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 3 * minute + 7_000, base: 50_000 });
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 3 * minute + 21_000, base: 50_500 });
+  engine.step(); await settle();
+  const bars = await engine.oi('bybit:BTCUSDT', minute, t0, t0 + 5 * minute);
+  assert.equal(bars.filter(b => b[0] === t0 + 3 * minute).length, 1, 'one reading a minute, however many pushes');
+  assert.equal(bars.at(-1)![4], 50_500, 'the newest push is the minute\'s close');
+});
+
+test('a venue with a socket OI feed asks REST only once the stream has brought nothing for a minute, and then once a minute', async () => {
+  let now = Date.now(), calls = 0;
+  const get = async (url: string) => {
+    if (url.includes('api.bybit.com/v5/market/tickers')) { calls++; return { result: { list: [{ openInterest: '200', singleOpenInterest: '100' }] } }; }
+    throw new Error('offline');
+  };
+  const { engine, fakes } = setup(['bybit'], { now: () => now, get });
+  engine.select(['bybit']);
+  fakes.get('bybit')!.onOi({ instrumentId: 'bybit:BTCUSDT', t: now, base: 50_000 });
+  engine.step(); await settle();
+  assert.equal(calls, 0, 'the socket reading keeps the REST fallback quiet');
+  now += 59_000; engine.step(); await settle();
+  assert.equal(calls, 0, 'a quiet socket within the minute costs no request (open interest arrives only when it changes)');
+  now += 2_000; engine.step(); await settle();
+  assert.equal(calls, 1, 'after a silent minute the fallback asks');
+  now += 30_000; engine.step(); await settle();
+  assert.equal(calls, 1, "the fallback keeps the minute's cadence it always had");
+  now += 30_000; engine.step(); await settle();
+  assert.equal(calls, 2, 'a due pass asks');
+});
+
+test("an open-interest reading older than the venue's newest changes nothing, and the store keeps each minute's last reading", async () => {
+  const minute = 60_000, t0 = Math.floor(Date.now() / minute) * minute - 10 * minute;
+  const saved: OiReading[] = [], live: number[] = [];
+  const oi: OiStore = { load: () => [], save: rows => { saved.push(...rows); }, close() {} };
+  const { engine, fakes } = setup(['bybit'], { now: () => t0 + 4 * minute, oi });
+  engine.onOiLive = (_id, reading) => live.push(reading.base);
+  engine.select(['bybit']);
+  const book = fakes.get('bybit')!;
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 3 * minute + 50_000, base: 110 });
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 3 * minute + 10_000, base: 90 });
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 2 * minute + 30_000, base: 80 });
+  engine.step(); await settle();
+  const bars = await engine.oi('bybit:BTCUSDT', minute, t0, t0 + 5 * minute);
+  assert.equal(bars.at(-1)![4], 110, "the delayed readings did not take the newest one's place");
+  assert.equal(bars.filter(b => b[0] === t0 + 2 * minute).length, 0, 'nor open an earlier minute');
+  assert.deepEqual(live, [110], 'only the reading taken is handed on');
+  book.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 3 * minute + 55_000, base: 150 });
+  const kept = new Map(saved.map(row => [`${row.venue}|${row.t}`, row.base]));
+  assert.equal(kept.get(`bybit|${t0 + 3 * minute}`), 150, "a reload reads the minute's last value, not its first");
+});
+
+test('Binance open interest, which has no socket, is polled every five seconds', async () => {
+  let now = Date.now(), calls = 0;
+  const get = async (url: string) => {
+    if (url.includes('/fapi/v1/openInterest')) { calls++; return { openInterest: '105' }; }
+    throw new Error('offline');
+  };
+  const { engine } = setup(['binance'], { now: () => now, get });
+  engine.select(['binance']);
+  engine.step(); await settle();
+  assert.equal(calls, 1, 'the first pass asks');
+  now += 4_000; engine.step(); await settle();
+  assert.equal(calls, 1, 'not again within five seconds');
+  now += 1_000; engine.step(); await settle();
+  assert.equal(calls, 2, 'every five seconds');
+});
+
+test('every reading is handed to onOiLive the moment it lands, from the socket and from the REST poll', async () => {
+  const socketReadings: { instrumentId: string; base: number }[] = [], restReadings: { instrumentId: string; base: number }[] = [];
+  const minute = 60_000, t0 = Math.floor(Date.now() / minute) * minute;
+  const bybit = setup(['bybit'], { now: () => t0 });
+  bybit.engine.onOiLive = (instrumentId, reading) => socketReadings.push({ instrumentId, base: reading.base });
+  bybit.engine.select(['bybit']);
+  bybit.fakes.get('bybit')!.onOi({ instrumentId: 'bybit:BTCUSDT', t: t0 + 7_000, base: 50_000 });
+  await settle();
+  assert.deepEqual(socketReadings, [{ instrumentId: 'bybit:BTCUSDT', base: 50_000 }], 'the socket reading is pushed with its market');
+  bybit.engine.stop();
+  let now = t0;
+  const binance = setup(['binance'], { now: () => now, get: async url => url.includes('/fapi/v1/openInterest') ? { openInterest: '105' } : null });
+  binance.engine.onOiLive = (instrumentId, reading) => restReadings.push({ instrumentId, base: reading.base });
+  binance.engine.select(['binance']);
+  binance.engine.step(); await settle();
+  assert.deepEqual(restReadings, [{ instrumentId: 'binance:BTCUSDT', base: 105 }], 'the REST poll reading is pushed too');
+  binance.engine.stop();
+});
+
 test('stopping the engine stops every connector', () => {
   const { engine, fakes } = setup(['binance', 'bybit']);
   engine.select(['binance', 'bybit']);
@@ -323,4 +426,19 @@ test('fills that the exchange reports one by one print as one market order, and 
   const stats = engine.footprint('bybit:BTCUSDT', 60_000, minute, minute + 60_000, 1).bars[0]!.stats!;
   assert.equal(stats.buyN, 1, 'one market order');
   assert.ok(Math.abs(stats.buy[1]! - total) < 1e-6, 'in the $25K-$50K bucket');
+});
+
+test("stored readings are read back as one row a minute, the newest by its own time whichever build wrote it, and an older reading after a reload changes nothing", async () => {
+  const minute = 60_000, m = Math.floor(Date.now() / minute) * minute - 10 * minute;
+  const close = async (rows: OiReading[], then?: (book: Fake) => void): Promise<number> => {
+    const oi: OiStore = { load: () => rows, save() {}, close() {} };
+    const { engine, fakes } = setup(['bybit'], { now: () => m + 5 * minute, oi });
+    engine.select(['bybit']); then?.(fakes.get('bybit')!);
+    const bars = await engine.oi('bybit:BTCUSDT', minute, m - minute, m + 2 * minute);
+    engine.stop();
+    return bars.find(b => b[0] === m)![4];
+  };
+  assert.equal(await close([{ venue: 'bybit', t: m, at: m + 10_000, base: 100 }, { venue: 'bybit', t: m + 30_000, base: 200 }]), 200, 'an older build’s reading taken later wins over this build’s earlier one');
+  assert.equal(await close([{ venue: 'bybit', t: m, at: m + 50_000, base: 150 }, { venue: 'bybit', t: m + 30_000, base: 200 }]), 150, 'and loses to a later one');
+  assert.equal(await close([{ venue: 'bybit', t: m + 50_000, base: 150 }], book => book.onOi({ instrumentId: 'bybit:BTCUSDT', t: m + 40_000, base: 100 })), 150, 'a reading older than one read back is not taken');
 });

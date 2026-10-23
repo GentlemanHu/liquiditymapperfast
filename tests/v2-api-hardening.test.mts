@@ -11,6 +11,7 @@ import { SqlitePrintStore } from '../src/server/v2/prints.mts';
 import { HistoryStore } from '../src/server/history.mts';
 import { QuotaLedger } from '../src/core/quota.mts';
 import { decodeLevels } from '../src/app/wire.ts';
+import { gridStepFor } from '../src/shared/grid.ts';
 
 const MIN = 60_000;
 type App = ReturnType<typeof createLocalServer>;
@@ -163,6 +164,24 @@ test('a book that ages out is taken off the map even when nothing else changes',
     try {
       assert.ok(await until(() => watch.frames.some(f => f.books.some(b => b.id === BOOK_ID))), 'the book is on the map while it is fresh');
       assert.ok(await until(() => watch.frames.at(-1)!.books.length === 0, 4_000), 'and an empty frame removes it once it is stale, though no other book changed');
+    } finally { watch.close(); }
+  });
+});
+
+test('the live socket publishes the step a book was merged on, and none for a grouped one', async () => {
+  await withServer(async ({ app, port }) => {
+    const state = app.state as unknown as { markets: unknown[]; books: Record<string, unknown> };
+    const grouped = 'hyperliquid:BTC-PERP';
+    state.markets = [market, { instrumentId: grouped, id: grouped, venue: 'hyperliquid', quote: 'USD', base: 'BTC', quantityUnit: 'base', marketType: 'perpetual' }];
+    state.books[BOOK_ID] = makeBook([[100, 1], [99, 1]], [[101, 1], [102, 1]], Date.now());
+    state.books[grouped] = makeBook([[85_100, 1], [85_000, 1]], [[85_200, 1], [85_300, 1]], Date.now(), { nSigFigs: 3 });
+    const watch = watchLevels(port);
+    try {
+      assert.ok(await until(() => watch.frames.some(f => f.books.some(b => b.id === BOOK_ID) && f.books.some(b => b.id === grouped))), 'both books are published');
+      const books = watch.frames.at(-1)!.books;
+      assert.equal(books.find(b => b.id === BOOK_ID)!.step, gridStepFor(100.5), 'the grid its far levels were merged on, as the page reads it');
+      assert.equal(books.find(b => b.id === grouped)!.coarse, true);
+      assert.ok(!('step' in books.find(b => b.id === grouped)!), 'a grouped book is not merged and says no step');
     } finally { watch.close(); }
   });
 });

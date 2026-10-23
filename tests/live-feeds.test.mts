@@ -1204,6 +1204,25 @@ test('OI polling uses the Binance descriptor and emits normalized OI', async () 
   assert.equal(defined(sample).base,12); assert.equal(messages[0].message.instrumentId,'binance:BTCUSDT'); assert.match(requests[0].url,/fapi\.binance\.com\/fapi\/v1\/openInterest/);
 });
 
+test('the Binance OI poll every five seconds spends a REST budget of its own, never the attempts Binance depth snapshots need', async () => {
+  let clock = 1_700_000_000_000;
+  const asked: string[] = [];
+  const manager = new LiveFeedManager({ networkEnabled: true, restTransport: { request: async request => { asked.push(request.url); return request.url.includes('openInterest') ? { symbol: 'BTCUSDT', openInterest: '12', time: clock } : { lastUpdateId: 1, bids: [], asks: [] }; } }, oiPollMs: 0, now: () => clock });
+  for (let i = 0; i < 12; i++) { assert.notEqual(await manager.pollOpenInterest({ symbol: 'BTCUSDT' }), null, `poll ${i + 1} of the minute`); clock += 5_000; }
+  clock -= 5_000;
+  const call = (manager as unknown as { rest: { request(request: unknown, context: { venue: string; key: string }): Promise<unknown> } }).rest;
+  await assert.doesNotReject(call.request({ url: 'https://fapi.binance.com/fapi/v1/depth?symbol=BTCUSDT&limit=1000', method: 'GET' }, { venue: 'binance', key: 'depth' }), 'a depth snapshot in the same minute is not refused');
+  manager.stop();
+});
+
+test('the Binance OI poll keeps its own budget when the manager is given venue policies that do not name it', async () => {
+  let clock = 1_700_000_000_000;
+  const manager = new LiveFeedManager({ networkEnabled: true, restTransport: { request: async () => ({ symbol: 'BTCUSDT', openInterest: '12', time: clock }) }, oiPollMs: 0, now: () => clock,
+    restRetryPolicies: { binance: { maxAttempts: 3, maxAttemptsPerWindow: 12, windowMs: 60_000, baseDelayMs: 250, maxDelayMs: 4_000, jitterRatio: 0.2 } } });
+  for (let i = 0; i < 12; i++) { assert.notEqual(await manager.pollOpenInterest({ symbol: 'BTCUSDT' }), null, `poll ${i + 1} of the minute`); clock += 5_000; }
+  manager.stop();
+});
+
 test('Binance public OI history is bounded, explicit, and statused', async () => {
   const requests: ExchangeRestRequest[] = []; const messages: LiveFeedEvent[] = [];
   const manager = new LiveFeedManager({ networkEnabled: true, restTransport: { request: async request => { requests.push(request); return [
