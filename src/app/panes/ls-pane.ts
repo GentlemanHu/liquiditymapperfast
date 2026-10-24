@@ -138,7 +138,7 @@ export class LsPane extends TimePane {
    */
   #load(state: AppState, ids: readonly string[], tfMs: number): void {
     const now = Date.now(), of = `${state.lsMetric}|${state.timeframe}`, ident = `${ids.join(',')}|${of}`;
-    const ask = lsWindow(this.#held, this.#loading, ident, this.view, tfMs, now);
+    const ask = lsWindow(this.#held, this.#loading, ident, this.view, tfMs, now, ids.map(id => id.slice(0, id.indexOf(':'))));
     if (!ask) return;
     const { from, to } = ask, generation = ++this.#generation, source = this.hub.source;
     // Another round (other markets, series or timeframe) cancels what the last one still waits for, its background warming included.

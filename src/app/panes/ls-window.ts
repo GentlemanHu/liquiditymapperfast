@@ -1,14 +1,15 @@
-import type { LsSeries } from '../../shared/long-short.ts';
+import { lsWindowPeriod, type LsSeries } from '../../shared/long-short.ts';
 
 /**
  * When the Long/Short pane asks for readings, over which window, and what a round leaves drawn (pure, tested in tests/app-ls-window.test.mts).
  *
  * The view needs itself and half a view before it (the first step drawn begins before the view). Nothing is asked while what is held (the
- * same markets, series and timeframe) covers that and was answered less than a minute ago, nor while a round is under way (a round ends when
- * every venue has answered or after `LS_ROUND_MS`, whichever comes first). Otherwise the window asked is a view wider on each side than the view
- * needs, so zooming and panning a little ask nothing. A live view's end moving on is the minute refresh's to follow, not a new question. Asking
- * anew on every view change had a zoom send three requests a step, each up to a second and a half on the server, with the pane blank until the
- * last (2026-10-15).
+ * same markets, series and timeframe) covers that, is in readings as fine as a window around this view would be, and was answered less than a
+ * minute ago, nor while a round is under way (a round ends when every venue has answered or after `LS_ROUND_MS`, whichever comes first).
+ * Otherwise the window asked is a view wider on each side than the view needs, so zooming and panning a little ask nothing. A live view's end
+ * moving on is the minute refresh's to follow, not a new question. Asking anew on every view change had a zoom send three requests a step, each
+ * up to a second and a half on the server, with the pane blank until the last (2026-10-15). Asking only for what is not covered had a zoom back
+ * in from a month-long view keep its daily readings, every line in steps a day wide, until the minute refresh (2026-10-23).
  */
 export interface LsHeld { ident: string; from: number; to: number; at: number }
 
@@ -39,17 +40,23 @@ export function lsMessage(series: readonly LsSeries[], loading: boolean): 'readi
   return loading ? 'reading' : series.some(s => s.status === 'failed' || s.status === 'stale') ? 'failed' : 'none';
 }
 
-/** The window to ask for now, or null when nothing need be asked. */
-export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, view: { t0: number; t1: number }, tfMs: number, now: number): { from: number; to: number } | null {
+/**
+ * The window to ask for now, or null when nothing need be asked. `venues` are those of the markets shown: the period each one's readings of a
+ * window are taken in (`lsWindowPeriod`) follows the window's length, so a window held from a wider view can cover this one in coarser readings.
+ */
+export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, view: { t0: number; t1: number }, tfMs: number, now: number, venues: readonly string[] = []): { from: number; to: number } | null {
   // Around the view: a view and a half before it and half a view after, as far as a window under FINE_SPAN_MS allows (a month-long view
   // and more is read as it is, in daily readings); what must be held before it is never more than what is asked.
   const span = view.t1 - view.t0, after = Math.min(span / 2 + tfMs, Math.max(tfMs, (FINE_SPAN_MS - span) / 3)), before = Math.min(1.5 * span, Math.max(0, FINE_SPAN_MS - span - after));
   const needFrom = view.t0 - Math.min(span / 2, before), needTo = Math.min(view.t1 + tfMs, now + tfMs);
+  const ask = { from: Math.floor((view.t0 - before) / HOUR) * HOUR, to: Math.ceil(Math.min(view.t1 + after, now + tfMs) / MINUTE) * MINUTE };
   if (held && held.ident === ident) {
     if (loading) return null;
-    if (held.from <= needFrom && held.to >= needTo - MINUTE && now - held.at < MINUTE) return null;
+    // Only finer: a coarser period than what is held is never a reason to ask (a live window lengthens as its end moves on, a minute at a time).
+    const finer = venues.some(venue => lsWindowPeriod(venue, tfMs, ask.from, ask.to) < lsWindowPeriod(venue, tfMs, held.from, held.to));
+    if (!finer && held.from <= needFrom && held.to >= needTo - MINUTE && now - held.at < MINUTE) return null;
   }
-  return { from: Math.floor((view.t0 - before) / HOUR) * HOUR, to: Math.ceil(Math.min(view.t1 + after, now + tfMs) / MINUTE) * MINUTE };
+  return ask;
 }
 
 /**
