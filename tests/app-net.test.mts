@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connectLive, connectionStatus, getColumns } from '../src/app/net.ts';
+import { ServerSource } from '../src/app/server-source.ts';
 import { encodeColumns } from '../src/server/v2/wire.mts';
 import { COLUMNS_PER_REQUEST } from '../src/shared/columns.ts';
 
@@ -87,5 +88,94 @@ test('a connection that goes silent is dropped and retried like one that closed,
     assert.equal(events.length, before, 'no close, no retry');
     assert.equal(old.closed, false);
     older.close();
+  } finally { Object.assign(globalThis, saved); }
+});
+
+class SendingSocket extends FakeSocket { sent: string[] = []; send(data: string) { this.sent.push(data); } }
+
+test('long/short questions go on the live socket once its server says it answers them, each answered by its id, all given up when it closes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const saved = { WebSocket: globalThis.WebSocket, location: globalThis.location, window: (globalThis as { window?: unknown }).window };
+  Object.assign(globalThis, { WebSocket: SendingSocket, location: { protocol: 'http:', host: '127.0.0.1:8787' }, window: globalThis });
+  FakeSocket.instances = [];
+  const handlers = { onOpen() {}, onClose() {}, onLevels() {}, onTick() {}, onLayers() {}, onPrints() {} };
+  try {
+    const live = connectLive(handlers);
+    const socket = FakeSocket.instances[0] as SendingSocket;
+    socket.open();
+    assert.equal(live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000, 1500), null, 'a server that has not said so: over HTTP');
+    socket.receive(JSON.stringify({ t: 'hello', ls: true }));
+    const answered = live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0.4, 3_600_000.2, 1500)!;
+    const asked = JSON.parse(socket.sent.at(-1)!) as { id: number; from: number; to: number; budget: number };
+    assert.deepEqual([asked.from, asked.to, asked.budget], [0, 3_600_001, 1500]);
+    socket.receive(JSON.stringify({ t: 'ls', id: asked.id, series: { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: 3_600_000, status: 'ok', pending: true, points: [{ t: 1_000, long: 0.6 }] } }));
+    const failed = live.longShort('okx:BTC-USDT-SWAP', 'accounts', '1h', 0, 3_600_000)!;
+    socket.receive(JSON.stringify({ t: 'ls', id: (JSON.parse(socket.sent.at(-1)!) as { id: number }).id, error: 'busy' }));
+    const cancel = new AbortController(), cancelled = live.longShort('bitget:BTCUSDT', 'accounts', '1h', 0, 3_600_000, 0, cancel.signal)!;
+    cancel.abort();
+    const late = live.longShort('gateio:BTC_USDT', 'accounts', '1h', 0, 3_600_000)!;
+    const dropped = live.longShort('binance:BTCUSDT', 'accounts', '1h', 0, 3_600_000)!;
+    t.mock.timers.tick(60_000);
+    socket.drop();
+    assert.equal(live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000), null, 'a closed socket says nothing of what its successor answers');
+    live.close();
+    await Promise.all([
+      answered.then(s => assert.deepEqual([s.status, s.pending, s.points.length], ['ok', true, 1])),
+      assert.rejects(failed, /busy/), assert.rejects(cancelled, /cancelled/), assert.rejects(late, /live-timeout/), assert.rejects(dropped, /live-timeout|live-closed/),
+    ]);
+  } finally { Object.assign(globalThis, saved); }
+});
+
+test('a long/short question waits a little for a connecting socket to say whether it answers them; an older server is asked over HTTP', async t => {
+  // While a page loads its HTTP requests to the server wait longest: a question asked then waits for the socket instead (2026-10-23).
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const saved = { WebSocket: globalThis.WebSocket, location: globalThis.location, window: (globalThis as { window?: unknown }).window };
+  Object.assign(globalThis, { WebSocket: SendingSocket, location: { protocol: 'http:', host: '127.0.0.1:8787' }, window: globalThis });
+  FakeSocket.instances = [];
+  const handlers = { onOpen() {}, onClose() {}, onLevels() {}, onTick() {}, onLayers() {}, onPrints() {} };
+  try {
+    const live = connectLive(handlers), socket = FakeSocket.instances[0] as SendingSocket;
+    const early = live.lsReadyWithin(4_000);
+    socket.open(); socket.receive(JSON.stringify({ t: 'hello', ls: true }));
+    assert.equal(await early, true, 'asked while it connected: the socket, once its server said so');
+    assert.equal(await live.lsReadyWithin(4_000), true, 'known: at once');
+    live.close();
+    assert.equal(await live.lsReadyWithin(4_000), false, 'closed: HTTP');
+    const older = connectLive(handlers), old = FakeSocket.instances[1] as SendingSocket;
+    old.open();
+    const waiting = live.lsReadyWithin(1), olderWaiting = older.lsReadyWithin(10_000);
+    t.mock.timers.tick(3_000);
+    assert.equal(await olderWaiting, false, 'a server that says nothing within 3 s of the socket opening is one from before');
+    assert.equal(await waiting, false);
+    assert.equal(await older.lsReadyWithin(10_000), false, 'and is not waited for again');
+    older.close();
+  } finally { Object.assign(globalThis, saved); }
+});
+
+test('a long/short question the socket drops or refuses is asked over HTTP; one its asker gave up is not', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const saved = { WebSocket: globalThis.WebSocket, location: globalThis.location, window: (globalThis as { window?: unknown }).window, fetch: globalThis.fetch };
+  const fetched: string[] = [];
+  Object.assign(globalThis, {
+    WebSocket: SendingSocket, location: { protocol: 'http:', host: '127.0.0.1:8787' }, window: globalThis,
+    fetch: async (url: string) => { fetched.push(String(url)); return { ok: true, json: async () => ({ id: 'bybit:BTCUSDT', population: 'accounts', periodMs: 3_600_000, status: 'ok', points: [] }) } as unknown as Response; },
+  });
+  FakeSocket.instances = [];
+  const handlers = { onOpen() {}, onClose() {}, onLevels() {}, onTick() {}, onLayers() {}, onPrints() {} };
+  try {
+    const source = new ServerSource(), live = source.connect(handlers), socket = FakeSocket.instances[0] as SendingSocket;
+    socket.open(); socket.receive(JSON.stringify({ t: 'hello', ls: true }));
+    const refused = source.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000, undefined, 1500);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    const sent = JSON.parse(socket.sent.at(-1)!) as { id: number };
+    socket.receive(JSON.stringify({ t: 'ls', id: sent.id, error: 'too many long/short questions at once' }));
+    assert.equal((await refused).status, 'ok');
+    assert.equal(fetched.length, 1, 'refused on the socket: asked over HTTP');
+    const cancel = new AbortController(), cancelled = source.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000, cancel.signal, 1500);
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    cancel.abort();
+    await assert.rejects(cancelled, /cancelled/);
+    assert.equal(fetched.length, 1, 'given up: not asked again over HTTP');
+    live.close();
   } finally { Object.assign(globalThis, saved); }
 });

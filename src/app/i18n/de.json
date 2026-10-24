@@ -1651,5 +1651,8 @@
  "A change nearby went the other way, by about the same size.": "Nebenan ging eine Änderung in die andere Richtung, etwa gleich groß.",
  "{usd} traded": "{usd} gehandelt",
  "none traded": "nichts gehandelt",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Gehandelt: Marktaufträge, die diese Zeile an dieser Börse etwa zur selben Zeit erreichten. Das Orderbuch sagt nicht, wie viel der Änderung sie ausmachen."
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Gehandelt: Marktaufträge, die diese Zeile an dieser Börse etwa zur selben Zeit erreichten. Das Orderbuch sagt nicht, wie viel der Änderung sie ausmachen.",
+ "being read": "wird gelesen",
+ "Hide the controls": "Bedienleiste ausblenden",
+ "Show the controls": "Bedienleiste einblenden"
 }

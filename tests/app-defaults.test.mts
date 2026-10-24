@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULTS_REV, DEFAULT_SHOW, defaultShow, initialState, type AppState } from '../src/app/store.ts';
+import { DEFAULTS_REV, DEFAULT_SHOW, LAYOUT_KEYS, defaultShow, initialState, type AppState } from '../src/app/store.ts';
 import { COLUMN_SHARE, MIN_FLOW_W, MIN_SIDE_W, defaultColumns } from '../src/app/layouts/layouts.ts';
 
 const saved = (blob: Record<string, unknown> | null, run: () => void): void => {
@@ -79,4 +79,12 @@ test('the stylesheet sets the columns the same way before the page has run', () 
   const vw = `${(COLUMN_SHARE * 100).toFixed(1)}vw`;
   assert.ok(css.includes(`--side-w: max(${MIN_SIDE_W}px, ${vw})`), 'the book');
   assert.ok(css.includes(`--flow-w: max(${MIN_FLOW_W}px, ${vw})`), 'the flow column');
+});
+
+test('the top bar starts unfolded; a fold is kept in this browser, never in a layout, and anything but true reads as unfolded', () => {
+  // Karl, 2026-10-24: collapse the header bar to give an iPad's short screen to the chart, as a browser's full screen does.
+  saved(null, () => assert.equal(initialState().barCollapsed, false));
+  saved({ barCollapsed: true }, () => assert.equal(initialState().barCollapsed, true));
+  saved({ barCollapsed: 'yes' }, () => assert.equal(initialState().barCollapsed, false));
+  assert.equal((LAYOUT_KEYS as readonly string[]).includes('barCollapsed'), false);
 });

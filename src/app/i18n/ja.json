@@ -1602,5 +1602,8 @@
  "A change nearby went the other way, by about the same size.": "近くで逆向きの変化があり、大きさはほぼ同じです。",
  "{usd} traded": "約定 {usd}",
  "none traded": "約定なし",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "約定: 同じころ、その取引所でこの行に届いた成行注文。変化のうちどれだけがそれによるものかは、板からは分かりません。"
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "約定: 同じころ、その取引所でこの行に届いた成行注文。変化のうちどれだけがそれによるものかは、板からは分かりません。",
+ "being read": "読み込み中",
+ "Hide the controls": "コントロールを隠す",
+ "Show the controls": "コントロールを表示"
 }

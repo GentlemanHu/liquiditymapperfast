@@ -38,7 +38,11 @@ export interface LsPoint { t: number; long: number }
  * the points held from before, the last request for more having failed.
  */
 export type LsStatus = 'ok' | 'empty' | 'unsupported' | 'serverOnly' | 'failed' | 'stale';
-export interface LsSeries { id: string; population: LsPopulation | null; periodMs: number; points: LsPoint[]; status: LsStatus }
+/**
+ * `pending`: a read of the venue for this window was under way when the answer was given (a question with a wait budget, `LongShortCache.series`):
+ * the points are what was held then, and asking again shortly gets what it read. It never changes what the status says.
+ */
+export interface LsSeries { id: string; population: LsPopulation | null; periodMs: number; points: LsPoint[]; status: LsStatus; pending?: boolean }
 
 export const LS_VENUES: readonly string[] = ['binance', 'bybit', 'okx', 'bitget', 'gateio'];
 /** The venues whose series follows the one chosen (the others publish one each). */
@@ -87,6 +91,16 @@ const windowReadings = (venue: string): number => Math.min(2_000, Math.floor(PAG
  * one request never ended, and every later question for it (Bybit's and OKX's hourly BTC readings) waited for good (2026-10-15).
  */
 export const LS_PAGE_DEADLINE_MS = 20_000;
+
+/** Whether `promise` settles before the wall-clock time `until` (Infinity: it is waited for). A rejection counts as settled. */
+async function settledBy(promise: Promise<unknown>, until: number): Promise<boolean> {
+  if (until === Infinity) { await promise.catch(() => undefined); return true; }
+  const left = until - Date.now();
+  if (left <= 0) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([promise.then(() => true, () => true), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), left); })]); }
+  finally { clearTimeout(timer); }
+}
 
 /** `promise`, or an error once `ms` have passed without it settling. */
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -249,21 +263,80 @@ export async function fetchLongShort(venue: string, symbol: string, metric: LsMe
   return { points: [...out.values()].sort((a, b) => a.t - b.t), from: page >= PAGES && end > from ? end : from };
 }
 
+/** A series the cache holds: its readings, the stretch [from, to) they cover, when its newest stretch was read and last failed, its read under way. */
+interface HeldSeries { points: Map<number, LsPoint>; from: number; to: number; checked: number; failed: number; busy: Promise<void> | null; noMarket?: boolean; restoring: Promise<void> | null }
+/** What a backing keeps of a series: its readings (oldest first), the stretch [from, to) they cover and when its newest stretch was read. */
+export interface LsHeldRecord { points: LsPoint[]; from: number; to: number; checked: number }
+/**
+ * What one read changed: `cleared`, the series is only what this read gave (the old readings go); `added`, the readings it gave (new or the same
+ * again); `keep`, the readings outside [first, last] went (the series was over its bound); and the stretch and read time after it.
+ */
+export interface LsChange { cleared: boolean; added: readonly LsPoint[]; keep: { first: number; last: number } | null; from: number; to: number; checked: number }
+/**
+ * Where a cache keeps its series across restarts. `load` is asked once per series (null: none kept); `save` after every read, never waited for
+ * (`full` gives the whole record, for a backing that writes it whole). Either may throw: the cache goes on as if it had none.
+ */
+export interface LsBacking {
+  load(key: string): Promise<LsHeldRecord | null>;
+  save(key: string, change: LsChange, full: () => LsHeldRecord): void;
+}
+/**
+ * The format of what a backing keeps: a backing stores it and treats a record of another as none. Raise it whenever a change to the venues'
+ * parsing or to what a stretch [from, to) claims would make kept readings or stretches wrong: before backings, a deploy read everything anew,
+ * and a wrong stretch kept now would never be read again (only the hours after it are).
+ */
+export const LS_FORMAT = 1;
+/** A kept record the cache can trust: finite times, readings in range and in order, at most `maxPoints`, read no later than `now` (with a minute's slack). */
+export function validRecord(record: LsHeldRecord, now = Infinity, maxPoints = Infinity): boolean {
+  if (!Number.isFinite(record.from) || !Number.isFinite(record.to) || !Number.isFinite(record.checked) || !Array.isArray(record.points)) return false;
+  // A record written under a clock that ran ahead would hold the refreshes back and report a failed one as read.
+  if (record.checked > now + MINUTE || record.points.length > maxPoints) return false;
+  let last = -Infinity;
+  for (const p of record.points) { if (!lsReading(p.t, p.long) || p.t <= last) return false; last = p.t; }
+  return true;
+}
+
 /**
  * The readings asked for, kept: at most `maxSeries` series (the least recently asked for goes first), each one unbroken stretch of at most
- * `maxPoints` readings, and nothing on disk. A series holds [from, to): a window older than that is read back to it, one reaching past it
+ * `maxPoints` readings, and on disk only through a `backing` (below). A series holds [from, to): a window older than that is read back to it, one reaching past it
  * (the newest, at most once a period and never more than once a minute) from where it ends, so a pane hidden for an hour gets the hour; a
  * window further from what is held than one question reaches starts the series again there. Past `maxPoints` the readings furthest from the
  * window asked go. One request at a time per series: a question that waited for another's looks again once it is answered, and a page that
  * has not come in `pageDeadlineMs` fails that request, so no series waits for good. Bitget publishes only its newest 30 periods, so its series
- * grows only while it is asked for.
+ * grows only while it is asked for (and kept).
+ *
+ * With a `backing` (a file on the server, IndexedDB in a page) a series is kept across restarts: the first question for it loads what was held
+ * (its readings and [from, to) and when its newest stretch was read), so only the hours since are read from the venue, and each read saves
+ * what it changed. Bitget's series then grows across restarts too. Without one, nothing is on disk.
  */
 export class LongShortCache {
-  #series = new Map<string, { points: Map<number, LsPoint>; from: number; to: number; checked: number; failed: number; busy: Promise<void> | null; noMarket?: boolean }>();
+  #series = new Map<string, HeldSeries>();
   /** Each paced venue's lane: when its last request went out (wall-clock ms, once it has), and how many wait behind it. */
   #lanes = new Map<string, { last: Promise<number>; waiting: number }>();
   constructor(private get: Fetcher, private browser: boolean, private now: () => number = Date.now, private maxSeries = 48, private maxPoints = 10_000, private pageDeadlineMs = LS_PAGE_DEADLINE_MS,
-    private gapMs: Readonly<Record<string, number>> = VENUE_GAP_MS) {}
+    private gapMs: Readonly<Record<string, number>> = VENUE_GAP_MS, private backing: LsBacking | null = null) {}
+
+  /** Fill a new series from the backing (once; every question for it waits for this first). A record that cannot be read is no record. */
+  async #restore(key: string, h: HeldSeries): Promise<void> {
+    try {
+      const record = await this.backing!.load(key);
+      if (record && validRecord(record, this.now(), this.maxPoints) && h.from === Infinity && !h.points.size) {
+        for (const p of record.points) h.points.set(p.t, p);
+        h.from = record.from; h.to = record.to; h.checked = record.checked;
+      }
+    } catch { /* unreadable: the series is read anew */ } finally { h.restoring = null; }
+  }
+
+  /**
+   * Hand the backing what a read changed. A backing that cannot write costs only the keeping: the series in memory is as read. A series no
+   * longer the cache's (evicted while its read was under way, and perhaps restored anew since) saves nothing: its change would land on the
+   * newer one's.
+   */
+  #save(key: string, h: HeldSeries, change: Omit<LsChange, 'from' | 'to' | 'checked'>): void {
+    if (!this.backing || this.#series.get(key) !== h) return;
+    const full = (): LsHeldRecord => ({ points: [...h.points.values()].sort((a, b) => a.t - b.t), from: h.from, to: h.to, checked: h.checked });
+    try { this.backing.save(key, { ...change, from: h.from, to: h.to, checked: h.checked }, full); } catch { /* see above */ }
+  }
 
   /**
    * `ask`, once the venue's least time has passed since its previous request actually went out: one lane a venue, first come first served, the
@@ -287,7 +360,12 @@ export class LongShortCache {
     return ask();
   }
 
-  async series(id: string, metric: LsMetric, tfMs: number, from: number, to: number): Promise<LsSeries> {
+  /**
+   * The readings of [from, to). With `budgetMs` the answer waits at most that long (wall-clock ms) for a read of the venue: past it, what is held
+   * is answered with `pending`, and the read goes on, so the next question gets what it read. Without one it waits for the read, as a question
+   * always did (an older page asks so).
+   */
+  async series(id: string, metric: LsMetric, tfMs: number, from: number, to: number, budgetMs?: number): Promise<LsSeries> {
     const colon = id.indexOf(':'), venue = id.slice(0, colon), symbol = id.slice(colon + 1);
     // A window needs at most `windowReadings` readings: a long one on a fine chart takes a coarser period, so one question always reaches
     // across it and the series never holds more than it keeps. Month-scale context uses daily readings, independent of the candle setting.
@@ -300,9 +378,22 @@ export class LongShortCache {
     const key = `${id}|${population}|${periodMs}`;
     let held = this.#series.get(key);
     if (held) this.#series.delete(key);
-    held ??= { points: new Map(), from: Infinity, to: -Infinity, checked: 0, failed: 0, busy: null };
+    if (!held) {
+      held = { points: new Map(), from: Infinity, to: -Infinity, checked: 0, failed: 0, busy: null, restoring: null };
+      if (this.backing) held.restoring = this.#restore(key, held);
+    }
     this.#series.set(key, held);
     while (this.#series.size > this.maxSeries) this.#series.delete(this.#series.keys().next().value!);
+    // The budget counts from the question: a backing slow to load (a page's IndexedDB opening) is waited for within it like a read.
+    const until = budgetMs === undefined ? Infinity : Date.now() + Math.max(0, budgetMs);
+    const restoring = held.restoring;
+    if (restoring && !(await settledBy(restoring, until))) {
+      // Its read starts once the series is loaded (a question with no wait: one read for all such questions, the others find it under way),
+      // if the cache still holds it: one evicted meanwhile is asked for anew by its next question (kicking it here could evict another
+      // series waiting on its own load, and so on without end).
+      void restoring.then(() => { if (this.#series.get(key) === held) return this.series(id, metric, tfMs, from, to, 0); }).catch(() => undefined);
+      return { ...answer([], 'empty'), pending: true };
+    }
     const reach = PAGES * PAGE_ROWS[venue]! * periodMs * 0.9;
     // The page's deadline counts from when the request goes out, not from a wait for the venue's turn.
     const get: Fetcher = (url, init) => this.#paced(venue, () => withDeadline(this.get(url, init), this.pageDeadlineMs));
@@ -310,9 +401,14 @@ export class LongShortCache {
     // different windows left the last answered from what the others read, empty, without its window ever read. Waiting is bounded too (each
     // request is at most `PAGES` pages, each page at most `pageDeadlineMs`); a question that runs out of either before its window is read says
     // it could not be read (`covered`), never that there are no readings.
-    let covered = false;
+    // Past the budget the read goes on: its handlers below update the series whether it succeeds or fails, and `busy` clears itself.
+    let covered = false, pending = false;
     for (let reads = 0, waits = 0; ;) {
-      if (held.busy) { if (waits++ >= 64) break; await held.busy; continue; }
+      if (held.busy) {
+        if (waits++ >= 64) break;
+        if (!(await settledBy(held.busy, until))) { pending = true; break; }
+        continue;
+      }
       const h = held, now = this.now(), want = Math.min(to, now + periodMs);
       if (now - h.failed < MINUTE) break;
       let start: number, end: number, kind: 'whole' | 'older' | 'newer';
@@ -324,8 +420,10 @@ export class LongShortCache {
       else if (want > h.to && (h.to < now - 2 * periodMs || h.to < h.checked - periodMs || now - h.checked >= Math.max(periodMs, MINUTE))) { start = h.to - 2 * periodMs; end = want; kind = 'newer'; }
       else { covered = true; break; }
       if (reads++ >= 4) break;
-      // Too far from what is held for one question to join them without a hole: the series starts again at this window.
-      if (kind !== 'whole' && end - start > reach) { h.points.clear(); h.from = Infinity; h.to = -Infinity; start = from; end = want; kind = 'whole'; }
+      // Too far from what is held for one question to join them without a hole: the series starts again at this window (and so does what the
+      // backing keeps, once it is read: a failed read leaves it as it was, a stretch as good as it ever was).
+      const restarted = kind !== 'whole' && end - start > reach;
+      if (restarted) { h.points.clear(); h.from = Infinity; h.to = -Infinity; start = from; end = want; kind = 'whole'; }
       // The Binance series chosen is Binance's: every other venue publishes its accounts alone.
       h.busy = fetchLongShort(venue, symbol, LS_CHOSEN_VENUES.includes(venue) ? metric : 'accounts', periodMs, start, end, get, now).then(({ points, from: reached }) => {
         // A market the venue did not list before (asked again once a minute) is published again once it answers.
@@ -344,23 +442,30 @@ export class LongShortCache {
           if (reached > h.to) h.from = reached;
           h.to = Math.max(h.to, until); h.checked = now;
         }
+        let keep: { first: number; last: number } | null = null;
         if (h.points.size > this.maxPoints) {
           // The readings furthest from the window asked go, so what it asked for is kept and the rest stays one unbroken stretch.
           const times = [...h.points.keys()].sort((a, b) => a - b), first = times.findIndex(t => t >= from - periodMs);
-          const at = Math.max(0, Math.min(first < 0 ? times.length : first, times.length - this.maxPoints)), keep = times.slice(at, at + this.maxPoints);
-          h.points = new Map(keep.map(t => [t, h.points.get(t)!]));
-          h.from = Math.max(h.from, keep[0]!); h.to = Math.min(h.to, keep[keep.length - 1]! + periodMs);
+          const at = Math.max(0, Math.min(first < 0 ? times.length : first, times.length - this.maxPoints)), kept = times.slice(at, at + this.maxPoints);
+          h.points = new Map(kept.map(t => [t, h.points.get(t)!]));
+          h.from = Math.max(h.from, kept[0]!); h.to = Math.min(h.to, kept[kept.length - 1]! + periodMs);
+          keep = { first: kept[0]!, last: kept[kept.length - 1]! };
         }
+        this.#save(key, h, { cleared: restarted || kind === 'whole', added: points, keep });
       }, error => {
         // When it failed, not when it began: a slow request of many pages would otherwise leave no minute's pause behind it.
         h.failed = this.now();
         if (error instanceof LsNoMarket) h.noMarket = true;
-      }).finally(() => { h.busy = null; });
+        // A crash in the handlers above counts as a failed read: nobody may be waiting on `busy` (a question past its budget) to catch it.
+      }).catch(() => { h.failed = this.now(); }).finally(() => { h.busy = null; });
     }
     if (held.noMarket) return answer([], 'unsupported');
     const points = [...held.points.values()].filter(p => p.t >= from - periodMs && p.t < to).sort((a, b) => a.t - b.t);
+    const failedLast = held.failed > 0 && held.failed >= held.checked;
+    // A read still under way when the budget ran out: what is held now, said as it would be without it, and asked again for the rest.
+    if (pending) return { ...answer(points, points.length ? (failedLast ? 'stale' : 'ok') : failedLast ? 'failed' : 'empty'), pending: true };
     // The last request failing after the last success says so, with what is held from before; so does a window not read in its turns.
-    const failing = !covered || (held.failed > 0 && held.failed >= held.checked);
+    const failing = !covered || failedLast;
     if (points.length) return answer(points, failing ? 'stale' : 'ok');
     return answer([], failing ? 'failed' : 'empty');
   }
@@ -375,5 +480,6 @@ export function parseLsSeries(value: unknown): LsSeries {
     throw new Error('not a long/short series');
   const kept: LsPoint[] = [];
   for (const p of points) { const r = lsReading(num(at(p, 't')), num(at(p, 'long'))); if (r && (!kept.length || r.t > kept[kept.length - 1]!.t)) kept.push(r); }
-  return { id, population: population as LsPopulation | null, periodMs, points: kept, status: status as LsStatus };
+  const series: LsSeries = { id, population: population as LsPopulation | null, periodMs, points: kept, status: status as LsStatus };
+  return at(value, 'pending') === true ? { ...series, pending: true } : series;
 }

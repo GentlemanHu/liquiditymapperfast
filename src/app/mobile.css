@@ -45,6 +45,8 @@ html[data-bar="compact"] .toolbar .spacer { order: 4; flex: 1 1 0; min-width: 0;
 html[data-bar="compact"] .toolbar .status { order: 5; flex: none; font-size: 0; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 38px; }
 html[data-bar="compact"] .toolbar .status::before { width: 10px; height: 10px; margin: 0; }
 html[data-bar="compact"] .more-btn { order: 6; display: inline-grid; place-items: center; flex: none; width: 44px; padding: 0; }
+/* The arrow that folds the bar away, after Settings; folded, the bar keeps only the top safe area (the clock and notch above it). */
+html[data-bar="compact"] .toolbar .bar-collapse { order: 7; flex: none; width: 44px; padding: 0; }
 /* A notice lies over the top of the map, as on the desktop's bar: the compact bar keeps its height when one comes or goes, and two lie one
    under the other. */
 html[data-bar="compact"] .toolbar { position: relative; z-index: 30; }

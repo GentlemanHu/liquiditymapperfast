@@ -1668,5 +1668,8 @@
  "A change nearby went the other way, by about the same size.": "Un changement voisin est allé dans l'autre sens, de taille proche.",
  "{usd} traded": "{usd} échangés",
  "none traded": "rien d'échangé",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Échangé : ordres au marché qui ont atteint cette ligne sur cette plateforme à peu près au même moment. Le carnet ne dit pas quelle part du changement ils expliquent."
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Échangé : ordres au marché qui ont atteint cette ligne sur cette plateforme à peu près au même moment. Le carnet ne dit pas quelle part du changement ils expliquent.",
+ "being read": "en lecture",
+ "Hide the controls": "Masquer les commandes",
+ "Show the controls": "Afficher les commandes"
 }

@@ -60,7 +60,9 @@ export class SqliteColumnStore implements ColumnStore {
   *load(sinceMs: number): Iterable<{ instrumentId: string; column: Column; step: number }> {
     // The tracker rows of the same minutes, by instrument and minute (a row of another length is from another layout: left out).
     const lt = new Map<string, { n: number; values: Float32Array }>();
-    for (const row of this.#db.prepare('SELECT inst, t, n, data FROM depth_lt WHERE t >= ?').all(sinceMs) as Iterable<{ inst: string; t: number; n: number; data: Uint8Array }>) {
+    // In the key's order, so SQLite walks the (inst, t) index and reads only the rows of the day: without the order it read the whole table
+    // (the minutes' rows of a week and more), at every start (2026-10-23).
+    for (const row of this.#db.prepare('SELECT inst, t, n, data FROM depth_lt WHERE t >= ? ORDER BY inst, t').all(sinceMs) as Iterable<{ inst: string; t: number; n: number; data: Uint8Array }>) {
       if (row.data.byteLength !== LT_LENGTH * 4 || !(row.n > 0)) continue;
       lt.set(`${row.inst}|${row.t}`, { n: row.n, values: new Float32Array(row.data.slice().buffer) });
     }
@@ -84,9 +86,14 @@ export class SqliteColumnStore implements ColumnStore {
     this.#insert.run(instrumentId, column.t, column.n, step, data);
     if (column.lt && column.lt.length === LT_LENGTH && (column.ltN ?? 0) > 0) this.#insertLt.run(instrumentId, column.t, column.ltN!, new Uint8Array(column.lt.buffer, column.lt.byteOffset, LT_LENGTH * 4).slice());
   }
+  /**
+   * Let go of the minutes before `beforeMs`. The rows are found through the (inst, t) index and deleted by rowid: `DELETE ... WHERE t < ?`
+   * scanned the whole table, 1.4 GB of columns on Karl's PC (2026-10-23), with the server's loop held for it; the index's walk takes about
+   * 0.2 s there.
+   */
   prune(beforeMs: number): void {
-    this.#db.prepare('DELETE FROM depth_columns WHERE t < ?').run(beforeMs);
-    this.#db.prepare('DELETE FROM depth_lt WHERE t < ?').run(beforeMs);
+    this.#db.prepare('DELETE FROM depth_columns WHERE rowid IN (SELECT rowid FROM depth_columns WHERE t < ?)').run(beforeMs);
+    this.#db.prepare('DELETE FROM depth_lt WHERE rowid IN (SELECT rowid FROM depth_lt WHERE t < ?)').run(beforeMs);
   }
   close(): void { this.#db.close(); }
 }

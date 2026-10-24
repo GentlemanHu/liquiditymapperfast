@@ -1668,5 +1668,8 @@
  "A change nearby went the other way, by about the same size.": "Uma mudança próxima foi no sentido contrário, de tamanho semelhante.",
  "{usd} traded": "{usd} negociados",
  "none traded": "nada negociado",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Negociado: ordens a mercado que chegaram a esta linha nessa corretora mais ou menos na mesma hora. O livro não diz quanto da mudança elas explicam."
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Negociado: ordens a mercado que chegaram a esta linha nessa corretora mais ou menos na mesma hora. O livro não diz quanto da mudança elas explicam.",
+ "being read": "lendo",
+ "Hide the controls": "Ocultar os controles",
+ "Show the controls": "Mostrar os controles"
 }

@@ -1,4 +1,4 @@
-import { connectLive, getAbsorption, getAbsorptionProfile, getBootstrap, getCandles, getColumns, getCoverage, getFlow, getFlowMinutes, getFootprint, getLiquidations, getLongShort, getOi, getOiProfile, getPriceHistory, getPrintSums, getPrints, getProfile, getRange, getSizes, getValueAreas } from './net.ts';
+import { connectLive, type LiveConnection, getAbsorption, getAbsorptionProfile, getBootstrap, getCandles, getColumns, getCoverage, getFlow, getFlowMinutes, getFootprint, getLiquidations, getLongShort, getOi, getOiProfile, getPriceHistory, getPrintSums, getPrints, getProfile, getRange, getSizes, getValueAreas } from './net.ts';
 import type { BootstrapState, DataSource, VenueCatalog, VenueControl, VenueEntry } from './source.ts';
 import { stateOfStatus } from './venue-notice.ts';
 
@@ -59,17 +59,41 @@ class ServerVenues implements VenueControl {
   }
 }
 
+/** How long a long/short question waits for the live socket to say whether it answers them (it connects as the page loads). */
+const LS_SOCKET_WAIT_MS = 4_000;
+
 /** The local server (`npm run dev:server`): live frames over one WebSocket, history from SQLite behind `/api/v2/*`. */
 export class ServerSource implements DataSource {
   readonly kind = 'server' as const;
   readonly venues = new ServerVenues();
   /** The server's answer, plus the open-interest reference the page used to assume. */
   bootstrap = async (): Promise<BootstrapState> => { const boot = await getBootstrap(); return { ...boot, oiReferences: boot.oiReferences ?? ['binance:BTCUSDT'] }; };
-  connect: DataSource['connect'] = handlers => connectLive(handlers);
+  /** The live connection, once connected: long/short questions are asked on it where its server answers them there. */
+  #live: LiveConnection | null = null;
+  #setConnected!: (live: LiveConnection) => void;
+  readonly #connected = new Promise<LiveConnection>(resolve => { this.#setConnected = resolve; });
+  connect: DataSource['connect'] = handlers => { const live = this.#live = connectLive(handlers); this.#setConnected(live); return live; };
   candles = getCandles;
   priceHistory = getPriceHistory;
   oi = getOi;
-  longShort = getLongShort;
+  /**
+   * On the live socket where the server answers there: a page's HTTP requests to the server wait behind its history requests for one of the
+   * browser's six connections, twenty seconds and more while it loads (2026-10-23). Over HTTP otherwise (a server from before, no socket).
+   */
+  longShort: DataSource['longShort'] = async (inst, metric, tf, from, to, signal, budgetMs) => {
+    // While the socket connects (a page loading, even before it is opened) a question waits a little for it rather than join the HTTP queue.
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const live = this.#live ?? await Promise.race([this.#connected, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LS_SOCKET_WAIT_MS); })]);
+    clearTimeout(timer);
+    const onSocket = live && await live.lsReadyWithin(Math.max(0, LS_SOCKET_WAIT_MS - (Date.now() - started))) ? live.longShort(inst, metric, tf, from, to, budgetMs, signal) : null;
+    if (!onSocket) return getLongShort(inst, metric, tf, from, to, signal, budgetMs);
+    // A socket that closed under it, or a server that had too many at once: asked over HTTP instead. Given up by its asker: not asked again.
+    return onSocket.catch((error: unknown) => {
+      if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error;
+      return getLongShort(inst, metric, tf, from, to, signal, budgetMs);
+    });
+  };
   prints = getPrints;
   liquidations = getLiquidations;
   printSums = getPrintSums;

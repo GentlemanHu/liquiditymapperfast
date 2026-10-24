@@ -232,6 +232,13 @@ export class Toolbar {
   #spacer = el('span', { class: 'spacer' });
   /** Phone only: the button that opens Settings, where every control that does not fit the top bar lives. */
   #more = el('button', { type: 'button', class: 'more-btn', ariaLabel: t('Settings'), tip: t('Settings: panels, heatmap colouring, venues, sound, theme and the guide.') });
+  /**
+   * Folds the bar away (`state.barCollapsed`), the chart taking its room as a browser's full screen does (Karl, 2026-10-24: "the ability
+   * to collapse the header bar ... on an iPad ... to maximize screen space"). Folded, the bar is a thin strip, `#expand`, that brings it
+   * back: a tab floating over the top of the screen covered one of the map's buttons or another, whatever the layout.
+   */
+  #collapse = el('button', { type: 'button', class: 'bar-collapse', ariaLabel: t('Hide the controls'), tip: t('Hide the controls'), ariaExpanded: 'true', onclick: () => this.store.set({ barCollapsed: true }) });
+  #expand = el('button', { type: 'button', class: 'bar-expand', ariaLabel: t('Show the controls'), tip: t('Show the controls'), onclick: () => this.store.set({ barCollapsed: false }) });
   #sheet: Sheet | null = null;
   /** Where Recenter lives on the full toolbar's screens: in a corner of the map it acts on, not among the venues (null until the map exists). */
   #mapHost: HTMLElement | null = null;
@@ -447,6 +454,12 @@ export class Toolbar {
 
   hostStatusControls(host: HTMLElement): void { this.#statusHost = host; this.#arrange(); }
 
+  /** Fold the bar away or bring it back (`state.barCollapsed`): folded, only its strip (`#expand`) and its notices show. */
+  setCollapsed(collapsed: boolean): void {
+    this.root.classList.toggle('collapsed', collapsed);
+    this.#collapse.setAttribute('aria-expanded', String(!collapsed));
+  }
+
   /**
    * Open the Volume profile panel (from a band's header on the map, or a tag of what has no room) and show where each measure is drawn: a
    * band's settings live with the profile's, a click from where it is drawn. An open panel stays and only scrolls there.
@@ -477,7 +490,11 @@ export class Toolbar {
       setTip(this.#venuesButton!, t('Venues: switch each exchange on or off for the map, the book and the flow column, or choose which ones feed the page'));
       this.root.classList.add('cockpit');
       const sp = this.#splits!;
-      // The name of the page is the last deck's title: what it holds is about the page itself (the guide, the author, installing it).
+      // The name of the page is the last deck's title: what it holds is about the page itself (the guide, the author, installing it). The
+      // arrow that folds the bar away sits on that deck's bottom edge, taking no width: room kept for it at the bar's end wrapped this deck
+      // onto a second row at 1,600 px, doubling the bar, and the top edge holds the title.
+      const tools = deck('tools', 'LiquidityMapperFast', [this.#guide, this.#shot], [this.#author, this.#install.root, ...(host ? [] : [this.#zone, this.#language, this.#theme, this.#glass, this.#status])]);
+      tools.append(this.#collapse);
       this.root.replaceChildren(
         deck('market', t('Market'), [this.#coin, this.#market], [this.#scope, this.#venuesButton!]),
         deck('time', t('Time'), [this.#timeframes], inCorner ? [] : [this.#recenter]),
@@ -485,8 +502,7 @@ export class Toolbar {
         deck('panels', t('Panels'), [this.#toggles]),
         deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#range]),
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound]),
-        deck('tools', 'LiquidityMapperFast', [this.#guide, this.#shot], [this.#author, this.#install.root, ...(host ? [] : [this.#zone, this.#language, this.#theme, this.#glass, this.#status])]),
-        this.#notice.root, this.#coinNotice);
+        tools, this.#expand, this.#notice.root, this.#coinNotice);
       return;
     }
     // A phone has Range in Settings and Recenter beside the timeframes: the map's corner stays clear.
@@ -496,9 +512,9 @@ export class Toolbar {
     this.root.replaceChildren(
       el('div', { class: 'tb-bar' },
         // The coin alone (Karl, 2026-10-17): the market is chosen in Settings, where the venues are.
-        el('div', { class: 'tb-row tb-main' }, this.#brand, this.#coin, this.#spacer, this.#status, this.#more),
+        el('div', { class: 'tb-row tb-main' }, this.#brand, this.#coin, this.#spacer, this.#status, this.#more, this.#collapse),
         el('div', { class: 'tb-row tb-time' }, this.#timeframes, this.#recenter)),
-      this.#notice.root, this.#coinNotice);
+      this.#expand, this.#notice.root, this.#coinNotice);
   }
 
   #toggleSheet(): void {

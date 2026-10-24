@@ -11,7 +11,7 @@ import { lsWindowPeriod, type LsSeries } from '../../shared/long-short.ts';
  * up to a second and a half on the server, with the pane blank until the last (2026-10-15). Asking only for what is not covered had a zoom back
  * in from a month-long view keep its daily readings, every line in steps a day wide, until the minute refresh (2026-10-23).
  */
-export interface LsHeld { ident: string; from: number; to: number; at: number }
+export interface LsHeld { ident: string; from: number; to: number; at: number; soon?: number }
 
 const MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
 /**
@@ -30,14 +30,31 @@ const FINE_SPAN_MS = 30 * DAY - 2 * HOUR;
  * the long/short ratios…" for good, and each re-ask added two more that never came back (2026-10-15).
  */
 export const LS_ROUND_MS = 45_000;
+/**
+ * How long a question waits for the venue before the source answers with what it holds, `pending` (shared/long-short.ts `series`): the lines
+ * held are drawn at once instead of after the slowest page. A question waited for its whole read: a venue that took longer than the round
+ * (45 s, a busy server on a saturated PC, 2026-10-23) was given up as failed, and drawn only after the next minute's refresh, 106 s after the
+ * pane was switched on, from what the server had read meanwhile.
+ */
+export const LS_BUDGET_MS = 1_500;
+/** How long after a `pending` answer its venue is asked again within the round (the read goes on in the source; each question is answered from it). */
+export const LS_FOLLOW_MS = 2_000;
+/**
+ * The wait before a venue's `attempt`-th question again (0 the first): doubling from `LS_FOLLOW_MS` to 8 s, so a slow read is asked about a
+ * handful of times a round, each answer the whole window's readings, rather than every few seconds on a server already busy.
+ */
+export const lsFollowDelay = (attempt: number): number => Math.min(8_000, LS_FOLLOW_MS * 2 ** Math.max(0, attempt));
+/** A round that ended with a venue still pending is asked again this long after, not a minute after. */
+export const LS_SOON_MS = 5_000;
 
 /**
- * What the pane says when it draws no step in view, for the series of the markets shown: `reading` while a round waits for a venue, `failed`
- * once it is over and a venue's last update could not be read (failed, or stale: readings held for another time; asked again with the minute
- * refresh), else `none` (the venues answered: nothing for this time).
+ * What the pane says when it draws no step in view, for the series of the markets shown: `reading` while a round waits for a venue or a venue
+ * is still being read (`pending`: what it holds is for another time, or nothing), `failed` once it is over and a venue's last update could not
+ * be read (failed, or stale: readings held for another time; asked again with the minute refresh), else `none` (the venues answered: nothing
+ * for this time).
  */
 export function lsMessage(series: readonly LsSeries[], loading: boolean): 'reading' | 'failed' | 'none' {
-  return loading ? 'reading' : series.some(s => s.status === 'failed' || s.status === 'stale') ? 'failed' : 'none';
+  return loading || series.some(s => s.pending) ? 'reading' : series.some(s => s.status === 'failed' || s.status === 'stale') ? 'failed' : 'none';
 }
 
 /**
@@ -54,22 +71,38 @@ export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, v
     if (loading) return null;
     // Only finer: a coarser period than what is held is never a reason to ask (a live window lengthens as its end moves on, a minute at a time).
     const finer = venues.some(venue => lsWindowPeriod(venue, tfMs, ask.from, ask.to) < lsWindowPeriod(venue, tfMs, held.from, held.to));
-    if (!finer && held.from <= needFrom && held.to >= needTo - MINUTE && now - held.at < MINUTE) return null;
+    // `soon`: the round ended with a venue still being read; its readings are asked for again then, not at the minute.
+    const due = now - held.at >= MINUTE || (held.soon !== undefined && now >= held.soon);
+    if (!finer && held.from <= needFrom && held.to >= needTo - MINUTE && !due) return null;
   }
   return ask;
 }
 
 /**
+ * Where a series' line ends: its newest reading's step, a period after it (a daily reading stands for its whole day, an hourly one for its
+ * hour), so lines of different periods compare by how far they are drawn. -Infinity with no readings.
+ */
+export const lsReach = (s: Pick<LsSeries, 'points' | 'periodMs'>): number => s.points.reduce((latest, p) => Math.max(latest, p.t), -Infinity) + s.periodMs;
+/** `s` with `status`, no longer pending. */
+function settledAs(s: LsSeries, status: LsSeries['status']): LsSeries { const out: LsSeries = { ...s, status }; delete out.pending; return out; }
+
+/**
  * The series drawn while a round lands, in the order of `ids`: a venue's answer as soon as it comes; until then what it had before (`before`).
  * Once the round is over (`final`) a venue with no answer, or with a failure where readings were held before, keeps those readings marked
- * stale, or is failed when it had none: never left out, so the popup says it could not be read.
+ * stale, or is failed when it had none: never left out, so the popup says it could not be read. A `pending` answer that reaches less far
+ * than the line drawn (the source holds none for this window yet, or an older stretch of a finer period while it reads the rest) keeps the
+ * line, still pending, so it never blanks or loses its newest hours while its venue is read.
  */
 export function lsLanded(ids: readonly string[], before: readonly LsSeries[], answers: ReadonlyMap<string, LsSeries>, final: boolean): LsSeries[] {
   const out: LsSeries[] = [];
   for (const id of ids) {
     const answer = answers.get(id), prev = before.find(s => s.id === id), held = prev?.points.length ? prev : null;
-    if (answer && !(answer.status === 'failed' && held)) out.push(answer);
-    else if (answer || final) out.push(held ? { ...held, status: 'stale' } : answer ?? { id, population: prev?.population ?? null, periodMs: prev?.periodMs ?? 0, points: [], status: 'failed' });
+    // Reaching less far than the line, or (the same period) as far with fewer readings: an older stretch while the rest is read.
+    const shorter = answer?.pending && held && (lsReach(answer) < lsReach(held) || (answer.periodMs === held.periodMs && lsReach(answer) === lsReach(held) && answer.points.length < held.points.length));
+    if (shorter && held) out.push({ ...held, pending: true });
+    else if (answer && !(answer.status === 'failed' && held)) out.push(answer);
+    // Stale: nothing is being read for it any more (a line kept while its venue was read says so no longer).
+    else if (answer || final) out.push(held ? settledAs(held, 'stale') : answer ?? { id, population: prev?.population ?? null, periodMs: prev?.periodMs ?? 0, points: [], status: 'failed' });
     else if (prev) out.push(prev);
   }
   return out;

@@ -15,8 +15,9 @@ import { TIMEFRAMES } from '../shared/series.ts';
 import type { BootstrapState, FootprintResponse, LayersMessage, LiquidationsMessage, LiveHandlers, OiPushMessage, PrintsMessage, TickMessage } from './source.ts';
 import { t } from './i18n.ts';
 
-async function request(path: string, signal?: AbortSignal): Promise<Response> {
-  const response = await fetch(path, { cache: 'no-store', ...(signal ? { signal } : {}) });
+/** `priority`: where the browser puts the request among those waiting for one of its six connections to the server (Fetch Priority; ignored where unknown). */
+async function request(path: string, signal?: AbortSignal, priority?: 'high' | 'low'): Promise<Response> {
+  const response = await fetch(path, { cache: 'no-store', ...(signal ? { signal } : {}), ...(priority ? { priority } : {}) } as RequestInit);
   if (!response.ok) throw new Error(`${path} failed: ${response.status}`);
   return response;
 }
@@ -59,9 +60,15 @@ export async function getOi(inst: string, tf: string, from: number, to: number, 
   // A server from before USD readings ignores the flag and answers coins: none, rather than coins read as dollars.
   return usd && body.usd !== true ? [] : body.bars;
 }
-/** A venue's long/short readings for one market (the server reads them from the venue when asked, see shared/long-short.ts); `signal` cancels. */
-export async function getLongShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal): Promise<LsSeries> {
-  return parseLsSeries(await (await request(`/api/v2/long-short?inst=${encodeURIComponent(inst)}&metric=${metric}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}`, signal)).json());
+/**
+ * A venue's long/short readings for one market (the server reads them from the venue when asked, see shared/long-short.ts); `signal` cancels.
+ * `budgetMs`: the server answers within it with what it holds, `pending` while it reads on (a server from before ignores it and waits).
+ * Asked at high priority: while a page loads, its history requests hold every connection to the server for seconds each, and a pane's few
+ * small answers waited behind them for twenty seconds (2026-10-23); a background question (budget 0, the pane's warming) is asked at low.
+ */
+export async function getLongShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number): Promise<LsSeries> {
+  const budget = budgetMs === undefined ? '' : `&budget=${Math.max(0, Math.round(budgetMs))}`;
+  return parseLsSeries(await (await request(`/api/v2/long-short?inst=${encodeURIComponent(inst)}&metric=${metric}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}${budget}`, signal, budgetMs === 0 ? 'low' : 'high')).json());
 }
 /** Taker flow per second for the instruments, as the server records it. */
 export async function getFlow(ids: string[], from: number, to: number): Promise<FlowFrame> {
@@ -178,21 +185,47 @@ export const connectionStatus = (failures: number, host: string): string => fail
  * `silenceMs` counts as a lost connection and is retried like one, once the server has shown that it sends heartbeats (an older server
  * says nothing while the market is quiet, and a quiet market is not a broken connection).
  */
-export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs = 5_000, now = () => performance.now() }: { silenceMs?: number; pollMs?: number; now?: () => number } = {}): { close(): void; tape(on: boolean): void } {
+export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs = 5_000, now = () => performance.now() }: { silenceMs?: number; pollMs?: number; now?: () => number } = {}): LiveConnection {
   let socket: WebSocket | null = null, closed = false, attempt = 0, timer: number | undefined, heard = 0, beats = false, tapeOn = false;
+  /** Long/short questions on the socket, once its server said it answers them (`hello`): waiting by id, all given up when it closes. */
+  let lsReady = false, lsNext = 0;
+  // A question its asker gave up is kept here, settled, until its answer comes: the server still counts it among its 16.
+  const lsWaiting = new Map<number, { resolve(series: LsSeries): void; reject(error: Error): void; timer: number; given?: boolean; off(): void }>();
+  /**
+   * Whether this socket's server answers them: unknown while it connects and for `LS_HELLO_MS` after (a question waits for it, up to the
+   * caller's limit: while a page loads, HTTP is where its questions wait longest), yes once it said so, no for a server that did not or a
+   * socket that is down (its questions go over HTTP at once).
+   */
+  let lsKnown: 'unknown' | 'yes' | 'no' = 'unknown';
+  const lsReadyWaiters = new Set<(ok: boolean) => void>();
+  const lsSettle = (known: 'yes' | 'no'): void => { lsKnown = known; lsReady = known === 'yes'; for (const w of lsReadyWaiters) w(lsReady); lsReadyWaiters.clear(); };
+  const lsDrop = (why: string): void => { lsSettle('no'); for (const w of lsWaiting.values()) { window.clearTimeout(w.timer); w.off(); w.reject(new Error(why)); } lsWaiting.clear(); };
   /** Tell the server whether to send the trade dust (again on every new connection). */
   const sayTape = (): void => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'tape', on: tapeOn })); };
-  const lost = () => { handlers.onClose(attempt + 1, location.host); if (!closed) timer = window.setTimeout(open, Math.min(10_000, 500 * 2 ** attempt++)); };
+  const lost = () => { lsDrop('live-closed'); handlers.onClose(attempt + 1, location.host); if (!closed) timer = window.setTimeout(open, Math.min(10_000, 500 * 2 ** attempt++)); };
   const open = () => {
     const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/v2/ws`;
     const current = new WebSocket(url); current.binaryType = 'arraybuffer'; socket = current;
-    current.onopen = () => { attempt = 0; heard = now(); beats = false; if (tapeOn) sayTape(); handlers.onOpen(); };
+    lsKnown = 'unknown';
+    current.onopen = () => {
+      // A server that has not said it answers long/short questions soon after the socket opens is one from before: HTTP for them.
+      window.setTimeout(() => { if (socket === current && lsKnown === 'unknown') lsSettle('no'); }, LS_HELLO_MS);
+      attempt = 0; heard = now(); beats = false; if (tapeOn) sayTape(); handlers.onOpen();
+    };
     current.onmessage = event => {
       heard = now();
       try {
         if (typeof event.data === 'string') {
           const message = JSON.parse(event.data) as { t: string };
           if (message.t === 'hb') beats = true;
+          else if (message.t === 'hello') lsSettle((message as { ls?: unknown }).ls === true ? 'yes' : 'no');
+          else if (message.t === 'ls') {
+            const m = message as { id?: unknown; series?: unknown; error?: unknown }, w = typeof m.id === 'number' ? lsWaiting.get(m.id) : undefined;
+            if (w) {
+              lsWaiting.delete(m.id as number); window.clearTimeout(w.timer); w.off();
+              if (!w.given) try { if (m.error !== undefined) w.reject(new Error(String(m.error))); else w.resolve(parseLsSeries(m.series)); } catch (error) { w.reject(error instanceof Error ? error : new Error(String(error))); }
+            }
+          }
           else if (message.t === 'tick') handlers.onTick(message as TickMessage); else if (message.t === 'layers') handlers.onLayers(message as LayersMessage);
           else if (message.t === 'prints' && Array.isArray((message as PrintsMessage).items)) handlers.onPrints((message as PrintsMessage).items);
           else if (message.t === 'liquidations' && Array.isArray((message as LiquidationsMessage).items)) handlers.onLiquidations?.((message as LiquidationsMessage).items);
@@ -213,5 +246,48 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
     lost();
   }, pollMs);
   open();
-  return { close() { closed = true; window.clearTimeout(timer); window.clearInterval(watchdog); socket?.close(); }, tape(on) { if (on !== tapeOn) { tapeOn = on; sayTape(); } } };
+  return {
+    close() { closed = true; window.clearTimeout(timer); window.clearInterval(watchdog); lsDrop('live-closed'); socket?.close(); },
+    tape(on) { if (on !== tapeOn) { tapeOn = on; sayTape(); } },
+    lsReadyWithin(ms) {
+      if (lsKnown !== 'unknown' || closed) return Promise.resolve(lsReady && !closed);
+      return new Promise<boolean>(resolve => {
+        const done = (ok: boolean): void => { window.clearTimeout(timer); lsReadyWaiters.delete(done); resolve(ok); };
+        const timer = window.setTimeout(() => done(false), ms);
+        lsReadyWaiters.add(done);
+      });
+    },
+    longShort(inst, metric, tf, from, to, budgetMs, signal) {
+      const live = socket;
+      if (!lsReady || !live || live.readyState !== WebSocket.OPEN || lsWaiting.size >= LS_SOCKET_WAITING) return null;
+      if (signal?.aborted) return Promise.reject(new Error('cancelled'));
+      const id = ++lsNext;
+      return new Promise<LsSeries>((resolve, reject) => {
+        const onAbort = (): void => { const w = lsWaiting.get(id); if (w && !w.given) { w.given = true; reject(new Error('cancelled')); } };
+        const off = (): void => signal?.removeEventListener('abort', onAbort);
+        const timer = window.setTimeout(() => { lsWaiting.delete(id); off(); reject(new Error('live-timeout')); }, LS_SOCKET_TIMEOUT_MS);
+        lsWaiting.set(id, { resolve, reject, timer, off });
+        signal?.addEventListener('abort', onAbort, { once: true });
+        live.send(JSON.stringify({ t: 'ls', id, inst, metric, tf, from: Math.floor(from), to: Math.ceil(to), ...(budgetMs === undefined ? {} : { budget: Math.max(0, Math.round(budgetMs)) }) }));
+      });
+    },
+  };
+}
+
+/** The most long/short questions waiting on the live socket, those given up included until answered (the server answers 16 at once); past it they go over HTTP. */
+const LS_SOCKET_WAITING = 16;
+/** A question not answered on the socket in this long is given up (the pane's round has long ended). */
+const LS_SOCKET_TIMEOUT_MS = 60_000;
+/** How long after its socket opens a server has to say it answers long/short questions there (it says so at once). */
+const LS_HELLO_MS = 3_000;
+/**
+ * The live connection: closed, told whether to send the trade dust, and asked long/short questions on (`longShort`: null where it cannot be,
+ * a server from before that never said it answers them, a socket not open, too many waiting: the caller asks over HTTP).
+ */
+export interface LiveConnection {
+  close(): void;
+  tape(on: boolean): void;
+  /** Whether its server answers long/short questions on it, waiting up to `ms` while that is not known yet (the socket connecting). */
+  lsReadyWithin(ms: number): Promise<boolean>;
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, budgetMs?: number, signal?: AbortSignal): Promise<LsSeries> | null;
 }

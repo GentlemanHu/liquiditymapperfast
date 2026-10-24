@@ -1685,5 +1685,8 @@
  "A change nearby went the other way, by about the same size.": "Рядом было изменение в обратную сторону, примерно такого же размера.",
  "{usd} traded": "{usd} в сделках",
  "none traded": "сделок не было",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Сделки: рыночные ордера, дошедшие до этой строки на этой бирже примерно в то же время. Стакан не говорит, какую часть изменения они объясняют."
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Сделки: рыночные ордера, дошедшие до этой строки на этой бирже примерно в то же время. Стакан не говорит, какую часть изменения они объясняют.",
+ "being read": "читается",
+ "Hide the controls": "Скрыть панель управления",
+ "Show the controls": "Показать панель управления"
 }

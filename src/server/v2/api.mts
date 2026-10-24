@@ -7,6 +7,7 @@ import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from
 import { FAR_STALE_MS, FarPoller, farSource, freshFar, type FarBook } from '../../shared/far-book.ts';
 import { OiSampler, oiHistoryWriter } from './oi-sampler.mts';
 import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-short.ts';
+import { SqliteLsStore } from './ls-store.mts';
 import { webGet, type Fetcher } from '../../shared/history.ts';
 import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing } from '../../shared/price-history.ts';
 import { BTC } from '../../shared/coins.ts';
@@ -217,7 +218,10 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   /** Instruments whose book is crossed (a feed fault), so they are valued as nothing rather than drawn as false walls. */
   const degraded = new Map<string, string>();
   let levelsDirty = true;
-  let lastSample = 0, lastPrune = 0, lastFlush = 0, lastBeat = 0, lastFlowPush = 0, lastSources = 0;
+  let lastSample = 0, lastFlush = 0, lastBeat = 0, lastFlowPush = 0, lastSources = 0;
+  // The first prune a minute after the start (then hourly), not in the first pass, which reads the last day back from the store; soon enough
+  // that a server restarted often still prunes.
+  let lastPrune = Date.now() - 59 * 60_000;
   // Open-interest pushes. The reducer appends each reading to `state.oi` (a copy keeping the newest 20 000 rows, each row the same object),
   // so a pass looks only at the rows after the last one it saw. Per instrument only the newest reading by its own time goes out, and only
   // when it is newer than the last one sent: a socket reading and a REST one can land in either order. The first pass marks what is there.
@@ -372,11 +376,18 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/api/v2/ws') return;
     wss.handleUpgrade(req, socket, head, client => {
       client.on('error', () => client.terminate());
-      // The one thing a page says on the socket: whether it draws the trade dust (an older page says nothing and is never sent it).
+      // What a page says on the socket: whether it draws the trade dust (an older page says nothing and is never sent it), and long/short
+      // questions (`lsOnSocket`).
       client.on('message', data => {
-        if (!(data instanceof Buffer) || data.length > 200) return;
-        try { const m = JSON.parse(String(data)) as { t?: unknown; on?: unknown }; if (m.t === 'tape') { if (m.on === true) tapeClients.add(client); else tapeClients.delete(client); } } catch { /* not ours */ }
+        if (!(data instanceof Buffer) || data.length > 600) return;
+        let m: Record<string, unknown> | null = null;
+        try { m = JSON.parse(String(data)) as Record<string, unknown>; } catch { /* not ours */ }
+        if (!m || typeof m !== 'object') return;
+        if (m.t === 'tape') { if (m.on === true) tapeClients.add(client); else tapeClients.delete(client); }
+        else if (m.t === 'ls') lsOnSocket(client, m);
       });
+      // What this server answers on the socket beyond its frames: long/short questions. A page from before ignores it.
+      client.send(JSON.stringify({ t: 'hello', ls: true }));
       levelsDirty = true; lastTick = ''; lastLayers = '';
     });
   };
@@ -456,9 +467,13 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     });
     sendJson(res, oiProfileOf(footprint, series, span.from, span.to, step));
   };
-  // Long/short ratios as the venues publish them, read when asked for and kept in memory only (shared/long-short.ts): nothing of the
-  // history store's budget, and nothing new asked while no page shows the pane (a read already under way finishes).
-  const longShort = new LongShortCache(webGet, false);
+  // Long/short ratios as the venues publish them, read when asked for and kept in memory and in a file of their own (shared/long-short.ts,
+  // ls-store.mts): nothing of the history store's budget, after a restart only the hours since are read, and nothing new is asked while no
+  // page shows the pane (a read already under way finishes).
+  // A file that cannot be opened (locked, damaged) costs only the keeping: it is a cache, never a reason not to start.
+  let lsStore: SqliteLsStore | null = null;
+  if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
+  const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore);
   const priceHistory = new PriceHistoryCache(priceHistoryGet);
   const priceHistoryRoute = (url: URL, res: ServerResponse) => {
     const id = url.searchParams.get('inst') ?? '', tfMs = timeframeMs(url.searchParams.get('tf'));
@@ -473,7 +488,35 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (!id || !tfMs) return sendJson(res, { error: BAD_SERIES }, 400);
     if (!(LS_METRICS as readonly string[]).includes(metric)) return sendJson(res, { error: `metric must be one of ${LS_METRICS.join(', ')}` }, 400);
     const span = windowOf(url, Date.now() + tfMs, 400 * tfMs); if (!span) return sendJson(res, { error: BAD_WINDOW }, 400);
-    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to).then(series => sendJson(res, series), () => sendJson(res, { error: 'long/short ratios could not be read' }, 502));
+    // `budget` (ms): answer within it with what is held, `pending` while the venue is read on; a page from before sends none and waits for the read.
+    const rawBudget = url.searchParams.get('budget'), budget = rawBudget === null ? undefined : Number(rawBudget);
+    if (budget !== undefined && !(Number.isFinite(budget) && budget >= 0)) return sendJson(res, { error: 'budget must be milliseconds, not negative' }, 400);
+    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to, budget === undefined ? undefined : Math.min(budget, 30_000))
+      .then(series => sendJson(res, series), () => sendJson(res, { error: 'long/short ratios could not be read' }, 502));
+  };
+  /**
+   * Long/short questions on a page's live socket, as the route above asks them, answered by the question's id: a page's HTTP requests to this
+   * server wait behind its history requests for one of the browser's six connections, twenty seconds and more while it loads and on a busy
+   * PC after (measured 2026-10-23), and the socket is no part of those. At most `LS_SOCKET_BUSY` a socket at once.
+   */
+  const LS_SOCKET_BUSY = 16;
+  const lsBusy = new WeakMap<WebSocket, number>();
+  const lsOnSocket = (client: WebSocket, m: Record<string, unknown>): void => {
+    const id = m.id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const reply = (body: object): void => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ t: 'ls', id, ...body })); };
+    const { inst, metric, from, to, budget } = m, tfMs = timeframeMs(m.tf);
+    if (typeof inst !== 'string' || !inst || inst.length > 120 || !tfMs) return reply({ error: BAD_SERIES });
+    if (typeof metric !== 'string' || !(LS_METRICS as readonly string[]).includes(metric)) return reply({ error: `metric must be one of ${LS_METRICS.join(', ')}` });
+    if (typeof from !== 'number' || typeof to !== 'number' || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from) return reply({ error: BAD_WINDOW });
+    if (budget !== undefined && !(typeof budget === 'number' && Number.isFinite(budget) && budget >= 0)) return reply({ error: 'budget must be milliseconds, not negative' });
+    const busy = lsBusy.get(client) ?? 0;
+    if (busy >= LS_SOCKET_BUSY) return reply({ error: 'too many long/short questions at once' });
+    lsBusy.set(client, busy + 1);
+    // Never a whole read held on the socket's count: a question with no budget waits at most as long as one with the largest.
+    longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000))
+      .then(series => reply({ series }), () => reply({ error: 'long/short ratios could not be read' }))
+      .finally(() => lsBusy.set(client, Math.max(0, (lsBusy.get(client) ?? 1) - 1)));
   };
   const footprintRoute = (url: URL, res: ServerResponse) => {
     // One instrument, or several (comma separated) added together: the aggregated footprint.
@@ -733,7 +776,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       clearInterval(loop); clearTimeout(absorptionWarm); syncFar([]); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).
-      for (const part of [() => takeOrders(true), () => recorder.flush(), () => store?.close(), () => footprint.close(), () => coverage.close(), () => prints.close(), () => liquidations.close(), () => flow.close(), () => absorption.close(), () => flowSources.close(), () => extra.close()]) {
+      for (const part of [() => takeOrders(true), () => recorder.flush(), () => store?.close(), () => lsStore?.close(), () => footprint.close(), () => coverage.close(), () => prints.close(), () => liquidations.close(), () => flow.close(), () => absorption.close(), () => flowSources.close(), () => extra.close()]) {
         try { part(); } catch (error) { console.error('v2 shutdown:', error); }
       }
     },

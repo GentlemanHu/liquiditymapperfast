@@ -536,3 +536,23 @@ test('bins too far apart for the flat merge are merged the old way, with the sam
   recorder.columns.set('x:BTC', columns);
   assert.deepEqual(recorder.query('x:BTC', T0, T0 + 5 * COLUMN_MS, 5 * COLUMN_MS), referenceQuery(columns, T0, T0 + 5 * COLUMN_MS, 5 * COLUMN_MS));
 });
+
+test('the store prunes and reads the day back through the (inst, t) index, never a scan of the whole table', () => {
+  // Karl's store was 1.4 GB of columns (2026-10-23): `DELETE ... WHERE t < ?` scanned all of it at every start and every hour, holding the loop.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'depth-store-')), file = path.join(dir, 'depth-v2.sqlite');
+  try {
+    const store = new SqliteColumnStore(file);
+    for (let i = 0; i < 6; i++) for (const id of ['a:BTC', 'b:BTC']) store.save(id, { t: T0 + i * COLUMN_MS, n: 1, bins: Int32Array.of(4), bid: Float32Array.of(1), ask: Float32Array.of(0), lt: new Float32Array(LT_LENGTH).fill(1), ltN: 1 }, 20);
+    store.prune(T0 + 3 * COLUMN_MS);
+    const rows = [...store.load(0)];
+    assert.deepEqual(rows.map(r => `${r.instrumentId}@${(r.column.t - T0) / COLUMN_MS}:${r.column.ltN}`), ['a:BTC@3:1', 'a:BTC@4:1', 'a:BTC@5:1', 'b:BTC@3:1', 'b:BTC@4:1', 'b:BTC@5:1'], 'each instrument from the cut on, with its tracker');
+    store.close();
+    const db = new DatabaseSync(file);
+    const plan = (sql: string): string => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(0) as { detail: string }[]).map(r => r.detail).join(' | ');
+    for (const table of ['depth_columns', 'depth_lt']) {
+      assert.match(plan(`DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} WHERE t < ?)`), /COVERING INDEX/, `${table}: the prune walks the index`);
+      assert.doesNotMatch(plan(`SELECT inst, t, n, data FROM ${table} WHERE t >= ? ORDER BY inst, t`), /^SCAN \w+$/, `${table}: the read-back is not a table scan`);
+    }
+    db.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

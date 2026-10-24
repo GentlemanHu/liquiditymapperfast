@@ -95,3 +95,35 @@ test('a socket reading and an older REST one landing in the same pass push the n
     app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await app.close();
   }
 });
+
+test('the live socket says it answers long/short questions, and answers each by its id; a question it cannot ask says why', async () => {
+  // A page asks them on the socket: its HTTP requests waited behind its history requests for one of six connections (2026-10-23).
+  const app = createLocalServer({ history: new HistoryStore({ filePath: ':memory:' }), quota: new QuotaLedger({ filePath: ':memory:' }), persistFixture: false });
+  const v2 = installV2(app, { dataDir: '', persist: false, liveMs: 20 });
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  const port = (app.server.address() as AddressInfo).port;
+  const texts: Record<string, unknown>[] = [];
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v2/ws`);
+  socket.on('message', (data: unknown) => { try { texts.push(JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data)) as Record<string, unknown>); } catch { /* a binary levels frame */ } });
+  const until = async (ok: () => boolean): Promise<void> => { for (let i = 0; i < 150 && !ok(); i++) await new Promise<void>(resolve => setTimeout(resolve, 20)); };
+  try {
+    await until(() => texts.some(m => m.t === 'hello'));
+    assert.deepEqual(texts.find(m => m.t === 'hello'), { t: 'hello', ls: true });
+    const now = Date.now();
+    // A venue that publishes no ratio: answered at once, no venue asked.
+    socket.send(JSON.stringify({ t: 'ls', id: 7, inst: 'hyperliquid:BTC-PERP', metric: 'accounts', tf: '1h', from: now - 86_400_000, to: now, budget: 1500 }));
+    socket.send(JSON.stringify({ t: 'ls', id: 8, inst: 'bybit:BTCUSDT', metric: 'everyone', tf: '1h', from: now - 1, to: now }));
+    socket.send(JSON.stringify({ t: 'ls', id: 9, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now, to: now - 1 }));
+    socket.send(JSON.stringify({ t: 'ls', id: 'x', inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: 1, to: 2 }));
+    await until(() => texts.filter(m => m.t === 'ls').length >= 3);
+    const answers = new Map(texts.filter(m => m.t === 'ls').map(m => [m.id, m]));
+    assert.deepEqual((answers.get(7)!.series as { status: string; points: unknown[] }).status, 'unsupported');
+    assert.match(String(answers.get(8)!.error), /metric must be one of/);
+    assert.match(String(answers.get(9)!.error), /from and to/);
+    await new Promise<void>(resolve => setTimeout(resolve, 100));
+    assert.equal(answers.has('x'), false, 'a question with no id of its own is not answered');
+  } finally {
+    socket.terminate(); v2.close();
+    app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await app.close();
+  }
+});

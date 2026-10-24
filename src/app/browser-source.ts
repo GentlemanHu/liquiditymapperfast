@@ -3,6 +3,7 @@ import type { FlowFrame } from '../shared/flow.ts';
 import { checkTape } from '../shared/tape.ts';
 import { TIMEFRAMES } from '../shared/series.ts';
 import { LongShortCache, type LsMetric, type LsSeries } from '../shared/long-short.ts';
+import { IdbLsStore } from './browser/ls-store.ts';
 import { webGet } from '../shared/history.ts';
 import { PriceHistoryCache, priceListing, type PriceHistoryAnswer } from '../shared/price-history.ts';
 import { toWire } from '../shared/prints.ts';
@@ -100,6 +101,7 @@ export class BrowserSource implements DataSource, VenueControl {
 
   constructor(worker: Worker, { persist = true, coin = BTC, tier = 0 }: { persist?: boolean; coin?: Coin; tier?: number } = {}) {
     this.#coin = coin;
+    this.#longShort = new LongShortCache(webGet, true, undefined, undefined, undefined, undefined, undefined, persist ? new IdbLsStore() : null);
     this.#worker = worker;
     let ready!: () => void, known!: () => void, failReady!: (error: Error) => void, failKnown!: (error: Error) => void;
     this.#ready = new Promise<void>((resolve, reject) => { ready = resolve; failReady = reject; });
@@ -219,8 +221,9 @@ export class BrowserSource implements DataSource, VenueControl {
    * Read from the venues by the page itself (each answers with CORS headers but OKX, which a page cannot read), kept in memory. A cancelled
    * question is not cancelled here: the request is the series', shared with every question for it, and the cache bounds its wait.
    */
-  #longShort = new LongShortCache(webGet, true);
-  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number): Promise<LsSeries> { return this.#longShort.series(inst, metric, TIMEFRAMES[tf] ?? 3_600_000, from, to); }
+  /** Long/short readings, kept across reloads in their own database (app/browser/ls-store.ts) unless the session keeps nothing (`?persist=0`). */
+  #longShort!: LongShortCache;
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, _signal?: AbortSignal, budgetMs?: number): Promise<LsSeries> { return this.#longShort.series(inst, metric, TIMEFRAMES[tf] ?? 3_600_000, from, to, budgetMs); }
   async oi(inst: string, tf: string, from: number, to: number, usd = false): Promise<OiBar[]> { return this.#call({ method: 'oi', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, ...(usd ? { usd } : {}) }); }
   async prints(from: number, to: number, minUsd?: number): Promise<Print[]> { return this.#call({ method: 'prints', from, to, ...(minUsd !== undefined ? { minUsd } : {}) }); }
   async printSums(ids: string[], from: number, to: number, minUsd: number, stepMs: number): Promise<PrintSumsAnswer> {

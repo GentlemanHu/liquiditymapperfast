@@ -12,8 +12,9 @@ import { venueLabel } from '../venues.ts';
 import { drawVenueMark } from '../venue-marks.ts';
 import { AXIS_W } from './heat-pane.ts';
 import { TimePane, setHtml } from './lower-panes.ts';
-import { LS_ROUND_MS, lsLanded, lsMessage, lsWindow, type LsHeld } from './ls-window.ts';
+import { LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsFollowDelay, lsLanded, lsMessage, lsReach, lsWindow, type LsHeld } from './ls-window.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
+import { IdbLsShown } from '../browser/ls-store.ts';
 import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, lsWindowPeriod, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
 
 const HOUR = 3_600_000;
@@ -72,8 +73,10 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
   for (const s of series) {
     const label = venueLabel(s.id);
     if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id }); continue; }
+    const p = s.status === 'failed' ? null : lsAt(s.points, time, s.periodMs);
+    // A venue still being read (`pending`) has no reading here yet: said so, not "no reading" or "could not be read".
+    if (!p && s.pending) { lines.push({ label, text: t('being read'), color: 'muted', mark: s.id }); continue; }
     if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
-    const p = lsAt(s.points, time, s.periodMs);
     if (!p && s.id.startsWith('bitget:')) noBitget = true;
     lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id } : { label, text: t('no reading'), color: 'muted', mark: s.id });
     if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true });
@@ -109,6 +112,10 @@ export class LsPane extends TimePane {
   #round: AbortController | null = null;
   /** The window the other series (of the venues that follow the one chosen) were last read for in the background, and whether that read is under way. */
   #warmed = ''; #warming: AbortController | null = null;
+  /** The round's timers asking a `pending` venue again, and the one drawing the pane when a round that ended with one pending is due again. */
+  #followups = new Set<number>(); #soon = 0; #deadline = 0;
+  /** What the pane drew from a server's answers, kept in this page (app/browser/ls-store.ts `IdbLsShown`); undefined until first asked. */
+  #shown: IdbLsShown | null | undefined;
   #sync: (() => void)[] = [];
 
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
@@ -128,13 +135,30 @@ export class LsPane extends TimePane {
   }
 
   /** Reflect the settings in the header and read again (a round under way is for what was shown: dropped). */
-  settingsChanged(): void { for (const sync of this.#sync) sync(); this.#generation++; this.#round?.abort(); this.#round = null; this.#warming?.abort(); this.#held = null; this.#loading = false; this.invalidate(); }
+  settingsChanged(): void { for (const sync of this.#sync) sync(); this.#generation++; this.#round?.abort(); this.#round = null; this.#warming?.abort(); this.#stopFollowing(); this.#held = null; this.#loading = false; this.invalidate(); }
+
+  #stopFollowing(): void { for (const timer of this.#followups) window.clearTimeout(timer); this.#followups.clear(); window.clearTimeout(this.#soon); this.#soon = 0; window.clearTimeout(this.#deadline); this.#deadline = 0; }
+
+  /**
+   * The page's copy of what the pane drew, with a server only: the browser engine keeps its own series (its cache's backing), and a session
+   * that keeps nothing (`?persist=0`) keeps none of these either.
+   */
+  #shownStore(): IdbLsShown | null {
+    if (this.#shown === undefined) {
+      let keep = true;
+      try { keep = new URLSearchParams(window.location.search).get('persist') !== '0'; } catch { /* no address to read: keep */ }
+      this.#shown = this.hub.source.kind === 'server' && keep ? new IdbLsShown() : null;
+    }
+    return this.#shown;
+  }
 
   /**
    * Ask for the readings when `lsWindow` says so (ls-window.ts). What is held stays drawn while the next answer comes (the readings of a wider
    * or narrower window are the same readings); only another series or another timeframe clear it, and a market no longer shown is not drawn.
    * One round at a time: a view that moved meanwhile is looked at again when it lands. Each venue is drawn as it answers (`lsLanded`), and the
-   * round ends when all have or after `LS_ROUND_MS`: a venue that never answers costs its own line, never the others'.
+   * round ends when all have or after `LS_ROUND_MS`: a venue that never answers costs its own line, never the others'. A question is answered
+   * within `LS_BUDGET_MS` with what the source holds; a venue it is still reading (`pending`) is asked again every `LS_FOLLOW_MS` until it has
+   * read it, and a round that ends with one still pending is asked again `LS_SOON_MS` later.
    */
   #load(state: AppState, ids: readonly string[], tfMs: number): void {
     const now = Date.now(), of = `${state.lsMetric}|${state.timeframe}`, ident = `${ids.join(',')}|${of}`;
@@ -142,8 +166,8 @@ export class LsPane extends TimePane {
     if (!ask) return;
     const { from, to } = ask, generation = ++this.#generation, source = this.hub.source;
     // Another round (other markets, series or timeframe) cancels what the last one still waits for, its background warming included.
-    this.#round?.abort(); this.#warming?.abort();
-    const round = this.#round = new AbortController(), answers = new Map<string, LsSeries>();
+    this.#round?.abort(); this.#warming?.abort(); this.#stopFollowing();
+    const round = this.#round = new AbortController(), answers = new Map<string, LsSeries>(), settled = new Set<string>();
     // Another series: Bybit publishes one population, so its line stays drawn while the others are read (every line used to blank, the pane
     // looking slow to switch); another timeframe is other readings for all of them.
     if (this.#seriesOf !== of) {
@@ -157,19 +181,72 @@ export class LsPane extends TimePane {
       if (over || generation !== this.#generation) return;
       this.#series = lsLanded(ids, this.#series, answers, final);
       if (final) {
-        over = true; window.clearTimeout(deadline); round.abort();
+        over = true; window.clearTimeout(deadline); round.abort(); this.#stopFollowing();
         if (this.#round === round) this.#round = null;
         this.#loading = false;
-        if (this.#held) this.#held.at = Date.now();
-        this.#warm(ids, state, from, to);
+        const at = Date.now(), pending = ids.some(id => answers.get(id)?.pending);
+        if (this.#held) { this.#held.at = at; if (pending) this.#held.soon = at + LS_SOON_MS; }
+        // A venue still being read is asked again shortly, the pane drawn then (a chart standing still draws nothing on its own); the other
+        // series are warmed once none is, so their reads do not queue before it at the venue.
+        if (pending) this.#soon = window.setTimeout(() => { this.#soon = 0; this.invalidate(); }, LS_SOON_MS + 50);
+        else this.#warm(ids, state, from, to);
       }
       this.invalidate();
     };
-    const deadline = window.setTimeout(() => land(true), LS_ROUND_MS);
-    for (const id of ids) {
-      void source.longShort(id, state.lsMetric, state.timeframe, from, to, round.signal)
+    const deadline = this.#deadline = window.setTimeout(() => land(true), LS_ROUND_MS);
+    const shown = this.#shownStore();
+    // The line drawn for a venue of this population (an answer, or what was kept), if any.
+    const line = (id: string, population: LsPopulation): LsSeries | undefined => this.#series.find(s => s.id === id && s.points.length > 0 && s.population === population);
+    const read = (id: string, attempt: number): void => {
+      void source.longShort(id, state.lsMetric, state.timeframe, from, to, round.signal, LS_BUDGET_MS)
         .catch((): LsSeries => ({ id, population: null, periodMs: 0, points: [], status: 'failed' }))
-        .then(series => { if (over || generation !== this.#generation) return; answers.set(id, series); land(answers.size === ids.length); });
+        .then(series => {
+          if (over || generation !== this.#generation) return;
+          answers.set(id, series);
+          // Every venue has answered once: a view that moves meanwhile asks its own window at once (that round cancels these follow-ups)
+          // rather than wait for a slow venue's last follow-up. Only a moved view can: the minute's refresh counts from the round's start
+          // (`held.at`), and the round (`LS_ROUND_MS`, 45 s) ends before it.
+          if (answers.size === ids.length) this.#loading = false;
+          // A venue's readings as the server answered them, kept for the next time the pane is shown (a final answer: a pending one comes again).
+          if (shown && !series.pending && series.points.length && series.population && series.periodMs) shown.add(`${id}|${series.population}|${series.periodMs}`, series.points);
+          // Still being read: drawn as it is, asked again a little later each time (each answer is the source's, not a new read); settled
+          // once it is not. A pane that is off or a page that is away asks nothing: the round is dropped as it stands (no venue is called
+          // failed for it: a slow one is only slow), and the pane drawn again asks a whole round anew.
+          if (series.pending) {
+            const timer = window.setTimeout(() => {
+              this.#followups.delete(timer);
+              if (over || generation !== this.#generation) return;
+              if (this.root.hidden || document.hidden) drop(); else read(id, attempt + 1);
+            }, lsFollowDelay(attempt));
+            this.#followups.add(timer);
+          } else settled.add(id);
+          land(settled.size === ids.length);
+        });
+    };
+    /** The round given up as it stands, its lines kept: nothing more is asked, and the next draw asks a whole round. */
+    const drop = (): void => {
+      over = true; window.clearTimeout(deadline); round.abort(); this.#stopFollowing();
+      if (this.#round === round) this.#round = null;
+      this.#loading = false; this.#held = null;
+    };
+    for (const id of ids) read(id, 0);
+    // What was drawn the last time, drawn at once: the server's answers can wait twenty seconds and more behind the page's other requests to
+    // it while the page loads. Marked pending (its venue is being read); the answer replaces it, a round that ends without one leaves it stale.
+    // Never over a final answer of this round (read, empty or failed: what it says stands), nor over a line that reaches as far (another
+    // period's, drawn before this window).
+    if (shown) for (const id of ids) {
+      const venue = id.slice(0, id.indexOf(':')), population = lsPopulationOf(venue, state.lsMetric), periodMs = lsWindowPeriod(venue, tfMs, from, to);
+      if (!population || !periodMs || line(id, population)?.periodMs === periodMs) continue;
+      void shown.get(`${id}|${population}|${periodMs}`).then(points => {
+        const answer = answers.get(id);
+        if (over || generation !== this.#generation || !points || (answer && !answer.pending)) return;
+        const inWindow = points.filter(p => p.t >= from - periodMs && p.t < to);
+        if (!inWindow.length) return;
+        const kept: LsSeries = { id, population, periodMs, points: inWindow, status: 'ok', pending: true }, current = line(id, population);
+        if (current && (current.periodMs === periodMs || lsReach(current) >= lsReach(kept))) return;
+        this.#series = this.#series.some(s => s.id === id) ? this.#series.map(s => s.id === id ? kept : s) : [...this.#series, kept];
+        this.invalidate();
+      });
     }
   }
 
@@ -189,10 +266,13 @@ export class LsPane extends TimePane {
     // Its own lifetime: cancelled with the pane's settings, and given up with the round's deadline, so it never holds a connection for good.
     const warming = this.#warming = new AbortController(), timer = window.setTimeout(() => warming.abort(), LS_ROUND_MS);
     const source = this.hub.source, others = LS_METRICS.filter(m => m !== state.lsMetric);
-    // Warmed only once every series came back read: one cancelled (a new round, the pane's settings, the deadline) or failed is warmed again
-    // with the next round (the source's cache keeps a failing venue to one question a minute).
-    void Promise.allSettled(chosen.flatMap(id => others.map(metric => source.longShort(id, metric, state.timeframe, from, to, warming.signal))))
-      .then(results => { if (!warming.signal.aborted && results.every(r => r.status === 'fulfilled' && r.value.status !== 'failed')) this.#warmed = key; })
+    // Asked with no wait (budget 0): the source starts each read and answers at once, so no request holds one of the browser's connections to
+    // the server; the reads go on in the source's cache, which is what a switch to the series draws from. Warmed once every series came back
+    // read: one cancelled (a new round, the pane's settings, the deadline), failed or still being read (`pending`) is warmed again with the next
+    // round, by then from the source's cache (which keeps a failing venue to one question a minute). A source from before the budget waits for
+    // the reads, as it always did.
+    void Promise.allSettled(chosen.flatMap(id => others.map(metric => source.longShort(id, metric, state.timeframe, from, to, warming.signal, 0))))
+      .then(results => { if (!warming.signal.aborted && results.every(r => r.status === 'fulfilled' && r.value.status !== 'failed' && !r.value.pending)) this.#warmed = key; })
       .finally(() => { window.clearTimeout(timer); if (this.#warming === warming) this.#warming = null; });
     // An abort settles the requests at once (their promises reject): the gate opens with it.
     warming.signal.addEventListener('abort', () => { if (this.#warming === warming) this.#warming = null; }, { once: true });

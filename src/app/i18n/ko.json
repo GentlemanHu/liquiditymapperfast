@@ -1602,5 +1602,8 @@
  "A change nearby went the other way, by about the same size.": "근처에서 반대 방향의 변화가 있었고 크기가 비슷합니다.",
  "{usd} traded": "체결 {usd}",
  "none traded": "체결 없음",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "체결: 비슷한 시각에 해당 거래소에서 이 행에 닿은 시장가 주문. 변화 중 얼마가 그 때문인지는 호가창에서 알 수 없습니다."
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "체결: 비슷한 시각에 해당 거래소에서 이 행에 닿은 시장가 주문. 변화 중 얼마가 그 때문인지는 호가창에서 알 수 없습니다.",
+ "being read": "읽는 중",
+ "Hide the controls": "컨트롤 숨기기",
+ "Show the controls": "컨트롤 표시"
 }

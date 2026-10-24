@@ -546,3 +546,71 @@ test('the period of a window is what the cache reads it in: the chart\'s own, co
   assert.equal(lsWindowPeriod('bitget', 15 * M, NOW - 20 * D, NOW), 2 * H, 'Bitget, with 288 a window, takes two-hourly readings');
   assert.equal(lsWindowPeriod('hyperliquid', H, NOW - D, NOW), 0);
 });
+
+/** A venue whose answers wait until the test lets them go: `release()` answers every request asked so far. */
+function gated(answer: (url: URL) => unknown): Fetcher & { asked: string[]; release(): void } {
+  const asked: string[] = [], waiting: (() => void)[] = [];
+  const get = (async (raw: string) => {
+    asked.push(raw);
+    await new Promise<void>(resolve => waiting.push(resolve));
+    return answer(new URL(raw));
+  }) as Fetcher & { asked: string[]; release(): void };
+  get.asked = asked;
+  get.release = () => { for (const go of waiting.splice(0)) go(); };
+  return get;
+}
+const bybitRows = (times: number[]) => ({ retCode: 0, result: { list: times.map(t => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(t) })) } });
+const settle = () => new Promise(resolve => setTimeout(resolve, 5));
+
+test('with a wait budget the cache answers at once with what it holds, pending, and the read goes on for the next question', async () => {
+  // A busy server took longer than the pane's round to read a venue, and the pane drew it a minute later (2026-10-23).
+  let now = NOW;
+  const get = gated(() => bybitRows([NOW - 2 * H, NOW - H]));
+  const cache = new LongShortCache(get, false, () => now);
+  const started = Date.now(), first = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 20);
+  assert.ok(Date.now() - started < 1_000, 'within about the budget');
+  assert.deepEqual([first.status, first.points.length, first.pending, get.asked.length], ['empty', 0, true, 1], 'nothing held yet: empty, still being read');
+  const again = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 20);
+  assert.deepEqual([again.pending, get.asked.length], [true, 1], 'asked again while it reads: the same read, no second request');
+  get.release(); await settle();
+  const read = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 20);
+  assert.deepEqual([read.status, read.points.length, read.pending, get.asked.length], ['ok', 2, undefined, 1], 'the read it went on with');
+  // The refresh of the newest stretch an hour on: what is held is answered at once, pending, and the new reading follows.
+  now += H + M;
+  const refresh = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + 2 * H, 20);
+  assert.deepEqual([refresh.status, refresh.points.length, refresh.pending, get.asked.length], ['ok', 2, true, 2], 'held readings at once, the refresh under way');
+  get.release(); await settle();
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + 2 * H, 20)).pending, undefined);
+});
+
+test('a budget of nothing starts the read and answers at once; without a budget the question waits for the read, as before', async () => {
+  const get = gated(() => bybitRows([NOW - H]));
+  const cache = new LongShortCache(get, false, () => NOW);
+  const now0 = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 0);
+  assert.deepEqual([now0.pending, get.asked.length], [true, 1], 'the read started, the answer at once');
+  let waited = false;
+  const full = cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H).then(s => { waited = true; return s; });
+  await settle(); assert.equal(waited, false, 'no budget: it waits');
+  get.release();
+  const s = await full;
+  assert.deepEqual([s.status, s.points.length, s.pending], ['ok', 1, undefined]);
+});
+
+test('a read that fails after the budget ran out is reported to the next question as failed, never as pending for good', async () => {
+  let fail = true;
+  const waiting: (() => void)[] = [];
+  const get: Fetcher = async () => { await new Promise<void>(resolve => waiting.push(resolve)); if (fail) throw new Error('down'); return bybitRows([NOW - H]); };
+  const cache = new LongShortCache(get, false, () => NOW);
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 10)).pending, true);
+  for (const go of waiting.splice(0)) go(); await settle();
+  const after = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 24 * H, NOW + H, 10);
+  assert.deepEqual([after.status, after.pending], ['failed', undefined], 'the failure, paused for a minute');
+  fail = false;
+});
+
+test('over the wire: pending is kept only when it is true', () => {
+  const base = { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: NOW, long: 0.6 }] };
+  assert.equal(parseLsSeries({ ...base, pending: true }).pending, true);
+  assert.equal('pending' in parseLsSeries(base), false);
+  assert.equal('pending' in parseLsSeries({ ...base, pending: 'yes' }), false);
+});

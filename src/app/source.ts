@@ -101,9 +101,10 @@ export interface DataSource {
   oi(inst: string, tf: string, from: number, to: number, usd?: boolean): Promise<OiBar[]>;
   /**
    * A venue's published long/short readings for one market (shared/long-short.ts): `metric` is the Binance series chosen. `signal` cancels the
-   * request; a source whose requests are shared by every question (the browser engine's cache) may answer anyway.
+   * request; a source whose requests are shared by every question (the browser engine's cache) may answer anyway. `budgetMs`: answer within
+   * about that long with what is held, `pending` while the venue is still being read (a server from before it waits for the read).
    */
-  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal): Promise<LsSeries>;
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number): Promise<LsSeries>;
   /** Large trades in [from, to), oldest first. */
   /** Large market orders in [from, to) from `minUsd` (the recording's floor when absent), the newest few thousand of them. */
   prints(from: number, to: number, minUsd?: number): Promise<Print[]>;

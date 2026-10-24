@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lsLanded, lsMessage, lsWindow, type LsHeld } from '../src/app/panes/ls-window.ts';
+import { lsFollowDelay, lsLanded, lsMessage, lsReach, lsWindow, type LsHeld } from '../src/app/panes/ls-window.ts';
 import type { LsSeries } from '../src/shared/long-short.ts';
 
 const HOUR = 3_600_000, MIN = 60_000, NOW = 1_800_000_000_000, TF = HOUR;
@@ -117,4 +117,52 @@ test('up to 29 days in view, at any timeframe finer than daily, the window and i
       assert.ok(ask.to - ask.from < 30 * DAY && ask.from <= v.t0, `${days} days on ${tf / MIN}-minute candles: ${(ask.to - ask.from) / HOUR} hours`);
     }
   }
+});
+
+test('a venue still being read says "reading", never "none", and keeps the lines drawn while it is read', () => {
+  const pendingEmpty: LsSeries = { ...S('bybit:BTCUSDT', 'empty', 0), pending: true };
+  assert.equal(lsMessage([pendingEmpty], false), 'reading', 'the round is over, the venue is still being read');
+  assert.equal(lsMessage([{ ...S('bybit:BTCUSDT', 'ok', 2), pending: true }], false), 'reading', 'readings held for another time while the venue is read: still reading, never "no readings"');
+  const before = [S('bybit:BTCUSDT', 'ok', 3)];
+  const kept = lsLanded(['bybit:BTCUSDT'], before, new Map([['bybit:BTCUSDT', pendingEmpty]]), false)[0]!;
+  assert.deepEqual([kept.points.length, kept.status, kept.pending], [3, 'ok', true], 'nothing held for this window yet: the lines drawn stay');
+  // S(…, n) has readings at NOW, NOW - 1 h, …: one reading reaches as far as three.
+  const partial: LsSeries = { ...S('bybit:BTCUSDT', 'ok', 1), pending: true };
+  assert.equal(lsLanded(['bybit:BTCUSDT'], before, new Map([['bybit:BTCUSDT', partial]]), true)[0]!.points.length, 3, 'as far as the line with fewer readings (its older ones still being read): the fuller line stays');
+  const further: LsSeries = { ...partial, points: [{ t: NOW + HOUR, long: 0.6 }] };
+  assert.equal(lsLanded(['bybit:BTCUSDT'], before, new Map([['bybit:BTCUSDT', further]]), true)[0], further, 'one reaching further is drawn as answered');
+  const older: LsSeries = { ...partial, points: [{ t: NOW - 5 * HOUR, long: 0.6 }] };
+  const keptLine = lsLanded(['bybit:BTCUSDT'], [{ ...before[0]!, points: [...before[0]!.points].reverse() }], new Map([['bybit:BTCUSDT', older]]), false)[0]!;
+  assert.deepEqual([keptLine.points.length, keptLine.pending], [3, true], 'an older stretch while the rest is read: the line drawn keeps its newest hours');
+});
+
+test('a round that ended with a venue pending is asked again when it is due, not a minute later', () => {
+  const ask = lsWindow(null, false, 'k', view, TF, NOW, VENUES)!, held: LsHeld = { ident: 'k', ...ask, at: NOW, soon: NOW + 5_000 };
+  assert.equal(lsWindow(held, false, 'k', view, TF, NOW + 4_000, VENUES), null, 'not yet');
+  assert.notEqual(lsWindow(held, false, 'k', view, TF, NOW + 5_000, VENUES), null, 'due');
+  assert.equal(lsWindow(held, true, 'k', view, TF, NOW + 5_000, VENUES), null, 'never over a round under way');
+});
+
+test('a venue still being read is asked again a little later each time, up to every 8 s', () => {
+  assert.deepEqual([0, 1, 2, 3, 9].map(lsFollowDelay), [2_000, 4_000, 8_000, 8_000, 8_000]);
+});
+
+test('a line kept while its venue was read turns stale, no longer pending, when the round ends without an answer or with a failure', () => {
+  // Found in review: the copy kept `pending`, and a blank pane said "Readingâ€¦" for a venue nothing was reading any more.
+  const keptLine: LsSeries = { ...S('bybit:BTCUSDT', 'ok', 3), pending: true };
+  for (const answers of [new Map<string, LsSeries>(), new Map([['bybit:BTCUSDT', S('bybit:BTCUSDT', 'failed', 0)]])]) {
+    const s = lsLanded(['bybit:BTCUSDT'], [keptLine], answers, true)[0]!;
+    assert.deepEqual([s.status, 'pending' in s, s.points.length], ['stale', false, 3]);
+    assert.equal(lsMessage([s], false), 'failed');
+  }
+});
+
+test('lines of different periods compare by how far they are drawn: a daily reading stands for its day', () => {
+  const DAY = 24 * HOUR, today = Math.floor(NOW / DAY) * DAY;
+  const hourly: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: HOUR, status: 'ok', points: [{ t: NOW - HOUR, long: 0.6 }, { t: NOW, long: 0.61 }] };
+  const daily: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: DAY, status: 'ok', pending: true, points: [{ t: today - DAY, long: 0.6 }, { t: today, long: 0.62 }] };
+  assert.equal(lsReach(daily), today + DAY);
+  assert.equal(lsLanded(['binance:BTCUSDT'], [hourly], new Map([['binance:BTCUSDT', daily]]), false)[0], daily, 'zoomed out to days: the daily line, though its newest reading is stamped at midnight');
+  const oldHourly: LsSeries = { ...hourly, pending: true, points: [{ t: NOW - 30 * HOUR, long: 0.6 }] };
+  assert.equal(lsLanded(['binance:BTCUSDT'], [{ ...daily, pending: undefined }], new Map([['binance:BTCUSDT', oldHourly]]), false)[0]!.periodMs, DAY, 'zoomed in, the finer series holds an old stretch: the daily line stays while it is read');
 });

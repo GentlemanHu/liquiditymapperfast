@@ -1602,5 +1602,8 @@
  "A change nearby went the other way, by about the same size.": "附近有一次方向相反、大小相近的变化。",
  "{usd} traded": "成交 {usd}",
  "none traded": "无成交",
- "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "成交:大致同一时间在该交易所触及此行的市价单。订单簿并不说明它们占这次变化的多少。"
+ "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "成交:大致同一时间在该交易所触及此行的市价单。订单簿并不说明它们占这次变化的多少。",
+ "being read": "读取中",
+ "Hide the controls": "隐藏控制栏",
+ "Show the controls": "显示控制栏"
 }
