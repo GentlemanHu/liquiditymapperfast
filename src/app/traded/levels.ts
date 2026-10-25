@@ -1,8 +1,9 @@
 import type { ProfileAnswer } from '../../shared/footprint.ts';
 import { levelsOf, rowOf, type ValueLevels } from '../../shared/profile.ts';
 import type { CandleRow } from '../store.ts';
+import { carryPairs, type Carry } from './carry.ts';
 import { dayWindows, lastWindows, minutesOf, monthWindows, sessionWindows, weekWindows, type ProfileWindow } from './sessions.ts';
-import { resolveZone, type KindSettings, type LineKind, type TradedSettings } from './settings.ts';
+import { linesSource, recordedCount, resolveZone, type KindSettings, type LineKind, type TradedSettings } from './settings.ts';
 
 /**
  * The step the traded column asks its rows on: one that both its display rows and the point of control's rows are whole multiples of (and
@@ -28,14 +29,23 @@ export function answerLevels(answer: ProfileAnswer, step: number, share: number)
 /**
  * When a past point of control was first traded through after its window ended: the first candle from `after` whose range reaches it,
  * `tolerance` either side (half a row: the levels are read from every venue, the candles are one market's, a little apart). Null when no
- * candle held reaches it: the level is still naked as far as the candles go.
+ * candle held reaches it: the level is still naked as far as the candles go. In a replay (`closed`: the moment shown and the candles' size) only
+ * candles over by then count: one still forming carries a high and low from after the moment.
  */
-export function touchedAt(price: number, after: number, candles: readonly CandleRow[], tolerance: number): number | null {
+export function touchedAt(price: number, after: number, candles: readonly CandleRow[], tolerance: number, closed?: { by: number; barMs: number }): number | null {
   for (const c of candles) {
     if (c[0] < after) continue;
+    if (closed && c[0] + closed.barMs > closed.by) break;
     if (c[3] - tolerance <= price && price <= c[2] + tolerance) return c[0];
   }
   return null;
+}
+
+/** Every window of one kind that touches [t0, t1], oldest first, however many: days and weeks start in the settings' zone (`page`: the page's clock). */
+export function periodWindows(s: Pick<KindSettings, 'period' | 'zone' | 'sessions'>, pageZone: 'local' | 'utc', t0: number, t1: number): ProfileWindow[] {
+  const zone = resolveZone(s.zone, pageZone);
+  return s.period === 'day' ? dayWindows(zone, t0, t1) : s.period === 'week' ? weekWindows(zone, t0, t1) : s.period === 'month' ? monthWindows(zone, t0, t1)
+    : sessionWindows(s.sessions, t0, t1, z => resolveZone(z, pageZone));
 }
 
 /**
@@ -44,10 +54,48 @@ export function touchedAt(price: number, after: number, candles: readonly Candle
  */
 export function linesWindows(s: KindSettings, pageZone: 'local' | 'utc', t0: number, t1: number, now: number, count = s.count): ProfileWindow[] {
   if (count < 1) return [];
-  const zone = resolveZone(s.zone, pageZone), end = Math.min(t1, now);
-  const all = s.period === 'day' ? dayWindows(zone, t0, end) : s.period === 'week' ? weekWindows(zone, t0, end) : s.period === 'month' ? monthWindows(zone, t0, end)
-    : sessionWindows(s.sessions, t0, end, z => resolveZone(z, pageZone));
-  return lastWindows(all, count, now);
+  return lastWindows(periodWindows(s, pageZone, t0, Math.min(t1, now)), count, now);
+}
+
+/** How far back from now the calendar is laid out to find a window under way and the one before it: a month and a half is more than the longest. */
+const CARRY_BACK: Readonly<Record<LineKind, number>> = { day: 3 * 86_400_000, week: 15 * 86_400_000, month: 65 * 86_400_000, sessions: 6 * 86_400_000 };
+
+/**
+ * The previous windows to carry across the ones under way at `now` (`carryPairs`) for one kind, from the whole calendar around now and before
+ * any gate: how many are drawn (`count` does not matter: a single day drawn still carries yesterday's) or whether the source can still be
+ * worked out (the caller gates the source with `recordedWindows` and the coverage rules, and a source that fails them is no carry: the one
+ * before it is never put in its place).
+ */
+export function carriesOf(s: Pick<KindSettings, 'period' | 'zone' | 'sessions'>, pageZone: 'local' | 'utc', now: number): Carry[] {
+  return carryPairs(periodWindows(s, pageZone, now - CARRY_BACK[s.period], now + 1), now);
+}
+
+/**
+ * The carries to draw at `now` for the kinds whose lines are on (`s.lines`): each kind's pairs (`carriesOf`) kept only where the source can
+ * still be worked out. From the recording that is a kind it can hold two windows of at all (`recordedCount`: a week never, it holds the one
+ * under way; a page that keeps a day no previous day) and a source that began inside what it keeps (`recordedWindows`, on the real clock
+ * `real`); from candles always (a month's too). A source that fails is dropped and nothing takes its place.
+ */
+export function gatedCarries(s: Pick<TradedSettings, 'lines' | 'source' | 'zone' | 'sessions'>, pageZone: 'local' | 'utc', now: number, real: number, keepsMs: number): Carry[] {
+  const out: Carry[] = [];
+  for (const period of s.lines) {
+    const k = { ...s, period }, recorded = linesSource(k) === 'recorded';
+    if (recorded && recordedCount(period, keepsMs) < 2) continue;
+    for (const c of carriesOf(k, pageZone, now)) if (!recorded || recordedWindows([c.source], real, keepsMs).length) out.push(c);
+  }
+  return out;
+}
+
+/** What a value-area answer of the recording says of a window, as the lines draw it. */
+export interface HeldValueArea { from: number; to: number; minutes: number; covered?: number; poc: number | null; vah: number | null; val: number | null; asOf: number }
+/**
+ * A window's levels from the recording's answer, and how far it reaches, or null when they are not drawn: no answer yet, no trade in the
+ * window, an answer from before the window ended (one that may lack its last trades waits for the next), or under `DRAWN_SHARE` of it
+ * recorded. An answer revised later (late trades) replaces this one; until it comes an answer that fails the first rules draws nothing.
+ */
+export function recordedWindowLevels(held: HeldValueArea | undefined, w: { to: number }, now: number): { levels: ValueLevels; upTo: number } | null {
+  if (!held || held.poc === null || held.vah === null || held.val === null || (w.to <= now && held.asOf < w.to) || recordedShare(held, held.asOf) < DRAWN_SHARE) return null;
+  return { levels: { poc: held.poc, vah: held.vah, val: held.val }, upTo: held.asOf };
 }
 
 /** A window's kind, from its key (`day|…`, `week|…`, `month|…`, `session|…`). */
@@ -93,6 +141,11 @@ export function candleBarMs(s: Pick<KindSettings, 'period' | 'sessions'>): numbe
  * buys spread as its volume is, or null where a bar with volume did not say (a venue that does not report them).
  */
 export interface CandleProfile { levels: ValueLevels | null; covered: number; rows: Map<number, number>; buys: Map<number, number> | null }
+/**
+ * The most rows one bar may be spread over, and one window may hold: a step far finer than the prices (before the first price is known the grid
+ * step is a billionth) would make millions of rows a bar. A bar a coin that fell 99 % has in its history is 20 times today's price high at most.
+ */
+export const MAX_BAR_ROWS = 100_000, MAX_WINDOW_ROWS = 4_000_000;
 export function candleLevels(bars: readonly CandleRow[], from: number, to: number, barMs: number, step: number, share: number, heldTo: number): CandleProfile {
   const rows = new Map<number, number>(), buys = new Map<number, number>(), end = Math.min(to, Math.floor(heldTo / barMs) * barMs);
   let n = 0, split = true, any = false;
@@ -106,6 +159,7 @@ export function candleLevels(bars: readonly CandleRow[], from: number, to: numbe
     if (taker === undefined || !Number.isFinite(taker)) split = false;
     const bought = split ? usd * Math.min(1, Math.max(0, taker! / volume)) : 0;
     const a = rowOf(low, step), z = rowOf(high, step);
+    if (!(z - a <= MAX_BAR_ROWS) || rows.size > MAX_WINDOW_ROWS) return { levels: null, covered: 0, rows: new Map(), buys: null };
     if (a === z) { rows.set(a, (rows.get(a) ?? 0) + usd); if (split) buys.set(a, (buys.get(a) ?? 0) + bought); continue; }
     for (let k = a; k <= z; k++) {
       const part = (Math.min(high, (k + 1) * step) - Math.max(low, k * step)) / (high - low);

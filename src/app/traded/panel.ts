@@ -95,7 +95,14 @@ export function buildTradedPanel(store: Store, tools: HTMLElement, body: HTMLEle
     // From the recording, only as many as it still holds: a count it cannot work out is not offered.
     const most = source === 'candles' ? mostCount(k) : recordedCount(first, sources.browser ? BROWSER_RETENTION_MS : RETENTION_MS);
     if (most >= 1) body.append(numberRow(t('Periods shown, including current'), t('How many past ones are drawn, the one under way among them (of each session).'), { min: 1, max: most, step: 1, value: Math.min(s.count, most) }, count => set({ count: Math.max(1, Math.min(most, Math.round(count))) })));
-    if (s.lines.length) body.append(switchRow(t('Extend untouched points of control'), t('A past point of control that price has not traded through since (a naked one) runs on, dotted, to where it was reached, or to the right edge.'), s.naked, naked => set({ naked })));
+    if (s.lines.length) body.append(switchRow(t('Extend untouched points of control'), t('A past point of control that price has not traded through since (a naked one) runs on, dotted, to where it was reached, or to the right edge.'), s.naked, naked => set({ naked })),
+      switchRow(t('Carry the previous period\'s levels'), t('The previous day\'s, week\'s, month\'s or session\'s point of control and value area are drawn across the one under way, long-dashed and fainter, whether or not price has traded through them. The recording must still hold all of that period (usually it does not for a previous week on a server, which keeps a week of trades, nor for a previous day on a page, which keeps a day); candles reach further and are marked ≈.'), s.carry, carry => set({ carry })));
+    // The recording holds a previous window of a kind only where it can hold two (a page a day, a server a week: no previous week), so with the
+    // recording as the source and no kind that can, the switch carries nothing: said, not left looking live.
+    const retention = sources.browser ? BROWSER_RETENTION_MS : RETENTION_MS;
+    if (s.carry && s.lines.length && s.source === 'recorded' && !s.lines.some(k => k === 'month' || recordedCount(k, retention) >= 2)) {
+      body.append(note(t('Nothing is carried from the recording for the periods ticked: it holds only the one under way (a server keeps a week of trades, a page a day). Work them out from candles to carry the previous one\'s levels.')));
+    }
     if (source === 'recorded') {
       body.append(note(sources.browser
         ? t('This page keeps a day of trades, and only while it is open: it works out today and the last session at most, and no week. For older ones, work them out from candles.')

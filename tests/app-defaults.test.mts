@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULTS_REV, DEFAULT_SHOW, LAYOUT_KEYS, defaultShow, initialState, type AppState } from '../src/app/store.ts';
-import { COLUMN_SHARE, MIN_FLOW_W, MIN_SIDE_W, defaultColumns } from '../src/app/layouts/layouts.ts';
+import { COLUMN_SHARE, FLOW_FLOOR_W, FULL_WIDTH, MIN_FLOW_W, MIN_SIDE_W, SIDE_FLOOR_W, defaultColumns } from '../src/app/layouts/layouts.ts';
 
 const saved = (blob: Record<string, unknown> | null, run: () => void): void => {
   const real = (globalThis as { window?: unknown }).window;
@@ -65,20 +65,35 @@ test('revision 3: a save of revision 2 carries its measure strip into the profil
   assert.equal(DEFAULTS_REV, 3);
 });
 
-test('the columns begin at the golden section of the window, as wide as before at the least', () => {
+test('the columns begin at the golden section of the window, as wide as before from 1,600 px up, and narrower in proportion under it, to a floor', () => {
   assert.ok(Math.abs(1 - 2 * COLUMN_SHARE - 0.618) < 0.001, 'the map keeps 61.8 %');
-  assert.deepEqual(defaultColumns(1366), { flowW: MIN_FLOW_W, sideW: MIN_SIDE_W });
+  // From 1,600 px up nothing changed (Karl's large screen was right as it was).
+  assert.deepEqual(defaultColumns(1600), { flowW: 306, sideW: MIN_SIDE_W });
   assert.deepEqual(defaultColumns(1920), { flowW: 367, sideW: MIN_SIDE_W });
   assert.deepEqual(defaultColumns(2560), { flowW: 489, sideW: 489 });
   assert.deepEqual(defaultColumns(3840), { flowW: 733, sideW: 733 });
-  assert.deepEqual(defaultColumns(0), { flowW: MIN_FLOW_W, sideW: MIN_SIDE_W });
+  // Under it they follow the window (the book 26.25 %, the flow column 18.75 %, as at 1,600), to their floors: the book was 420 px of a 1,280 px window.
+  assert.deepEqual(defaultColumns(1500), { flowW: 287, sideW: 394 });
+  assert.deepEqual(defaultColumns(1366), { flowW: 261, sideW: 359 });
+  assert.deepEqual(defaultColumns(1280), { flowW: 260, sideW: 350 });
+  assert.deepEqual(defaultColumns(1024), { flowW: 260, sideW: 350 });
+  assert.deepEqual(defaultColumns(0), { flowW: FLOW_FLOOR_W, sideW: SIDE_FLOOR_W });
+  assert.deepEqual([MIN_FLOW_W, MIN_SIDE_W, FULL_WIDTH], [300, 420, 1600]);
+  let last = { flowW: 0, sideW: 0 };
+  for (let width = 800; width <= 4000; width += 40) {
+    const now = defaultColumns(width);
+    assert.ok(now.flowW >= last.flowW && now.sideW >= last.sideW, `${width}: never narrower in a wider window`);
+    assert.ok(now.sideW >= SIDE_FLOOR_W && now.flowW >= FLOW_FLOOR_W);
+    last = now;
+  }
 });
 
 test('the stylesheet sets the columns the same way before the page has run', () => {
   const css = fs.readFileSync(path.join(process.cwd(), 'src', 'app', 'styles.css'), 'utf8');
   const vw = `${(COLUMN_SHARE * 100).toFixed(1)}vw`;
-  assert.ok(css.includes(`--side-w: max(${MIN_SIDE_W}px, ${vw})`), 'the book');
-  assert.ok(css.includes(`--flow-w: max(${MIN_FLOW_W}px, ${vw})`), 'the flow column');
+  const book = `${(MIN_SIDE_W / FULL_WIDTH * 100).toFixed(2)}vw`, flow = `${(MIN_FLOW_W / FULL_WIDTH * 100).toFixed(2)}vw`;
+  assert.ok(css.includes(`--side-w: max(clamp(${SIDE_FLOOR_W}px, ${book}, ${MIN_SIDE_W}px), ${vw})`), 'the book');
+  assert.ok(css.includes(`--flow-w: max(clamp(${FLOW_FLOOR_W}px, ${flow}, ${MIN_FLOW_W}px), ${vw})`), 'the flow column');
 });
 
 test('the top bar starts unfolded; a fold is kept in this browser, never in a layout, and anything but true reads as unfolded', () => {

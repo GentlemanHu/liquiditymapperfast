@@ -29,6 +29,7 @@ import { TapeRing, tapeCapacity } from './tape/ring.ts';
 import { isPhone } from './device.ts';
 import type { SumRow } from '../shared/print-sums.ts';
 import { ChartPriceHistory } from './price-history.ts';
+import { ColumnHolds, columnReach, settledBefore, type ColumnDrop } from './column-holds.ts';
 
 export const TIMEFRAMES: Readonly<Record<string, number>> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 };
 const MINUTE = 60_000;
@@ -69,18 +70,12 @@ export function askedSpan(from: number, to: number): { from: number; to: number 
 function slidOnly(last: AskedWindow | null, base: string, from: number, to: number, spacing: number): boolean {
   return last !== null && last.base === base && from >= last.from && from - last.from <= spacing && to >= last.to && to - last.to <= spacing;
 }
-/**
- * A window of recorded columns is complete once its last minute has ended and the recorder has taken that minute's last sample (seconds
- * later); this much room also covers a source whose clock is a little off.
- */
-export const COLUMNS_SETTLE_MS = 2 * MINUTE;
-/** Every window of `stepMs` that ends at or before this time was complete at `now` (the source's clock) and stays as it is. */
-export const settledBefore = (now: number, stepMs: number): number => Math.floor((now - COLUMNS_SETTLE_MS) / stepMs) * stepMs;
-/**
- * The whole window is asked for again at least this often, refreshes or not: a source lets go of what passes its retention (the browser
- * keeps a day), and columns held from before that would otherwise pile up behind a wide view for days.
- */
-export const COLUMNS_FULL_EVERY_MS = 3_600_000;
+export { COLUMNS_SETTLE_MS, COLUMNS_FULL_EVERY_MS, COLUMN_STEPS_HELD, settledBefore } from './column-holds.ts';
+/** `ids` with the sets that answer them, in `ids`' order; an instrument the source left out is answered by nothing (price grid 0). */
+function answered(sets: readonly { id: string; step: number }[], ids: readonly string[]): { id: string; step: number }[] {
+  const byId = new Map(sets.map(set => [set.id, set] as const));
+  return ids.map(id => byId.get(id) ?? { id, step: 0 });
+}
 
 export interface RasterResult { id: number; w: number; h: number; data: Float32Array; stats: RasterStats; bounds: Bounds }
 
@@ -124,11 +119,13 @@ export class Hub {
   #rasterId = 0;
   #inflight = new Map<number, Bounds>();
   /**
-   * The recorded columns the worker holds: of these instruments, at this step, covering [from, to) (`to` reaches past now: the window the
-   * view may move into); every window that ends before `settled` was complete when it was asked for, so a refresh asks only from there.
-   * `steps`: each market's price grid, as the columns held were recorded on; `whole`: when the whole window was last asked for.
+   * The recorded columns the worker holds, by step and instrument (see `ColumnHolds`): each instrument is asked for on its own account, so a
+   * book that comes or goes, or a zoom back to a step held, does not ask the source for the whole window of every instrument again.
    */
-  #columns: { key: string; from: number; to: number; stepMs: number; settled: number; steps: Map<string, number>; whole: number } | null = null;
+  #columns = new ColumnHolds();
+  /** The step the worker reads (`columnsUse`) and the one the last `loadColumns` wanted; the worker starts at one-minute columns. */
+  #columnsDrawn = MINUTE;
+  #columnsWanted = MINUTE;
   /** How far the page's clock is ahead of the source's (the bootstrap says the source's): windows settle by the source's clock. */
   #sourceSkew = 0;
   #columnsLoading = false;
@@ -918,50 +915,101 @@ export class Hub {
   }
 
   /**
-   * Make sure recorded columns cover `view` (with margin) at a resolution suited to `widthPx`. While the columns held still cover it, a
-   * refresh (`invalidateColumns`) asks only for the windows that could have changed since they were asked for (from `settled`), and none
-   * at all when the view is wholly in the past: a recorded minute does not change, and asking for the whole window again every 30 s cost
-   * a server seconds for a view over days (Research_Findings.md).
+   * Make sure recorded columns cover `view` (with margin) at a resolution suited to `widthPx`, each instrument on its own account
+   * (`ColumnHolds.plan`): one not held for the view is asked for whole and no other is, so a book that comes back after a flap asks for
+   * itself and a step held before asks for nothing. While the columns held still cover the view, a refresh (`invalidateColumns`) asks
+   * only for the windows that could have changed since they were asked for (from `settled`), and none at all when the view is wholly in
+   * the past: a recorded minute does not change, and asking for the whole window again every 30 s cost a server seconds for a view over
+   * days (Research_Findings.md).
    */
   async loadColumns(view: Bounds, widthPx: number): Promise<void> {
     const ids = this.store.state.levels?.books.map(book => book.id) ?? [];
-    if (!ids.length || this.#columnsLoading) return;
+    if (!ids.length) return;
     const span = view.t1 - view.t0;
     // About two pixels a column, in minutes that double from one level to the next: zooming moves between a few steps the server has merged before.
     const stepMs = MINUTE * 2 ** Math.max(0, Math.round(Math.log2(span / Math.max(1, widthPx) * 2 / MINUTE)));
-    const key = ids.join(',');
-    const have = this.#columns, clock = Date.now();
-    const covers = have !== null && have.key === key && have.stepMs === stepMs && have.from <= view.t0 && have.to >= view.t1 && clock - have.whole < COLUMNS_FULL_EVERY_MS;
-    if (covers && !this.#columnsStale) return;
+    const holds = this.#columns;
+    // The view is one object the pane moves on: what an answer is judged against below is the view it was asked for.
+    const seen: Bounds = { t0: view.t0, t1: view.t1, p0: view.p0, p1: view.p1 };
+    this.#columnsWanted = stepMs;
+    holds.touch(stepMs);
+    // A step held for every book is read at once, whatever else is under way.
+    if (holds.covers(ids, seen, stepMs)) this.#readColumns(stepMs);
+    if (this.#columnsLoading) return;
+    const clock = Date.now();
     // What is asked from here on answers every refresh mark made so far; one made while it is under way is answered by the next.
+    const stale = this.#columnsStale;
     this.#columnsStale = false;
+    this.#forgetColumns(holds.sweep(clock, stepMs, this.#columnsDrawn, new Set(ids)));
     // The source's clock: a page whose clock runs ahead would otherwise count the source's open minutes as settled and never ask for them again.
     const now = clock - this.#sourceSkew, settled = settledBefore(now, stepMs);
-    // Whole windows at both ends: a window cut by the question would be kept as the part of it that was asked for.
-    const reach = { from: Math.floor((view.t0 - span * 0.5) / stepMs) * stepMs, to: Math.ceil((view.t1 + span * 0.5) / stepMs) * stepMs };
-    const end = Math.min(now + MINUTE, covers ? have.to : reach.to);
-    if (covers && have.settled >= end) return;
+    const asks = holds.plan(ids, seen, stepMs, now, clock, stale);
+    if (!asks.length) return;
+    const reach = columnReach(seen, stepMs);
     this.#columnsLoading = true;
     try {
-      let tail = covers ? have : null, from = tail ? tail.settled : reach.from;
-      let frame = await this.source.columns(ids, from, end, stepMs);
-      // A market whose price grid is not the one its columns held were recorded on (a server started again and chose another): their bins
-      // mean other prices, so the whole window is asked for again.
-      const held = tail;
-      if (held && frame.instruments.some(set => set.step > 0 && (held.steps.get(set.id) ?? set.step) !== set.step)) {
-        tail = null; from = reach.from;
-        frame = await this.source.columns(ids, from, Math.min(Date.now() - this.#sourceSkew + MINUTE, reach.to), stepMs);
+      for (const ask of asks) {
+        // A zoom to another step since the load began: that step's own load follows, and the rest of this one would only hold it up.
+        if (stepMs !== this.#columnsWanted) break;
+        const frame = await this.source.columns(ask.ids, ask.from, ask.to, stepMs);
+        let whole = frame.instruments, wholeIds = ask.ids;
+        if (ask.tail) {
+          // A market whose price grid is not the one its columns held were recorded on (a server started again and chose another): their bins
+          // mean other prices, so its whole window is asked for again.
+          const other = new Set(holds.gridChanged(stepMs, frame.instruments));
+          const tails = frame.instruments.filter(set => !other.has(set.id));
+          whole = []; wholeIds = [...other];
+          holds.recordTail(stepMs, answered(tails, ask.ids.filter(id => !other.has(id))), settled, clock);
+          if (tails.length) this.#postColumns({ type: 'columnsTail', stepMs, from: ask.from, instruments: tails }, stepMs);
+          // What the other steps hold for these markets was recorded on the old grid too.
+          if (other.size) this.#forgetColumns(holds.forgetElsewhere(stepMs, wholeIds));
+          if (other.size) whole = (await this.source.columns(wholeIds, reach.from, Math.min(Date.now() - this.#sourceSkew + MINUTE, reach.to), stepMs)).instruments;
+        }
+        // Every instrument asked for is held from here on, answered or not: one a source leaves out is not asked for again on every frame
+        // (and has nothing in the worker: what it held for it is forgotten).
+        if (wholeIds.length) {
+          const got = new Set(whole.map(set => set.id)), had = holds.at(stepMs), left = wholeIds.filter(id => !got.has(id) && had.has(id));
+          holds.recordWhole(stepMs, answered(whole, wholeIds), reach, settled, clock);
+          if (left.length) this.#forgetColumns([{ stepMs, ids: left }]);
+        }
+        if (whole.length) this.#postColumns({ type: 'columns', stepMs, instruments: whole }, stepMs);
+        this.#forgetColumns(holds.evict(stepMs, this.#columnsDrawn, this.#columnsWanted));
+        // Once every book is held at the step the view wants, that is the step to read (a step wanted since is read by its own load).
+        if (stepMs === this.#columnsWanted && holds.covers(ids, seen, stepMs)) this.#readColumns(stepMs);
       }
-      const steps = new Map(tail ? tail.steps : []);
-      for (const set of frame.instruments) if (set.step > 0) steps.set(set.id, set.step);
-      this.#columns = tail ? { ...tail, settled: Math.max(tail.settled, settled), steps } : { key, from, to: reach.to, stepMs, settled, steps, whole: clock };
-      // The instruments are views onto a few fetch buffers that nothing on this thread reads again: hand the buffers over instead of copying tens of MB.
-      const buffers = new Set<ArrayBuffer>();
-      for (const set of frame.instruments) for (const array of [set.bins, set.bid, set.ask]) if (array.buffer instanceof ArrayBuffer) buffers.add(array.buffer);
-      this.#post(tail ? { type: 'columnsTail', stepMs: frame.stepMs, from, instruments: frame.instruments } : { type: 'columns', stepMs: frame.stepMs, instruments: frame.instruments }, [...buffers]);
-      this.columnStepMs = frame.stepMs; this.columnsVersion++;
-      this.onColumns();
+      // A load for a step nobody wants any more reads nothing and changes nothing the page would draw: say so, so that the frame that waits for this load to end comes.
+      if (stepMs !== this.#columnsWanted) this.onColumns();
     } finally { this.#columnsLoading = false; }
+  }
+
+  /** The steps the page holds recorded columns for, and the books at each (what it has told the worker to keep). */
+  heldColumns(): { stepMs: number; ids: string[] }[] { return this.#columns.steps().map(stepMs => ({ stepMs, ids: [...this.#columns.at(stepMs).keys()] })); }
+
+  /** Hand columns to the worker. The instruments are views onto a few fetch buffers that nothing on this thread reads again: hand the buffers over instead of copying tens of MB. */
+  #postColumns(message: Extract<WorkerIn, { type: 'columns' | 'columnsTail' }>, stepMs: number): void {
+    const buffers = new Set<ArrayBuffer>();
+    for (const set of message.instruments) for (const array of [set.bins, set.bid, set.ask]) if (array.buffer instanceof ArrayBuffer) buffers.add(array.buffer);
+    this.#post(message, [...buffers]);
+    // What the worker reads has changed only if it is at this step; a step it is not reading waits for `#readColumns`.
+    if (stepMs === this.#columnsDrawn) this.#columnsChanged();
+  }
+
+  /** The worker reads the columns held at this step from now on. */
+  #readColumns(stepMs: number): void {
+    if (stepMs === this.#columnsDrawn) return;
+    this.#post({ type: 'columnsUse', stepMs });
+    this.#columnsDrawn = stepMs;
+    this.#columnsChanged();
+  }
+
+  /** Panes keyed on `columnsVersion` ask the worker again. */
+  #columnsChanged(): void {
+    this.columnStepMs = this.#columnsDrawn; this.columnsVersion++;
+    this.onColumns();
+  }
+
+  #forgetColumns(drops: readonly ColumnDrop[]): void {
+    for (const drop of drops) this.#post({ type: 'columnsDrop', stepMs: drop.stepMs, ids: drop.ids });
   }
 
   /** The source's clock (the page's, less the difference seen at boot): what the source counts as settled is by its own time. */

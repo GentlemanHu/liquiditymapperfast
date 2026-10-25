@@ -20,6 +20,17 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 /* The full top bar as a console of decks (toolbar.ts #arrange): framed groups of up to two rows, wrapping as whole decks, Tools at the right
    end. Their frames are the theme's (chrome.css). */
 .toolbar.cockpit { align-items: stretch; gap: 4px 3px; padding: 2px 6px 5px; }
+/* The bar scales to its window (bar-fit.ts, toolbar.ts #fit; Karl, 2026-10-25: at 1,500 px its last deck wrapped alone onto a second row): `--bar-zoom` is 1
+   for its own size and goes down to 0.85 so that the decks stay one row; under that they are two rows, broken before one deck (`.deck-break`,
+   a line of its own: its negative margin takes back the row gap it adds), each deck growing to fill its row (Tools no longer pinned to the right across a gap).
+   While it is measured (`.fitting`) it is one row at zoom 1 with every deck at its own width. A bar of its own size at 1,600 px and over is as it was. */
+.toolbar.cockpit { zoom: var(--bar-zoom, 1); }
+.toolbar.cockpit.wrapped > .deck { flex: 1 1 auto; }
+.toolbar.cockpit.fitting { zoom: 1; flex-wrap: nowrap; }
+.toolbar.cockpit.fitting > .deck { flex: none; }
+.toolbar.cockpit > .deck-break { flex: 0 0 100%; height: 0; margin-top: -4px; }
+.toolbar.cockpit.fitting > .deck-break { display: none; }
+.toolbar.cockpit.wrapped .deck-tools { margin-left: 0; }
 /* One height for every control in a deck's row: a button ran 22.2 px, a select 24, and the rows rode at different heights. */
 .toolbar.cockpit :is(button, select) { box-sizing: border-box; height: 22px; padding: 0 5px; }
 .toolbar.cockpit .led-btn { padding-left: 19px; }
@@ -165,7 +176,7 @@ button.on { background: var(--text); color: var(--bg); border-color: var(--text)
 .seg.scope button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
 
 /* The columns' widths until one is dragged: the golden section for the map, the rest shared (layouts/layouts.ts `defaultColumns` says the same). */
-main { --side-w: max(420px, 19.1vw); --flow-w: max(300px, 19.1vw); display: grid; grid-template-columns: var(--flow-w) 6px minmax(0, 1fr) 6px var(--side-w); min-height: 0; }
+main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(260px, 18.75vw, 300px), 19.1vw); display: grid; grid-template-columns: var(--flow-w) 6px minmax(0, 1fr) 6px var(--side-w); min-height: 0; }
 .chart-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .side-col, .flow-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .side-col[hidden], .flow-col[hidden], .splitter[hidden] { display: none; }

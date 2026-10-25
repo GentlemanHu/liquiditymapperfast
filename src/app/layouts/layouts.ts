@@ -14,15 +14,18 @@ export interface PaneArrangement { order: string[]; heights: Record<string, numb
 export interface SavedLayout { name: string; savedAt: number; settings: Partial<Settings>; panes: PaneArrangement }
 
 /**
- * How wide the flow column and the book start (px) in a window `width` px wide (Karl, 2026-10-17: on a large screen they began very narrow).
- * The map takes the golden section of the window, 61.8 %, and the two columns share the rest, 19.1 % each, never less than they began at
- * before (300 and 420), so a window under about 2200 px is as it was. The stylesheet says the same (`main` in styles.css: `max(420px, 19.1vw)`),
- * so the columns follow the window until a column is dragged.
+ * How wide the flow column and the book start (px) in a window `width` px wide (Karl, 2026-10-17: on a large screen they began very narrow;
+ * 2026-10-25: on a small one they were too wide, 420 px of 1,280). The map takes the golden section of the window, 61.8 %, and the two columns
+ * share the rest, 19.1 % each, never less than they began at before (300 and 420) in a window of 1,600 px and over, so those are as they were.
+ * Narrower windows take them down in proportion to the window, to floors under which their content starts to give (the book's header goes from
+ * three rows to four under about 330 px; the flow column's venue names are cut under about 260). The stylesheet says the same (`main` in
+ * styles.css: `max(clamp(350px, 26.25vw, 420px), 19.1vw)`), so the columns follow the window until a column is dragged.
  */
-export const COLUMN_SHARE = 0.191, MIN_FLOW_W = 300, MIN_SIDE_W = 420;
+export const COLUMN_SHARE = 0.191, MIN_FLOW_W = 300, MIN_SIDE_W = 420, FLOW_FLOOR_W = 260, SIDE_FLOOR_W = 350, FULL_WIDTH = 1600;
 export function defaultColumns(width: number): { flowW: number; sideW: number } {
-  const share = Math.round(Math.max(0, width) * COLUMN_SHARE);
-  return { flowW: Math.max(MIN_FLOW_W, share), sideW: Math.max(MIN_SIDE_W, share) };
+  const w = Math.max(0, width), share = Math.round(w * COLUMN_SHARE);
+  const scaled = (full: number, floor: number): number => Math.round(Math.min(full, Math.max(floor, w * full / FULL_WIDTH)));
+  return { flowW: Math.max(scaled(MIN_FLOW_W, FLOW_FLOOR_W), share), sideW: Math.max(scaled(MIN_SIDE_W, SIDE_FLOOR_W), share) };
 }
 
 /** A name as it is kept: spaces collapsed and trimmed, at most `MAX_NAME` characters; null when nothing is left. */

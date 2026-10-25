@@ -6,6 +6,7 @@ import type { VenueEntry } from './source.ts';
 import { clock, usd, zoneName } from './format.ts';
 import { venueLabel } from './panes/ladder-pane.ts';
 import { el } from './dom.ts';
+import { BAR_ZOOM_FLOOR, fitBar, type BarFit } from './bar-fit.ts';
 import { lazy } from './lazy.ts';
 import { setTip } from './tip.ts';
 import { InstallButton } from './install.ts';
@@ -242,6 +243,8 @@ export class Toolbar {
   #sheet: Sheet | null = null;
   /** Where Recenter lives on the full toolbar's screens: in a corner of the map it acts on, not among the venues (null until the map exists). */
   #mapHost: HTMLElement | null = null;
+  /** What the full bar was last fitted to (`#fit`), and the element that breaks it into two rows where it is. */
+  #fitted: BarFit | null = null; #deckBreak: HTMLElement | null = null; #fitFrame = 0;
   /** Settings' "Keep screen on" switch (only where the browser can hold the screen awake). */
   #awake = el('input', { type: 'checkbox' });
   #recenter = el('button', { textContent: t('Recenter'), tip: t('Jump back to the live edge and fit the price range to the recent candles (keyboard: R, Home, or double-click the chart).') });
@@ -367,6 +370,13 @@ export class Toolbar {
     this.#venuesButton = venues;
     this.#arrange();
     onLayoutMode(() => { this.#arrange(); });
+    // The bar is fitted when it is laid out, and again when what its decks' widths depend on changes: the window, the fonts, the theme and
+    // frame, the language. Its own height changing (the fit itself, folding it away) asks again and finds the same answer.
+    const refit = (): void => { if (this.#fitFrame) return; this.#fitFrame = requestAnimationFrame(() => { this.#fitFrame = 0; this.#fit(); }); };
+    addEventListener('resize', refit);
+    void document.fonts?.ready.then(refit);
+    new MutationObserver(refit).observe(document.documentElement, { attributes: true, attributeFilter: ['data-frame', 'data-theme', 'data-bar', 'lang'] });
+    new ResizeObserver(refit).observe(this.root);
   }
 
   /**
@@ -495,6 +505,7 @@ export class Toolbar {
       // onto a second row at 1,600 px, doubling the bar, and the top edge holds the title.
       const tools = deck('tools', 'LiquidityMapperFast', [this.#guide, this.#shot], [this.#author, this.#install.root, ...(host ? [] : [this.#zone, this.#language, this.#theme, this.#glass, this.#status])]);
       tools.append(this.#collapse);
+      this.#deckBreak = null; this.#fitted = null;
       this.root.replaceChildren(
         deck('market', t('Market'), [this.#coin, this.#market], [this.#scope, this.#venuesButton!]),
         deck('time', t('Time'), [this.#timeframes], inCorner ? [] : [this.#recenter]),
@@ -503,18 +514,51 @@ export class Toolbar {
         deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#range]),
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound]),
         tools, this.#expand, this.#notice.root, this.#coinNotice);
+      this.#fit();
       return;
     }
     // A phone has Range in Settings and Recenter beside the timeframes: the map's corner stays clear.
     this.#mapTools.remove();
     setTip(this.#venuesButton!, t('Choose which exchanges feed the map. The choice is kept in this browser; nothing changes until you press Apply.'));
     this.root.classList.remove('cockpit');
+    this.#unfit();
     this.root.replaceChildren(
       el('div', { class: 'tb-bar' },
         // The coin alone (Karl, 2026-10-17): the market is chosen in Settings, where the venues are.
         el('div', { class: 'tb-row tb-main' }, this.#brand, this.#coin, this.#spacer, this.#status, this.#more, this.#collapse),
         el('div', { class: 'tb-row tb-time' }, this.#timeframes, this.#recenter)),
       this.#expand, this.#notice.root, this.#coinNotice);
+  }
+
+  /**
+   * Scale the full bar, or break it into two rows, to fit its window (`fitBar`, bar-fit.ts). The decks are measured at their own size, the bar
+   * laid out as one row at zoom 1 (`.fitting`); what is applied is `--bar-zoom` (the stylesheet's `zoom`) and a break before one deck. Nothing
+   * is written when the answer is the one already applied, so a bar that has not changed does not move.
+   */
+  #fit(): void {
+    const bar = this.root;
+    // A bar folded away has no decks to measure (they are not laid out): its fit stays, and is right again the moment it unfolds.
+    if (!bar.classList.contains('cockpit') || !bar.isConnected || bar.classList.contains('collapsed')) return;
+    bar.classList.add('fitting');
+    const decks = [...bar.querySelectorAll<HTMLElement>(':scope > .deck')], style = getComputedStyle(bar);
+    const widths = decks.map(d => d.getBoundingClientRect().width), available = bar.getBoundingClientRect().width;
+    const gap = parseFloat(style.columnGap) || 0, pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    bar.classList.remove('fitting');
+    // The bevel frame is not scaled: held, a button's borders go from 1 + 1 px to 2 + 0, and under a fractional zoom those snap apart (1 + 1 px, then 1 + 0:
+    // the box loses a pixel when it is pressed or switched on). It takes the two balanced rows at its own size instead.
+    const fit = fitBar(widths, gap, pad, available, document.documentElement.dataset.frame === 'bevel' ? 1 : BAR_ZOOM_FLOOR), was = this.#fitted;
+    if (was && was.zoom === fit.zoom && was.breakBefore === fit.breakBefore) return;
+    this.#fitted = fit;
+    bar.style.setProperty('--bar-zoom', String(fit.zoom));
+    this.#deckBreak?.remove(); this.#deckBreak = null;
+    const at = fit.breakBefore === null ? undefined : decks[fit.breakBefore];
+    if (at) { this.#deckBreak = el('span', { class: 'deck-break', ariaHidden: 'true' }); at.before(this.#deckBreak); }
+    bar.classList.toggle('wrapped', this.#deckBreak !== null);
+  }
+  /** The compact bar is not scaled or broken: what the full bar applied is let go. */
+  #unfit(): void {
+    this.root.style.removeProperty('--bar-zoom'); this.root.classList.remove('fitting', 'wrapped');
+    this.#deckBreak?.remove(); this.#deckBreak = null; this.#fitted = null;
   }
 
   #toggleSheet(): void {

@@ -13,6 +13,55 @@ export function toStore(set: ColumnSet): ColumnStore {
 }
 
 /**
+ * The recorded columns the worker holds: per window step (`stepMs`), per instrument. One step is the one the panes read (`use`); the others
+ * wait for a zoom back to them, and an instrument the view no longer lists keeps its columns until the page says to drop them
+ * (`Hub.loadColumns`), so a book that comes back costs nothing. The page and this class are kept in step by the messages alone.
+ */
+export class RecordedColumns {
+  #steps = new Map<number, Map<string, ColumnStore>>();
+  #current: number;
+  constructor(stepMs: number) { this.#current = stepMs; }
+
+  /** The step the panes read. */
+  get stepMs(): number { return this.#current; }
+  /** The instruments' columns at that step (none while it holds nothing). */
+  get current(): ReadonlyMap<string, ColumnStore> { return this.#steps.get(this.#current) ?? EMPTY; }
+
+  /** The steps held, and the instruments held at one (what the page's record is checked against). */
+  steps(): number[] { return [...this.#steps.keys()]; }
+  ids(stepMs: number): string[] { return [...(this.#steps.get(stepMs)?.keys() ?? [])]; }
+
+  /** These instruments' columns at `stepMs` as they are now, each replacing what was held for it; the other instruments are left as they were. */
+  set(stepMs: number, sets: readonly ColumnSet[]): void {
+    const held = this.#at(stepMs);
+    for (const set of sets) held.set(set.id, toStore(set));
+  }
+
+  /** `withTail` into the columns held at `stepMs`: a tail belongs to the step it was asked at, whichever step is read now. */
+  tail(stepMs: number, from: number, sets: readonly ColumnSet[]): void {
+    const held = this.#at(stepMs);
+    for (const set of sets) held.set(set.id, withTail(held.get(set.id), set, from));
+  }
+
+  /** Read `stepMs` from now on. */
+  use(stepMs: number): void { this.#current = stepMs; }
+
+  /** Forget these instruments' columns at `stepMs`, or all of that step's (`ids` null). */
+  drop(stepMs: number, ids: readonly string[] | null): void {
+    const held = this.#steps.get(stepMs);
+    if (!held) return;
+    if (ids) { for (const id of ids) held.delete(id); if (!held.size) this.#steps.delete(stepMs); } else this.#steps.delete(stepMs);
+  }
+
+  #at(stepMs: number): Map<string, ColumnStore> {
+    let held = this.#steps.get(stepMs);
+    if (!held) { held = new Map(); this.#steps.set(stepMs, held); }
+    return held;
+  }
+}
+const EMPTY: ReadonlyMap<string, ColumnStore> = new Map();
+
+/**
  * `held` with every column from `from` on replaced by `set`'s, which are the columns of `from` onwards as the source has them now: the page's
  * refresh asks again only for the windows that could still change (`Hub.loadColumns`). The columns before `from` are kept as they are, so
  * `from` must be the start of a window. Without `held`, the store is `set`'s alone.
