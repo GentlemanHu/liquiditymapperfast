@@ -1588,7 +1588,7 @@
  "Gather the rows under a header per kind, in the order chosen within each; click a header to fold its rows away.": "Satırları her tür için bir başlığın altında, her birinin içinde seçilen sırayla topla; bir başlığa tıklamak satırlarını katlar.",
  "Where cvd, cvd retail and cvd whales start: the chart's left edge, or each day's start in the chart's time zone (the day the left edge falls in is loaded whole).": "cvd, cvd perakende ve cvd balinaların başladığı yer: grafiğin sol kenarı ya da grafiğin saat dilimindeki her günün başı (sol kenarın düştüğü gün tümüyle yüklenir).",
  "Each day's start": "Her günün başı",
- "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Bir mumu sabitlemek için tıklayın: yeniden tıklanana ya da Esc’ye basılana dek bir kart o mumun her istatistiğini listeler. Hücreler her mumun kendi son mumlarına göre ne kadar alışılmadık olduğuna göre (Alışılmadık, Vurgular’ın taban çizgisi) gölgelenebilir ya da çizgi olarak çizilebilir; satırlar katlanabilen başlıklar altında türe göre gruplanabilir. CVD her günün başından, kümülatif toplamları grafiğin saat diliminde her gün yeniden başlatır.",
+ "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Bir mumu sabitlemek için tıklayın: yeniden tıklanana ya da Esc’ye basılana dek bir kart o mumun her istatistiğini listeler. Shift+tıklama, daha fazla mumu yan yana karşılaştırmak için sabitler (en fazla beş). Hücreler her mumun kendi son mumlarına göre ne kadar alışılmadık olduğuna göre (Alışılmadık, Vurgular’ın taban çizgisi) gölgelenebilir ya da çizgi olarak çizilebilir; satırlar katlanabilen başlıklar altında türe göre gruplanabilir. CVD her günün başından, kümülatif toplamları grafiğin saat diliminde her gün yeniden başlatır.",
  "{n} stats · cvd from each day's start": {
   "one": "{n} istatistik · CVD her günün başından",
   "other": "{n} istatistik · CVD her günün başından"
@@ -1654,5 +1654,7 @@
  "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "İşlem: o borsada aynı sıralarda bu satıra ulaşan piyasa emirleri. Emir defteri, değişikliğin ne kadarını açıkladıklarını söylemez.",
  "being read": "okunuyor",
  "Hide the controls": "Kontrolleri gizle",
- "Show the controls": "Kontrolleri göster"
+ "Show the controls": "Kontrolleri göster",
+ "≈ from candles": "≈ mumlardan",
+ "An estimate from the candles of {market}, the volume of each spread over its range: not the recording.": "{market} mumlarından bir tahmin: her mumun hacmi fiyat aralığına yayılmıştır. Kayıt değildir."
 }

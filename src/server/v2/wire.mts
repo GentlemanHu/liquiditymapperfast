@@ -3,6 +3,7 @@ import { packLt } from '../../shared/columns.ts';
 import type { ValuedBook } from './levels.mts';
 import { usableStep } from '../../shared/levels.ts';
 import type { TapeBatch } from '../../shared/tape.ts';
+import type { LtWindows } from '../../shared/lt-windows.ts';
 
 /**
  * Binary frame: u32 header length, UTF-8 JSON header, zero padding to 8 bytes, then typed-array payloads
@@ -11,6 +12,7 @@ import type { TapeBatch } from '../../shared/tape.ts';
 export const WIRE_COLUMNS = 'columns';
 export const WIRE_LEVELS = 'levels';
 export const WIRE_TAPE = 'tape';
+export const WIRE_LT = 'lt';
 
 type Part = { kind: 'f64' | 'f32' | 'i32'; data: Float64Array | Float32Array | Int32Array };
 
@@ -47,6 +49,20 @@ export function encodeColumns(results: ColumnsRequestResult[], from: number, to:
   });
   for (const lt of trackers) parts.push({ kind: 'f32', data: lt });
   return frame({ type: WIRE_COLUMNS, from, to, stepMs, instruments }, parts);
+}
+
+/**
+ * One part of the answer to a Liquidity Tracker question on the live socket (`{t:'lt', id}`), over [from, to) at `stepMs`: per instrument the
+ * starts of its windows (f64) and four numbers each for the half-life asked (f32, NaN where its tracker does not cover the window). The
+ * answer is a few such frames, the newest stretch first; `done` is on the last.
+ */
+export function encodeLt(id: number, from: number, to: number, stepMs: number, half: number, done: boolean, results: { instrumentId: string; windows: LtWindows }[]): Buffer {
+  const parts: Part[] = [];
+  const instruments = results.map(({ instrumentId, windows }) => {
+    parts.push({ kind: 'f64', data: Float64Array.from(windows.times) }, { kind: 'f32', data: windows.values });
+    return { id: instrumentId, windows: windows.times.length };
+  });
+  return frame({ type: WIRE_LT, id, from, to, stepMs, half, done, instruments }, parts);
 }
 
 /** Every market order completed since the last batch (shared/tape.ts): the ids in the header, six columns as parts. */

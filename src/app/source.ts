@@ -10,7 +10,7 @@ import type { AbsorptionAnswer, AbsorptionGroup, AbsorptionMinute, AbsorptionPro
 import type { CoverageAnswer, CoverageMetric } from '../shared/coverage.ts';
 import type { RecoveryReport, RecoveryRequest } from '../shared/engine.ts';
 import type { PriceHistoryAnswer } from '../shared/price-history.ts';
-import type { ColumnsFrame, LevelsFrame } from './wire.ts';
+import type { ColumnsFrame, LevelsFrame, LtFrame } from './wire.ts';
 import type { Bar } from './panes/footprint.ts';
 import type { CandleRow, LayerLevel, Market, OiBar } from './store.ts';
 
@@ -113,6 +113,12 @@ export interface DataSource {
   /** Whale VWAP sums of `ids` in [from, to) from the size band at `minUsd` up, in steps of `stepMs` (a server from before them answers 404). */
   printSums?(ids: string[], from: number, to: number, minUsd: number, stepMs: number): Promise<PrintSumsAnswer>;
   columns(ids: string[], from: number, to: number, stepMs: number): Promise<ColumnsFrame>;
+  /**
+   * The Liquidity Tracker alone (lt-lane.ts): these markets' windows of `stepMs` over [from, to) for one half-life (an index into LT_HALF_LIVES), handed
+   * to `onFrame` a part at a time, the newest first, settled when the last has come. Only a server whose live socket answers it has it; it rejects
+   * ('unsupported') where it cannot be asked (a server from before, no socket), and the pane reads the columns instead.
+   */
+  ltLane?(ids: string[], from: number, to: number, stepMs: number, half: number, onFrame: (frame: LtFrame) => void, signal?: AbortSignal): Promise<void>;
   /** Taker buys and sells per second for each instrument over [from, to), from its first recorded minute in that range. */
   flow(ids: string[], from: number, to: number): Promise<FlowFrame>;
   /** The same flow a minute at a time, for windows older than the seconds the page holds; a source that keeps no older flow (the browser keeps a day) has none. */

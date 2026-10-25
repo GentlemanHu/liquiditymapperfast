@@ -8,11 +8,13 @@ export type PriceReader = (id: string, tf: string, from: number, to: number, sig
 const MINUTE = 60_000, DAY = 86_400_000;
 const priceKey = (target: PriceTarget, tfMs: number): string => `${target.id}|${target.listing.symbol}|${target.listing.unit}|${tfMs}`;
 
-/** The overview is useful for compressed candles or any missing part of the visible price history. */
+/**
+ * The overview is needed where the chart's own candles leave a part of the visible price history missing: it is drawn only there (the
+ * line is cut at the candles, `uncoveredRuns`), so a view the candles cover whole, compressed to a smear or not, needs none and asks for none.
+ */
 export function priceOverviewNeeded(candles: readonly CandleRow[], tfMs: number, view: Window, width: number, now: number): boolean {
   const to = Math.min(view.t1, now), from = Math.max(0, view.t0);
   if (!(width > 0 && to > from && tfMs > 0)) return false;
-  if (width * tfMs / (view.t1 - view.t0) < 2) return true;
   let end = Math.floor(from / tfMs) * tfMs;
   for (const c of candles) {
     if (c[0] + tfMs <= end) continue;
@@ -21,6 +23,13 @@ export function priceOverviewNeeded(candles: readonly CandleRow[], tfMs: number,
     if (end >= to) return false;
   }
   return true;
+}
+
+/** The lowest low and the highest high of the candles that touch [t0, t1), or null where there are none or they are flat: what a fit to the chart's own candles takes. */
+export function candlePriceRange(candles: readonly CandleRow[], tfMs: number, t0: number, t1: number): { lo: number; hi: number } | null {
+  let lo = Infinity, hi = -Infinity;
+  for (const c of candles) if (c[0] + tfMs > t0 && c[0] < t1) { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); }
+  return hi > lo ? { lo, hi } : null;
 }
 
 /** At most a few hundred native bars: daily for month-scale context, never finer than the selected candles; retain a resolution near its changeover. */
@@ -41,7 +50,9 @@ export function priceWindow(view: Window, width: number, now: number, previousMs
 
 /**
  * The chart's one active overview. A short gesture delay coalesces requests; the newest view is remembered while a read is out. Old
- * points stay drawn through range/resolution changes, carrying their own interval. Another instrument cancels and clears them.
+ * points stay drawn through range/resolution changes, carrying their own interval. Another instrument cancels and clears them, and so does
+ * a view that now needs another resolution: the read in flight is for a window the zoom has left, and the view waited behind it (a zoom out
+ * passes through several resolutions, each read taking its turn: 2026-10-24).
  */
 export class ChartPriceHistory {
   answer: PriceHistoryAnswer | null = null;
@@ -49,6 +60,8 @@ export class ChartPriceHistory {
   version = 0;
   readonly #cached = new Map<string, { answer: PriceHistoryAnswer; landedAt: number }>();
   #id = ''; #generation = 0; #pending = false; #retryAt = 0; #landedAt = 0;
+  /** The resolution of the read in flight, and whether it was dropped for another (its answer, if it comes, is not taken). */
+  #readTfMs = 0; #dropped = false;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #controller: AbortController | null = null;
   #wanted: { target: PriceTarget; window: PriceWindow; changed: () => void } | null = null;
@@ -60,6 +73,7 @@ export class ChartPriceHistory {
       this.#pending = false; this.#id = priceKey(target, 0); this.answer = null; this.status = 'idle'; this.#retryAt = 0; this.version++;
     }
     this.#wanted = { target, window, changed };
+    if (this.#pending && this.#readTfMs !== window.tfMs && !this.#dropped && this.#controller) { this.#dropped = true; this.#controller.abort(); }
     // Eight recent instrument/resolution windows survive zooms and coin switches. Recheck live tails before reusing them.
     const key = priceKey(target, window.tfMs), cached = this.#cached.get(key);
     if (!this.#pending && !this.#covers(window) && cached && this.#covers(window, cached.answer, cached.landedAt)) {
@@ -82,13 +96,16 @@ export class ChartPriceHistory {
   async #load(): Promise<void> {
     const wanted = this.#wanted; if (!wanted || this.#pending || this.now() < this.#retryAt || this.#covers(wanted.window)) return;
     const { target, window: w, changed } = wanted, generation = this.#generation, controller = new AbortController();
-    this.#controller = controller; this.#pending = true;
+    this.#controller = controller; this.#pending = true; this.#readTfMs = w.tfMs; this.#dropped = false;
     if (!this.answer?.candles.length) this.status = 'loading';
     changed();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('Price history timed out')); }, 25_000); });
-      const a = parsePriceHistory(await Promise.race([this.read(target.id, w.tf, w.from, w.to, controller.signal), deadline]), target.id, w.tfMs);
+      // A read dropped for another resolution ends the wait at once (a source that cannot be cancelled goes on and keeps its answer for later).
+      const dropped = new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error('Price history dropped')), { once: true }));
+      dropped.catch(() => undefined);
+      const a = parsePriceHistory(await Promise.race([this.read(target.id, w.tf, w.from, w.to, controller.signal), deadline, dropped]), target.id, w.tfMs);
       if (generation !== this.#generation) return;
       if (a.from > w.from || a.to < w.to) throw new Error('Incomplete price history window');
       if ((a.status === 'failed' || a.status === 'stale') && this.answer?.candles.length && !a.candles.length) {
@@ -105,6 +122,8 @@ export class ChartPriceHistory {
       this.version++;
     } catch {
       if (generation !== this.#generation) return;
+      // Dropped for another resolution: not a failure, and the next read (the finally below) is the view's own, with no cool-down.
+      if (this.#dropped) { if (!this.answer?.candles.length) this.status = 'idle'; return; }
       this.status = this.answer?.candles.length ? 'stale' : 'failed'; this.#retryAt = this.now() + MINUTE; this.version++;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -142,6 +161,70 @@ export function pricePoints(answer: PriceHistoryAnswer, at: number, replay: bool
     run!.push({ t, price: c[4], start: c[0] }); previous = c[0];
   }
   return runs;
+}
+
+/** A time range [from, to) the chart's candles cover. */
+export type Covered = readonly [number, number];
+
+/** The time the chart's candles cover, merged where they follow one another: each holds its interval [start, start + tfMs). Candles are oldest first. */
+export function candleCoverage(candles: readonly { readonly 0: number }[], tfMs: number): Covered[] {
+  const out: [number, number][] = [];
+  for (const c of candles) {
+    const start = c[0], last = out[out.length - 1];
+    if (last && start <= last[1]) { if (start + tfMs > last[1]) last[1] = start + tfMs; } else out.push([start, start + tfMs]);
+  }
+  return out;
+}
+
+/** Whether `t` is inside a range the candles cover (`candleCoverage`: sorted, not overlapping, each [from, to)). */
+export function isCovered(covered: readonly Covered[], t: number): boolean {
+  let lo = 0, hi = covered.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (covered[mid]![1] <= t) lo = mid + 1; else hi = mid; }
+  return lo < covered.length && covered[lo]![0] <= t;
+}
+
+/**
+ * The price line without the parts where the chart draws its own candles (Karl, 2026-10-24: the line over the candles was noise; it is for
+ * where there are none). A line is cut where it meets a covered range, at that range's edge, at the price on the straight line between the two
+ * points around it, so it ends against the first candle and takes up again after a gap. `covered` is sorted and does not overlap
+ * (`candleCoverage`); a point inside a range is dropped.
+ */
+export function uncoveredRuns(runs: readonly (readonly { t: number; price: number }[])[], covered: readonly Covered[]): { t: number; price: number }[][] {
+  if (!covered.length) return runs.map(run => run.map(({ t, price }) => ({ t, price })));
+  const result: { t: number; price: number }[][] = [];
+  /** The part of [x0, x1] outside the covered ranges, as closed intervals in order. */
+  const free = (x0: number, x1: number): [number, number][] => {
+    const out: [number, number][] = []; let cursor = x0;
+    // The first range that can touch: ranges end before `cursor` are skipped by a binary search on their ends.
+    let lo = 0, hi = covered.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (covered[mid]![1] <= cursor) lo = mid + 1; else hi = mid; }
+    for (let i = lo; i < covered.length && cursor < x1; i++) {
+      const [a, b] = covered[i]!;
+      if (a >= x1) break;
+      if (a > cursor) out.push([cursor, a]);
+      cursor = Math.max(cursor, b);
+    }
+    if (cursor < x1) out.push([cursor, x1]);
+    return out;
+  };
+  const inside = (t: number): boolean => isCovered(covered, t);
+  for (const run of runs) {
+    let out: { t: number; price: number }[] | null = null;
+    for (let i = 0; i < run.length; i++) {
+      const p = run[i]!;
+      if (i === 0) { if (!inside(p.t)) { out = [{ t: p.t, price: p.price }]; result.push(out); } continue; }
+      const q = run[i - 1]!, span = p.t - q.t;
+      const at = (t: number): { t: number; price: number } => ({ t, price: span > 0 ? q.price + (p.price - q.price) * (t - q.t) / span : p.price });
+      for (const [a, b] of free(q.t, p.t)) {
+        if (b === a) continue;
+        if (out && a === q.t) out.push(at(b));
+        else { out = [at(a), at(b)]; result.push(out); }
+        if (b < p.t) out = null;
+      }
+      if (out && out[out.length - 1]!.t !== p.t) out = null;
+    }
+  }
+  return result;
 }
 
 /** The latest observed close at this time, with no carry over a missing interval. */

@@ -1,6 +1,10 @@
 import { connectLive, type LiveConnection, getAbsorption, getAbsorptionProfile, getBootstrap, getCandles, getColumns, getCoverage, getFlow, getFlowMinutes, getFootprint, getLiquidations, getLongShort, getOi, getOiProfile, getPriceHistory, getPrintSums, getPrints, getProfile, getRange, getSizes, getValueAreas } from './net.ts';
 import type { BootstrapState, DataSource, VenueCatalog, VenueControl, VenueEntry } from './source.ts';
 import { stateOfStatus } from './venue-notice.ts';
+import { currentCoin } from './coin.ts';
+import { PriceHistoryCache, priceListing, type PriceHistoryAnswer } from '../shared/price-history.ts';
+import { webGet } from '../shared/history.ts';
+import { TIMEFRAMES } from '../shared/series.ts';
 
 interface FeedCatalog { maxSelected: number; selectedVenues: string[]; venues: { id: string; name: string; supported: boolean; default?: boolean; status: string }[] }
 interface ExtraVenueInfo { id: string; name: string; enabled: boolean; default?: boolean; state: string; lastError: string | null; reconnects: number }
@@ -74,7 +78,28 @@ export class ServerSource implements DataSource {
   readonly #connected = new Promise<LiveConnection>(resolve => { this.#setConnected = resolve; });
   connect: DataSource['connect'] = handlers => { const live = this.#live = connectLive(handlers); this.#setConnected(live); return live; };
   candles = getCandles;
-  priceHistory = getPriceHistory;
+  readonly #price = new PriceHistoryCache(webGet);
+  /**
+   * The white price line's history, read by the page from the exchange itself (as the VWAP's and the profiles' candles are), the server's
+   * route only where that cannot (a venue it cannot read, a read that failed). Through the server it waited behind the page's other history
+   * requests for one of the browser's six connections to it: a zoom out set off a burst of them and the line's request ran 25 s and gave
+   * up, where the same window read from Binance takes 0.4 s (measured 2026-10-24; the VWAP's candles, which go straight there, were
+   * all in within 0.5 s of the same zoom).
+   */
+  priceHistory = async (inst: string, tf: string, from: number, to: number, signal?: AbortSignal): Promise<PriceHistoryAnswer> => {
+    const target = priceListing(currentCoin(), inst), tfMs = Object.hasOwn(TIMEFRAMES, tf) ? TIMEFRAMES[tf] : undefined;
+    let held: PriceHistoryAnswer | null = null;
+    if (target && tfMs) {
+      try {
+        const answer = await this.#price.series(target, tfMs, from, to);
+        if (answer.status === 'ok' || answer.status === 'empty') return answer;
+        held = answer;
+      } catch { /* the server's route below */ }
+    }
+    // A read that failed (a window the page's cache holds only some of, the exchange refusing): the server's cache may hold the whole of it. What
+    // the page holds still stands, marked stale, where the server cannot answer either.
+    try { return await getPriceHistory(inst, tf, from, to, signal); } catch (error) { if (held?.status === 'stale') return held; throw error; }
+  };
   oi = getOi;
   /**
    * On the live socket where the server answers there: a page's HTTP requests to the server wait behind its history requests for one of the
@@ -93,6 +118,16 @@ export class ServerSource implements DataSource {
       if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error;
       return getLongShort(inst, metric, tf, from, to, signal, budgetMs);
     });
+  };
+  /** On the live socket where the server answers it there (a page's HTTP requests wait behind its history requests); otherwise it rejects, and the pane reads the columns. */
+  ltLane: NonNullable<DataSource['ltLane']> = async (ids, from, to, stepMs, half, onFrame, signal) => {
+    const started = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const live = this.#live ?? await Promise.race([this.#connected, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LS_SOCKET_WAIT_MS); })]);
+    clearTimeout(timer);
+    const asked = live && await live.lsReadyWithin(Math.max(0, LS_SOCKET_WAIT_MS - (Date.now() - started))) ? live.ltLane(ids, from, to, stepMs, half, onFrame, signal) : null;
+    if (!asked) throw new Error('unsupported');
+    return asked;
   };
   prints = getPrints;
   liquidations = getLiquidations;

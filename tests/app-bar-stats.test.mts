@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -298,4 +298,19 @@ test('liquidations by day: a candle counts where its day is answered and the rec
   const running = new Map([[0, { rows: [liq(H + 5, 'short', 300)], cut: false, to: H + H / 2 }]]);
   assert.deepEqual([0, H, 2 * H].map(t => liquidationBuckets(running, ['a'], [0, H, 2 * H], H, 0, H + 40 * 60_000).buy.get(t) ?? null), [0, 300, null]);
   assert.equal(liquidationBuckets(running, ['a'], [H], H, 0, 2 * H + 60_000).buy.get(H), undefined, 'closed after the answer: not known yet');
+});
+
+test('a click pins a candle alone, a Shift+click adds it to the pinned ones or takes it away, and the oldest pin gives way past five', () => {
+  assert.deepEqual(pinsAfterClick([], 5, false), [5]);
+  assert.deepEqual(pinsAfterClick([5], 5, false), [], 'the pinned one is let go');
+  assert.deepEqual(pinsAfterClick([5], 6, false), [6], 'another candle: it alone');
+  assert.deepEqual(pinsAfterClick([5, 6], 7, false), [7], 'a plain click on a third replaces the pair');
+  assert.deepEqual(pinsAfterClick([5, 6], 5, false), [6], 'a plain click on a pinned one lets that one go');
+  assert.deepEqual(pinsAfterClick([5], 6, true), [5, 6]);
+  assert.deepEqual(pinsAfterClick([5, 6], 6, true), [5], 'Shift on a pinned one takes it away');
+  assert.deepEqual(pinsAfterClick([1, 2, 3, 4, 5], 6, true), [2, 3, 4, 5, 6], 'the oldest gives way');
+  assert.equal(MAX_PINS, 5);
+  const before = [1, 2];
+  pinsAfterClick(before, 3, true);
+  assert.deepEqual(before, [1, 2], 'the pins given are not changed');
 });

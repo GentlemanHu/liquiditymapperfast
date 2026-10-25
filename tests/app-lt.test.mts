@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LT_DEFAULTS, ltSeries, ltWeight, type LtParams, type LtStore } from '../src/app/lt.ts';
+import { LT_DEFAULTS, imbalanceAxis, ltSeries, ltWeight, type LtParams, type LtStore } from '../src/app/lt.ts';
 import { LT_LENGTH, ltIndex } from '../src/shared/lt-sample.ts';
 
 const MIN = 60_000;
@@ -85,4 +85,12 @@ test('output is time-ordered, limited to the requested range, and empty sides re
   assert.deepEqual([...out.times], [MIN, 3 * MIN]);
   near(out.bid, [0, 10]);
   near(out.ask, [20, 0]);
+});
+
+test('the imbalance axis is the largest imbalance in view, up to the next of 2, 5, 10, 20, 50 and 100 %', () => {
+  assert.equal(imbalanceAxis(0), 0.02, 'nothing in view: the smallest');
+  assert.deepEqual([0.004, 0.02, 0.021, 0.05, 0.07, 0.1, 0.15, 0.2, 0.3, 0.5, 0.51, 1].map(imbalanceAxis), [0.02, 0.02, 0.05, 0.05, 0.1, 0.1, 0.2, 0.2, 0.5, 0.5, 1, 1]);
+  assert.equal(imbalanceAxis(NaN), 0.02);
+  assert.equal(imbalanceAxis(1.4), 1, 'never past the whole book');
+  for (const largest of [0.004, 0.03, 0.2, 0.9]) assert.ok(imbalanceAxis(largest) >= largest, 'the largest bar fits');
 });

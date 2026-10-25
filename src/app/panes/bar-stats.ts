@@ -491,6 +491,18 @@ export function tableHeight(ids: readonly string[], options: Pick<StatOptions, '
   return 12 + Math.max(1, rows) * ROW_H + (bands.length - rows) * HEAD_H;
 }
 
+/** The most candles pinned at once (each has a card of every statistic: more would cover the strip and the chart). */
+export const MAX_PINS = 5;
+/**
+ * The pinned candles after a click on candle `start`: a plain click pins that one alone, or lets it go when it is pinned; with `add` (Shift) it adds
+ * the candle to the pinned ones, or takes it from them, the oldest pin giving way past `MAX_PINS`.
+ */
+export function pinsAfterClick(pins: readonly number[], start: number, add: boolean): number[] {
+  const held = pins.includes(start);
+  if (held) return pins.filter(t => t !== start);
+  return add ? [...pins, start].slice(-MAX_PINS) : [start];
+}
+
 /** The card of a pinned candle: every statistic shown, for that one candle. */
 export function pinnedLines(time: string, rows: readonly { label: string; value: string; tone: StatTone }[]): InfoLine[] {
   return [

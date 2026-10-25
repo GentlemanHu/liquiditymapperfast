@@ -127,6 +127,57 @@ export function mergeCandleProfiles(a: CandleProfile, b: CandleProfile, step: nu
   return { levels: levelsOf(rows, step, share), covered: Math.min(a.covered, b.covered), rows, buys };
 }
 
+/**
+ * Whether a column should show the candles' estimate of its window in place of the recording: when the recording holds less than
+ * `DRAWN_SHARE` of the window (`since` is where it begins, the later of the start it was asked from and every venue's first minute: null
+ * when it holds all of it). One source for the whole column, never the two added: the recording counts every venue, a candle one market, so
+ * a sum would be a mixture of two scales, and its point of control and value area a reading of neither (AGENTS.md: no setting may claim to
+ * work out what can no longer be worked out). Karl, 2026-10-24: zoomed out to months, the column showed only the last days.
+ */
+export function loadedColumnWanted(since: number | null, from: number, to: number): boolean {
+  if (since === null || !(to > from)) return false;
+  return (to - Math.max(from, Math.min(since, to))) / (to - from) < DRAWN_SHARE;
+}
+
+/**
+ * Where the recording behind the traded-volume column begins inside `window` (null: it holds all of it, or nothing is known yet): the later of
+ * the start it can be asked from (`asked`, `askedSpan`) and the first minute of each venue it counts (`earliest` is the first minute recorded
+ * at all, so the answer of another window says the same), or, while no answer is held, where the hub knows the recording began. An answer
+ * whose venues never recorded anything leaves `since` at the window's end: the recording holds none of it (a page that has only just started,
+ * a scope the server does not record), so the candles' estimate is wanted wherever they hold the window. Only the instruments of `ids` (those
+ * the column counts now) are read from the held answer. It does not depend on the window
+ * the held answer was asked for: a zoom out that has not been answered yet does not flash the estimate on for a window the recording holds.
+ */
+export function recordingStart(window: { from: number; to: number }, asked: number, held: readonly { id: string; earliest: number | null }[] | null, hubSince: number, ids?: readonly string[]): number | null {
+  // An answer for other instruments (a scope or a chip changed, and the answer for the new ones has not come) says nothing about these: none of
+  // its instruments counted, it is as if none were held.
+  const mine = held && ids ? held.filter(inst => ids.includes(inst.id)) : held;
+  let since = asked;
+  if (mine && mine.length) {
+    let any = false;
+    for (const inst of mine) if (inst.earliest !== null) { any = true; if (inst.earliest > since) since = inst.earliest; }
+    if (!any) since = window.to;
+  } else if (hubSince > since) since = hubSince;
+  return since > window.from + 60_000 ? since : null;
+}
+
+/**
+ * A candle estimate (`candleLevels`) as the answer a column reads, so its bars, levels, header and boxes are drawn by the same code as the
+ * recording's: one instrument whose rows are on `step`, each `[low price, bought, sold]`. Where the candles do not say what was bought
+ * (`buys` null) a row's whole volume is in `bought` and `split` is false: the column draws it unsplit, in grey. The instrument says it
+ * was there for the whole window (`earliest` = `from`), so nothing reads it as a recording that began late.
+ */
+export function candleAnswer(rows: ReadonlyMap<number, number>, buys: ReadonlyMap<number, number> | null, step: number, from: number, to: number): { answer: ProfileAnswer; split: boolean } {
+  const out: [number, number, number][] = [];
+  for (const [row, usd] of [...rows].sort((a, b) => a[0] - b[0])) {
+    if (!(usd > 0)) continue;
+    const bought = buys ? Math.min(usd, Math.max(0, buys.get(row) ?? 0)) : usd;
+    out.push([row * step, bought, usd - bought]);
+  }
+  const minutes = Math.max(0, Math.round((to - from) / 60_000));
+  return { answer: { from, to, instruments: [{ id: 'candles', step, rows: out, minutes, first: from, earliest: from }] }, split: buys !== null };
+}
+
 /** The zone a window's dates are read in: a session's own (its start is a date there), else the zone days and weeks start in. */
 export function windowZone(w: ProfileWindow, s: TradedSettings, pageZone: 'local' | 'utc'): string {
   if (w.key.startsWith('session|')) {

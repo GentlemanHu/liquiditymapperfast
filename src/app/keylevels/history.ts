@@ -99,6 +99,17 @@ export class KeyLevelHistory {
   /** Up to when the bars held are known: the time the last successful request of the newest ones was made. */
   get heldTo(): number { return this.#heldTo; }
 
+  /**
+   * Whether the bars held reach back to `from`: 'yes'; 'coming' when they do not yet and may (a request is out, or one can still be asked); 'never'
+   * when they will not (the exchange's history begins later, nothing could be read at all, or the next try is a minute off).
+   */
+  reach(from: number): 'yes' | 'coming' | 'never' {
+    if (this.#bars.length && this.heldFrom <= from) return 'yes';
+    if (this.state === 'unavailable' || this.#exhausted) return 'never';
+    if (this.#pending || this.state === 'loading' || this.state === 'idle') return 'coming';
+    return this.now() < this.#retryAt ? 'never' : 'coming';
+  }
+
   /** Make sure `barMs` candles of `target` from `from` are held or on their way; `onLoad` runs when an answer changes them. */
   ensure(target: HistoryTarget | null, from: number, barMs: number, onLoad: () => void): void {
     const key = target ? `${target.id}|${barMs}` : '';

@@ -14,9 +14,10 @@ import { BTC } from '../../shared/coins.ts';
 import type { OiEvent as OiPushItem } from '../../shared/connector.ts';
 import { TOUCH_HINT_MS } from '../../shared/levels.ts';
 import { COLUMNS_PER_REQUEST } from '../../shared/columns.ts';
-import { DepthRecorder, COLUMN_MS, HOT_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
+import { DepthRecorder, COLUMN_MS, HOT_MS, RETENTION_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
 import { SqliteColumnStore } from './store.mts';
-import { encodeColumns, encodeLevels, encodeTape } from './wire.mts';
+import { encodeColumns, encodeLevels, encodeLt, encodeTape } from './wire.mts';
+import { validHalf } from '../../shared/lt-windows.ts';
 import { TAPE_BATCH_MAX, packTape } from '../../shared/tape.ts';
 import type { MarketOrder } from '../../shared/orders.ts';
 import { FootprintRecorder } from './footprint.mts';
@@ -47,6 +48,16 @@ export interface V2Handle {
 }
 
 const MAX_COLUMN_SPAN_MS = MAX_PROFILE_SPAN_MS;
+/** A tracker question names markets (a few dozen ids), so it may run longer than the other things a page says on the socket. */
+const LT_QUESTION_BYTES = 4_096, MAX_LT_INSTRUMENTS = 64;
+/** The stretch one frame of a tracker answer covers. */
+const LT_SLICE_MS = 24 * 3_600_000;
+/**
+ * How long a tracker question works before it lets the loop go. The server has one thread, and a page loading the map asks it for tens of megabytes of
+ * columns in 0.5-second steps: a question that let go after every market waited behind those steps 27 times for its first frame (47 s, measured on the
+ * restarted server, 2026-10-25), and one that answers from what memory and the kept hours hold needs only a few milliseconds a market.
+ */
+const LT_TURN_MS = 60;
 /** The stretch of prints one turn of the event loop fills the footprint's lists from (see `fillLists` below). */
 const FILL_STEP_MS = 10 * 60_000;
 /** The most flow history one request may ask for: what the recorder keeps in memory, and a few thousand seconds per instrument cost 8 bytes each. */
@@ -57,6 +68,11 @@ const MAX_FLOW_MINUTES_SPAN_MS = 8 * 24 * 3_600_000;
 const MAX_SIZES_INSTRUMENTS = 96;
 /** The live socket says something at least this often, so a client can tell a quiet server from a dead connection. */
 const HEARTBEAT_MS = 5_000;
+/**
+ * How long after starting the days the store holds beyond memory are read once for the Liquidity Tracker (`warmLt`): a few milliseconds at a time, so that the
+ * first question a page asks is answered as fast as the next (a week of every market is some six seconds of reading, 2026-10-24).
+ */
+const LT_WARM_AFTER_MS = 8_000;
 /** How long after starting the stored absorption hours are packed (`AbsorptionRecorder.warm`). */
 const ABSORPTION_WARM_AFTER_MS = 3_000;
 /** Books with at least this many raw levels are re-valued no more often than the interval below. */
@@ -136,6 +152,19 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   const detect = (taken: readonly TakenFill[]): void => { for (const f of taken) absorption.add(f.instrumentId, f.t, f.price, f.usd, f.side); };
   // The stored hours are packed for the absorption column once the start's own work is done, so the page's first question does not read them.
   const absorptionWarm = setTimeout(() => { void absorption.warm(); }, ABSORPTION_WARM_AFTER_MS);
+  // The days behind memory, newest first, six hours of one market at a time with the loop let go between (they stay in the recorder's cache for the questions).
+  const warmLt = async (): Promise<void> => {
+    const block = 6 * 3_600_000, newest = Math.floor((Date.now() - HOT_MS) / block) * block, oldest = Date.now() - RETENTION_MS;
+    for (let end = newest + block; end > oldest; end -= block) {
+      for (const id of [...recorder.steps.keys()]) {
+        if (closed) return;
+        try { recorder.queryLt(id, end - block, end, 3_600_000, 0); } catch (error) { console.error('v2 tracker warm-up:', error); return; }
+        await new Promise<void>(resolve => setTimeout(resolve, 4));
+      }
+    }
+  };
+  const ltWarm = setTimeout(() => { void warmLt(); }, LT_WARM_AFTER_MS);
+  ltWarm.unref();
   absorptionWarm.unref();
   /** Every order completed since the last dust batch, for the clients that asked for it (`tapeClients`), at most a batch's worth. */
   let tapeOut: MarketOrder[] = [], tapeSeq = 0;
@@ -376,18 +405,19 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/api/v2/ws') return;
     wss.handleUpgrade(req, socket, head, client => {
       client.on('error', () => client.terminate());
-      // What a page says on the socket: whether it draws the trade dust (an older page says nothing and is never sent it), and long/short
-      // questions (`lsOnSocket`).
+      // What a page says on the socket: whether it draws the trade dust (an older page says nothing and is never sent it), long/short
+      // questions (`lsOnSocket`) and Liquidity Tracker questions (`ltOnSocket`, which name the markets and so run longer than the rest).
       client.on('message', data => {
-        if (!(data instanceof Buffer) || data.length > 600) return;
+        if (!(data instanceof Buffer) || data.length > LT_QUESTION_BYTES) return;
         let m: Record<string, unknown> | null = null;
         try { m = JSON.parse(String(data)) as Record<string, unknown>; } catch { /* not ours */ }
-        if (!m || typeof m !== 'object') return;
+        if (!m || typeof m !== 'object' || (data.length > 600 && m.t !== 'lt')) return;
         if (m.t === 'tape') { if (m.on === true) tapeClients.add(client); else tapeClients.delete(client); }
         else if (m.t === 'ls') lsOnSocket(client, m);
+        else if (m.t === 'lt') ltOnSocket(client, m);
       });
-      // What this server answers on the socket beyond its frames: long/short questions. A page from before ignores it.
-      client.send(JSON.stringify({ t: 'hello', ls: true }));
+      // What this server answers on the socket beyond its frames: long/short and tracker questions. A page from before ignores it.
+      client.send(JSON.stringify({ t: 'hello', ls: true, lt: true }));
       levelsDirty = true; lastTick = ''; lastLayers = '';
     });
   };
@@ -517,6 +547,53 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000))
       .then(series => reply({ series }), () => reply({ error: 'long/short ratios could not be read' }))
       .finally(() => lsBusy.set(client, Math.max(0, (lsBusy.get(client) ?? 1) - 1)));
+  };
+  /**
+   * Liquidity Tracker questions on a page's live socket: the tracker of the named markets over a window at one step, for one half-life, as the
+   * columns would hold it (`recorder.queryLt`) but without their books, a few hundred kilobytes where the columns of the same view are tens of
+   * megabytes. Answered in frames a day each, the newest first (what memory holds comes at once, the days read back from the store follow, one
+   * market at a time with the loop let go between), the last marked `done`; `{t:'lt', id, cancel:true}` ends one. At most `LT_SOCKET_BUSY` a socket.
+   */
+  const LT_SOCKET_BUSY = 4;
+  const ltRunning = new WeakMap<WebSocket, Map<number, { cancelled: boolean }>>();
+  const ltOnSocket = (client: WebSocket, m: Record<string, unknown>): void => {
+    const id = m.id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const running = ltRunning.get(client) ?? new Map<number, { cancelled: boolean }>();
+    ltRunning.set(client, running);
+    // A question given up frees its slot at once (its loop still stops at its next market): the page counts only the questions it has not given up.
+    if (m.cancel === true) { const one = running.get(id); if (one) { one.cancelled = true; running.delete(id); } return; }
+    const fail = (error: string): void => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ t: 'lt', id, error })); };
+    const { inst, from, to, half } = m;
+    if (!Array.isArray(inst) || !inst.length || inst.length > MAX_LT_INSTRUMENTS || !inst.every(i => typeof i === 'string' && i.length > 0 && i.length <= 120)) return fail(BAD_SERIES);
+    if (typeof from !== 'number' || typeof to !== 'number' || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from) return fail(BAD_WINDOW);
+    if (!validHalf(half)) return fail('half must name one of the half-lives the tracker is kept for');
+    const stepMs = typeof m.stepMs === 'number' && Number.isSafeInteger(m.stepMs) ? Math.max(COLUMN_MS, Math.round(m.stepMs / COLUMN_MS) * COLUMN_MS) : NaN;
+    if (!(stepMs > 0) || stepMs > MAX_COLUMN_SPAN_MS) return fail(BAD_WINDOW);
+    if (running.has(id)) return fail('question id in use');
+    if (running.size >= LT_SOCKET_BUSY) return fail('too many tracker questions at once');
+    const ids = [...new Set(inst as string[])], one = { cancelled: false };
+    running.set(id, one);
+    // Windows from the step's own grid, so each is whole whichever part of the question it falls in; no more than the days that are kept.
+    const lo = Math.floor(Math.max(from, to - MAX_COLUMN_SPAN_MS) / stepMs) * stepMs, slice = Math.ceil(LT_SLICE_MS / stepMs) * stepMs;
+    void (async () => {
+      let turnStart = performance.now();
+      for (let hi = to; hi > lo;) {
+        const start = Math.max(lo, (Math.ceil(hi / slice) - 1) * slice);
+        const results: { instrumentId: string; windows: ReturnType<typeof recorder.queryLt> }[] = [];
+        for (const instrumentId of ids) {
+          if (closed || one.cancelled || client.readyState !== WebSocket.OPEN) return;
+          results.push({ instrumentId, windows: recorder.queryLt(instrumentId, start, hi, stepMs, half) });
+          // The loop is let go once a turn has had its share, not after every market.
+          if (performance.now() - turnStart > LT_TURN_MS) { await new Promise<void>(resolve => setImmediate(resolve)); turnStart = performance.now(); }
+        }
+        if (closed || one.cancelled || client.readyState !== WebSocket.OPEN) return;
+        // A client that is far behind is let go as the rest of the socket does (it reconnects and asks again), not sent more.
+        if (sendVerdict('event', client.bufferedAmount) === 'drop') { client.terminate(); return; }
+        client.send(encodeLt(id, start, hi, stepMs, half, start <= lo, results), { binary: true });
+        hi = start;
+      }
+    })().catch(error => { console.error('v2 tracker question failed:', error); fail('internal error'); }).finally(() => { if (running.get(id) === one) running.delete(id); });
   };
   const footprintRoute = (url: URL, res: ServerResponse) => {
     // One instrument, or several (comma separated) added together: the aggregated footprint.
@@ -773,7 +850,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     },
     close() {
       closed = true;
-      clearInterval(loop); clearTimeout(absorptionWarm); syncFar([]); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
+      clearInterval(loop); clearTimeout(absorptionWarm); clearTimeout(ltWarm); syncFar([]); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).
       for (const part of [() => takeOrders(true), () => recorder.flush(), () => store?.close(), () => lsStore?.close(), () => footprint.close(), () => coverage.close(), () => prints.close(), () => liquidations.close(), () => flow.close(), () => absorption.close(), () => flowSources.close(), () => extra.close()]) {

@@ -121,3 +121,20 @@ test('a hover card goes above and right of the pointer, flips to the left near t
   const tiny = placeCard(10, 10, { w: 2000, h: 2000 }, view);
   assert.ok(tiny.left >= 6 && tiny.top >= 6, 'a card larger than the page is still pinned to its corner');
 });
+
+test('a labelled line marked to wrap keeps its label at the left and breaks its text under it, where the two do not fit side by side', () => {
+  // The bar stats card's "Recorded" line ran out of the box: a label and a long sentence were one row, whatever the wrap width.
+  const sentence = '90 % of the candle: the figure counts only that part';
+  const laid = layoutInfo(measure, [{ label: 'Recorded', text: sentence, color: 'sell', wrap: true, rule: true }], 150);
+  assert.deepEqual(laid.rows.map(r => [r.label ?? null, r.text]).slice(0, 2), [['Recorded', ''], [null, '90 % of the candle: the']], 'the label alone on its row, the text under it');
+  assert.equal(laid.rows.map(r => r.text).filter(Boolean).join(' '), sentence, 'no word is lost or reordered');
+  for (const row of laid.rows) assert.ok(measure(row.text, false) <= 150, row.text);
+  assert.ok(laid.rows.every(r => r.color === 'sell'));
+  assert.deepEqual(laid.rows.map(r => r.rule), [true, ...laid.rows.slice(1).map(() => false)], 'the hairline once, on the label row');
+  assert.ok(laid.width <= 150 + 16, `the box is ${laid.width} px wide`);
+  // Short enough to sit beside its label, it stays one row.
+  const short = layoutInfo(measure, [{ label: 'Recorded', text: '90 %', wrap: true }], 250);
+  assert.deepEqual(short.rows.map(r => [r.label, r.text]), [['Recorded', '90 %']]);
+  // A label with no wrap is never broken (as before).
+  assert.equal(layoutInfo(measure, [{ label: 'Recorded', text: sentence }], 100).rows.length, 1);
+});

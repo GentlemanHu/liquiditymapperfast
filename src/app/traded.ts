@@ -72,9 +72,9 @@ export const VOLUME_WORDS: ColumnWords = { buy: t('Bought at market'), sell: t('
  * What the pointer is told on one row: its prices, buys, sells and the difference, its share of the window, the market orders that began at
  * these prices, where the row stands against the point of control and the value area (`levels`), and how far back the recording goes.
  */
-export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
+export function tradedLines(rows: TradedRows, index: number, levels: ValueLevels | null = null, words: ColumnWords = VOLUME_WORDS, note: string | null = null, split = true): InfoLine[] {
   const low = (rows.bin0 + index) * rows.step, high = low + rows.step;
-  return [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(high, rows.step)}`, bold: true }, ...rowBody(rows, index, words, whereIn(levels, low, high))];
+  return [{ text: `${fmtPrice(low, rows.step)} – ${fmtPrice(high, rows.step)}`, bold: true }, ...rowBody(rows, index, words, whereIn(levels, low, high), split), ...(note ? [{ text: note, color: 'muted' as const, wrap: true, rule: true }] : [])];
 }
 
 /** Where the prices [low, high) stand against a profile's point of control and value area, in words (null without levels). */
@@ -116,16 +116,20 @@ export function periodRowLines(r: PeriodRow, words: ColumnWords = VOLUME_WORDS):
  * The body of a row's box under its first line, which says where the row is (its prices on the column, its time span on the profile along
  * the top): its two sides and their difference, its share of the window, the market orders that began in it where they are counted, where
  * it stands against the point of control and the value area (`where`, in the words of its axis), and how far back the recording goes.
+ * `split` false: the column's two sides are not known (an estimate from candles that do not say who bought), so its box gives the volume
+ * alone, never a bought and a sold side or their difference.
  */
-export function rowBody(rows: TradedRows, index: number, words: ColumnWords, where: string | null): InfoLine[] {
+export function rowBody(rows: TradedRows, index: number, words: ColumnWords, where: string | null, split = true): InfoLine[] {
   const b = rows.buy[index] ?? 0, s = rows.sell[index] ?? 0, v = b + s, lines: InfoLine[] = [];
   if (!(v > 0)) lines.push({ text: words.none, color: 'muted', wrap: true });
   else {
-    lines.push({ label: words.buy, text: `$${usd(b)}`, color: 'buy' }, { label: words.sell, text: `$${usd(s)}`, color: 'sell' });
-    const net = b - s;
-    lines.push({ label: words.net, text: `${net > 0 ? '+' : net < 0 ? '−' : ''}$${usd(Math.abs(net))}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+    if (split) {
+      lines.push({ label: words.buy, text: `$${usd(b)}`, color: 'buy' }, { label: words.sell, text: `$${usd(s)}`, color: 'sell' });
+      const net = b - s;
+      lines.push({ label: words.net, text: `${net > 0 ? '+' : net < 0 ? '−' : ''}$${usd(Math.abs(net))}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+    } else lines.push({ label: t('Volume'), text: `$${usd(v)}` });
     if (rows.total > 0) lines.push({ label: words.share, text: `${(v / rows.total * 100).toFixed(1)} %` });
-    if (rows.buyN && rows.sellN && rows.counted > 0) {
+    if (split && rows.buyN && rows.sellN && rows.counted > 0) {
       lines.push({ label: t('Orders begun here'), text: t('{buys} buys · {sells} sells', { buys: (rows.buyN[index] ?? 0).toLocaleString('en-US'), sells: (rows.sellN[index] ?? 0).toLocaleString('en-US') }) });
       if (rows.counted < rows.minutes) lines.push({ text: t('Orders are counted for {n} of the {total} minutes.', { n: rows.counted, total: rows.minutes }), color: 'muted', wrap: true });
     }
@@ -152,15 +156,17 @@ export const tradedNetLine = (rows: TradedRows): string => { const net = tradedN
  * the price `mark` is now. Numbers only: the shape of the distribution is read from them (most of it above the point of control: it built
  * upward), not named. `title` names the window.
  */
-export function tradedFigures(rows: TradedRows, levels: ValueLevels | null, mark: number, title: string, words: ColumnWords = VOLUME_WORDS): InfoLine[] {
+export function tradedFigures(rows: TradedRows, levels: ValueLevels | null, mark: number, title: string, words: ColumnWords = VOLUME_WORDS, note: string | null = null, split = true): InfoLine[] {
   const lines: InfoLine[] = [{ text: title, bold: true }];
   if (!(rows.total > 0)) { lines.push({ text: words.none, color: 'muted', wrap: true }); return lines; }
   const mid = (i: number): number => (rows.bin0 + i + 0.5) * rows.step, at = (price: number): string => fmtPrice(price, rows.step);
   let buy = 0, sell = 0, weighted = 0;
   for (let i = 0; i < rows.buy.length; i++) { const b = rows.buy[i]!, s = rows.sell[i]!; buy += b; sell += s; weighted += mid(i) * (b + s); }
   const net = buy - sell;
-  lines.push({ label: words.buy, text: `$${usd(buy)}`, color: 'buy' }, { label: words.sell, text: `$${usd(sell)}`, color: 'sell' },
-    { label: words.net, text: `${signedUsd(net)} · ${share(net / rows.total)}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+  if (split) {
+    lines.push({ label: words.buy, text: `$${usd(buy)}`, color: 'buy' }, { label: words.sell, text: `$${usd(sell)}`, color: 'sell' },
+      { label: words.net, text: `${signedUsd(net)} · ${share(net / rows.total)}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) });
+  } else lines.push({ label: t('Volume'), text: `$${usd(rows.total)}` });
   // The median: the row where the running total, from the lowest price up, first reaches half of it.
   let run = 0, median = mid(0);
   for (let i = 0; i < rows.buy.length; i++) { run += rows.buy[i]! + rows.sell[i]!; if (run >= rows.total / 2) { median = mid(i); break; } }
@@ -181,5 +187,6 @@ export function tradedFigures(rows: TradedRows, levels: ValueLevels | null, mark
     const where = !levels ? '' : Math.abs(mark - levels.poc) < rows.step / 2 ? t('Point of control') : mark > levels.vah ? t('Above the value area') : mark < levels.val ? t('Below the value area') : t('In the value area');
     lines.push({ label: t('Price now'), text: where ? `${fmtPrice(mark)} · ${where}` : fmtPrice(mark), rule: true });
   }
+  if (note) lines.push({ text: note, color: 'muted', wrap: true, rule: true });
   return lines;
 }

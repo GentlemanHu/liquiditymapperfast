@@ -1604,7 +1604,7 @@
  "Gather the rows under a header per kind, in the order chosen within each; click a header to fold its rows away.": "Raccogli le righe sotto un'intestazione per tipo, nell'ordine scelto all'interno di ciascuno; clicca un'intestazione per ripiegarne le righe.",
  "Where cvd, cvd retail and cvd whales start: the chart's left edge, or each day's start in the chart's time zone (the day the left edge falls in is loaded whole).": "Dove partono cvd, cvd retail e cvd balene: dal bordo sinistro del grafico o dall'inizio di ogni giorno nel fuso del grafico (il giorno in cui cade il bordo sinistro è caricato per intero).",
  "Each day's start": "L'inizio di ogni giorno",
- "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Clicca una candela per fissarla: una scheda elenca ogni statistica di quella candela finché non la clicchi di nuovo o premi Esc. Le celle possono essere ombreggiate per quanto ogni candela è insolita rispetto alle proprie candele recenti (Insolito, la base delle Evidenziazioni) o disegnate come linee, e le righe possono essere raggruppate per tipo sotto intestazioni ripiegabili. CVD dall'inizio di ogni giorno fa ripartire le somme cumulate ogni giorno nel fuso del grafico.",
+ "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Clicca una candela per fissarla: una scheda elenca ogni statistica di quella candela finché non la clicchi di nuovo o premi Esc. Maiusc+clic fissa altre candele per confrontarle affiancate (fino a cinque). Le celle possono essere ombreggiate per quanto ogni candela è insolita rispetto alle proprie candele recenti (Insolito, la base delle Evidenziazioni) o disegnate come linee, e le righe possono essere raggruppate per tipo sotto intestazioni ripiegabili. CVD dall'inizio di ogni giorno fa ripartire le somme cumulate ogni giorno nel fuso del grafico.",
  "{n} stats · cvd from each day's start": {
   "one": "{n} statistica · CVD dall'inizio di ogni giorno",
   "other": "{n} statistiche · CVD dall'inizio di ogni giorno",
@@ -1671,5 +1671,7 @@
  "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Scambiato: ordini a mercato che hanno raggiunto questa riga su quella sede più o meno nello stesso momento. Il book non dice quanta parte della variazione spiegano.",
  "being read": "in lettura",
  "Hide the controls": "Nascondi i comandi",
- "Show the controls": "Mostra i comandi"
+ "Show the controls": "Mostra i comandi",
+ "≈ from candles": "≈ dalle candele",
+ "An estimate from the candles of {market}, the volume of each spread over its range: not the recording.": "Una stima dalle candele di {market}, con il volume di ciascuna distribuito sul suo intervallo: non è la registrazione."
 }

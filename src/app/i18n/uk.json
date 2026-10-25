@@ -1625,7 +1625,7 @@
  "Gather the rows under a header per kind, in the order chosen within each; click a header to fold its rows away.": "Зібрати рядки під заголовком для кожного виду, усередині — у вибраному порядку; клацання по заголовку згортає його рядки.",
  "Where cvd, cvd retail and cvd whales start: the chart's left edge, or each day's start in the chart's time zone (the day the left edge falls in is loaded whole).": "Звідки починаються cvd, cvd роздрібу й cvd китів: від лівого краю графіка або від початку кожного дня в часовому поясі графіка (день, у який потрапляє лівий край, завантажується повністю).",
  "Each day's start": "Початок кожного дня",
- "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Клацніть свічку, щоб закріпити її: картка покаже кожну статистику цієї свічки, доки її не клацнуть знову або не натиснуть Esc. Клітинки можна зафарбовувати за тим, наскільки незвична кожна свічка проти своїх недавніх (Незвично, база «Виділень»), або малювати лініями, а рядки — групувати за видом під згортуваними заголовками. CVD від початку кожного дня запускає накопичені суми заново щодня в часовому поясі графіка.",
+ "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "Клацніть свічку, щоб закріпити її: картка покаже кожну статистику цієї свічки, доки її не клацнуть знову або не натиснуть Esc. Shift+клацання закріплює ще свічки, щоб порівняти їх поруч (до п’яти). Клітинки можна зафарбовувати за тим, наскільки незвична кожна свічка проти своїх недавніх (Незвично, база «Виділень»), або малювати лініями, а рядки — групувати за видом під згортуваними заголовками. CVD від початку кожного дня запускає накопичені суми заново щодня в часовому поясі графіка.",
  "{n} stats · cvd from each day's start": {
   "one": "{n} статистика · CVD з початку кожного дня",
   "few": "{n} статистики · CVD з початку кожного дня",
@@ -1693,5 +1693,7 @@
  "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "Угоди: ринкові ордери, що дійшли до цього рядка на цій біржі приблизно в той самий час. Стакан не каже, яку частину зміни вони пояснюють.",
  "being read": "читається",
  "Hide the controls": "Сховати панель керування",
- "Show the controls": "Показати панель керування"
+ "Show the controls": "Показати панель керування",
+ "≈ from candles": "≈ за свічками",
+ "An estimate from the candles of {market}, the volume of each spread over its range: not the recording.": "Оцінка за свічками {market}: обсяг кожної свічки розподілено по її діапазону. Це не запис."
 }

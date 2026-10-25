@@ -1542,7 +1542,7 @@
  "Gather the rows under a header per kind, in the order chosen within each; click a header to fold its rows away.": "行を種類ごとの見出しの下にまとめ、各種類の中は選んだ順に並べます。見出しをクリックするとその行を折りたたみます。",
  "Where cvd, cvd retail and cvd whales start: the chart's left edge, or each day's start in the chart's time zone (the day the left edge falls in is loaded whole).": "cvd、cvd 小口、cvd クジラの起点：チャートの左端か、チャートのタイムゾーンでの各日の始まり（左端が入る日は丸ごと読み込みます）。",
  "Each day's start": "各日の始まり",
- "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "ローソク足をクリックすると固定され、もう一度クリックするかEscを押すまで、その足のすべての統計がカードに表示されます。セルは各足が自身の直近の足に比べてどれだけ異常か（異常、ハイライトの基準）で塗るか、線で描くことができ、行は折りたためる見出しの下に種類別にまとめられます。CVDを各日の始まりからにすると、累計はチャートのタイムゾーンで毎日やり直します。",
+ "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "ローソク足をクリックすると固定され、もう一度クリックするかEscを押すまで、その足のすべての統計がカードに表示されます。Shiftを押しながらクリックすると、さらに足を固定して並べて比較できます（最大5本）。セルは各足が自身の直近の足に比べてどれだけ異常か（異常、ハイライトの基準）で塗るか、線で描くことができ、行は折りたためる見出しの下に種類別にまとめられます。CVDを各日の始まりからにすると、累計はチャートのタイムゾーンで毎日やり直します。",
  "{n} stats · cvd from each day's start": "{n} 統計 · CVD は各日の始まりから",
  "Series": "シリーズ",
  "Reading the market orders of this candle…": "このローソク足の成行注文を読み込み中…",
@@ -1605,5 +1605,7 @@
  "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "約定: 同じころ、その取引所でこの行に届いた成行注文。変化のうちどれだけがそれによるものかは、板からは分かりません。",
  "being read": "読み込み中",
  "Hide the controls": "コントロールを隠す",
- "Show the controls": "コントロールを表示"
+ "Show the controls": "コントロールを表示",
+ "≈ from candles": "≈ ローソク足から",
+ "An estimate from the candles of {market}, the volume of each spread over its range: not the recording.": "{market}のローソク足からの推定です。各足の出来高をその値幅に配分したもので、記録ではありません。"
 }

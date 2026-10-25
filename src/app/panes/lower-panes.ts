@@ -11,19 +11,19 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, DAY_MS, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type LiquidationDay, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, DAY_MS, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type LiquidationDay, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
 import { LIQUIDATIONS_PER_ANSWER, LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
 import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
-import { HoverCard } from '../hovercard.ts';
+import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
-import type { LtSeries } from '../lt.ts';
+import { imbalanceAxis, type LtSeries } from '../lt.ts';
 import { LT_HALF_LIVES } from '../../shared/lt-sample.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
 import { panelSwitchRow, panelSwitchOn, panelSwitchTip, setPanelSwitch } from '../sound/panel.ts';
@@ -520,6 +520,7 @@ export class LtPane extends TimePane {
   #lines: InfoLine[] | null = null;
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
     super(host, store, view, 'lt');
+    this.hub.onLtLane = () => this.invalidate();
     this.head.innerHTML = `<strong>${t('Liquidity Tracker')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('ltPane'));
     setTip(this.head.querySelector('strong')!, t("Weighted USD liquidity near the touch: each enabled venue measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders."));
@@ -571,12 +572,17 @@ export class LtPane extends TimePane {
     const emptyScope = emptyScopeMessage(state);
     if (emptyScope) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(emptyScope, 12, ph / 2); return; }
     const t0 = Math.floor(v.t0 / MINUTE) * MINUTE, t1 = Math.ceil(v.t1 / MINUTE) * MINUTE;
-    const key = `${ids.join(',')}|${t0}|${t1}|${this.hub.columnsVersion}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}`;
+    // Where the trackers come from: the lane (the tracker alone, asked for by this pane: lt-lane.ts) where the source has one and no size filter is
+    // set; the recorded columns (the books the map is drawn from, which a size filter needs, and which the browser engine has at hand) otherwise.
+    const lane = this.hub.ltLane, useLane = lane.serve(ids, v, pw, lt.halfLifeBp, lt.minUsd > 0 || lt.maxUsd > 0);
+    const key = useLane ? `lane|${ids.join(',')}|${t0}|${t1}|${lane.version}|${lt.halfLifeBp}|${lt.average}`
+      : `${ids.join(',')}|${t0}|${t1}|${this.hub.columnsVersion}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}`;
     const liveTail = v.t1 > Date.now() - 2 * MINUTE;
     if (ids.length && !this.#busy && (key !== this.#key || (liveTail && performance.now() - this.#lastAt > 1_500))) {
       this.#key = key; this.#busy = true; this.#lastAt = performance.now();
       const params = { halfLifeBp: lt.halfLifeBp, minUsd: scaledUsd(lt.minUsd), maxUsd: scaledUsd(lt.maxUsd), average: lt.average };
-      void this.hub.lt(ids, t0, t1, params).then(r => { this.#series = { ...r, stepMs: this.hub.columnStepMs }; this.#busy = false; this.invalidate(); }, () => { this.#busy = false; });
+      // While the lane holds nothing for the step or half-life just chosen, the series on screen stays (it carries its own step) rather than a blank.
+      void this.hub.lt(ids, t0, t1, params, useLane).then(r => { if (!(useLane && !lane.holds && this.#series)) this.#series = { ...r, stepMs: r.stepMs ?? this.hub.columnStepMs }; this.#busy = false; this.invalidate(); }, () => { this.#busy = false; });
     }
     const s = this.#series, readout = this.head.querySelector('.readout')!;
     if (!s || !s.times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Liquidity tracker is collecting…'), 12, ph / 2); setText(readout, ''); return; }
@@ -613,14 +619,23 @@ export class LtPane extends TimePane {
       ctx.fillText(usd(hi), this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, ph - 8);
     } else {
       const mid = ph / 2, half = ph / 2 - 6;
+      // The axis follows the data in view, as the lines' does (a book is rarely more than a few percent out of balance, and on ±100 % that is a hair):
+      // the largest imbalance on screen, up to the next of 2, 5, 10, 20, 50 and 100 %. The height of a bar is its share of that.
+      let largest = 0;
       for (let i = 0; i < n; i++) {
         const t = s.times[i]!, total = s.bid[i]! + s.ask[i]!; if (t + step < v.t0 || t > v.t1 || total <= 0) continue;
-        const imb = (s.bid[i]! - s.ask[i]!) / total, x0 = xOf(t - step / 2), x1 = xOf(t + step / 2);
+        largest = Math.max(largest, Math.abs(s.bid[i]! - s.ask[i]!) / total);
+      }
+      const axis = imbalanceAxis(largest);
+      for (let i = 0; i < n; i++) {
+        const t = s.times[i]!, total = s.bid[i]! + s.ask[i]!; if (t + step < v.t0 || t > v.t1 || total <= 0) continue;
+        const imb = (s.bid[i]! - s.ask[i]!) / total, x0 = xOf(t - step / 2), x1 = xOf(t + step / 2), height = Math.abs(imb) / axis * half;
         ctx.fillStyle = imb >= 0 ? p.bid : p.ask; ctx.globalAlpha = state.highlight.on ? 0.3 + 0.65 * Math.min(1, Math.abs(imb) / 0.5) : 0.7;
-        ctx.fillRect(x0, imb >= 0 ? mid - imb * half : mid, Math.max(1, x1 - x0 - 0.4), Math.max(1, Math.abs(imb) * half));
+        ctx.fillRect(x0, imb >= 0 ? mid - height : mid, Math.max(1, x1 - x0 - 0.4), Math.max(1, height));
       }
       ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(0, mid + 0.5); ctx.lineTo(pw, mid + 0.5); ctx.stroke();
-      ctx.fillStyle = p.muted; ctx.fillText('+100%', this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, mid); ctx.fillText('-100%', this.w - AXIS_W + 6, ph - 8);
+      const edge = `${Math.round(axis * 100)}%`;
+      ctx.fillStyle = p.muted; ctx.fillText(`+${edge}`, this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, mid); ctx.fillText(`-${edge}`, this.w - AXIS_W + 6, ph - 8);
     }
     // Readout follows the cursor, else the newest point.
     let at = n - 1;
@@ -638,16 +653,19 @@ export class LtPane extends TimePane {
 export class BarStatsPane extends TimePane {
   /** The strip is too short for a popup drawn on it, so the cell's popup is a page element. */
   #card = new HoverCard();
-  /** The card of a pinned candle, a page element of its own beside the hover card. */
-  #pinCard = new HoverCard();
+  /** The cards of the pinned candles, page elements of their own beside the hover card: one each, kept for the next pin. */
+  #pinCards: HoverCard[] = [];
   #cell: StatCell | null = null;
   /** The popup of the View column's cell under the pointer, when it is there. */
   #viewLines: InfoLine[] | null = null;
   /**
-   * The candle pinned by a click (its start, and the market, the markets counted and the timeframe it was pinned on): shown with every statistic
-   * until it is clicked again, Esc is pressed, or any of those changes.
+   * The candles pinned by a click (their starts, oldest pin first), and the market, the markets counted and the timeframe they were pinned on: each
+   * shown with every statistic until it is clicked again, Esc is pressed, or any of those changes. A click pins one candle alone; a Shift+click adds
+   * a candle to the others (or takes it away), up to `MAX_PINS`, to read them side by side. (Not Ctrl: Ctrl+drag selects a Range, and a Ctrl+click
+   * would clear one.)
    */
-  #pinned: { t: number; on: string } | null = null;
+  #pins: number[] = [];
+  #pinsOn = '';
   #pinContext(state: AppState): string { return `${state.marketId}|${state.timeframe}|${this.heat.footprintMarkets(state).join(',')}`; }
   /**
    * Liquidations of the markets counted, every size the record keeps, by UTC day: each day asked on its own, so an answer holds a whole day
@@ -680,7 +698,7 @@ export class BarStatsPane extends TimePane {
     this.#button.onclick = () => { this.#panel = togglePanel(this.#button, { title: t('Bar stats'), width: 440, align: 'right', onClose: () => { this.#panel = null; } }, (tools, body) => this.#build(tools, body)); };
     this.head.append(this.#button);
     this.canvas.addEventListener('click', e => this.#click(e));
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && this.#pinned !== null) { this.#pinned = null; this.invalidate(); } });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && this.#pins.length) { this.#pins = []; this.invalidate(); } });
   }
   /** Redraw after the configuration changed and keep an open panel in step. */
   refresh(): void { this.#panel?.render((tools, body) => this.#build(tools, body)); this.invalidate(); }
@@ -740,13 +758,21 @@ export class BarStatsPane extends TimePane {
 
   protected draw(): void {
     this.#cell = null; this.#viewLines = null;
-    const pin = this.#strip();
+    const pins = this.#strip();
     const at = this.pointer, lines = this.#cell ? statCellLines(this.#cell) : this.#viewLines;
     if (lines && at) this.#card.show(lines, at.x, at.y); else this.#card.hide();
-    if (pin) this.#pinCard.show(pin.lines, pin.x, pin.y); else this.#pinCard.hide();
+    this.#showPins(pins);
   }
 
-  protected override undrawn(): void { this.#cell = null; this.#viewLines = null; this.#card.hide(); this.#pinCard.hide(); }
+  /** The cards of the pinned candles, left to right, each clear of the one before it (the candles may be a slot apart, and a card is a few hundred pixels wide). */
+  #showPins(pins: readonly { lines: InfoLine[]; x: number; y: number }[]): void {
+    while (this.#pinCards.length < pins.length) this.#pinCards.push(new HoverCard());
+    let free = -Infinity;
+    pins.forEach((pin, i) => { const card = this.#pinCards[i]!; card.show(pin.lines, Math.max(pin.x, free), pin.y); free = card.right + 6 - CARD_GAP; });
+    for (let i = pins.length; i < this.#pinCards.length; i++) this.#pinCards[i]!.hide();
+  }
+
+  protected override undrawn(): void { this.#cell = null; this.#viewLines = null; this.#card.hide(); for (const card of this.#pinCards) card.hide(); }
 
   /** What the table worked out last, kept while nothing it was worked out from changes (a pointer move only redraws), and what Export CSV writes. */
   #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
@@ -756,7 +782,7 @@ export class BarStatsPane extends TimePane {
   #layout: { band: TableBand; y: number; h: number }[] = [];
   protected override ownsPoint(x: number): boolean { return !!this.#viewSpan && x >= this.#viewSpan[0] && x <= this.#viewSpan[1]; }
 
-  /** A click on a kind's header folds or unfolds its rows; on a candle it pins it (on the pinned one, lets it go). Not while the Range tool selects. */
+  /** A click on a kind's header folds or unfolds its rows; on a candle it pins it alone (on the pinned one, lets it go), and with Shift it adds it to the pinned ones. Not while the Range tool selects. */
   #click(e: MouseEvent): void {
     const state = this.store.state;
     if (this.rangeGesture || e.ctrlKey || e.metaKey || state.rangeTool) { this.rangeGesture = false; return; }
@@ -771,7 +797,10 @@ export class BarStatsPane extends TimePane {
     if (!table || x < 0 || x > this.plotW) return;
     const at = this.view.tOf(x, this.plotW), start = table.times.find(s => at >= s && at < s + tfMs);
     if (start === undefined) return;
-    this.#pinned = this.#pinned?.t === start ? null : { t: start, on: this.#pinContext(state) };
+    const on = this.#pinContext(state);
+    if (this.#pinsOn !== on) this.#pins = [];
+    this.#pinsOn = on;
+    this.#pins = pinsAfterClick(this.#pins, start, e.shiftKey);
     this.invalidate();
   }
 
@@ -812,7 +841,7 @@ export class BarStatsPane extends TimePane {
     return value;
   }
 
-  #strip(): { lines: InfoLine[]; x: number; y: number } | null {
+  #strip(): { lines: InfoLine[]; x: number; y: number }[] {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, defs = enabledStats(state.barStats), options = state.barStatOptions;
     const readout = this.head.querySelector('.readout'), data = this.heat.footprintData, daily = options.cvdFrom === 'day';
@@ -824,7 +853,7 @@ export class BarStatsPane extends TimePane {
     const rowSize = data.step > 0 ? ` · ${t('rows of {step}', { step: `$${fmtPrice(data.step, data.step)}` })}` : '';
     setText(readout, (markets.length > 1 ? `${t('{n} markets', { n: markets.length })} · ${stats}` : stats) + rowSize);
     this.#viewSpan = null; this.#layout = [];
-    if (!defs.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No statistics selected: use Stats to add some.'), 12, ph / 2); this.#table = null; return null; }
+    if (!defs.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No statistics selected: use Stats to add some.'), 12, ph / 2); this.#table = null; return []; }
     // Replay: only the candles that ended by its moment (a candle under way would carry its future executions).
     // The candles of the view and one each side (what the footprint asks for), not every bar it still holds: the running sums (cvd) start at the
     // view, whatever was looked at before; from each day's start, at the start of the day the left edge falls in (loaded whole for it).
@@ -836,7 +865,7 @@ export class BarStatsPane extends TimePane {
     for (const c of state.candles) if (near(c[0])) starts.add(c[0]);
     for (const b of data.bars.values()) if (near(b.t)) starts.add(b.t);
     const times = [...starts].sort((a, b) => a - b);
-    if (!times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once executions are recorded for the visible candles.'), 12, ph / 2); this.#table = null; return null; }
+    if (!times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once executions are recorded for the visible candles.'), 12, ph / 2); this.#table = null; return []; }
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
     // The exchange's own candles (Binance's): the candle delta and the fills read them.
     const taker = defs.some(def => def.id === 'takerDelta' || def.id === 'fills' || def.id === 'avgFill') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
@@ -871,7 +900,7 @@ export class BarStatsPane extends TimePane {
     const layout = this.#layout = bands.map(band => { const h = band.kind === 'head' ? HEAD_H : rowH, at = { band, y: y0, h }; y0 += h; return at; });
     const gridBottom = y0, slot = pw * tfMs / (v.t1 - v.t0), cells = options.cells, filled = cells === 'filled' || cells === 'unusual';
     const visible = times.map((_, i) => i).filter(i => times[i]! + tfMs > v.t0 && times[i]! < v.t1);
-    if (!visible.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No executions recorded for the candles in view.'), 12, ph / 2); return null; }
+    if (!visible.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No executions recorded for the candles in view.'), 12, ph / 2); return []; }
     // A candle the recording holds only in part: the rows read from executions are drawn faint there (rec % says how much).
     const partial = all.map((bar, i) => { const share = bar ? coverageOf(bar, times[i]!, tfMs, now) : null; return share !== null && share < 0.95; });
     // Under the pointer: the candle (any pane's pointer says which, the time axis being shared) and, from this pane's own pointer, the band; or,
@@ -969,17 +998,19 @@ export class BarStatsPane extends TimePane {
       ctx.restore();
       this.#cell = hoverCell;
     }
-    // The pinned candle: its column boxed, and a card of every statistic beside it (gone with it out of view, back with it).
-    if (this.#pinned && this.#pinned.on !== this.#pinContext(state)) this.#pinned = null;
-    const pinIdx = this.#pinned ? times.indexOf(this.#pinned.t) : -1;
-    let pin: { lines: InfoLine[]; x: number; y: number } | null = null;
-    if (pinIdx >= 0 && visible.includes(pinIdx)) {
+    // The pinned candles: each column boxed, and a card of every statistic beside it (gone with it out of view, back with it), left to right.
+    if (this.#pinsOn !== this.#pinContext(state)) this.#pins = [];
+    const pins: { lines: InfoLine[]; x: number; y: number }[] = [];
+    for (const start of this.#pins) {
+      const pinIdx = times.indexOf(start);
+      if (pinIdx < 0 || !visible.includes(pinIdx)) continue;
       const x = v.xOf(times[pinIdx]!, pw), w = Math.max(1, slot - 1);
       ctx.save(); ctx.strokeStyle = p.text; ctx.lineWidth = 2; ctx.strokeRect(Math.round(x) + 1, top + 1, Math.max(1, Math.round(w) - 2), gridBottom - top - 2); ctx.restore();
       const page = this.canvas.getBoundingClientRect();
-      pin = { lines: pinnedLines(clock(times[pinIdx]!, true), defs.map((def, r) => { const value = rowsValues[r]![pinIdx]; return { label: labelOf.get(def.id)!, value: shown(def, value), tone: value === null || value === undefined ? 'text' : toneOf(def, value) }; })),
-        x: page.left + leftGutter(state) + x + w, y: page.top };
+      pins.push({ lines: pinnedLines(clock(times[pinIdx]!, true), defs.map((def, r) => { const value = rowsValues[r]![pinIdx]; return { label: labelOf.get(def.id)!, value: shown(def, value), tone: value === null || value === undefined ? 'text' : toneOf(def, value) }; })),
+        x: page.left + leftGutter(state) + x + w, y: page.top });
     }
+    pins.sort((a, b) => a.x - b.x);
     // The View column, right of the plot under the price axis and the columns: each row over the candles in view (its tip says how).
     if (this.#viewSpan) {
       // Worked out again only for other candles in view or other figures (a pointer move redraws from what is held).
@@ -1012,7 +1043,7 @@ export class BarStatsPane extends TimePane {
       const label = labelOf.get(band.def.id)!, w = ctx.measureText(label).width + 10;
       ctx.globalAlpha = 0.88; ctx.fillStyle = p.panel; ctx.fillRect(2, y + 2, w, h - 5); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(label, 6, y + (h - 1) / 2);
     }
-    return pin;
+    return pins;
   }
 
   /**

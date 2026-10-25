@@ -297,6 +297,9 @@ dialog.coins p { margin: 4px 0; max-width: 46ch; }
 .hovercard:not(.on) { display: none; }
 .hovercard .hc-row { display: flex; justify-content: space-between; gap: 14px; }
 .hovercard .hc-label { color: var(--muted); }
+/* A labelled line that may wrap: its text stays beside the label where it fits, and goes under it, wrapped, where it does not. */
+.hovercard .hc-row.hc-wrap { flex-wrap: wrap; }
+.hovercard .hc-row.hc-wrap .hc-value { white-space: normal; flex: 0 1 auto; margin-left: auto; text-align: left; font-family: inherit; }
 .hovercard .hc-value { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-align: right; white-space: nowrap; }
 .hovercard .bold { font-weight: 600; }
 .hovercard .rule { margin-top: 3px; padding-top: 4px; border-top: 1px solid var(--line); }

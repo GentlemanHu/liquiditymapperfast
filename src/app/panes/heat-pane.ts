@@ -3,14 +3,14 @@ import { buildLut } from '../heatmap/lut.ts';
 import { colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
 import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
-import { TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
+import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
 import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripLines, type StripBar } from '../measures/volume-strip.ts';
 import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
 import type { ValueLevels } from '../../shared/profile.ts';
-import { DRAWN_SHARE, answerLevels, candleBarMs, candleLevels, linesWindows, mergeCandleProfiles, recordedShare, recordedWindows, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../traded/levels.ts';
+import { DRAWN_SHARE, answerLevels, candleAnswer, candleBarMs, candleLevels, linesWindows, loadedColumnWanted, mergeCandleProfiles, recordedShare, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../traded/levels.ts';
 import { LabelBoard } from '../labels.ts';
 import type { ProfileWindow } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
@@ -21,7 +21,8 @@ import { timeAxis } from '../time-axis.ts';
 export { timeTicks } from '../time-axis.ts';
 import type { Store, AppState, CandleRow } from '../store.ts';
 import { cumulative, groupLevels, type Grouped } from './levels-data.ts';
-import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf } from '../scope.ts';
+import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from '../scope.ts';
+import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText } from '../text-fit.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
 import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
@@ -71,7 +72,7 @@ import { TapeGL, type DustStyle } from '../tape/gl.ts';
 import { TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../tape/trace.ts';
 import { curveColors } from './ladder-curves.ts';
 import { priceInstrument, priceTarget, type PriceHistoryAnswer, type PriceTarget } from '../../shared/price-history.ts';
-import { priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindow, type PricePoint, type PriceWindow } from '../price-history.ts';
+import { candleCoverage, candlePriceRange, isCovered, priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindow, uncoveredRuns, type Covered, type PricePoint, type PriceWindow } from '../price-history.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -103,6 +104,15 @@ function glowOf(color: string, r: number, dpr: number): { image: HTMLCanvasEleme
 }
 /** A recording younger than this gets the faded placeholder to its left. */
 const PLACEHOLDER_MAX_AGE_MS = 2 * 3_600_000;
+/**
+ * How long, at least, the column's estimate from the candles stands while its window or its rows move (a drag, a zoom, the price scale):
+ * working it out is a pass over every bar of the window spread over the rows each covers, 24 ms at $20 rows, 93 ms at $5, 228 ms at $2 and
+ * 1.1 s at $0.50 (BTC, 21 weeks of 5-minute bars, perpetual and spot; measured in review, 2026-10-24). It stands four times as long as the
+ * last one took, so a drag spends a fifth of its time on it at most.
+ */
+const LOADED_COLUMN_MS = 250;
+/** How far behind a window that has ended the candles known may be for the column's estimate still to stand (the history asks for its newest bars every minute). */
+const LOADED_LAG_MS = 10 * 60_000;
 /** Replay: each VWAP line up to the last bar that ended by its moment (so its tag is the VWAP then); live, the lines as they are. */
 function replayCut(lines: VwapLine[], at: number): VwapLine[] {
   if (!replaying()) return lines;
@@ -214,6 +224,8 @@ export class HeatPane {
   #overviewTarget: PriceTarget | null = null;
   #overviewContext: { key: string; candles: readonly CandleRow[]; window: PriceWindow | null } | null = null;
   #overviewPoints: { answer: PriceHistoryAnswer; cut: number; runs: PricePoint[][] } | null = null;
+  /** The line as drawn: the runs without the parts the chart's candles cover, worked out again only when the answer or what the candles cover changes. */
+  #overviewDrawn: { runs: PricePoint[][]; key: string; drawn: { t: number; price: number }[][]; covered: Covered[] } | null = null;
   /** A Go to needing price history may fit it on arrival, only while time and price stay where that action put them. */
   #priceFit: Bounds | null = null;
   #dataVersion = 0; #rasteredVersion = -1; #rasteredKey = ''; #lastRasterAt = 0;
@@ -234,6 +246,11 @@ export class HeatPane {
   #columnSelect: { y: number; side: Side; i: number } | null = null;
   /** Each column's point of control and value area over its window, and the answer and rows they were read from. */
   readonly #levelsMemo = new Map<ProfileMetric, { answer: ProfileAnswer; step: number; share: number; levels: ValueLevels | null }>();
+  /** The traded-volume column's estimate from the candles, built once for the rows it came from and not oftener than `LOADED_COLUMN_MS` (a drag moves its window every frame). */
+  #loadedCol: { rows: Map<number, number>; step: number; from: number; to: number; at: number; cost: number; answer: ProfileAnswer; split: boolean; markets: string; sources: string } | null = null;
+  #loadedTimer = 0;
+  /** What the column's window was worked out from the candles as, by what it depends on: one slot that replaces itself, so a drag cannot fill `#candleLevels` with windows nobody asks for twice. */
+  #columnSlot: { key: string; value: { levels: ValueLevels; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean } | null } | null = null;
   /** The days, weeks or sessions the lines are drawn for, and what they were worked out for. */
   #vaWindows: { key: string; windows: ProfileWindow[] } | null = null;
   /** Levels of days, weeks or sessions worked out from candles, by window, bar size, rows and share; a window under way with the candles' version. */
@@ -555,13 +572,13 @@ export class HeatPane {
 
   goTo(t: number): void {
     const v = this.view, span = v.t1 - v.t0, t0 = t - span / 2, t1 = t + span / 2;
-    let lo = Infinity, hi = -Infinity;
     const state = this.store.state, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const own = state.seriesInstrument === state.marketId ? state.candles : [];
-    for (const c of own) if (c[0] + tf > t0 && c[0] < t1) { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); }
-    const pad = (hi - lo) * 0.18;
-    v.set({ t0, t1, p0: hi > lo ? lo - pad : v.p0, p1: hi > lo ? hi + pad : v.p1 });
-    this.#priceFit = priceOverviewNeeded(own, tf, v, this.plotW, Date.now()) ? v.clone() : null;
+    // Fitted to the candles that are drawn, whichever series they are of (the line is cut on them, so they are what is on screen; a view they
+    // do not cover is fitted to the line when it comes, `#priceFit`).
+    const range = candlePriceRange(state.candles, tf, t0, t1), pad = range ? (range.hi - range.lo) * 0.18 : 0;
+    v.set({ t0, t1, p0: range ? range.lo - pad : v.p0, p1: range ? range.hi + pad : v.p1 });
+    // Planned on the candles that are drawn (`state.candles`), as the line is cut on them: where they cover the view there is no line to fit to.
+    this.#priceFit = priceOverviewNeeded(state.candles, tf, v, this.plotW, Date.now()) ? v.clone() : null;
     this.store.set({ followLive: false }); this.#liveMargin = v.t1 - pageNow(); this.#rasteredKey = ''; this.onView(); this.invalidate();
   }
 
@@ -914,8 +931,8 @@ export class HeatPane {
     const key = `${state.marketId}|${state.seriesInstrument}|${tf}|${Math.floor(v.t0 / 60_000)}|${Math.ceil(v.t1 / 60_000)}|${Math.floor(now / 60_000)}|${this.plotW}|${history.answer?.tfMs ?? 0}`;
     let context = this.#overviewContext;
     if (!context || context.key !== key || context.candles !== state.candles) {
-      const own = state.seriesInstrument === state.marketId ? state.candles : [];
-      const wanted = priceOverviewNeeded(own, tf, v, this.plotW, now);
+      // The candles that are drawn, whichever market they are of: the line is cut on exactly these, so a line is planned only where it will show.
+      const wanted = priceOverviewNeeded(state.candles, tf, v, this.plotW, now);
       this.#overviewTarget = wanted ? priceTarget(currentCoin(), state.marketId, kindOf(state.markets, state.marketId) ?? 'perp') : null;
       const window = wanted && this.#overviewTarget ? priceWindow(v, this.plotW, now, history.answer?.tfMs, tf) : null;
       context = this.#overviewContext = { key, candles: state.candles, window };
@@ -931,6 +948,18 @@ export class HeatPane {
     const at = pageNow(), cut = replaying() || answer.asOf > at ? Math.floor(at / 1000) : 0;
     if (!this.#overviewPoints || this.#overviewPoints.answer !== answer || this.#overviewPoints.cut !== cut) this.#overviewPoints = { answer, cut, runs: pricePoints(answer, at, replaying()) };
     return this.#overviewPoints.runs;
+  }
+
+  /**
+   * The line without the parts where the chart draws candles (Karl, 2026-10-24: the line across the candles was noise; it is for where the
+   * chart has none): cut at the candles' edge, taken up after a gap in them. The candles that count are the ones drawn, `state.candles`.
+   */
+  #overviewLine(state: AppState): { t: number; price: number }[][] {
+    const runs = this.#overviewRuns(), candles = state.candles, tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    // The candles' coverage changes when one starts or the series is replaced, never when the forming one moves: the key names those.
+    const key = `${candles.length}|${candles[0]?.[0] ?? 0}|${candles[candles.length - 1]?.[0] ?? 0}|${tfMs}`;
+    if (this.#overviewDrawn?.runs !== runs || this.#overviewDrawn.key !== key) { const covered = candleCoverage(candles, tfMs); this.#overviewDrawn = { runs, key, drawn: uncoveredRuns(runs, covered), covered }; }
+    return this.#overviewDrawn.drawn;
   }
 
   #fitOverview(): void {
@@ -951,7 +980,10 @@ export class HeatPane {
       const tf = Object.entries(TIMEFRAMES).find(([, ms]) => ms === a.tfMs)?.[0] ?? '';
       const market = `${venueLabel(a.instrumentId)} ${target.listing.symbol} ${target.kind === 'spot' ? t('Spot') : t('Perp')}`;
       text = t('Price · {market} · {timeframe}', { market, timeframe: tf });
-      const point = pricePointAt(this.#overviewRuns(), state.hover?.t ?? Math.min(pageNow(), this.view.t1), a.tfMs);
+      // The price only where the line is drawn: over a candle the candle says it, and the line's close would be one nothing on the chart shows.
+      this.#overviewLine(state);
+      const at = state.hover?.t ?? Math.min(pageNow(), this.view.t1);
+      const point = isCovered(this.#overviewDrawn?.covered ?? [], at) ? null : pricePointAt(this.#overviewRuns(), at, a.tfMs);
       if (point) text += `  ${fmtPrice(point.price)}`;
     }
     const status = h.status === 'stale' ? t('Price history is stale; trying again in a minute.') : h.status === 'failed' ? t('Price history could not be loaded; trying again in a minute.') : h.status === 'empty' ? t('No price history for this time.') : !a?.candles.length ? t('Reading price history…') : '';
@@ -961,7 +993,7 @@ export class HeatPane {
   /** A true price series; separate paths preserve exchange gaps and never splice a reference market into the selected market's live trades. */
   #paintOverview(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const answer = this.hub.priceHistory.answer; if (!this.#overview || !answer) return;
-    const runs = this.#overviewRuns(), v = this.view, p = this.#palette;
+    const runs = this.#overviewLine(state), v = this.view, p = this.#palette;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip(); ctx.lineJoin = 'round';
     ctx.globalAlpha = 0.9 * (1 - 0.85 * this.#lodFrame.barAlpha);
     if (priceInstrument(state.marketId) !== answer.instrumentId) ctx.setLineDash([5, 3]);
@@ -1325,11 +1357,113 @@ export class HeatPane {
    * source was asked from (eight days back at most, `askedSpan`) and the first minute every venue in it was recorded. Zoomed out to months,
    * the column is the last eight days, and says so (Karl, 2026-10-20: one profile across the whole chart, from nobody knew where).
    */
-  #columnCovers(metric: ProfileMetric): number | null {
-    const answer = this.#columnAnswer(metric); if (!answer) return null;
+  #columnCovers(metric: ProfileMetric): number | null { return this.#loadedColumn(metric) ? null : this.#recordedSince(this.hub.profile(metric)?.answer ?? null); }
+  /** Where an answer's numbers begin when that is after the chart's left edge (null when they cover all of it, or there is no answer). */
+  #recordedSince(answer: ProfileAnswer | null): number | null {
+    if (!answer) return null;
     let since = answer.from;
     for (const inst of answer.instruments) if (inst.earliest !== null && inst.earliest > since) since = inst.earliest;
     return since > this.#tradedWindow().from + 60_000 ? since : null;
+  }
+  /**
+   * The traded-volume column's estimate from the exchange candles, in the same shape as the recording's answer, when the recording holds
+   * under `DRAWN_SHARE` of the window on the map and the candles hold the window (`#windowFromCandles`, for the markets the column counts:
+   * `#columnMarkets`); else null and the column is the recording's. One source for the whole column, never the two added (the recording
+   * counts every venue, a candle one or two markets). Karl, 2026-10-24: zoomed out to months the column showed only the last days, with
+   * nothing for the rest that the page had loaded. Not in a replay (its window is the replay's), and only traded volume: no exchange
+   * publishes where absorption, liquidations or open interest happened. `split` false: the candles do not say who bought, so the column has
+   * one volume and no sides. `markets` names what it was worked out from, for its box.
+   */
+  #loadedColumn(metric: ProfileMetric): { answer: ProfileAnswer; split: boolean; markets: string } | null {
+    if (metric !== 'volume') return null;
+    const state = this.store.state, win = this.#tradedWindow();
+    if (!this.#loadedWanted(state, win)) return null;
+    const step = requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), now = Date.now(), c = this.#loadedCol;
+    const mine = this.#columnMarkets(state), sources = `${mine.main?.id ?? ''}|${mine.spot?.id ?? ''}`;
+    // A drag, a zoom or a change of the price scale moves the window or the rows every frame: what was worked out stands for a while, longer
+    // the longer it took, and the pane is drawn again when it is due. Not once the markets it counts have changed (Spot, a chip): it is of others.
+    if (c && c.sources === sources && (c.step !== step || c.from !== win.from || c.to !== win.to)) {
+      const hold = Math.max(LOADED_COLUMN_MS, 4 * c.cost);
+      if (now - c.at < hold) {
+        if (!this.#loadedTimer) this.#loadedTimer = window.setTimeout(() => { this.#loadedTimer = 0; this.invalidate(); }, hold - (now - c.at) + 5);
+        return c;
+      }
+    }
+    const started = performance.now();
+    const r = this.#windowFromCandles(state, { key: 'day|map', name: '', from: win.from, to: win.to }, step, state.traded.share / 100, pageNow(), true);
+    if (!r) return null;
+    if (!c || c.rows !== r.rows || c.step !== step || c.from !== win.from || c.to !== win.to) {
+      const { answer, split } = candleAnswer(r.rows, r.buys, step, win.from, win.to);
+      this.#loadedCol = { rows: r.rows, step, from: win.from, to: win.to, at: now, cost: performance.now() - started, answer, split, markets: r.markets, sources };
+    }
+    return this.#loadedCol;
+  }
+  /**
+   * Whether the column's estimate from the candles is wanted for this window, whether or not the candles are in yet: the recording holds under
+   * `DRAWN_SHARE` of it (`#volumeSince`), some venue is counted at all, the window is not older than the candles reach (`PROFILE_CANDLES_BACK_MS`:
+   * none are asked for beyond it), and a market of the column's own is there to read (`#columnMarkets`).
+   */
+  #loadedWanted(state: AppState, win: { from: number; to: number } = this.#tradedWindow()): boolean {
+    if (replaying() || !state.show.traded || win.from < Date.now() - PROFILE_CANDLES_BACK_MS) return false;
+    const mine = this.#columnMarkets(state);
+    if (!mine.main && !mine.spot) return false;
+    const ids = flowIds(state, this.hub.flow.ids);
+    if (!ids.length) return false;
+    return loadedColumnWanted(this.#volumeSince(win, ids), win.from, win.to);
+  }
+  /**
+   * Whether a press on the volume column must not start a Range selection: the estimate is drawn, or it is wanted and the candles it is read
+   * from are still on their way. Never where they cannot come (a history shorter than the window, an exchange that does not answer): the
+   * column then shows the recording, and a press on it selects.
+   */
+  #loadedBlocksRange(state: AppState): boolean {
+    if (this.#loadedColumn('volume')) return true;
+    const win = this.#tradedWindow();
+    if (!this.#loadedWanted(state, win)) return false;
+    const mine = this.#columnMarkets(state), spotOnly = !mine.main, primary = spotOnly ? mine.spot : mine.main;
+    if (!primary) return false;
+    const h = this.hub.profileHistory(this.#profileCandles(state, 'day').barMs, spotOnly ? 'spot' : 'main');
+    return h.id !== primary.id || h.reach(win.from) === 'coming';
+  }
+  /**
+   * Where the recording behind the traded-volume column begins inside the window (`recordingStart`: from what does not depend on the window
+   * an answer was asked for, so a zoom out not yet answered does not flash the estimate on; before an answer is held, from where the hub knows
+   * the recording began).
+   */
+  #volumeSince(win: { from: number; to: number }, ids: readonly string[]): number | null {
+    const held = this.hub.profile('volume')?.answer;
+    return recordingStart(win, askedSpan(win.from, win.to).from, held ? held.instruments : null, this.hub.recordedSince, ids);
+  }
+  /** Whether a market is a spot or a perpetual one: the market list says, else its venue's name does (Binance spot's candles are `binancespot`). */
+  #marketKind(state: AppState, id: string): Kind { return kindOf(state.markets, id) ?? (/spot$|^coinbase$/.test(venueOfInstrument(id)) ? 'spot' : 'perp'); }
+  /**
+   * The candle markets the column's estimate is worked out from: the coin's usual one (`main`) and the spot market that joins it (`spot`),
+   * each only where its venue's chip is on and it is inside the Spot / Perp / Both filter, as the recording's flow column counts. A market
+   * the filter or a chip leaves out is no part of the estimate, and where none is left there is no estimate (never another market's).
+   */
+  #columnMarkets(state: AppState): { main: HistoryTarget | null; spot: HistoryTarget | null } {
+    const { target, spot } = this.#profileCandles(state, 'day');
+    const counts = (m: HistoryTarget | null): HistoryTarget | null => m && !state.disabledVenues.includes(venueOfInstrument(m.id)) && (state.scope === 'all' || this.#marketKind(state, m.id) === state.scope) ? m : null;
+    return { main: counts(target), spot: counts(spot) };
+  }
+  /** What the market is called in a box that names where an estimate comes from ("Binance Perp"). */
+  #marketLabel(state: AppState, m: HistoryTarget): string {
+    // A spot venue's own name says so already ("Binance spot"); a perpetual's does not.
+    const name = venueLabel(m.id);
+    return this.#marketKind(state, m.id) === 'spot' ? (/spot/i.test(name) ? name : `${name} ${t('Spot')}`) : `${name} ${t('Perp')}`;
+  }
+  /** Whether anything on the chart is drawn from the traded-volume column's numbers: a volume column at a side, or the chart window's lines read from volume. */
+  #loadedServes(state: AppState): boolean {
+    const sides = sideColumns(state), s = state.traded;
+    return [...sides.right, ...sides.left].some(c => c.metric === 'volume') || (s.windowLines && (s.poc || s.va) && lineMetric(s.placements) === 'volume');
+  }
+  /** Ask for the candles the column's estimate is read from, only while the recording holds too little of the window to be the column. */
+  #ensureLoadedColumn(state: AppState): void {
+    const win = this.#tradedWindow();
+    if (!this.#loadedWanted(state, win)) return;
+    const mine = this.#columnMarkets(state), { barMs } = this.#profileCandles(state, 'day'), at = Math.floor(win.from / barMs) * barMs;
+    if (mine.main) this.hub.profileHistory(barMs, 'main').ensure(mine.main, at, barMs, () => this.invalidate());
+    if (mine.spot) this.hub.profileHistory(barMs, 'spot').ensure(mine.spot, at, barMs, () => this.invalidate());
   }
   /** The point of control and the value area of what is on the chart, read from the column's answer over every price (kept until either changes). */
   #viewLevels(metric: ProfileMetric): ValueLevels | null {
@@ -1344,7 +1478,7 @@ export class HeatPane {
    * What a column draws: its measure's answer by price once one is held, the last one while a new one loads; the same answer on either side
    * of the map (`Hub.profile`).
    */
-  #columnAnswer(metric: ProfileMetric): ProfileAnswer | null { return this.hub.profile(metric)?.answer ?? null; }
+  #columnAnswer(metric: ProfileMetric): ProfileAnswer | null { return this.#loadedColumn(metric)?.answer ?? this.hub.profile(metric)?.answer ?? null; }
 
   /**
    * Ask for what a column adds up over the window on the map (whole minutes, up to the one that is open), on the instruments the flow
@@ -1358,6 +1492,7 @@ export class HeatPane {
     const live = state.followLive && !replaying(), ids = flowIds(state, this.hub.flow.ids), end = to;
     const step = requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), asked = { tag: '', settled: false };
     this.hub.ensureProfile(metric, ids, from, end, step, live, asked, measureDef(metric).judgedByMarks ? this.#absorptionContext(state).thresholds : undefined);
+    if (metric === 'volume' && this.#loadedServes(state)) this.#ensureLoadedColumn(state);
   }
 
   /**
@@ -1589,35 +1724,61 @@ export class HeatPane {
    * of `step`, which the window's profile on the chart draws, and `buys` the part bought at market (null where the candles do not say).
    * The spot market's candles join once they reach the window as the perpetual's do (`spot`); until then the perpetual's draw alone.
    */
-  #windowFromCandles(state: AppState, w: ProfileWindow, step: number, share: number, now: number): { levels: ValueLevels; upTo: number; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean } | null {
-    const { target, spot, barMs } = this.#profileCandles(state, windowKind(w)), h = this.hub.profileHistory(barMs);
-    if (!target || h.id !== target.id || h.barMs !== barMs || h.heldFrom > w.from) return null;
+  #windowFromCandles(state: AppState, w: ProfileWindow, step: number, share: number, now: number, column = false): { levels: ValueLevels; upTo: number; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean; markets: string } | null {
+    const { target, spot, barMs } = this.#profileCandles(state, windowKind(w));
+    // The traded-volume column counts the markets the chips and the Spot / Perp filter leave on (`#columnMarkets`), and may be the spot market's
+    // alone; the days, weeks and sessions on the chart are the coin's usual market with its spot market, whatever is on. `lag`: how far behind a
+    // window that has ended the candles known may be (a column follows a pan off the live edge; a period's lines are drawn only once final).
+    const mine = column ? this.#columnMarkets(state) : { main: target, spot }, spotOnly = column && !mine.main, primary = spotOnly ? mine.spot : mine.main, lag = column ? LOADED_LAG_MS : 0;
+    if (!primary) return null;
+    const h = this.hub.profileHistory(barMs, spotOnly ? 'spot' : 'main');
+    if (h.id !== primary.id || h.barMs !== barMs || h.heldFrom > w.from) return null;
     // Replay: the candles up to its moment (a bar under way carries its future).
     let heldTo = Math.min(h.heldTo, now);
-    if (w.to <= now && heldTo < w.to) return null;
+    // A window that has ended needs the candles to reach its end; the column's, under way or ended, needs them to reach (within `lag`) its end
+    // or now: candles whose refreshes stopped would otherwise be 100 % of a window cut at where they stop, and drawn against the 90 % rule.
+    if (column ? heldTo < Math.min(w.to, now) - lag : w.to <= now && heldTo < w.to) return null;
     // The spot market's join a window that has ended once they reach its end, and one under way only while they are as current as the
     // perpetual's (within a bar): a spot history that stopped would otherwise hold the profile back to where it stopped.
-    const s = spot ? this.hub.profileHistory(barMs, 'spot') : null, sHeldTo = s ? Math.min(s.heldTo, now) : -Infinity;
-    const joined = !!s && s.id === spot!.id && s.barMs === barMs && s.heldFrom <= w.from && (w.to <= now ? sHeldTo >= w.to : sHeldTo >= heldTo - barMs);
+    const second = spotOnly ? null : mine.spot, s = second ? this.hub.profileHistory(barMs, 'spot') : null, sHeldTo = s ? Math.min(s.heldTo, now) : -Infinity;
+    const joined = !!s && s.id === second!.id && s.barMs === barMs && s.heldFrom <= w.from && (w.to <= now ? sHeldTo >= w.to - lag : sHeldTo >= heldTo - barMs);
     if (joined) heldTo = Math.min(heldTo, sHeldTo);
     // Ended a bar before the candles known reach: its bars are final. Until then it is worked out again as they come; and an answer is kept
     // for good only when it is final, drawn and whole (the spot market's in it where they joined), never a rejected one that more could fix.
     const ended = w.to + barMs <= heldTo;
-    const final = `${target.id}|${joined ? spot!.id : ''}|${barMs}|${step}|${share}|${w.from}|${w.to}`, live = `${final}|${h.version}|${joined ? s!.version : ''}|${Math.floor(heldTo / barMs)}`;
-    let held = ended ? this.#candleLevels.get(final) : undefined;
-    if (held === undefined) {
-      if (!this.#candleLevels.has(live)) {
-        // A bound on what is kept: the oldest go first (20 windows of each session at most are drawn).
-        if (this.#candleLevels.size > 400) for (const k of [...this.#candleLevels.keys()].slice(0, 200)) this.#candleLevels.delete(k);
-        let r = candleLevels(h.bars, w.from, w.to, barMs, step, share, heldTo), merged = false;
-        if (joined) { const other = candleLevels(s!.bars, w.from, w.to, barMs, step, share, heldTo); if (other.covered >= DRAWN_SHARE) { r = mergeCandleProfiles(r, other, step, share); merged = true; } }
-        const value = r.covered >= DRAWN_SHARE && r.levels ? { levels: r.levels, rows: r.rows, buys: r.buys, spot: merged } : null;
-        this.#candleLevels.set(live, value);
-        if (ended && value && (!joined || merged)) this.#candleLevels.set(final, value);
+    const final = `${primary.id}|${joined ? second!.id : ''}|${barMs}|${step}|${share}|${w.from}|${w.to}`, live = `${final}|${h.version}|${joined ? s!.version : ''}|${Math.floor(heldTo / barMs)}`;
+    type Worked = { levels: ValueLevels; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean };
+    const work = (): Worked | null => {
+      let r = candleLevels(h.bars, w.from, w.to, barMs, step, share, heldTo), merged = false;
+      if (joined) { const other = candleLevels(s!.bars, w.from, w.to, barMs, step, share, heldTo); if (other.covered >= DRAWN_SHARE) { r = mergeCandleProfiles(r, other, step, share); merged = true; } }
+      return r.covered >= DRAWN_SHARE && r.levels ? { levels: r.levels, rows: r.rows, buys: r.buys, spot: merged } : null;
+    };
+    let held: Worked | null | undefined;
+    if (column) {
+      // The column's window changes with every drag: kept in a slot of its own, not among the periods' windows (which it would push out). A
+      // window that has ended and came out whole is kept by its final key, as the periods' are, so the candles' refresh each minute does not
+      // work a static view out again; any other is worked out again when the candles change.
+      const slot = this.#columnSlot;
+      if (slot && (slot.key === live || (ended && slot.key === final))) held = slot.value;
+      else {
+        const value = work();
+        this.#columnSlot = { key: ended && value && (!joined || value.spot) ? final : live, value };
+        held = value;
       }
-      held = this.#candleLevels.get(live);
+    } else {
+      held = ended ? this.#candleLevels.get(final) : undefined;
+      if (held === undefined) {
+        if (!this.#candleLevels.has(live)) {
+          // A bound on what is kept: the oldest go first (20 windows of each session at most are drawn).
+          if (this.#candleLevels.size > 400) for (const k of [...this.#candleLevels.keys()].slice(0, 200)) this.#candleLevels.delete(k);
+          const value = work();
+          this.#candleLevels.set(live, value);
+          if (ended && value && (!joined || value.spot)) this.#candleLevels.set(final, value);
+        }
+        held = this.#candleLevels.get(live);
+      }
     }
-    return held ? { levels: held.levels, rows: held.rows, buys: held.buys, spot: held.spot, upTo: Math.min(w.to, heldTo) } : null;
+    return held ? { levels: held.levels, rows: held.rows, buys: held.buys, spot: held.spot, upTo: Math.min(w.to, heldTo), markets: column ? [primary, ...(held.spot ? [second!] : [])].map(m => this.#marketLabel(state, m)).join(' + ') : '' } : null;
   }
   /**
    * A past day, week, month or session's levels as its lines draw them, and how far what they come from reaches; null when it is not drawn:
@@ -1765,7 +1926,7 @@ export class HeatPane {
     if (!state.show.traded || (!s.poc && !s.va)) return [];
     const v = this.view, p = this.#palette, now = pageNow(), step = this.#levelStep();
     // `live`: the window under way (or what is on the chart), whose lines end at the right edge. `kind`: whose they are.
-    const segments: { x0: number; x1: number; levels: ValueLevels; name: string; naked: number | null; live: boolean; key: string; kind: LineKind | 'view' }[] = [];
+    const segments: { x0: number; x1: number; levels: ValueLevels; name: string; naked: number | null; live: boolean; key: string; kind: LineKind | 'view'; estimate?: boolean }[] = [];
     // The lines are traded volume's when its column is chosen, else the first column's. Another measure than traded volume draws its own
     // levels, over the window the columns add up (what is on the chart, or the day, week or session under way): past days, weeks and
     // sessions are traded volume's.
@@ -1775,7 +1936,8 @@ export class HeatPane {
     if (s.windowLines) {
       // From where the column's numbers begin: a chart wider than what it could add up gets lines over the part it did, not across all of it.
       const levels = this.#viewLevels(lines), covers = this.#columnCovers(lines);
-      if (levels) segments.push({ x0: covers === null ? 0 : v.xOf(covers, pw), x1: pw, levels, name: '', naked: null, live: true, key: 'view', kind: 'view' });
+      // Read from the candles' estimate (the column's, `#loadedColumn`), they say so with a ≈ on their labels and tags, as the period lines from candles do.
+      if (levels) segments.push({ x0: covers === null ? 0 : v.xOf(covers, pw), x1: pw, levels, name: '', naked: null, live: true, key: 'view', kind: 'view', estimate: !!this.#loadedColumn(lines) });
     }
     // The days, weeks, months or sessions drawn on the chart (always traded volume's).
     {
@@ -1800,7 +1962,7 @@ export class HeatPane {
     if (!segments.length) return [];
     // With several kinds drawn, a tag on the axis says whose it is (D, W, M, S), as the key levels' do; the lines of a longer period are
     // heavier, so the month's stand out over the days'.
-    const many = new Set(segments.map(x => x.kind)).size > 1, code = (kind: LineKind | 'view', what: string): string => many && kind !== 'view' ? `${KIND_CODE[kind]} ${what}` : what;
+    const many = new Set(segments.map(x => x.kind)).size > 1, code = (kind: LineKind | 'view', what: string, estimate = false): string => { const text = many && kind !== 'view' ? `${KIND_CODE[kind]} ${what}` : what; return estimate ? `≈ ${text}` : text; };
     const weight = (kind: LineKind | 'view'): number => kind === 'month' ? 1.5 : kind === 'week' ? 1.25 : 1;
     const tags: KeyTag[] = [];
     const tag = (key: string, price: number, text: string, rank: number, older: boolean): void => { if (s.tags) tags.push({ key: `vp|${key}`, y: v.yOf(price, ph), rank, text, older, color: p.poc }); };
@@ -1824,7 +1986,7 @@ export class HeatPane {
       if (s.poc) { line(x0, x1, poc, 2 * heavy, []); if (runsOn) line(x1, Math.min(pw + 4, seg.naked!), poc, 2 * heavy, [2, 3]); }
       ctx.setLineDash([]);
       // The chart window's lines are named only beside a period's, which carry their own names.
-      const own = seg.kind === 'view' && many ? t('Chart') : seg.name, name = own ? `${own} ` : '', pocText = `${name}${t('POC')} ${fmtPrice(poc, step)}`;
+      const base = seg.kind === 'view' && many ? t('Chart') : seg.name, own = seg.estimate ? `≈ ${base}`.trim() : base, name = own ? `${own} ` : '', pocText = `${name}${t('POC')} ${fmtPrice(poc, step)}`;
       if (s.labels && x1 - x0 > 70) {
         // The point of control is named where it ends: at the end of its run when it runs on.
         if (s.poc) label(pocText, runsTo, poc, runsOn ? 2 : 0);
@@ -1832,7 +1994,7 @@ export class HeatPane {
       } else if (s.labels && runsOn && runsTo - Math.max(0, x1) > 70) label(pocText, runsTo, poc, 2);   // only its run is on the chart
       // A longer period's tags go first where two would meet.
       const first = 1 - (heavy - 1);
-      if (seg.live) { if (s.poc) tag(`${seg.key}|poc`, poc, code(seg.kind, t('POC')), first, false); if (s.va) { tag(`${seg.key}|vah`, vah, code(seg.kind, t('VAH')), first + 1.5, false); tag(`${seg.key}|val`, val, code(seg.kind, t('VAL')), first + 1.5, false); } }
+      if (seg.live) { if (s.poc) tag(`${seg.key}|poc`, poc, code(seg.kind, t('POC'), seg.estimate), first, false); if (s.va) { tag(`${seg.key}|vah`, vah, code(seg.kind, t('VAH'), seg.estimate), first + 1.5, false); tag(`${seg.key}|val`, val, code(seg.kind, t('VAL'), seg.estimate), first + 1.5, false); } }
       else if (runsOn && seg.naked! >= pw) tag(`${seg.key}|poc`, poc, code(seg.kind, t('POC')), 8 - (heavy - 1), true);   // untouched to now: outlined, as an older key level
     }
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
@@ -1882,9 +2044,9 @@ export class HeatPane {
     // The column's inside, off the edge line on the map's side.
     const inner = left ? x0 : x0 + 1;
     const rows: TradedRows | null = answer ? tradedRows(answer, this.#tradedStep(), v.p0, v.p1) : null;
-    const s = state.traded, levels = this.#viewLevels(metric);
-    // The header: the total, the line under it, and the difference of the two sides.
-    const headH = 28 + (rows && rows.total > 0 ? 12 : 0);
+    const s = state.traded, levels = this.#viewLevels(metric), loaded = this.#loadedColumn(metric), unsplit = !!loaded && !loaded.split;
+    // The header: the total, the line under it, and the difference of the two sides (none for an estimate whose candles do not say who bought).
+    const headH = 28 + (rows && rows.total > 0 && !unsplit ? 12 : 0);
     ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
     ctx.fillStyle = p.panel; ctx.fillRect(x0, 0, W, ph);
     // The value area, shaded behind the bars.
@@ -1902,18 +2064,26 @@ export class HeatPane {
         const hgt = Math.max(1, y1 - y0 - 0.5);
         ctx.globalAlpha = 0.85;
         const len = Math.max(1, total / rows.max * width), buyLen = len * b / total;
+        // An estimate from the candles is outlined in the profile colour, as the Volume bars and the candle profiles are (one market's, not the venues').
+        const outline = (): void => {
+          const [x, w] = bar(0, len); ctx.globalAlpha = 0.85; ctx.strokeStyle = p.poc; ctx.fillStyle = p.poc; ctx.lineWidth = 1;
+          if (hgt >= 2) ctx.strokeRect(x + 0.5, y0 + 0.5, Math.max(0, w - 1), Math.max(0, hgt - 1)); else ctx.fillRect(x, y0, w, 1);
+        };
+        if (loaded && !loaded.split) { const [x, w] = bar(0, len); ctx.globalAlpha = 0.75; ctx.fillStyle = p.muted; ctx.fillRect(x, y0, w, hgt); outline(); continue; }
         if (s.bars === 'delta') {
           // The whole row faintly, and the difference over it on the same scale in the colour of the side that was the bigger: a busy row whose
           // two sides were close still shows, as busy and balanced, never as a row where nothing traded (Karl, 2026-10-20).
           const net = b - sl;
           ctx.globalAlpha = 0.25; ctx.fillStyle = p.muted; ctx.fillRect(bar(0, len)[0], y0, len, hgt); ctx.globalAlpha = 0.85;
           if (Math.abs(net) > 0) { const n = Math.max(1, Math.abs(net) / rows.max * width); ctx.fillStyle = net > 0 ? p.bid : p.ask; ctx.fillRect(bar(0, n)[0], y0, n, hgt); }
+          if (loaded) outline();
           continue;
         }
         // The first side (bid colour) against the map's edge, then the second, on both sides of the map.
         const [first, second] = splitStyles(b, sl, median, floor, p, s.emphasis);
         if (b > 0) { const [x, w] = bar(0, Math.max(0.5, buyLen)); ctx.globalAlpha = first.alpha; ctx.fillStyle = first.color; ctx.fillRect(x, y0, w, hgt); }
         if (sl > 0) { const [x, w] = bar(buyLen, Math.max(0.5, len - buyLen)); ctx.globalAlpha = second.alpha; ctx.fillStyle = second.color; ctx.fillRect(x, y0, w, hgt); }
+        if (loaded) outline();
       }
       ctx.globalAlpha = 1;
     }
@@ -1934,7 +2104,7 @@ export class HeatPane {
     }
     // A selection made on the column (its window, a band of its rows), shaded on it.
     const sel = state.range, win = this.#tradedWindow();
-    if (sel && sel.p0 !== null && sel.p1 !== null && Math.abs(sel.t0 - win.from) < 60_000 && Math.abs(sel.t1 - win.to) < 120_000) {
+    if (sel && !loaded && sel.p0 !== null && sel.p1 !== null && Math.abs(sel.t0 - win.from) < 60_000 && Math.abs(sel.t1 - win.to) < 120_000) {
       const ya = v.yOf(sel.p1, ph), yb = v.yOf(sel.p0, ph);
       ctx.fillStyle = p.text; ctx.globalAlpha = 0.14; ctx.fillRect(inner, ya, W - 1, yb - ya); ctx.globalAlpha = 1;
       ctx.strokeStyle = p.text; ctx.setLineDash([5, 4]); ctx.strokeRect(inner + 0.5, Math.round(ya) + 0.5, W - 2, Math.max(1, Math.round(yb - ya) - 1)); ctx.setLineDash([]);
@@ -1951,24 +2121,28 @@ export class HeatPane {
     const held = this.hub.profile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
     const measured = measureDef(metric).header(rows, flags);
     let { head, sub } = measured;
+    // An estimate from the candles says so, in the profile colour, where a recording's window says "since" in amber.
+    if (loaded) { head = `≈ ${head}`; sub = t('≈ from candles'); }
     if (this.hub.profileState(metric) === 'unavailable' && !rows) sub = t('not on this server');
     ctx.fillText(head, x0 + 4, 4);
     let lineY = 16;
     // A window that reaches back before the recording, or a measure whose record is cut, says so in the dot rows' amber; so does a chart wider
     // than what the column could add up (a source answers eight days at most, `askedSpan`): the column then holds only its newest part.
     const covers = this.#columnCovers(metric);
-    if (covers !== null) sub = t('since {time}', { time: clock(covers, covers < startOfDay(Date.now())) });
-    const warn = covers !== null || measured.warn;
-    if (sub) { if (warn) ctx.fillStyle = '#e6a700'; ctx.fillText(sub, x0 + 4, lineY); }
-    if (rows && rows.total > 0) { const net = tradedNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + 4, lineY + 12, W - 8); }
+    if (covers !== null && !loaded) sub = t('since {time}', { time: clock(covers, covers < startOfDay(Date.now())) });
+    const warn = !loaded && (covers !== null || measured.warn);
+    if (sub) { if (warn) ctx.fillStyle = '#e6a700'; else if (loaded) ctx.fillStyle = p.poc; ctx.fillText(sub, x0 + 4, lineY); }
+    if (rows && rows.total > 0 && !unsplit) { const net = tradedNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + 4, lineY + 12, W - 8); }
     ctx.restore(); ctx.textBaseline = 'middle';
     // The edge line on the map's side: a right column's left edge, a left column's right edge.
     const edge = left ? x0 + W - 0.5 : x0 + 0.5;
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(edge, 0); ctx.lineTo(edge, ph); ctx.stroke();
     // The box stands beside the columns, over the map, like the profile's comparison.
     // It opens downward from under the chart's corner buttons, which would otherwise cover its first lines.
-    if (rows && hover && onHead) return { lines: tradedFigures(rows, levels, state.mark.price, t('What is on the chart'), metricWords(metric)), y: 34, placement: 'down' };
-    return rows && hover && hoverRow >= 0 ? { lines: tradedLines(rows, hoverRow, levels, metricWords(metric)), y: hover.y } : null;
+    // Where the estimate comes from, and, where its candles do not say who bought, that its column has one volume and no sides.
+    const note = loaded ? [t('An estimate from the candles of {market}, the volume of each spread over its range: not the recording.', { market: loaded.markets }), ...(unsplit ? [t('{market} candles do not say who bought: the total only.', { market: loaded.markets })] : [])].join(' ') : null;
+    if (rows && hover && onHead) return { lines: tradedFigures(rows, levels, state.mark.price, t('What is on the chart'), metricWords(metric), note, !unsplit), y: 34, placement: 'down' };
+    return rows && hover && hoverRow >= 0 ? { lines: tradedLines(rows, hoverRow, levels, metricWords(metric), note, !unsplit), y: hover.y } : null;
   }
 
   /**
@@ -2603,7 +2777,10 @@ export class HeatPane {
         this.#selecting = { x, y }; this.range.begin(this.#rangePoint(x, y)); el.setPointerCapture(e.pointerId); return;
       }
       const column = this.#columnAt(x);
-      if (this.range && e.button === 0 && column && y >= 0 && y <= this.plotH) {
+      // A selection on the column is a question to the recording: there is none to ask of an estimate from candles (the press pans the chart),
+      // and none either while the estimate is wanted and its candles are on their way (it would shade the estimate that replaces the recording);
+      // where they cannot come the column is the recording's and a press selects.
+      if (this.range && e.button === 0 && column && y >= 0 && y <= this.plotH && !(column.metric === 'volume' && this.#loadedBlocksRange(this.store.state))) {
         this.#columnSelect = { y, side: column.side, i: column.i };
         const { from, to } = this.#tradedWindow(), band = this.#columnBand(y, y);
         this.range.begin({ t: from, p: band.p0 }); this.range.move({ t: to, p: band.p1 }, { t: from, p: band.p0 });

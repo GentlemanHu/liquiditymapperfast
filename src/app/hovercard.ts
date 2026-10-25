@@ -1,7 +1,9 @@
 import { el } from './dom.ts';
 import type { InfoLine } from './infobox.ts';
 
-const GAP = 14, MARGIN = 6;
+/** How far a card stands off the pointer (or the point it is set beside), and from the viewport's edge. */
+export const CARD_GAP = 14;
+const GAP = CARD_GAP, MARGIN = 6;
 
 /** Where a card of `size` goes for a pointer at (x, y): above-right of it, flipped to the other side or below where there is no room, always inside the viewport. */
 export function placeCard(x: number, y: number, size: { w: number; h: number }, viewport: { w: number; h: number }): { left: number; top: number } {
@@ -17,6 +19,8 @@ export function placeCard(x: number, y: number, size: { w: number; h: number }, 
  */
 export class HoverCard {
   readonly root: HTMLElement;
+  /** Where the card's right edge was last put (viewport px), for a caller that sets another beside it. */
+  right = 0;
   #key = ''; #on = false;
   /** The card's size, read when what it says changes (reading it is a layout, and the pointer moves far more often than the text does). */
   #size: { w: number; h: number } | null = null;
@@ -32,12 +36,12 @@ export class HoverCard {
 
   /** Show `lines` for a pointer at viewport position (x, y). */
   show(lines: readonly InfoLine[], x: number, y: number): void {
-    const key = lines.map(l => `${l.label ?? ''}\u0001${l.text}\u0001${l.color ?? ''}${l.bold ? 'b' : ''}${l.rule ? 'r' : ''}`).join('\u0002');
+    const key = lines.map(l => `${l.label ?? ''}\u0001${l.text}\u0001${l.color ?? ''}${l.bold ? 'b' : ''}${l.rule ? 'r' : ''}${l.wrap ? 'w' : ''}`).join('\u0002');
     let measure = false;
     if (key !== this.#key) {
       this.#key = key; measure = true;
       this.root.replaceChildren(...lines.map(line => {
-        const cls = ['hc-line', `c-${line.color ?? 'text'}`, ...(line.bold ? ['bold'] : []), ...(line.rule ? ['rule'] : [])];
+        const cls = ['hc-line', `c-${line.color ?? 'text'}`, ...(line.bold ? ['bold'] : []), ...(line.rule ? ['rule'] : []), ...(line.wrap ? ['hc-wrap'] : [])];
         return line.label !== undefined
           ? el('div', { class: `${cls.join(' ')} hc-row` }, el('span', { class: 'hc-label', textContent: line.label }), el('span', { class: 'hc-value', textContent: line.text }))
           : el('div', { class: cls.join(' '), textContent: line.text });
@@ -47,6 +51,7 @@ export class HoverCard {
     if (measure || !this.#size) this.#size = { w: this.root.offsetWidth, h: this.root.offsetHeight };
     const at = placeCard(x, y, this.#size, { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight });
     this.root.style.transform = `translate(${Math.round(at.left)}px, ${Math.round(at.top)}px)`;
+    this.right = at.left + this.#size.w;
   }
 
   hide(): void {

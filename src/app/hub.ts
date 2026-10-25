@@ -9,6 +9,7 @@ import type { WorkerIn, WorkerOut, RasterStats } from './worker/raster.worker.ts
 import type { CellShare } from './cell-sources.ts';
 import type { Bounds } from './view.ts';
 import type { LtParams, LtSeries } from './lt.ts';
+import { LtLane } from './lt-lane.ts';
 import { pickOi, weakOi, type OiCandidate } from './oi-source.ts';
 import { takeOiPushes, withOiPushes, type OiPush } from './oi-push.ts';
 import { replaying } from './replay/clock.ts';
@@ -268,7 +269,11 @@ export class Hub {
   #printsLoading = false;
   onRaster: (result: RasterResult) => void = () => {};
   #depthWaiters = new Map<number, (r: { bid: Float32Array; ask: Float32Array }) => void>();
-  #ltWaiters = new Map<number, (r: LtSeries) => void>();
+  #ltWaiters = new Map<number, (r: LtSeries & { stepMs?: number }) => void>();
+  /** The Liquidity Tracker's own way to its data, apart from the columns (lt-lane.ts): the pane reads it where the source has one and no size filter is set. */
+  readonly ltLane: LtLane;
+  /** Called when the lane holds something new (or failed), so the pane draws again. */
+  onLtLane: () => void = () => {};
   #cellWaiters = new Map<number, (items: CellShare[]) => void>();
   /** Bumped whenever new recorded columns reach the worker, so derived series know to recompute. */
   columnsVersion = 0;
@@ -368,12 +373,19 @@ export class Hub {
       return source.priceHistory(id, tf, from, to, signal);
     });
     this.worker = new Worker(new URL('./worker/raster.worker.ts', import.meta.url), { type: 'module' });
+    this.ltLane = new LtLane(source.ltLane?.bind(source), (stepMs, half, instruments) => {
+      // The arrays are the lane's own copies, handed over rather than copied again.
+      const buffers: ArrayBuffer[] = [];
+      for (const item of instruments) for (const array of [item.times, item.values]) if (array.buffer instanceof ArrayBuffer) buffers.push(array.buffer);
+      this.#post({ type: 'ltLane', stepMs, instruments }, buffers);
+      void half;
+    }, () => Date.now() - this.#sourceSkew, () => this.onLtLane());
     this.#ready = new Promise(resolve => {
       this.worker.onmessage = (event: MessageEvent<WorkerOut>) => {
         const message = event.data;
         if (message.type === 'ready') resolve();
         else if (message.type === 'error') console.error('raster worker:', message.message);
-        else if (message.type === 'lt') { this.#ltWaiters.get(message.id)?.({ times: message.times, bid: message.bid, ask: message.ask, estimated: message.estimated }); this.#ltWaiters.delete(message.id); }
+        else if (message.type === 'lt') { this.#ltWaiters.get(message.id)?.({ times: message.times, bid: message.bid, ask: message.ask, estimated: message.estimated, stepMs: message.stepMs }); this.#ltWaiters.delete(message.id); }
         else if (message.type === 'cell') { this.#cellWaiters.get(message.id)?.(message.items); this.#cellWaiters.delete(message.id); }
         else if (message.type === 'depth') { this.#depthWaiters.get(message.id)?.({ bid: message.bid, ask: message.ask }); this.#depthWaiters.delete(message.id); }
         else {
@@ -971,10 +983,10 @@ export class Hub {
     return new Promise(resolve => { this.#cellWaiters.set(id, resolve); this.#post({ type: 'cell', id, enabled, t0, t1, p0, p1 }); });
   }
 
-  /** Liquidity Tracker series over [t0, t1] for the enabled instruments. */
-  lt(enabled: string[], t0: number, t1: number, params: LtParams): Promise<LtSeries> {
+  /** Liquidity Tracker series over [t0, t1] for the enabled instruments: from the recorded columns, or (`lane`) from the trackers the lane holds. `stepMs`: that of the windows. */
+  lt(enabled: string[], t0: number, t1: number, params: LtParams, lane = false): Promise<LtSeries & { stepMs?: number }> {
     const id = ++this.#rasterId + 2_000_000;
-    return new Promise(resolve => { this.#ltWaiters.set(id, resolve); this.#post({ type: 'lt', id, enabled, t0, t1, params }); });
+    return new Promise(resolve => { this.#ltWaiters.set(id, resolve); this.#post({ type: 'lt', id, enabled, t0, t1, params, lane }); });
   }
 
   /** New minutes may have been recorded: the next `loadColumns` asks again for the windows that could have changed. */

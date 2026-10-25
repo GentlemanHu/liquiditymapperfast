@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connectLive, connectionStatus, getColumns } from '../src/app/net.ts';
 import { ServerSource } from '../src/app/server-source.ts';
-import { encodeColumns } from '../src/server/v2/wire.mts';
+import { encodeColumns, encodeLt } from '../src/server/v2/wire.mts';
+import type { LtFrame } from '../src/app/wire.ts';
 import { COLUMNS_PER_REQUEST } from '../src/shared/columns.ts';
 
 const exact = (b: Buffer): ArrayBuffer => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
@@ -176,6 +177,104 @@ test('a long/short question the socket drops or refuses is asked over HTTP; one 
     cancel.abort();
     await assert.rejects(cancelled, /cancelled/);
     assert.equal(fetched.length, 1, 'given up: not asked again over HTTP');
+    live.close();
+  } finally { Object.assign(globalThis, saved); }
+});
+
+test('the white price line is read by the page from the exchange, the server only where that fails', async () => {
+  // The line's request through the server ran 25 s behind the page's other history requests; from Binance it takes 0.4 s (2026-10-24).
+  const saved = { fetch: globalThis.fetch };
+  const urls: string[] = [];
+  let binanceDown = false, serverDown = false;
+  const HOUR = 3_600_000, from = Date.UTC(2026, 0, 1), kline = (i: number) => [from + i * HOUR, '100', '102', '99', '101', '5', from + (i + 1) * HOUR - 1, '505', 10, '2', '202', '0'];
+  Object.assign(globalThis, {
+    fetch: async (input: string | URL | Request) => {
+      const url = String(input); urls.push(url);
+      if (url.includes('/api/v2/price-history')) {
+        if (serverDown) return { ok: false, status: 500, json: async () => ({}) } as unknown as Response;
+        const u = new URL(url, 'http://localhost');
+        return { ok: true, status: 200, json: async () => ({ instrumentId: 'binance:BTCUSDT', tfMs: HOUR, from: Number(u.searchParams.get('from')), to: Number(u.searchParams.get('to')), asOf: Date.now(), status: 'ok', candles: [[Number(u.searchParams.get('from')), 100, 102, 99, 101, 5, 10]] }) } as unknown as Response;
+      }
+      if (binanceDown) throw new TypeError('network down');
+      return { ok: true, status: 200, json: async () => Array.from({ length: 6 }, (_, i) => kline(i)) } as unknown as Response;
+    },
+  });
+  try {
+    const source = new ServerSource();
+    const answer = await source.priceHistory('binance:BTCUSDT', '1h', from, from + 6 * HOUR);
+    assert.equal(answer.status, 'ok'); assert.equal(answer.candles.length, 6);
+    assert.ok(urls.some(u => u.includes('fapi.binance.com')), 'read from the exchange');
+    assert.ok(!urls.some(u => u.includes('/api/v2/price-history')), 'not through the server');
+    urls.length = 0; binanceDown = true;
+    const other = await source.priceHistory('binance:BTCUSDT', '1h', from + 10 * 24 * HOUR, from + 10 * 24 * HOUR + 6 * HOUR);
+    assert.ok(urls.some(u => u.includes('/api/v2/price-history')), 'the exchange could not be read: the server route is asked');
+    assert.equal(other.status, 'ok');
+    urls.length = 0;
+    await source.priceHistory('notavenue:XYZ', '1h', from, from + 6 * HOUR).catch(() => undefined);
+    assert.ok(urls.every(u => !u.includes('klines')), 'an instrument the page cannot read is not read from the exchange');
+    assert.ok(urls.some(u => u.includes('/api/v2/price-history')), 'an instrument the page cannot read goes to the server');
+    // A window the page holds only some of (the exchange refusing the rest) is asked of the server too, and what the page holds stands where the server fails as well.
+    const fresh = new ServerSource();
+    urls.length = 0; binanceDown = false; serverDown = false;
+    assert.equal((await fresh.priceHistory('binance:BTCUSDT', '1h', from, from + 6 * HOUR)).status, 'ok');
+    urls.length = 0; binanceDown = true;
+    const some = await fresh.priceHistory('binance:BTCUSDT', '1h', from, from + 12 * HOUR);
+    assert.ok(urls.some(u => u.includes('/api/v2/price-history')), 'a stale direct answer is checked against the server');
+    assert.equal(some.status, 'ok'); assert.equal(some.candles.length, 1, 'the server answered');
+    urls.length = 0; serverDown = true;
+    const held = await fresh.priceHistory('binance:BTCUSDT', '1h', from, from + 12 * HOUR);
+    assert.equal(held.status, 'stale'); assert.equal(held.candles.length, 6, 'the server failed too: what the page holds stands');
+  } finally { Object.assign(globalThis, saved); }
+});
+
+test('tracker questions go on the live socket once its server says it answers them: parts come as binary frames, the last settles, a refusal or a drop fails it, a given-up one is told to stop', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const saved = { WebSocket: globalThis.WebSocket, location: globalThis.location, window: (globalThis as { window?: unknown }).window };
+  Object.assign(globalThis, { WebSocket: SendingSocket, location: { protocol: 'http:', host: '127.0.0.1:8787' }, window: globalThis });
+  FakeSocket.instances = [];
+  const handlers = { onOpen() {}, onClose() {}, onLevels() {}, onTick() {}, onLayers() {}, onPrints() {} };
+  const ask = (live: ReturnType<typeof connectLive>, frames: LtFrame[], signal?: AbortSignal) => live.ltLane(['a:BTC', 'b:BTC'], 1000.4, 9_000_000.2, 120_000, 2, frame => frames.push(frame), signal);
+  const part = (id: number, from: number, to: number, done: boolean) => exact(encodeLt(id, from, to, 120_000, 2, done, [{ instrumentId: 'a:BTC', windows: { times: [from], values: Float32Array.of(1, 2, 3, 4) } }, { instrumentId: 'b:BTC', windows: { times: [], values: new Float32Array(0) } }]));
+  try {
+    const live = connectLive(handlers);
+    const socket = FakeSocket.instances[0] as SendingSocket;
+    socket.open();
+    assert.equal(ask(live, []), null, 'a server that has not said so: nothing asked');
+    socket.receive(JSON.stringify({ t: 'hello', ls: true }));
+    assert.equal(ask(live, []), null, 'a server that answers long/short and not the tracker');
+    socket.receive(JSON.stringify({ t: 'hello', ls: true, lt: true }));
+    const frames: LtFrame[] = [], answered = ask(live, frames)!;
+    const asked = JSON.parse(socket.sent.at(-1)!) as { t: string; id: number; inst: string[]; from: number; to: number; stepMs: number; half: number };
+    assert.deepEqual([asked.t, asked.inst, asked.from, asked.to, asked.stepMs, asked.half], ['lt', ['a:BTC', 'b:BTC'], 1000, 9_000_001, 120_000, 2]);
+    socket.receive(part(asked.id, 5_000_000, 9_000_000, false));
+    assert.equal(frames.length, 1, 'a part is handed on as it comes');
+    socket.receive(part(asked.id + 100, 0, 1, true));
+    socket.receive(part(asked.id, 1_000, 5_000_000, true));
+    await answered;
+    assert.deepEqual(frames.map(f => [f.from, f.to, f.done]), [[5_000_000, 9_000_000, false], [1_000, 5_000_000, true]], 'a part for a question it does not hold is let go');
+    assert.deepEqual(Array.from(frames[0]!.instruments[0]!.values), [1, 2, 3, 4]);
+    // A refusal fails it.
+    const refused = ask(live, [])!;
+    socket.receive(JSON.stringify({ t: 'lt', id: (JSON.parse(socket.sent.at(-1)!) as { id: number }).id, error: 'too many tracker questions at once' }));
+    await assert.rejects(refused, /too many tracker questions/);
+    // Given up by its asker: the server is told to stop, and a late part is let go.
+    const cancel = new AbortController(), cancelled = ask(live, [], cancel.signal)!;
+    const givenUp = JSON.parse(socket.sent.at(-1)!) as { id: number };
+    cancel.abort();
+    assert.deepEqual(JSON.parse(socket.sent.at(-1)!), { t: 'lt', id: givenUp.id, cancel: true });
+    await assert.rejects(cancelled, /cancelled/);
+    socket.receive(part(givenUp.id, 0, 1, true));
+    const pre = new AbortController(); pre.abort();
+    await assert.rejects(ask(live, [], pre.signal)!, /cancelled/);
+    // Too many at once go to the columns; one that is never answered is given up; a closed socket fails what waits and says nothing of its successor's.
+    const waiting = [1, 2, 3, 4].map(() => ask(live, [])!);
+    assert.equal(ask(live, []), null, 'four waiting: the next is not asked');
+    t.mock.timers.tick(90_000);
+    await Promise.all(waiting.map(w => assert.rejects(w, /live-timeout/)));
+    const dropped = ask(live, [])!;
+    socket.drop();
+    await assert.rejects(dropped, /live-closed/);
+    assert.equal(ask(live, []), null, 'a closed socket asks nothing');
     live.close();
   } finally { Object.assign(globalThis, saved); }
 });

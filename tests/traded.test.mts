@@ -212,3 +212,22 @@ test('a period profile\'s row says whose it is, its prices, its two sides where 
   assert.ok(!grey.some(l => l.color === 'buy' || l.color === 'sell'), 'no sides where the candles do not say');
   assert.ok(grey.some(l => l.text === '$300'), 'its whole volume'); assert.ok(grey.some(l => l.text === 'Above the value area'));
 });
+
+test('an estimate whose candles do not say who bought has one volume: its boxes give no bought, sold or delta', () => {
+  const answer: ProfileAnswer = { from: T0, to: T0 + 60 * MIN, instruments: [
+    { id: 'candles', step: 10, rows: [[85_000, 100, 0], [85_010, 300, 0], [85_020, 100, 0]], minutes: 60, first: T0, earliest: T0 },
+  ] };
+  const rows = tradedRows(answer, 10, 85_000, 85_029), levels = { poc: 85_010, vah: 85_020, val: 85_000 };
+  const labels = (lines: { label?: string }[]): string[] => lines.flatMap(l => l.label ? [l.label] : []);
+  const row = tradedLines(rows, 1, levels, undefined, null, false);
+  assert.ok(labels(row).includes('Volume')); assert.equal(row.find(l => l.label === 'Volume')?.text, '$300');
+  assert.ok(!labels(row).some(l => ['Bought at market', 'Sold at market', 'Delta', 'Orders begun here'].includes(l)), 'no sides on a row');
+  assert.equal(row.find(l => l.label === 'Share of volume')?.text, '60.0 %', 'the share of the whole stays');
+  const whole = tradedFigures(rows, levels, 85_011, 'Oct 19', undefined, null, false);
+  assert.equal(whole.find(l => l.label === 'Volume')?.text, '$500');
+  assert.ok(!labels(whole).some(l => ['Bought at market', 'Sold at market', 'Delta'].includes(l)), 'no sides in the whole');
+  assert.ok(labels(whole).includes('Point of control'), 'the levels stay');
+  // A split estimate, or the recording, keeps its sides as before.
+  assert.ok(labels(tradedLines(rows, 1, levels)).includes('Bought at market'));
+  assert.ok(labels(tradedFigures(rows, levels, 85_011, 'Oct 19')).includes('Delta'));
+});

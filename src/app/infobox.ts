@@ -13,7 +13,10 @@ export interface InfoLine {
   label?: string;
   color?: InfoColor;
   bold?: boolean;
-  /** Break `text` into lines no wider than the box's wrap width. */
+  /**
+   * Break `text` into lines no wider than the box's wrap width. On a line with a label, the label stays at the left and the text goes under it,
+   * wrapped, where the two do not fit side by side (a long sentence beside its label ran out of the box).
+   */
   wrap?: boolean;
   /** A hairline above this line, to set a group of lines apart. */
   rule?: boolean;
@@ -35,8 +38,12 @@ export function layoutInfo(measure: (text: string, bold: boolean, kind: InfoKind
   const rows: InfoRow[] = [];
   for (const line of lines) {
     const base = { color: line.color ?? 'text', bold: line.bold === true, rule: line.rule === true };
-    if (line.label !== undefined || !line.wrap || measure(line.text, base.bold, 'plain') <= wrapAt) { rows.push({ ...base, text: line.text, ...(line.label !== undefined ? { label: line.label } : {}), ...(line.mark ? { mark: line.mark } : {}) }); continue; }
+    const apart = line.wrap === true && (line.label === undefined ? measure(line.text, base.bold, 'plain') > wrapAt
+      : measure(line.label, false, 'label') + (line.mark ? MARK.room : 0) + INFO.gap + measure(line.text, base.bold, 'value') > wrapAt);
+    if (!apart) { rows.push({ ...base, text: line.text, ...(line.label !== undefined ? { label: line.label } : {}), ...(line.mark ? { mark: line.mark } : {}) }); continue; }
     let current = '', first = true;
+    // The label alone on its row (it carries the hairline), then its text, wrapped, under it.
+    if (line.label !== undefined) { rows.push({ ...base, text: '', label: line.label, ...(line.mark ? { mark: line.mark } : {}) }); first = false; }
     const flush = (): void => { rows.push({ ...base, rule: base.rule && first, text: current }); first = false; };
     for (const word of line.text.split(' ')) {
       const next = current ? `${current} ${word}` : word;

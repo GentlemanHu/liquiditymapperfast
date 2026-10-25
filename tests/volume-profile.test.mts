@@ -9,7 +9,7 @@ import { levelsOf, pointOfControl, valueArea } from '../src/shared/profile.ts';
 import { FootprintRecorder, parseProfile, parseValueAreas } from '../src/shared/footprint.ts';
 import { dayWindows, fromWall, lastWindows, offsetMs, sessionWindows, weekWindows, type SessionDef } from '../src/app/traded/sessions.ts';
 import { TRADED_DEFAULTS, chartKinds, linesCount, linesSource, readTraded, recordedCount, resolveZone } from '../src/app/traded/settings.ts';
-import { answerLevels, candleBarMs, candleLevels, linesWindows, mergeCandleProfiles, recordedShare, recordedWindows, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
+import { answerLevels, candleAnswer, candleBarMs, candleLevels, linesWindows, loadedColumnWanted, mergeCandleProfiles, recordedShare, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
 import { TradeCoverage, recordedMinutes } from '../src/shared/coverage.ts';
 import { tradedRows } from '../src/app/traded.ts';
 import { initialState } from '../src/app/store.ts';
@@ -372,4 +372,66 @@ test('the minutes recorded come from the coverage record: a quiet minute listene
   assert.equal(recordedMinutes(coverage, 'b:BTC', T0, T0 + HOUR, t => held.has(t)), 4, 'no record at all: every minute held is from before it');
   assert.equal(recordedMinutes(coverage, 'b:BTC', T0, T0 + HOUR, () => false), 0);
   assert.equal(recordedMinutes(coverage, 'a:BTC', T0 + HOUR, T0, () => true), 0);
+});
+
+test('the column shows the candles instead of the recording when the recording holds under nine tenths of its window, never both added', () => {
+  // Karl, 2026-10-24: zoomed out to months, the column showed only the last days, with nothing for the rest that the page had loaded.
+  const from = 1_000 * DAY, to = from + 100 * DAY;
+  assert.equal(loadedColumnWanted(null, from, to), false, 'the recording holds all of the window');
+  assert.equal(loadedColumnWanted(from - DAY, from, to), false, 'it began before the window');
+  assert.equal(loadedColumnWanted(from + 5 * DAY, from, to), false, 'it misses 5 % of the window: still the recording, which says "since"');
+  assert.equal(loadedColumnWanted(from + 10 * DAY + MIN, from, to), true, 'it misses more than a tenth');
+  assert.equal(loadedColumnWanted(to - 8 * DAY, from, to), true, 'eight days of a hundred: the candles');
+  assert.equal(loadedColumnWanted(to + DAY, from, to), true, 'it begins after the window ends: nothing recorded in it');
+  assert.equal(loadedColumnWanted(from, to, to), false, 'an empty window asks for nothing');
+});
+
+test('a candle estimate becomes the answer the column reads: rows on its step, buys and sells, one instrument there for the whole window', () => {
+  const step = 10, bars = [[0, 100, 120, 100, 110, 5, 0, 2], [300_000, 110, 130, 110, 125, 5, 0, 5]] as unknown as CandleRowLike[];
+  const profile = candleLevels(bars as never, 0, 600_000, 300_000, step, 0.7, 600_000);
+  const { answer, split } = candleAnswer(profile.rows, profile.buys, step, 0, 600_000);
+  assert.equal(split, true);
+  const inst = answer.instruments[0]!;
+  assert.deepEqual([answer.from, answer.to, inst.step, inst.first, inst.earliest], [0, 600_000, step, 0, 0], 'there for the whole window');
+  const total = inst.rows.reduce((a, [, b, s]) => a + b + s, 0), spread = [...profile.rows.values()].reduce((a, v) => a + v, 0);
+  assert.ok(Math.abs(total - spread) < 1e-6, 'every dollar of the estimate is in the rows');
+  assert.ok(inst.rows.every(([low]) => low % step === 0), 'rows start on the step');
+  assert.deepEqual(inst.rows.map(r => r[0]), [...inst.rows.map(r => r[0])].sort((a, b) => a - b), 'in order of price');
+  // The column's own readers take it: rows on its display grid, and levels over every price.
+  const rows = tradedRows(answer, 20, 90, 140);
+  assert.ok(Math.abs(rows.total - spread) < 1e-6);
+  assert.equal(rows.partial, false, 'it is not read as a recording that began late');
+  assert.ok(answerLevels(answer, step, 0.7) !== null);
+  // Without taker buys a row's volume is whole on one side, said by `split`.
+  const noSplit = candleAnswer(profile.rows, null, step, 0, 600_000);
+  assert.equal(noSplit.split, false); assert.ok(noSplit.answer.instruments[0]!.rows.every(([, , sold]) => sold === 0));
+  // Nothing traded: an instrument with no rows, not a crash.
+  assert.deepEqual(candleAnswer(new Map(), null, step, 0, 600_000).answer.instruments[0]!.rows, []);
+});
+type CandleRowLike = readonly number[];
+
+test('where the recording begins for the column does not depend on the window an answer was asked for, nor on instruments it does not count', () => {
+  const MIN = 60_000, DAY = 86_400_000, to = 1_000 * DAY, from = to - 30 * DAY, asked = to - 8 * DAY, win = { from, to };
+  const held = (...earliest: (number | null)[]): { id: string; earliest: number | null }[] => earliest.map((e, i) => ({ id: `v${i}:BTC`, earliest: e }));
+  // A month on the map: the recording can be asked about eight days at most, and that is where it begins whatever answer is held.
+  assert.equal(recordingStart(win, asked, held(from - DAY, from - 2 * DAY), 0), asked, 'the asked span, from venues recorded long before');
+  assert.equal(recordingStart(win, asked, held(to - 3 * DAY, from - DAY), 0), to - 3 * DAY, 'the latest venue to start recording');
+  assert.equal(recordingStart(win, asked, held(to - 3 * DAY, null), 0), to - 3 * DAY, 'a venue with nothing recorded is not a start');
+  // Nothing recorded at all: the recording begins after the window ends, and the candles are wanted wherever they hold it.
+  assert.equal(recordingStart(win, asked, held(null, null), 0), to);
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, held(null), 0), to, 'a short window too');
+  // No answer held yet (or none for what is counted): where the hub knows the recording began, else the asked span alone.
+  assert.equal(recordingStart(win, asked, null, to - 2 * DAY), to - 2 * DAY);
+  assert.equal(recordingStart(win, asked, [], 0), asked, 'an answer with no instruments says nothing');
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, null, 0), null);
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, null, to - 5 * DAY), null, 'the recording holds all of the day');
+  // The minute's slack the column has always had: a start within a minute of the window's is its start.
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, held(to - DAY + 30_000), 0), null);
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, held(to - DAY + 2 * MIN), 0), to - DAY + 2 * MIN);
+  // After a scope or a chip changed, the held answer is for the old instruments until the new one lands: only the ones counted now speak.
+  const old = [{ id: 'old:BTC', earliest: to - 2 * DAY }, { id: 'kept:BTC', earliest: from - DAY }];
+  assert.equal(recordingStart(win, asked, old, 0, ['kept:BTC']), asked, 'the old venue that is no longer counted does not set the start');
+  assert.equal(recordingStart(win, asked, old, 0, ['old:BTC', 'kept:BTC']), to - 2 * DAY, 'counted again, it does');
+  assert.equal(recordingStart(win, asked, old, to - 3 * DAY, ['new:BTC']), to - 3 * DAY, 'none of the answer counted: as if none were held, the hub says');
+  assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, [{ id: 'old:BTC', earliest: to - 2 * MIN }], 0, ['new:BTC']), null, 'and without the hub: the recording is taken to hold the day');
 });

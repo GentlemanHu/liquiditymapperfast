@@ -1542,7 +1542,7 @@
  "Gather the rows under a header per kind, in the order chosen within each; click a header to fold its rows away.": "将各行收在每个类别的标题下，类别内按所选顺序排列；点击标题可折叠其中的行。",
  "Where cvd, cvd retail and cvd whales start: the chart's left edge, or each day's start in the chart's time zone (the day the left edge falls in is loaded whole).": "cvd、cvd 散户和 cvd 巨鲸的起点：图表左边缘，或图表时区中每天的开始（左边缘所在的那一天会整天加载）。",
  "Each day's start": "每天的开始",
- "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "点击一根 K 线即可固定：卡片会列出该 K 线的每项统计，直到再次点击或按 Esc。单元格可以按每根 K 线相对其自身近期 K 线的异常程度着色（异常，高亮的基准），或画成线；各行可按类别归入可折叠的标题下。CVD 从每天开始时起，会让累计值在图表时区中每天重新开始。",
+ "Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.": "点击一根 K 线即可固定：卡片会列出该 K 线的每项统计，直到再次点击或按 Esc。按住 Shift 点击可再固定更多 K 线，并排比较（最多五根）。单元格可以按每根 K 线相对其自身近期 K 线的异常程度着色（异常，高亮的基准），或画成线；各行可按类别归入可折叠的标题下。CVD 从每天开始时起，会让累计值在图表时区中每天重新开始。",
  "{n} stats · cvd from each day's start": "{n} 项统计 · CVD 从每天开始时起",
  "Series": "序列",
  "Reading the market orders of this candle…": "正在读取这根 K 线的市价单…",
@@ -1605,5 +1605,7 @@
  "Traded: market orders that reached this row on that venue around the same time. The book does not say how much of the change they account for.": "成交:大致同一时间在该交易所触及此行的市价单。订单簿并不说明它们占这次变化的多少。",
  "being read": "读取中",
  "Hide the controls": "隐藏控制栏",
- "Show the controls": "显示控制栏"
+ "Show the controls": "显示控制栏",
+ "≈ from candles": "≈ 来自K线",
+ "An estimate from the candles of {market}, the volume of each spread over its range: not the recording.": "根据{market}的K线估算，每根K线的成交量按其价格区间分摊，并非录制数据。"
 }

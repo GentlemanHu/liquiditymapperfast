@@ -8,7 +8,7 @@ import { AbsorptionProfile, parseAbsorptionAnswer, parseAbsorptionLive, parseAbs
 import { parseCoverage, type CoverageAnswer, type CoverageMetric } from '../shared/coverage.ts';
 import { fromWire, type Print } from './prints.ts';
 import { fromWire as liquidationFromWire, type Liquidation } from '../shared/liquidations.ts';
-import { decodeColumns, decodeLevels, decodeTape, frameType, type ColumnsFrame } from './wire.ts';
+import { decodeColumns, decodeLevels, decodeLt, decodeTape, frameType, type ColumnsFrame, type LtFrame } from './wire.ts';
 import type { CandleRow, OiBar } from './store.ts';
 import { parsePriceHistory, type PriceHistoryAnswer } from '../shared/price-history.ts';
 import { TIMEFRAMES } from '../shared/series.ts';
@@ -198,8 +198,17 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
    */
   let lsKnown: 'unknown' | 'yes' | 'no' = 'unknown';
   const lsReadyWaiters = new Set<(ok: boolean) => void>();
+  /** Whether this socket's server answers Liquidity Tracker questions (its hello says so), and the ones waiting: frames in, the last one resolves. */
+  let ltOk = false, ltNext = 0;
+  const ltWaiting = new Map<number, { onFrame(frame: LtFrame): void; resolve(): void; reject(error: Error): void; timer: number; off(): void }>();
   const lsSettle = (known: 'yes' | 'no'): void => { lsKnown = known; lsReady = known === 'yes'; for (const w of lsReadyWaiters) w(lsReady); lsReadyWaiters.clear(); };
-  const lsDrop = (why: string): void => { lsSettle('no'); for (const w of lsWaiting.values()) { window.clearTimeout(w.timer); w.off(); w.reject(new Error(why)); } lsWaiting.clear(); };
+  const lsDrop = (why: string): void => {
+    lsSettle('no'); ltOk = false;
+    for (const w of lsWaiting.values()) { window.clearTimeout(w.timer); w.off(); w.reject(new Error(why)); }
+    lsWaiting.clear();
+    for (const w of ltWaiting.values()) { window.clearTimeout(w.timer); w.off(); w.reject(new Error(why)); }
+    ltWaiting.clear();
+  };
   /** Tell the server whether to send the trade dust (again on every new connection). */
   const sayTape = (): void => { if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ t: 'tape', on: tapeOn })); };
   const lost = () => { lsDrop('live-closed'); handlers.onClose(attempt + 1, location.host); if (!closed) timer = window.setTimeout(open, Math.min(10_000, 500 * 2 ** attempt++)); };
@@ -218,7 +227,12 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
         if (typeof event.data === 'string') {
           const message = JSON.parse(event.data) as { t: string };
           if (message.t === 'hb') beats = true;
-          else if (message.t === 'hello') lsSettle((message as { ls?: unknown }).ls === true ? 'yes' : 'no');
+          else if (message.t === 'hello') { ltOk = (message as { lt?: unknown }).lt === true; lsSettle((message as { ls?: unknown }).ls === true ? 'yes' : 'no'); }
+          else if (message.t === 'lt') {
+            // A tracker question's refusal (its frames are binary): the question fails, and the caller reads the columns instead.
+            const m = message as { id?: unknown; error?: unknown }, w = typeof m.id === 'number' ? ltWaiting.get(m.id) : undefined;
+            if (w) { ltWaiting.delete(m.id as number); window.clearTimeout(w.timer); w.off(); w.reject(new Error(String(m.error ?? 'lt-refused'))); }
+          }
           else if (message.t === 'ls') {
             const m = message as { id?: unknown; series?: unknown; error?: unknown }, w = typeof m.id === 'number' ? lsWaiting.get(m.id) : undefined;
             if (w) {
@@ -232,8 +246,16 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
           else if (message.t === 'flow' && Array.isArray((message as { items?: unknown }).items)) handlers.onFlow?.((message as unknown as { items: FlowUpdate[] }).items);
           else if (message.t === 'oi' && Array.isArray((message as OiPushMessage).items)) handlers.onOiPush?.((message as OiPushMessage).items);
           else if (message.t === 'absorption') { const found = parseAbsorptionLive(message); handlers.onAbsorption?.(found.groups, found.minutes); }
-        } else if (frameType(event.data as ArrayBuffer) === 'tape') { const batch = decodeTape(event.data as ArrayBuffer); if (batch && tapeOn) handlers.onTape?.(batch); }
-        else handlers.onLevels(decodeLevels(event.data as ArrayBuffer));
+        } else {
+          const kind = frameType(event.data as ArrayBuffer);
+          if (kind === 'tape') { const batch = decodeTape(event.data as ArrayBuffer); if (batch && tapeOn) handlers.onTape?.(batch); }
+          else if (kind === 'lt') {
+            const frame = decodeLt(event.data as ArrayBuffer), w = ltWaiting.get(frame.id);
+            // A frame for a question given up, timed out or refused finds no waiter and is let go.
+            if (w) { w.onFrame(frame); if (frame.done) { ltWaiting.delete(frame.id); window.clearTimeout(w.timer); w.off(); w.resolve(); } }
+          }
+          else handlers.onLevels(decodeLevels(event.data as ArrayBuffer));
+        }
       } catch (error) { console.error('live frame rejected', error); }
     };
     current.onclose = lost;
@@ -257,6 +279,22 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
         lsReadyWaiters.add(done);
       });
     },
+    ltLane(ids, from, to, stepMs, half, onFrame, signal) {
+      const live = socket;
+      if (!ltOk || !live || live.readyState !== WebSocket.OPEN || ltWaiting.size >= LT_SOCKET_WAITING) return null;
+      if (signal?.aborted) return Promise.reject(new Error('cancelled'));
+      const id = ++ltNext;
+      return new Promise<void>((resolve, reject) => {
+        // Given up by its asker, or timed out: the server is told to stop (it frees the slot at once), and a late frame for it finds no waiter.
+        const stop = (): void => { if (live.readyState === WebSocket.OPEN) live.send(JSON.stringify({ t: 'lt', id, cancel: true })); };
+        const onAbort = (): void => { const w = ltWaiting.get(id); if (w) { ltWaiting.delete(id); window.clearTimeout(w.timer); reject(new Error('cancelled')); stop(); } };
+        const off = (): void => signal?.removeEventListener('abort', onAbort);
+        const timer = window.setTimeout(() => { ltWaiting.delete(id); off(); reject(new Error('live-timeout')); stop(); }, LT_SOCKET_TIMEOUT_MS);
+        ltWaiting.set(id, { onFrame, resolve, reject, timer, off });
+        signal?.addEventListener('abort', onAbort, { once: true });
+        live.send(JSON.stringify({ t: 'lt', id, inst: ids, from: Math.floor(from), to: Math.ceil(to), stepMs, half }));
+      });
+    },
     longShort(inst, metric, tf, from, to, budgetMs, signal) {
       const live = socket;
       if (!lsReady || !live || live.readyState !== WebSocket.OPEN || lsWaiting.size >= LS_SOCKET_WAITING) return null;
@@ -278,6 +316,9 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
 const LS_SOCKET_WAITING = 16;
 /** A question not answered on the socket in this long is given up (the pane's round has long ended). */
 const LS_SOCKET_TIMEOUT_MS = 60_000;
+/** The most Liquidity Tracker questions waiting on the live socket (the server answers four at once), and how long one may take before it is given up. */
+const LT_SOCKET_WAITING = 4;
+const LT_SOCKET_TIMEOUT_MS = 90_000;
 /** How long after its socket opens a server has to say it answers long/short questions there (it says so at once). */
 const LS_HELLO_MS = 3_000;
 /**
@@ -290,4 +331,9 @@ export interface LiveConnection {
   /** Whether its server answers long/short questions on it, waiting up to `ms` while that is not known yet (the socket connecting). */
   lsReadyWithin(ms: number): Promise<boolean>;
   longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, budgetMs?: number, signal?: AbortSignal): Promise<LsSeries> | null;
+  /**
+   * The Liquidity Tracker of these markets over [from, to) at `stepMs` for one half-life (an index into LT_HALF_LIVES), in frames handed to `onFrame`
+   * newest stretch first, settled when the last has come; null where the socket cannot ask it (a server from before, not open, too many waiting).
+   */
+  ltLane(ids: string[], from: number, to: number, stepMs: number, half: number, onFrame: (frame: LtFrame) => void, signal?: AbortSignal): Promise<void> | null;
 }

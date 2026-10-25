@@ -1,6 +1,6 @@
 /** Decoders for the v2 binary frames (see src/server/v2/wire.mts for the layout). */
 import type { ColumnSet, ColumnsFrame } from '../shared/columns.ts';
-import { LT_LENGTH } from '../shared/lt-sample.ts';
+import { LT_FIELDS, LT_LENGTH } from '../shared/lt-sample.ts';
 import { checkTape, type TapeBatch } from '../shared/tape.ts';
 import { usableStep } from '../shared/levels.ts';
 export type { ColumnSet, ColumnsFrame };
@@ -41,6 +41,25 @@ export function decodeTape(buffer: ArrayBuffer): TapeBatch | null {
   const { header, part } = open(buffer);
   if (header.type !== 'tape') throw new Error(`Expected a tape frame, got ${header.type}`);
   return checkTape({ seq: header.seq, dropped: header.dropped, ids: header.ids, inst: part(0), t: part(1), price: part(2), usd: part(3), lo: part(4), hi: part(5) });
+}
+
+/**
+ * One part of the answer to a Liquidity Tracker question (server/v2/wire.mts `encodeLt`): per market the starts of its windows over
+ * [from, to) at `stepMs`, and LT_FIELDS numbers each of the half-life asked (NaN where the tracker does not cover the window). `done`: the last.
+ */
+export interface LtFrame { id: number; from: number; to: number; stepMs: number; half: number; done: boolean; instruments: { id: string; times: Float64Array; values: Float32Array }[] }
+export function decodeLt(buffer: ArrayBuffer): LtFrame {
+  const { header, part } = open(buffer);
+  if (header.type !== 'lt') throw new Error(`Expected a tracker frame, got ${header.type}`);
+  const raw = header.instruments as { id: string; windows: number }[];
+  const frame = { id: Number(header.id), from: Number(header.from), to: Number(header.to), stepMs: Number(header.stepMs), half: Number(header.half), done: header.done === true };
+  if (![frame.id, frame.from, frame.to, frame.stepMs, frame.half].every(Number.isFinite) || !Array.isArray(raw)) throw new Error('Malformed tracker frame');
+  return { ...frame, instruments: raw.map((item, i) => {
+    const times = part(i * 2), values = part(i * 2 + 1);
+    if (!(times instanceof Float64Array) || !(values instanceof Float32Array)) throw new Error('Malformed tracker frame');
+    if (typeof item.id !== 'string' || times.length !== item.windows || values.length !== times.length * LT_FIELDS) throw new Error('Malformed tracker frame');
+    return { id: item.id, times, values };
+  }) };
 }
 
 export function decodeColumns(buffer: ArrayBuffer): ColumnsFrame {

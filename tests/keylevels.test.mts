@@ -259,3 +259,37 @@ test('VWAP history refresh asks for a few original-resolution bars and preserves
   assert.deepEqual(h.bars[0], first, 'closed history is cached'); assert.equal(h.bars.length, count);
   h.ensure(target, now - 20 * DAY, HOUR, () => {}); await done(); assert.equal(urls.length, 2, 'a repeated window asks nothing');
 });
+
+test('whether the history reaches back to a time: yes once it does, coming while it can, never where the exchange has nothing older or cannot be read', async () => {
+  let now = D0 + 10 * DAY, down = false;
+  const get = async (url: string): Promise<unknown> => {
+    if (down) throw new Error('down');
+    const end = Number(new URL(url).searchParams.get('endTime')), first = now - 5 * DAY; // listed five days ago
+    const rows: unknown[] = [];
+    for (let t = Math.floor(end / HOUR) * HOUR; t >= first && rows.length < 1500; t -= HOUR) rows.unshift([t, '100', '110', '90', '100', '1']);
+    return rows;
+  };
+  const h = new KeyLevelHistory(get, () => now), target = historyTarget('binance:BTCUSDT', BTC)!;
+  const settle = (): Promise<void> => new Promise(r => setTimeout(r, 0));
+  assert.equal(h.reach(now - DAY), 'coming', 'nothing asked yet');
+  h.ensure(target, now - 3 * DAY, HOUR, () => {});
+  assert.equal(h.reach(now - 3 * DAY), 'coming', 'a request is out');
+  await settle(); await settle();
+  assert.equal(h.reach(now - 3 * DAY), 'yes');
+  assert.equal(h.reach(now - 9 * DAY), 'coming', 'not there, and it can still be asked for');
+  h.ensure(target, now - 9 * DAY, HOUR, () => {}); await settle(); await settle();
+  h.ensure(target, now - 9 * DAY, HOUR, () => {}); await settle(); await settle();
+  assert.equal(h.reach(now - 9 * DAY), 'never', 'the exchange said it has nothing older');
+  assert.equal(h.reach(now - 4 * DAY), 'yes');
+  // An exchange that cannot be read: nothing is held, and nothing is coming.
+  const dead = new KeyLevelHistory(get, () => now); down = true;
+  dead.ensure(target, now - 3 * DAY, HOUR, () => {}); await settle(); await settle();
+  assert.equal(dead.state, 'unavailable'); assert.equal(dead.reach(now - 3 * DAY), 'never');
+  // Bars held and the walk back failing: not coming until the minute's wait is over.
+  down = false;
+  const part = new KeyLevelHistory(get, () => now);
+  part.ensure(target, now - 3 * DAY, HOUR, () => {}); await settle(); await settle();
+  down = true; part.ensure(target, now - 4.5 * DAY, HOUR, () => {}); await settle(); await settle();
+  assert.equal(part.reach(now - 4.5 * DAY), 'never', 'a failed try waits a minute');
+  now += 61_000; assert.equal(part.reach(now - 4.5 * DAY), 'coming', 'then it is asked again');
+});

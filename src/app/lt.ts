@@ -43,9 +43,24 @@ export interface LtStore {
   cutoff?: number;
   /** One instant's book (the live column): measured from its own touch it is exact, not an estimate. */
   instant?: boolean;
+  /**
+   * A store of trackers alone (the lane, `lt-lane.ts`): `lt` holds this many numbers a column, those of the half-life asked, with no books
+   * behind them (`counts` all 0). A column whose numbers are NaN is a gap: there is nothing to work it out from.
+   */
+  ltStride?: number;
 }
 /** `estimated`: some recorded column was worked out from its average book (no kept tracker, or a size filter), not from its samples. */
 export interface LtSeries { times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean }
+
+/**
+ * The half-height of the imbalance view's axis (a share, 0..1): the largest |imbalance| in view, up to the next of 2, 5, 10, 20, 50 and 100 %.
+ * The axis used to be fixed at +-100 %, where the few percent a book is out of balance by is a hair; now the bars fill the pane, and the
+ * axis says what it is. A view with no imbalance at all (nothing in view) takes the smallest.
+ */
+export function imbalanceAxis(largest: number): number {
+  for (const step of [0.02, 0.05, 0.1, 0.2, 0.5]) if (!(largest > step)) return step;
+  return 1;
+}
 
 function counts(usd: number, p: LtParams): boolean { return usd > 0 && usd >= p.minUsd && (p.maxUsd <= 0 || usd <= p.maxUsd); }
 
@@ -58,14 +73,26 @@ export function ltSeries(stores: LtStore[], t0: number, t1: number, stepMs: numb
   const sumB: number[] = [], sumA: number[] = [], wB: number[] = [], wA: number[] = [];
   const kept = params.minUsd <= 0 && params.maxUsd <= 0 ? ltIndex(params.halfLifeBp) : -1;
   let estimated = false;
+  const slotOf = (t: number): number => {
+    let i = slot.get(t);
+    if (i === undefined) { i = slot.size; slot.set(t, i); sumB.push(0); sumA.push(0); wB.push(0); wA.push(0); }
+    return i;
+  };
   for (const store of stores) {
     let at = 0;
     for (let c = 0; c < store.times.length; c++) {
       const n = store.counts[c]!, t = store.times[c]!, from = at;
       at += n;
       if (!(t + stepMs > t0 && t < t1) || (store.cutoff !== undefined && t >= store.cutoff)) continue;
-      let i = slot.get(t);
-      if (i === undefined) { i = slot.size; slot.set(t, i); sumB.push(0); sumA.push(0); wB.push(0); wA.push(0); }
+      if (store.ltStride !== undefined) {
+        // Trackers alone: the numbers of the window, or nothing (a gap draws nothing, not a zero).
+        const lt = store.lt, base = c * store.ltStride;
+        if (!lt || !Number.isFinite(lt[base]!)) continue;
+        const i = slotOf(t);
+        sumB[i]! += lt[base]!; sumA[i]! += lt[base + 1]!; wB[i]! += lt[base + 2]!; wA[i]! += lt[base + 3]!;
+        continue;
+      }
+      const i = slotOf(t);
       const lt = store.lt, base = c * LT_LENGTH + kept;
       if (kept >= 0 && lt && Number.isFinite(lt[base]!)) {
         sumB[i]! += lt[base]!; sumA[i]! += lt[base + 1]!; wB[i]! += lt[base + 2]!; wA[i]! += lt[base + 3]!;

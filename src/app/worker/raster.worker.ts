@@ -2,6 +2,7 @@ import { loadKernels, type Kernels } from '../kernels.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import type { ColumnSet, LiveBook } from '../wire.ts';
 import { ltSeries, type LtParams, type LtStore } from '../lt.ts';
+import { LT_FIELDS } from '../../shared/lt-sample.ts';
 import { shareInCell, type CellShare } from '../cell-sources.ts';
 import { depthSeries } from '../depth-series.ts';
 import { dropAbsent } from './membership.ts';
@@ -14,7 +15,9 @@ export type WorkerIn =
   | { type: 'live'; books: LiveBook[]; now: number }
   | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean }
   | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; range: number }
-  | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams }
+  | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams; /** Read the lane's trackers (`ltLane`) in place of the columns'. */ lane?: boolean }
+  /** The trackers the lane holds, whole (a replacement): per market its windows' starts and LT_FIELDS numbers each, at this step. */
+  | { type: 'ltLane'; stepMs: number; instruments: { id: string; times: Float64Array; values: Float32Array }[] }
   | { type: 'cell'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number };
 export type { CellShare };
 /** Quantiles of the non-empty cells (bid + ask USD): p15 is the black cutoff, p96 the white point. */
@@ -23,7 +26,7 @@ export type WorkerOut =
   | { type: 'ready' }
   | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number }
   | { type: 'depth'; id: number; w: number; bid: Float32Array; ask: Float32Array }
-  | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean }
+  | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number }
   | { type: 'cell'; id: number; items: CellShare[] }
   | { type: 'error'; message: string };
 
@@ -35,6 +38,9 @@ const scope = self as unknown as { onmessage: ((e: MessageEvent<WorkerIn>) => vo
 let kernels: Kernels | null = null;
 let recorded = new Map<string, Store>();
 let recordedStepMs = COLUMN_MS;
+/** The lane's trackers by market (`ltLane`), as stores of trackers alone, and their step. */
+let lane = new Map<string, LtStore>();
+let laneStepMs = COLUMN_MS;
 const live = new Map<string, Store & { minute: number }>();
 const steps = new Map<string, number>();
 
@@ -143,15 +149,15 @@ function cell(message: Extract<WorkerIn, { type: 'cell' }>): void {
  * one-minute steps: one instant's book, measured from its own touch.
  */
 function lt(message: Extract<WorkerIn, { type: 'lt' }>): void {
-  const useLive = recordedStepMs === COLUMN_MS;
+  const stepMs = message.lane ? laneStepMs : recordedStepMs, useLive = stepMs === COLUMN_MS;
   const stores: LtStore[] = [];
   for (const id of message.enabled) {
-    const rec = recorded.get(id), lv = useLive ? live.get(id) : undefined;
+    const rec = message.lane ? lane.get(id) : recorded.get(id), lv = useLive ? live.get(id) : undefined;
     if (rec) stores.push({ ...rec, cutoff: lv?.minute });
     if (lv) stores.push({ ...lv, instant: true });
   }
-  const out = ltSeries(stores, message.t0, message.t1, recordedStepMs, message.params);
-  scope.postMessage({ type: 'lt', id: message.id, times: out.times, bid: out.bid, ask: out.ask, estimated: out.estimated }, [out.times.buffer, out.bid.buffer, out.ask.buffer]);
+  const out = ltSeries(stores, message.t0, message.t1, stepMs, message.params);
+  scope.postMessage({ type: 'lt', id: message.id, times: out.times, bid: out.bid, ask: out.ask, estimated: out.estimated, stepMs }, [out.times.buffer, out.bid.buffer, out.ask.buffer]);
 }
 
 scope.onmessage = event => {
@@ -181,6 +187,9 @@ scope.onmessage = event => {
         const column = liveColumn(book, step, message.now);
         if (column) live.set(book.id, column); else live.delete(book.id);
       }
+    } else if (message.type === 'ltLane') {
+      laneStepMs = message.stepMs;
+      lane = new Map(message.instruments.map(item => [item.id, { step: 0, times: item.times, counts: new Uint32Array(item.times.length), bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0), lt: item.values, ltStride: LT_FIELDS }]));
     } else if (message.type === 'depth') depth(message);
     else if (message.type === 'lt') lt(message);
     else if (message.type === 'cell') cell(message);
