@@ -72,6 +72,11 @@ export function clock(t: number, withDate = false): string {
   const time = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`;
   return withDate ? `${monthDay(d)} ${time}` : time;
 }
+/** The time with its seconds ("13:42:05") on the page's clock, for a window of minutes, where the minute alone says too little. */
+export function clockSeconds(t: number): string {
+  const d = onWall(t);
+  return `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}`;
+}
 
 /**
  * A time-axis tick's label: a tick on a midnight of the zone's clock is its date alone ("Oct 7", never "Oct 7 00:00": zoomed out to days, every

@@ -30,9 +30,9 @@ import { replaying } from './replay/clock.ts';
 import { topShown } from './measures/strip.ts';
 import { tableHeight } from './panes/bar-stats.ts';
 import { Layout } from './layout.ts';
-import { Dock } from './dock.ts';
+import { Dock, axisOf, fillsArea } from './dock.ts';
 import { RangeTool } from './range/tool.ts';
-import { startDevice, onLayoutMode, isPhone } from './device.ts';
+import { startDevice, onLayoutMode, isPhone, layoutMode } from './device.ts';
 import './styles.css';
 import './mobile.css';
 import './chrome.css';
@@ -164,6 +164,8 @@ async function main(): Promise<void> {
   // The trade dust: asked for while the bubbles and their Live trades switch are both on; arrivals redraw the dust alone.
   // The Candle view's trail reads the same orders, so they are asked for while it is shown whatever the bubbles' switches say.
   const candleShown = (): boolean => dock.tab === 'candle' && isPhone();
+  // The Flow tab fills the area as the Tape does, and the Book held upright: the map is covered under them (what the Flow draws ends now, whatever the map's window is).
+  const mapCovered = (): boolean => isPhone() && fillsArea(dock.tab, axisOf(layoutMode()));
   // The glass around the chart (glass/ui-glass.ts): lit by the large orders where the map shows them.
   const glass = new UiGlass((price, t) => heat.liveSpot(price, t), () => hub.tape);
   cvd.onLargeFlow = (x, y, usd) => glass.pulse(x, y, usd, scaledUsd(100_000), usd > 0 ? 0 : 1);
@@ -175,8 +177,8 @@ async function main(): Promise<void> {
   // On a phone the Tape keeps the market's orders from the page's opening, whichever tab shows, so the ring runs there always.
   // The book's cues read the tape for the contact ripples and for what traded beside a change (the hover), so they want it whether or not the ripples are on.
   const tapeWanted = (): boolean => (store.state.show.bubbles && store.state.tradeBubbles.live) || candleShown() || store.state.material === 'glass' || isPhone() || (store.state.show.book && store.state.ladderCues.look !== 'off');
-  // The map and the book are covered while the Candle tab shows: they draw nothing then, and catch up when they show again.
-  const coverPanes = (): void => { const covered = candleShown(); heat.setSuspended(covered); ladder.setSuspended(covered); };
+  // The map is covered while a view that fills the area shows, and the book while any tab but its own does (the Tape draws its own): they draw nothing then, and catch up when they show again.
+  const coverPanes = (): void => { heat.setSuspended(mapCovered()); ladder.setSuspended(isPhone() && dock.tab !== 'book'); };
   dock.onChange = () => { candle.setShown(candleShown()); coverPanes(); hub.setTape(tapeWanted()); };
   hub.setTape(tapeWanted());
   hub.onTape = () => { heat.tapeArrived(); candle.tapeArrived(); glass.tapeArrived(); ladder.tapeArrived(); };
@@ -299,6 +301,8 @@ async function main(): Promise<void> {
   await hub.start();
   await hub.loadSeries(true);
   heat.fit(); lower();
+  // A tab saved from the last visit is already showing: what it covers draws nothing from the start, not from the first tap (the dock only tells of a change).
+  candle.setShown(candleShown()); coverPanes();
   window.setInterval(() => { void hub.loadSeries(true); }, 60_000);
   // Each new open-interest reading is pushed as it lands (Hub.#oiPush); this load is the reconciliation: history, the markets added
   // together, a reading a push missed.

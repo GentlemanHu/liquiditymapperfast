@@ -53,11 +53,12 @@ html[data-bar="compact"] .toolbar { position: relative; z-index: 30; }
 html[data-bar="compact"] .toolbar .notice { position: absolute; left: 8px; right: 8px; top: calc(100% + 4px); z-index: 45; margin: 0; box-shadow: 2px 2px 0 var(--shadow); }
 html[data-bar="compact"] .toolbar .notice:not([hidden]) ~ .notice:not([hidden]) { top: calc(100% + 40px); }
 .more-btn { display: none; }
-/* Recentre is a symbol in the bar: the word would not fit beside seven timeframes. */
-html[data-bar="compact"] .tb-time > button { flex: none; width: 44px; padding: 0; font-size: 0; display: inline-grid; place-items: center; }
+/* Recentre is a symbol in the bar: the word would not fit beside seven timeframes. A flex box, not a grid: the hidden word is an item of its own,
+   and in a grid it took a row of its own and lifted the symbol 3.8 px above the middle of the button (Karl, 2026-10-26). */
+html[data-bar="compact"] .tb-time > button { flex: none; width: 44px; padding: 0; font-size: 0; display: inline-flex; align-items: center; justify-content: center; }
+html { --icon-recenter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E"); }
 html[data-bar="compact"] .tb-time > button::before { content: ""; width: 20px; height: 20px; background: currentColor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat; }
+  -webkit-mask: var(--icon-recenter) center / contain no-repeat; mask: var(--icon-recenter) center / contain no-repeat; }
 /* The name is "LMF" where the room is short. */
 @media (max-width: 700px) {
   html[data-bar="compact"] .toolbar .brand { font-size: 0; margin: 0; }
@@ -209,8 +210,6 @@ html[data-layout^="phone"] .chart-col, html[data-layout^="phone"] .side-col, htm
 html[data-layout^="phone"] .splitter, html[data-layout^="phone"] .grip { display: none; }
 html[data-layout^="phone"] .pane.heat { order: 0; flex: 1 1 0; min-height: 140px; }
 html[data-layout^="phone"] .chart-col > .pane:not(.heat), html[data-layout^="phone"] .side-col > .pane, html[data-layout^="phone"] .flow-col > .pane { display: none; order: 2; }
-html[data-layout^="phone"] main[data-tab="flow"] .pane.cvd:not([hidden]),
-html[data-layout^="phone"] main[data-tab="book"] .pane.ladder:not([hidden]),
 html[data-layout^="phone"] main[data-tab="depth"] .pane.depth:not([hidden]),
 html[data-layout^="phone"] main[data-tab="oi"] .pane.oi:not([hidden]),
 html[data-layout^="phone"] main[data-tab="delta"] .pane.delta:not([hidden]),
@@ -231,19 +230,38 @@ html[data-layout^="phone"] .dock { display: flex; background: var(--panel); bord
 .dock-tab { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 52px; padding: 5px 2px 4px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 11.5px; font-weight: 600; line-height: 1.1; }
 .dock-tab[hidden] { display: none; }
 .dock-tab svg { width: 22px; height: 22px; flex: none; }
-.dock-tab.on { background: transparent; color: var(--text); box-shadow: inset 0 3px 0 var(--ui); }
+.dock-tab.on { background: transparent; color: var(--text); }
 .dock-tab.on svg { color: var(--ui); }
+/* The mark under the open tab slides to the one chosen (dock.ts `ink`): the top of its button upright, its edge on the rail. */
+.dock-ink { display: none; }
+html[data-layout^="phone"] .dock { position: relative; }
+html[data-layout^="phone"] .dock-ink { display: block; position: absolute; left: 0; top: 0; height: 3px; width: var(--ink-len, 0); transform: translateX(var(--ink-at, 0)); background: var(--ui); pointer-events: none; }
+html[data-layout^="phone"] .dock-ink.slide { transition: transform .26s cubic-bezier(.3, .9, .25, 1), width .26s cubic-bezier(.3, .9, .25, 1); }
+html[data-layout="phone-landscape"] .dock-ink { left: auto; right: 0; width: 3px; height: var(--ink-len, 0); transform: translateY(var(--ink-at, 0)); }
+html[data-layout="phone-landscape"] .dock-ink.slide { transition: transform .26s cubic-bezier(.3, .9, .25, 1), height .26s cubic-bezier(.3, .9, .25, 1); }
+/* A tab under a finger answers at once: its icon gives a little. */
+.dock-tab svg { transition: transform .12s ease-out; }
+.dock-tab:active svg { transform: scale(.86); }
+/* A pane that comes up (a tab chosen) fades in rather than appearing: the animation starts when its box does. */
+@keyframes pane-in { from { opacity: 0; } to { opacity: 1; } }
+html[data-layout^="phone"] main > .pane:not([hidden]), html[data-layout^="phone"] main :is(.chart-col, .side-col, .flow-col) > .pane:not([hidden]) { animation: pane-in .18s ease-out; }
 /* Ten tabs share the width: a longer word than English has ("Глубина", "Profundidade") shrinks a little more instead of running into its neighbour's. */
 html[data-layout^="phone"] .dock-tab { font-size: min(11.5px, 2.55vw); }
 html[data-layout="phone"] .dock { padding: 0 0 var(--safe-b); }
 
-/* The Tape tab (panes/candle-pane.ts) fills the area in place of the map, in either orientation, with nothing beside it to resize. */
+/* The Tape tab (panes/candle-pane.ts) and the Flow tab (panes/cvd-pane.ts) fill the area in place of the map, in either orientation, with
+   nothing beside them to resize (`FULL_TABS` in dock.ts). */
 .pane.candle { display: none; }
-html[data-layout^="phone"] main[data-tab="candle"] { display: flex; flex-direction: column; }
-html[data-layout^="phone"] main[data-tab="candle"] .pane.heat, html[data-layout^="phone"] main[data-tab="candle"] > .dock-grip { display: none; }
-/* The tape has no timeframe: the map's timeframes and recentre leave the top bar while it shows. */
-html[data-layout^="phone"]:has(main[data-tab="candle"]) .toolbar .tb-time { display: none; }
-html[data-layout^="phone"] main[data-tab="candle"] > .pane.candle { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; order: 0; }
+html[data-layout^="phone"] main:is([data-tab="candle"], [data-tab="flow"]) { display: flex; flex-direction: column; }
+html[data-layout^="phone"] main:is([data-tab="candle"], [data-tab="flow"]) .pane.heat, html[data-layout^="phone"] main:is([data-tab="candle"], [data-tab="flow"]) > .dock-grip { display: none; }
+/* Neither has a timeframe: the map's timeframes and recentre leave the top bar while one shows. */
+html[data-layout^="phone"]:has(main:is([data-tab="candle"], [data-tab="flow"])) .toolbar .tb-time { display: none; }
+html[data-layout^="phone"] main[data-tab="candle"] > .pane.candle, html[data-layout^="phone"] main[data-tab="flow"] .pane.cvd:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; order: 0; }
+/* The Book held upright fills the area as the Tape and the Flow do (it keeps its place beside the map held sideways): twice the price rows. */
+html[data-layout="phone"] main[data-tab="book"] { display: flex; flex-direction: column; }
+html[data-layout="phone"] main[data-tab="book"] .pane.heat, html[data-layout="phone"] main[data-tab="book"] > .dock-grip { display: none; }
+html[data-layout="phone"]:has(main[data-tab="book"]) .toolbar .tb-time { display: none; }
+html[data-layout="phone"] main[data-tab="book"] .pane.ladder:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; order: 0; }
 /* The tab already says "Tape": its header is the readout and help on one slim row (its choices are in Settings). */
 html[data-layout^="phone"] .pane.candle .pane-head strong { display: none; }
 html[data-layout^="phone"] .pane.candle .pane-head { flex-wrap: nowrap; min-height: 34px; column-gap: 6px; }
@@ -264,10 +282,11 @@ html[data-layout="phone-landscape"] main:not([data-tab="map"]) > .dock-grip { di
 html[data-layout="phone-landscape"] .dock-grip i { width: 4px; height: 40px; }
 html[data-layout="phone-landscape"] .dock-grip.active i { width: 4px; height: 56px; }
 html[data-layout="phone-landscape"] .dock-grip::before { inset: 0 -12px; }
-html[data-layout="phone-landscape"] main[data-tab="flow"] .pane.cvd:not([hidden]),
 html[data-layout="phone-landscape"] main[data-tab="book"] .pane.ladder:not([hidden]),
 html[data-layout="phone-landscape"] main[data-tab="depth"] .pane.depth:not([hidden]),
 html[data-layout="phone-landscape"] main[data-tab="oi"] .pane.oi:not([hidden]),
+html[data-layout="phone-landscape"] main[data-tab="delta"] .pane.delta:not([hidden]),
+html[data-layout="phone-landscape"] main[data-tab="ls"] .pane.ls:not([hidden]),
 html[data-layout="phone-landscape"] main[data-tab="lt"] .pane.lt:not([hidden]),
 html[data-layout="phone-landscape"] main[data-tab="stats"] .pane.bars:not([hidden]) { display: flex; grid-column: 3; grid-row: 1; flex: none !important; }
 html[data-layout="phone-landscape"] .dock { grid-column: 2; grid-row: 2; flex-direction: column; justify-content: flex-start; width: 60px; border-top: 0; border-left: 1px solid var(--line); padding-right: env(safe-area-inset-right); overflow-y: auto; }
@@ -282,17 +301,36 @@ html[data-layout="phone-landscape"] .dock {
     linear-gradient(transparent, color-mix(in srgb, var(--text) 20%, transparent)) 0 100% / 100% 12px no-repeat scroll,
     var(--panel);
 }
-html[data-layout="phone-landscape"] .dock-tab.on { box-shadow: inset -3px 0 0 var(--ui); }
-/* The Candle tab fills the area on its side too: not the grid of map, handle and pane above. */
-html[data-layout="phone-landscape"] main[data-tab="candle"] { display: flex; flex-direction: column; }
-html[data-layout="phone-landscape"] main[data-tab="candle"] > .dock-grip { display: none; }
+/* The Tape and the Flow fill the area on their side too: not the grid of map, handle and pane above. */
+html[data-layout="phone-landscape"] main:is([data-tab="candle"], [data-tab="flow"]) { display: flex; flex-direction: column; }
+html[data-layout="phone-landscape"] main:is([data-tab="candle"], [data-tab="flow"]) > .dock-grip { display: none; }
 
 /* The headers of the panes. */
 html[data-layout^="phone"] .pane-head { min-height: 42px; padding: 3px 8px 3px 12px; gap: 2px 8px; }
 html[data-layout^="phone"] .pane-head strong { font-size: 13px; }
-/* The flow column's span buttons become a menu on a phone. */
-html[data-layout^="phone"] .pane.cvd .cvd-seg { display: none; }
-html[data-layout^="phone"] .pane.cvd .cvd-span-select { display: inline-block; }
+/* The Flow view (panes/cvd-pane.ts, Karl 2026-10-26). The tab already says "Flow", so its header is the spans as chips across the width, the
+   settings and the help, and under them one line that reads what the lines hold where a finger points: the time, the price and each kind's
+   running delta in the colours of the lines. The map's own span is not among the chips: the view fills the area, with no map to follow. */
+.pane.cvd .pane-head .readout { display: none; }
+html[data-layout^="phone"] .pane.cvd .pane-head { flex-wrap: wrap; gap: 6px 8px; padding: 6px 8px 0 10px; }
+html[data-layout^="phone"] .pane.cvd .pane-head strong, html[data-layout^="phone"] .pane.cvd .cvd-span-select, html[data-layout^="phone"] .pane.cvd .cvd-seg button[data-span="map"] { display: none; }
+html[data-layout^="phone"] .pane.cvd .cvd-seg { display: flex; order: 0; flex: 1 1 0; min-width: 0; }
+html[data-layout^="phone"] .pane.cvd .cvd-seg button { flex: 1 1 0; min-width: 0; min-height: 36px; padding: 0 2px; font-size: 14px; }
+html[data-layout^="phone"] .pane.cvd .pane-head .cvd-gear { order: 1; margin-left: 0; width: 38px; min-height: 36px; padding: 0; display: inline-grid; place-items: center; }
+html[data-layout^="phone"] .pane.cvd .pane-head button.help { order: 2; margin: 0 2px; }
+html[data-layout^="phone"] .pane.cvd .pane-head .readout { display: block; order: 9; flex: 1 0 100%; font-size: 13px; padding: 2px 2px 5px; font-variant-numeric: tabular-nums; }
+html[data-layout^="phone"] .pane.cvd .readout b { color: var(--text); font-weight: 650; }
+html[data-layout^="phone"] .pane.cvd .readout .sp b { color: var(--cvd-spot); }
+html[data-layout^="phone"] .pane.cvd .readout .pp b { color: var(--cvd-perp); }
+html[data-layout^="phone"] .pane.cvd .readout .sp, html[data-layout^="phone"] .pane.cvd .readout .pp { margin-left: 6px; }
+html[data-layout^="phone"] .pane.cvd .readout .when { color: var(--muted); margin-right: 2px; }
+html[data-layout^="phone"] .pane.cvd .readout .since { color: var(--muted); margin-left: 8px; font-size: 11.5px; }
+/* Held sideways there is the width to put the line on the row of the chips, and no height to spare. */
+html[data-layout="phone-landscape"] .pane.cvd .pane-head { flex-wrap: nowrap; align-items: center; padding: 4px 8px 4px 10px; }
+html[data-layout="phone-landscape"] .pane.cvd .cvd-seg { flex: 0 0 min(340px, 46%); }
+html[data-layout="phone-landscape"] .pane.cvd .cvd-seg button, html[data-layout="phone-landscape"] .pane.cvd .pane-head .cvd-gear { min-height: 32px; }
+html[data-layout="phone-landscape"] .pane.cvd .pane-head .readout { order: 1; flex: 1 1 0; padding: 0 4px; }
+html[data-layout="phone-landscape"] .pane.cvd .pane-head .cvd-gear { order: 2; }
 html[data-layout^="phone"] .pane-head .readout { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding-bottom: 3px; }
 /* A control's name is a small caption above it: there is no room beside it, and "Auto · 100" alone does not say what it sets. */
 html[data-layout^="phone"] .pane-head .ctl { display: flex; flex-direction: column; align-items: stretch; gap: 1px; font-size: 9.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; line-height: 1.1; }
@@ -306,6 +344,10 @@ html[data-layout^="phone"] .pane-head .ctl .size-ctl .size-menu { width: 30px; p
 /* The Order Book's own header: the tab already says "Book", and its choices wrap onto the rows their words need (five side by side cut every value). */
 html[data-layout^="phone"] .pane.ladder .pane-head { flex-wrap: wrap; padding-left: 8px; gap: 4px 6px; }
 html[data-layout^="phone"] .pane.ladder .pane-head strong, html[data-layout^="phone"] .pane.ladder .recenter-btn { display: none; }
+/* With no map above it the Book has the crosshair of the bar's own timeframes row in its header: it brings the book back to the price. */
+html[data-layout="phone"] .pane.ladder .pane-head .recenter-btn { display: inline-flex; align-items: center; justify-content: center; order: 4; flex: none; width: 40px; min-height: 36px; padding: 0; margin: 0; font-size: 0; align-self: flex-end; }
+html[data-layout="phone"] .pane.ladder .pane-head .recenter-btn::before { content: ""; width: 20px; height: 20px; background: currentColor;
+  -webkit-mask: var(--icon-recenter) center / contain no-repeat; mask: var(--icon-recenter) center / contain no-repeat; }
 html[data-layout^="phone"] .pane.ladder .pane-head .ctl { flex: 1 1 auto; min-width: 0; margin-left: 0; }
 html[data-layout^="phone"] .pane-head .ctl[hidden] { display: none; }
 html[data-layout^="phone"] .pane.ladder .pane-head .ctl select { width: 100%; min-width: 0; text-overflow: ellipsis; padding: 0 2px 0 8px; }
@@ -316,6 +358,37 @@ html[data-layout^="phone"] .pane.ladder { container: ladder / inline-size; }
   .pane-head button.help { display: none; }
   .pane-head .ctl select { font-size: 13px; padding: 0 2px 0 6px; }
 }
+
+/* ---- one slim row for a pane's header (pane-tune.ts, Karl 2026-10-26) --------------------------------------------------------------- */
+/* The title, the choice made all the time and a key at the end of the row; the other controls wait in the sheet the key opens. */
+.tune-btn { display: none; }
+html[data-layout^="phone"] .pane-head.tuned .rest { display: none; }
+html[data-layout^="phone"] .pane-head.tuned > .tune-btn { display: inline-grid; place-items: center; order: 5; flex: none; width: 40px; min-height: 36px; padding: 0; margin-left: auto; align-self: flex-end; }
+html[data-layout^="phone"] .pane-head.tuned > .tune-btn.open { background: color-mix(in srgb, var(--ui) 15%, var(--panel)); border-color: var(--ui); }
+html[data-layout^="phone"] .pane-head.tuned > button.help { order: 6; align-self: flex-end; margin-bottom: 7px; }
+html[data-layout^="phone"] .pane-head.tuned { align-items: flex-end; padding-bottom: 0; }
+html[data-layout^="phone"] .pane-head.tuned > strong { align-self: center; }
+/* In the sheet each control is a row: its name at the left, the control at the right, a finger's height. */
+.sheet .tune-body > .ctl { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; min-height: 54px; border-top: 1px solid var(--line); color: var(--text); font-size: 15px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.sheet .tune-body > .ctl:first-child { border-top: 0; }
+.sheet .tune-body > .ctl > select { flex: 0 1 62%; min-width: 0; }
+.sheet .tune-body > .ctl input[type=checkbox] { order: 2; width: 26px; height: 26px; margin: 0; flex: none; }
+.sheet .tune-body > .ctl .size-ctl { flex: 0 0 auto; width: 188px; }
+.sheet .tune-body > .ctl .size-ctl .size-value { width: auto; flex: 1 1 auto; min-height: var(--tap); font-size: 16px; }
+.sheet .tune-body > .ctl .size-ctl .size-menu { width: 44px; min-height: var(--tap); }
+.sheet .tune-body > button { width: 100%; margin-top: 8px; }
+.sheet .tune-body > [hidden] { display: none; }
+
+/* The Liquidity Tracker's header: the tab says "LT", so the title goes, and the half-lives are chips, one tap each. */
+.lt-halves { display: none; }
+html[data-layout^="phone"] .pane.lt .pane-head .lt-halves { display: flex; flex: 1 1 0; min-width: 0; margin: 0; }
+html[data-layout^="phone"] .pane.lt .pane-head > strong { display: none; }
+html[data-layout^="phone"] .pane.lt .lt-halves .cap { display: block; }
+html[data-layout^="phone"] .pane.lt .lt-halves .seg { display: flex; }
+html[data-layout^="phone"] .pane.lt .lt-halves .seg button { flex: 1 1 0; min-width: 0; min-height: 36px; padding: 0 2px; font-size: 14px; }
+html[data-layout^="phone"] .pane.lt .lt-halves .seg button.far:not(.on) { display: none; }
+html[data-layout^="phone"] .pane.lt .lt-halves .seg button.on { background: var(--text); border-color: var(--text); color: var(--panel); font-weight: 650; }
+/* Where there is room (a phone held sideways) the half-life says its name beside the chips. */
 
 /* ---- a touch screen that keeps the desktop's arrangement (a tablet held sideways): the same panes with fingers' room --------------- */
 @media (pointer: coarse) {
@@ -351,6 +424,8 @@ html[data-layout^="phone"] .pane.ladder { container: ladder / inline-size; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sheet, .sheet-scrim { transition: none; }
+  .sheet, .sheet-scrim, .dock-tab svg { transition: none; }
+  .dock-ink.slide { transition: none !important; }
+  html[data-layout^="phone"] main .pane { animation: none !important; }
   html[data-bar="compact"] .panel, html[data-bar="compact"] .menu { animation: none; }
 }

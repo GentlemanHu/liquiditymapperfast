@@ -14,6 +14,8 @@ export interface LaneLine {
   lo: Float64Array; hi: Float64Array; last: Float64Array;
   /** The range of all of the above (NaN when the line has no value), for scaling. */
   min: number; max: number;
+  /** The running delta as it stood just before the window's left edge (0 for a line that began inside it): what a line drawn without rebasing has behind it. */
+  before?: number;
   /** Over the ranking window: buy minus sell, buy plus sell, buy and sell. */
   delta: number; gross: number; buy: number; sell: number;
   /** Nothing traded in the last five completed minutes. */
@@ -74,12 +76,12 @@ export const aggregateIds = (flow: FlowBook, ids: readonly string[], kindOf: (id
 function laneLine(id: string, kind: Kind, series: FlowSeries, track: FlowTrack, o: { t0Sec: number; t1Sec: number; columns: number; winStart: number; nowSec: number; now: number; rebase: boolean; quietFlag: boolean }): LaneLine {
   const out = new Float64Array(o.columns * 3);
   track.decimate(o.t0Sec, o.t1Sec, o.columns, out);
-  const base = o.rebase ? track.cumDelta(o.t0Sec - 1) : 0;
+  const edge = track.cumDelta(o.t0Sec - 1), base = o.rebase ? edge : 0, before = track.first !== null && track.first <= o.t0Sec - 1 ? edge : 0;
   const lo = new Float64Array(o.columns), hi = new Float64Array(o.columns), last = new Float64Array(o.columns);
   for (let c = 0; c < o.columns; c++) { lo[c] = out[c * 3]! - base; hi[c] = out[c * 3 + 1]! - base; last[c] = out[c * 3 + 2]! - base; }
   const r = range(lo, hi);
   const delta = series.delta(o.winStart, o.nowSec), gross = series.gross(o.winStart, o.nowSec);
-  return { id, kind, series, lo, hi, last, ...r, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
+  return { id, kind, series, lo, hi, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
 }
 
 /**
@@ -113,6 +115,7 @@ export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, 
     const last = nan(columns), span = t1Sec - t0Sec;
     let delta = 0, gross = 0;
     const bases = tracks.map(s => settings.rebase ? s.cumDelta(t0Sec - 1) : 0), firsts = tracks.map(s => s.first);
+    const before = tracks.reduce((sum, s, i) => { const first = firsts[i]; return first !== null && first !== undefined && first <= t0Sec - 1 ? sum + s.cumDelta(t0Sec - 1) : sum; }, 0);
     for (let c = 0; c < columns; c++) {
       // The same slices as FlowSeries.decimate, so the aggregate and the lanes line up column for column.
       const a = t0Sec + Math.floor(span * c / columns), end = Math.max(a + 1, t0Sec + Math.floor(span * (c + 1) / columns)) - 1;
@@ -122,7 +125,7 @@ export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, 
     }
     for (const s of lanes) if (s) { delta += s.delta(winStart, nowSec); gross += s.gross(winStart, nowSec); }
     const r = range(last);
-    return { id: '', kind, series: null, lo: last, hi: last, last, ...r, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: false };
+    return { id: '', kind, series: null, lo: last, hi: last, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: false };
   };
   return { t0, t1, columns, rankSec, nowSec, rows, spot: aggregate('spot'), perp: aggregate('perp'), instruments: withFlow.length + olderOnly.length, hidden: Math.max(0, volumeFamilies - rows.length), counted: families.flatMap(f => f.lanes.map(l => l.id)) };
 }

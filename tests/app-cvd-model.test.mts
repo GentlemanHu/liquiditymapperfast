@@ -4,6 +4,7 @@ import { FlowBook } from '../src/app/flow-book.ts';
 import { Ranker } from '../src/app/cvd/rank.ts';
 import { buildModel, type CvdModel } from '../src/app/cvd/model.ts';
 import { CVD_DEFAULTS, readCvd } from '../src/app/cvd/settings.ts';
+import { laneNet } from '../src/app/cvd/hero.ts';
 import { aggregateHover, aggregateLabel, divergence, rowHover, rowLabel, signedUsd, windowName } from '../src/app/cvd/text.ts';
 import { hueGap, hueOf, laneColors, nearDirection } from '../src/app/cvd/colors.ts';
 import { PALETTES, contrastRatio } from '../src/app/theme.ts';
@@ -85,6 +86,11 @@ test('the aggregate lines are the sums of the lanes, column for column, and the 
   const raw = model(book, ids, { settings: { ...CVD_DEFAULTS, rebase: false } }).rows[0]!.lanes[1]!;
   assert.ok(raw.last[0]! > lane.last[0]! + 20_000 * 3_000, 'unrebased, the running total since the history began is higher by what came before the window');
   assert.equal(m.spot!.delta, -6_000 * 3_600 + 1_000 * 3_600 + 0 * 0, 'aggregate window delta over every spot lane (binance spot and coinbase)');
+  // Unrebased, a line's net over the window is its end less the total before the window, so the first column's trades are in it.
+  const unrebased = model(book, ids, { settings: { ...CVD_DEFAULTS, rebase: false } });
+  assert.ok(Math.abs(laneNet(raw, false)! - 20_000 * 3_600) <= 20_000 * 2, 'a lane: an hour at +20k/s, not an hour less a column');
+  assert.ok(Math.abs(laneNet(unrebased.spot, false)! - (-5_000 * 3_600)) <= 5_000 * 2, 'the aggregate the same');
+  assert.equal(laneNet(m.spot, true), m.spot!.last[59]!, 'rebased, the end is the net');
 });
 
 test('an exchange with no trade in the last five completed minutes is flagged quiet, only when asked', () => {
@@ -164,7 +170,8 @@ test('settings read from storage field by field and never come out invalid', () 
   assert.deepEqual(readCvd(undefined), CVD_DEFAULTS); assert.deepEqual(readCvd('nonsense'), CVD_DEFAULTS);
   const s = readCvd({ span: '4h', rank: '24h', top: 2, heights: 'equal', auto: false, refreshMin: 500, pinned: ['kraken', 'kraken', 7, '', 'okx'], quietFlag: 'yes', rebase: false, extra: 1 });
   assert.deepEqual(s, { span: '4h', rank: '24h', top: 3, v: 2, heights: 'equal', auto: false, refreshMin: 60, pinned: ['kraken', 'okx'], quietFlag: true, rebase: false, bursts: false,
-    strip: CVD_DEFAULTS.strip, stripRetailUsd: CVD_DEFAULTS.stripRetailUsd, stripWhaleUsd: CVD_DEFAULTS.stripWhaleUsd, stripSmall: CVD_DEFAULTS.stripSmall, stripBlink: CVD_DEFAULTS.stripBlink });
+    strip: CVD_DEFAULTS.strip, stripRetailUsd: CVD_DEFAULTS.stripRetailUsd, stripWhaleUsd: CVD_DEFAULTS.stripWhaleUsd, stripSmall: CVD_DEFAULTS.stripSmall, stripBlink: CVD_DEFAULTS.stripBlink, scale: 'shared' });
+  assert.equal(readCvd({ scale: 'own' }).scale, 'own'); assert.equal(readCvd({ scale: 'wide' }).scale, 'shared', 'an unknown scale is the default');
   assert.equal(readCvd({ bursts: true }).bursts, true); assert.equal(readCvd({ bursts: 1 }).bursts, false, 'the burst marks are off unless switched on');
   assert.deepEqual(readCvd({ pinHyperliquid: true }).pinned, ['hyperliquid'], 'a save from before the list kept Hyperliquid pinned');
   assert.deepEqual(readCvd({ pinHyperliquid: true, pinned: ['okx'] }).pinned, ['okx'], 'the list wins over the old switch');

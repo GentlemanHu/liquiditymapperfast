@@ -4,6 +4,7 @@ import type { View } from '../view.ts';
 import { helpButton } from '../help.ts';
 import { setTip } from '../tip.ts';
 import { t, tn } from '../i18n.ts';
+import { addTune } from '../pane-tune.ts';
 import { clock, usd } from '../format.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
@@ -90,9 +91,11 @@ export class DeltaPane extends TimePane {
     const check = document.createElement('input'); check.type = 'checkbox'; check.checked = d().divergence; check.onchange = () => patch({ divergence: check.checked });
     box.append(check, t('Divergences'));
     this.#sync.push(() => { check.checked = d().divergence; });
-    select(t('CVD from'), t('Where the cumulative delta starts: the left edge of the chart, or again each day or week (in the Volume profile\'s zone).'), [['none', t('The left edge')], ['day', t('Each day')], ['week', t('Each week')]], () => d().reset, v => patch({ reset: v === 'day' || v === 'week' ? v : 'none' }));
+    const from = select(t('CVD from'), t('Where the cumulative delta starts: the left edge of the chart, or again each day or week (in the Volume profile\'s zone).'), [['none', t('The left edge')], ['day', t('Each day')], ['week', t('Each week')]], () => d().reset, v => patch({ reset: v === 'day' || v === 'week' ? v : 'none' }));
     group.append(box);
-    select(t('Swing'), t('How many candles each side a high or low must stand beyond to count as a swing. A swing is drawn only once that many candles have closed after it.'), PIVOTS.map((n): [string, string] => [String(n), tn(n, '{n} candle', '{n} candles')]), () => String(d().pivot), v => patch({ pivot: (PIVOTS as readonly number[]).includes(Number(v)) ? Number(v) : d().pivot }));
+    const swing = select(t('Swing'), t('How many candles each side a high or low must stand beyond to count as a swing. A swing is drawn only once that many candles have closed after it.'), PIVOTS.map((n): [string, string] => [String(n), tn(n, '{n} candle', '{n} candles')]), () => String(d().pivot), v => patch({ pivot: (PIVOTS as readonly number[]).includes(Number(v)) ? Number(v) : d().pivot }));
+    // On a phone what is shown stays in the row; the rest waits behind the key (pane-tune.ts).
+    addTune(this.head, [split, markets, from, box, swing], t('Delta'));
   }
 
   /** Reflect the settings in the header's controls and draw again. */

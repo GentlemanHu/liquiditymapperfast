@@ -62,7 +62,27 @@ test('revision 3: a save of revision 2 carries its measure strip into the profil
   // off" rule does not switch off what the strip carried in.
   saved({ defaultsRev: 2, show: { ...DEFAULT_SHOW, traded: false }, measureStrip: { on: true, kind: 'oi' } }, () => { const s = initialState(); assert.deepEqual([topOf(s.traded), s.show.traded], [{ on: true, metric: 'oi' }, true]); });
   saved({ defaultsRev: 2, show: { ...DEFAULT_SHOW, traded: true }, measureStrip: { on: false, kind: 'oi' } }, () => assert.equal(initialState().show.traded, false, 'with the strip off, the old rule stands'));
-  assert.equal(DEFAULTS_REV, 3);
+  assert.equal(DEFAULTS_REV, 4);
+});
+
+test('revision 4: the Liquidity Tracker is at 100 bp on every screen unless another half-life was chosen, and a touch screen has the Flow and LT panes on once', () => {
+  // Karl, 2026-10-26: the phone's Flow and LT are tabs of the bar, and 100 bp is "the best setting" (then: on the desktop too). A save of revision 3 holds 10 bp, the old default, written down by every save.
+  const rev3 = { defaultsRev: 3, show: { ...DEFAULT_SHOW, cvd: false, lt: false }, lt: { halfLifeBp: 10, minUsd: 0, maxUsd: 0, average: false, view: 'lines' } };
+  saved(rev3, () => {
+    const s = initialState(true, true);
+    assert.deepEqual([s.show.cvd, s.show.lt, s.lt.halfLifeBp, s.defaultsRev], [true, true, 100, DEFAULTS_REV]);
+  });
+  // A first visit on a phone: the same.
+  saved(null, () => { const s = initialState(true, true); assert.deepEqual([s.show.cvd, s.show.lt, s.lt.halfLifeBp], [true, true, 100]); });
+  // Another half-life was a choice, and anything saved under the new revision is read as it is.
+  saved({ ...rev3, lt: { ...rev3.lt, halfLifeBp: 25 } }, () => assert.equal(initialState(true, true).lt.halfLifeBp, 25));
+  saved({ ...rev3, defaultsRev: DEFAULTS_REV, lt: { ...rev3.lt, halfLifeBp: 10 } }, () => { const s = initialState(true, true); assert.deepEqual([s.show.cvd, s.show.lt, s.lt.halfLifeBp], [false, false, 10]); });
+  // A desktop keeps its panes, and so does a desktop window that is only narrow (a phone's layout without a finger), but the half-life is the same 100.
+  saved(rev3, () => { for (const s of [initialState(false, false), initialState(true, false), initialState(false, true)]) assert.deepEqual([s.show.cvd, s.show.lt, s.lt.halfLifeBp], [false, false, 100]); });
+  saved(null, () => assert.equal(initialState(false, false).lt.halfLifeBp, 100));
+  // A desktop's own choice of another half-life, and a 10 chosen under revision 4, are kept.
+  saved({ ...rev3, lt: { ...rev3.lt, halfLifeBp: 50 } }, () => assert.equal(initialState(false, false).lt.halfLifeBp, 50));
+  saved({ ...rev3, defaultsRev: DEFAULTS_REV }, () => assert.equal(initialState(false, false).lt.halfLifeBp, 10));
 });
 
 test('the columns begin at the golden section of the window, as wide as before from 1,600 px up, and narrower in proportion under it, to a floor', () => {

@@ -21,6 +21,9 @@ import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
+import { addTune } from '../pane-tune.ts';
+import { isPhone } from '../device.ts';
+import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
 import { imbalanceAxis, type LtSeries } from '../lt.ts';
@@ -245,6 +248,8 @@ export class DepthPane extends TimePane {
     this.#bell.onchange = () => setPanelSwitch(this.store, 'depthPane', this.#bell.checked);
     bell.append(this.#bell, t('Sound')); setTip(bell, panelSwitchTip('depthPane')); this.head.append(bell);
     this.syncSound();
+    // On a phone the range stays in the row and the sound waits behind the key (pane-tune.ts).
+    addTune(this.head, [bell], t('Depth'));
   }
   refresh(): void { this.#key = ''; this.invalidate(); }
   /** Show the depth sound's switch as the settings have it (it is also in the Sounds panel). */
@@ -509,6 +514,8 @@ export class OiPane extends TimePane {
 /** The Liquidity Tracker's size filters' menus (any size can be typed; the menus' "any" and "no cap" are 0). */
 const MIN_SIZES = [10_000, 50_000, 100_000, 250_000, 500_000, 1_000_000];
 const MAX_SIZES = [100_000, 250_000, 500_000, 1_000_000, 5_000_000];
+/** The half-lives a phone has a chip for (the others are in the sheet's menu): 100 bp is the one Karl found best. */
+const LT_CHIPS: readonly number[] = [10, 25, 50, 100, 250];
 const MINUTE = 60_000;
 
 /** Liquidity Tracker row: distance-weighted bid and ask liquidity of the aggregated enabled venues over time (see lt.ts). */
@@ -526,25 +533,27 @@ export class LtPane extends TimePane {
     setTip(this.head.querySelector('strong')!, t("Weighted USD liquidity near the touch: each enabled venue measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders."));
     const lt = () => this.store.state.lt;
     const patch = (change: Partial<AppState['lt']>) => this.store.set({ lt: { ...lt(), ...change } });
-    const select = (label: string, title: string, options: [string, string][], get: () => string, set: (value: string) => void) => {
+    const select = (label: string, title: string, options: [string, string][], get: () => string, set: (value: string) => void): HTMLLabelElement => {
       const wrap = document.createElement('label'); wrap.className = 'ctl'; setTip(wrap, title); wrap.append(label);
       const control = document.createElement('select');
       for (const [value, text] of options) control.append(new Option(text, value));
       control.value = get(); control.onchange = () => set(control.value);
       wrap.append(control); this.head.append(wrap);
       this.#sync.push(() => { if (control.value !== get()) control.value = get(); });
+      return wrap;
     };
     // Any size, typed or from the menu; 0 is no filter.
-    const size = (label: string, title: string, sign: '≥' | '≤', none: string, presets: readonly number[], get: () => number, put: (usd: number) => void): void => {
+    const size = (label: string, title: string, sign: '≥' | '≤', none: string, presets: readonly number[], get: () => number, put: (usd: number) => void): HTMLLabelElement => {
       const wrap = document.createElement('label'); wrap.className = 'ctl'; setTip(wrap, title); wrap.append(label);
       const control = sizeControl(label, { sign, value: scaledUsd(get()), presets: presets.map(scaledUsd), min: 1, max: scaledUsd(SIZE_MAX_USD), none }, v => put(v === 0 ? 0 : unscaledUsd(v)));
       wrap.append(control.root); this.head.append(wrap);
       this.#sync.push(() => control.set(scaledUsd(get())));
+      return wrap;
     };
     // Exactly the half-lives the recording keeps the tracker for (`shared/lt-sample.ts`).
-    select(t('Half-life'), t("Distance from the touch, in basis points of price, at which a level's weight halves"), LT_HALF_LIVES.map(v => [String(v), `${v} bp`]), () => String(lt().halfLifeBp), v => patch({ halfLifeBp: Number(v) }));
-    size(t('Min'), t('Ignore price bins smaller than this'), '≥', t('any'), MIN_SIZES, () => lt().minUsd, v => patch({ minUsd: v }));
-    size(t('Max'), t('Ignore price bins larger than this'), '≤', t('no cap'), MAX_SIZES, () => lt().maxUsd, v => patch({ maxUsd: v }));
+    const half = select(t('Half-life'), t("Distance from the touch, in basis points of price, at which a level's weight halves"), LT_HALF_LIVES.map(v => [String(v), `${v} bp`]), () => String(lt().halfLifeBp), v => patch({ halfLifeBp: Number(v) }));
+    const min = size(t('Min'), t('Ignore price bins smaller than this'), '≥', t('any'), MIN_SIZES, () => lt().minUsd, v => patch({ minUsd: v }));
+    const max = size(t('Max'), t('Ignore price bins larger than this'), '≤', t('no cap'), MAX_SIZES, () => lt().maxUsd, v => patch({ maxUsd: v }));
     const avg = document.createElement('label'); avg.className = 'ctl'; setTip(avg, t('Divide by the summed weights of the non-empty levels, as if each had size 1'));
     const box = document.createElement('input'); box.type = 'checkbox'; box.checked = lt().average; box.onchange = () => patch({ average: box.checked });
     avg.append(box, t('Per level')); this.head.append(avg);
@@ -554,7 +563,21 @@ export class LtPane extends TimePane {
     bell.append(bellBox, t('Sound')); setTip(bell, t('Within 1% of the price, the bids outweigh the asks (or the other way round) by more than this share. It sounds once and again only after the book has come back. Three steps.')); this.head.append(bell);
     this.#sync.push(() => { bellBox.checked = panelSwitchOn(this.store, 'depth'); });
     this.#sync.push(() => { if (box.checked !== lt().average) box.checked = lt().average; });
-    select(t('View'), t('Bid and ask lines, or the imbalance (bid - ask) / (bid + ask)'), [['lines', t('Bid & ask')], ['imbalance', t('Imbalance')]], () => lt().view, v => patch({ view: v as AppState['lt']['view'] }));
+    const viewChoice = select(t('View'), t('Bid and ask lines, or the imbalance (bid - ask) / (bid + ask)'), [['lines', t('Bid & ask')], ['imbalance', t('Imbalance')]], () => lt().view, v => patch({ view: v as AppState['lt']['view'] }));
+    // On a phone the half-life is a row of chips, one tap to each (Karl, 2026-10-26: 100 bp is "the best setting", and a menu is a long way to
+    // it), and the rest of the controls wait behind the key at the row's end. The select stays, in the sheet, for the half-lives with no chip.
+    const chips = el('div', { class: 'ctl lt-halves', role: 'group', ariaLabel: t('Half-life') }, el('span', { class: 'cap', textContent: `${t('Half-life')} · bp` }));
+    const seg = el('div', { class: 'seg' });
+    for (const bp of LT_HALF_LIVES) {
+      const chip = el('button', { type: 'button', textContent: String(bp), onclick: () => patch({ halfLifeBp: bp }) });
+      chip.dataset.bp = String(bp);
+      // Chips for the half-lives that are used; another one shows only while it is the one chosen.
+      if (!LT_CHIPS.includes(bp)) chip.classList.add('far');
+      seg.append(chip);
+    }
+    chips.append(seg); this.head.append(chips);
+    this.#sync.push(() => { for (const chip of seg.children) { const on = Number((chip as HTMLElement).dataset.bp) === lt().halfLifeBp; chip.classList.toggle('on', on); chip.setAttribute('aria-pressed', String(on)); } });
+    addTune(this.head, [half, min, max, avg, bell, viewChoice], t('Liquidity Tracker'));
   }
   /** Recompute on the next draw and reflect persisted settings in the controls. */
   refresh(): void { this.#key = ''; for (const sync of this.#sync) sync(); this.invalidate(); }
@@ -595,6 +618,14 @@ export class LtPane extends TimePane {
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     if (lt.view === 'lines') {
       const hi = Math.max(max, 1) * 1.08, y = (value: number) => ph - 6 - value / hi * (ph - 12);
+      // On a phone the lines have round gridlines to read their height by and a tag at their ends with the newest figure, as the map's price has;
+      // the desktop keeps its two numbers (Karl, 2026-10-26: the tracker is the pane that is looked at).
+      const phone = isPhone(), ticks = phone ? niceTicks(0, hi, 3).values.filter(value => value > 0) : [];
+      if (phone && ticks.length) {
+        ctx.save(); ctx.strokeStyle = p.line; ctx.globalAlpha = 0.8; ctx.lineWidth = 1; ctx.setLineDash([1, 3]); ctx.beginPath();
+        for (const value of ticks) { const gy = Math.round(y(value)) + 0.5; ctx.moveTo(0, gy); ctx.lineTo(pw, gy); }
+        ctx.stroke(); ctx.restore();
+      }
       if (state.highlight.on) { // the gap between the lines takes the colour of the side with more, stronger the larger the imbalance
         for (let i = 0; i < n; i++) {
           const t = s.times[i]!, b = s.bid[i]!, a = s.ask[i]!, total = b + a; if (t + step < v.t0 - step || t > v.t1 + step || total <= 0) continue;
@@ -616,7 +647,23 @@ export class LtPane extends TimePane {
         ctx.stroke();
       }
       ctx.lineWidth = 1; ctx.fillStyle = p.muted;
-      ctx.fillText(usd(hi), this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, ph - 8);
+      if (!phone) { ctx.fillText(usd(hi), this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, ph - 8); }
+      else {
+        // The newest figure of each line, in a tag at its end (the ask above the bid, never one over the other), and the round numbers between the tags.
+        const last = n - 1, tags: { y: number; text: string; color: string }[] = [];
+        if (last >= 0 && s.times[last]! + step >= v.t0 && s.times[last]! <= v.t1 + step) tags.push({ y: y(s.ask[last]!), text: usd(s.ask[last]!), color: p.ask }, { y: y(s.bid[last]!), text: usd(s.bid[last]!), color: p.bid });
+        tags.sort((a, b) => a.y - b.y);
+        for (let k = 1; k < tags.length; k++) if (tags[k]!.y - tags[k - 1]!.y < 15) tags[k]!.y = tags[k - 1]!.y + 15;
+        // Two lines near zero push the lower tag below the plot: the pair is lifted back up from the floor.
+        for (let k = tags.length - 1, floor = ph - 8; k >= 0; k--, floor = tags[k + 1]!.y - 15) if (tags[k]!.y > floor) tags[k]!.y = floor;
+        ctx.textAlign = 'left';
+        for (const value of [0, ...ticks]) { const gy = y(value); if (!tags.some(tag => Math.abs(tag.y - gy) < 9)) ctx.fillText(value === 0 ? '0' : usd(value), this.w - AXIS_W + 6, value === 0 ? ph - 8 : gy); }
+        for (const tag of tags) {
+          ctx.fillStyle = tag.color; ctx.fillRect(this.w - AXIS_W + 1, tag.y - 7, AXIS_W - 2, 14);
+          ctx.fillStyle = textOn(tag.color, 1, p); ctx.font = `600 10px ui-monospace, SFMono-Regular, Menlo, monospace`; ctx.textAlign = 'center'; ctx.fillText(tag.text, this.w - AXIS_W / 2, tag.y + 0.5);
+        }
+        ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'left';
+      }
     } else {
       const mid = ph / 2, half = ph / 2 - 6;
       // The axis follows the data in view, as the lines' does (a book is rarely more than a few percent out of balance, and on ±100 % that is a hair):

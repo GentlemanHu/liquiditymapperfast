@@ -1,10 +1,11 @@
-import { usd, clock } from '../format.ts';
+import { usd, clock, price as fmtPrice } from '../format.ts';
 import type { InfoLine } from '../infobox.ts';
 import { venueLabel } from '../venues.ts';
 import { t } from '../i18n.ts';
 import { scaledUsd } from '../coin.ts';
 import type { Kind } from '../scope.ts';
 import type { CvdModel, FamilyRow, LaneLine } from './model.ts';
+import { laneNet } from './hero.ts';
 
 /** A signed dollar figure for a label: +$12.3M, −$4.1M, $0. */
 export const signedUsd = (value: number): string => !Number.isFinite(value) ? '–' : value === 0 ? '$0' : `${value < 0 ? '−' : '+'}$${usd(Math.abs(value))}`;
@@ -12,7 +13,9 @@ export const plainUsd = (value: number): string => Number.isFinite(value) ? `$${
 
 /** One line of a row's label: its text, which colour it takes, and a coloured dot ahead of it (the lane's line colour). */
 /** `mark`: the exchange whose mark goes before the text (the row's name line). */
-export interface LabelLine { text: string; tone: 'text' | 'muted'; bold?: boolean; dot?: Kind; mark?: string }
+export interface LabelLine { text: string; tone: 'text' | 'muted'; bold?: boolean; dot?: Kind; mark?: string;
+  /** A short line in the text colour ahead of the text (the legend of the price drawn over the flow). */
+  swatch?: 'price' }
 
 /** The ranking window as a short name: "1H". */
 export const windowName = (rankSec: number): string => rankSec >= 86_400 ? `${Math.round(rankSec / 86_400)}D` : rankSec >= 3_600 ? `${Math.round(rankSec / 3_600)}H` : `${Math.round(rankSec / 60)}M`;
@@ -46,6 +49,22 @@ export function aggregateLabel(model: CvdModel, height: number, filter?: { kind:
   const total = (model.spot?.delta ?? 0) + (model.perp?.delta ?? 0), foot: LabelLine = { text: `Δ${name} ${signedUsd(total)}`, tone: 'muted' };
   const hidden: LabelLine[] = filter && filter.hidden > 0 ? [{ text: t('{n} filtered out', { n: filter.hidden }), tone: 'muted' }] : [];
   return height >= 80 ? [head, ...lanes, foot, ...hidden].slice(0, Math.max(3, Math.floor((height - 6) / 12))) : [head, ...lanes].slice(0, Math.max(2, Math.floor((height - 6) / 12)));
+}
+
+/**
+ * The legend of the phone's chart: every exchange together, each kind's net over the window the chart draws (where its line ends, so the
+ * figure agrees with the line beside it), both together, how many exchanges the Spot or Perp filter leaves out, and the price's line with the
+ * newest price. `span` is the window's short name ("1h").
+ */
+export function heroLabel(model: CvdModel, span: string, rebase: boolean, price: number, filter?: { kind: Kind; hidden: number }): LabelLine[] {
+  const head: LabelLine = { text: !filter ? t('ALL VENUES') : filter.kind === 'spot' ? t('ALL SPOT VENUES') : t('ALL PERP VENUES'), tone: 'text', bold: true };
+  const nets = ([['spot', model.spot], ['perp', model.perp]] as const).map(([kind, line]) => [kind, laneNet(line, rebase)] as const);
+  const lanes: LabelLine[] = nets.flatMap(([kind, net]) => net === null ? [] : [{ text: `${letter(kind)} ${signedUsd(net)}`, tone: 'text' as const, dot: kind }]);
+  const total = nets.reduce((sum, [, net]) => sum + (net ?? 0), 0);
+  const foot: LabelLine[] = lanes.length ? [{ text: `Δ${span.toUpperCase()} ${signedUsd(total)}`, tone: 'muted' }] : [];
+  const hidden: LabelLine[] = filter && filter.hidden > 0 ? [{ text: t('{n} filtered out', { n: filter.hidden }), tone: 'muted' }] : [];
+  const line: LabelLine[] = Number.isFinite(price) ? [{ text: fmtPrice(price), tone: 'text', swatch: 'price' }] : [];
+  return [head, ...lanes, ...foot, ...hidden, ...line];
 }
 
 const lanePhrase = (kind: Kind): string => kind === 'spot' ? t('Spot') : t('Perp');

@@ -1613,5 +1613,9 @@
  "The previous day's, week's, month's or session's point of control and value area are drawn across the one under way, long-dashed and fainter, whether or not price has traded through them. The recording must still hold all of that period (usually it does not for a previous week on a server, which keeps a week of trades, nor for a previous day on a page, which keeps a day); candles reach further and are marked ≈.": "前一日、前一周、前一月或前一时段的控制点和价值区域，无论价格是否已经穿过，都会以长虚线和较淡的颜色画在当前周期上。录制数据必须仍然保留该周期的全部内容（保留一周成交的服务器通常没有前一周，只保留一天的页面通常没有前一日）；K 线可追溯得更远，并以 ≈ 标出。",
  "The previous day's, week's, month's or session's point of control and value area are carried across the one under way, long-dashed and fainter and named \"Previous …\", whether or not price has traded through them (a switch in the settings). They are drawn only when that period can still be worked out: the recording usually holds no previous week, nor a previous day on a page that reads the exchanges itself; candles reach further and are marked ≈. The older a day, week or session is among those drawn, the fainter its lines and profile.": "前一日、前一周、前一月或前一时段的控制点和价值区域，无论价格是否已经穿过，都会延续到当前周期上，以长虚线、较淡的颜色画出，并命名为“前一个…”（设置中有开关）。只有该周期仍能算出时才会画出：录制数据通常不含前一周，自行读取交易所的页面也不含前一日；K 线可追溯得更远，并以 ≈ 标出。已画出的日、周或时段越旧，其线条和分布图越淡。",
  "p{what}": "前{what}",
- "Nothing is carried from the recording for the periods ticked: it holds only the one under way (a server keeps a week of trades, a page a day). Work them out from candles to carry the previous one's levels.": "对已勾选的周期，不会从录制数据中延续任何内容：录制数据只含正在进行的那个周期（服务器保留一周成交，页面保留一天）。请改用 K 线计算，以延续前一周期的水平线。"
+ "Nothing is carried from the recording for the periods ticked: it holds only the one under way (a server keeps a week of trades, a page a day). Work them out from candles to carry the previous one's levels.": "对已勾选的周期，不会从录制数据中延续任何内容：录制数据只含正在进行的那个周期（服务器保留一周成交，页面保留一天）。请改用 K 线计算，以延续前一周期的水平线。",
+ "Flow lines": "资金流线",
+ "Spot and perpetual on one axis of dollars, so their sizes read against each other, or each over its own range, so their shapes do.": "现货与永续共用一条美元轴，便于比较规模；或各自使用自己的范围，便于比较形态。",
+ "One axis of dollars": "共用美元轴",
+ "Each over its own range": "各自范围"
 }

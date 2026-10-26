@@ -40,10 +40,18 @@ export interface CvdSettings {
    * size prints. The Bar stats' own sizes are the starting values.
    */
   strip: boolean; stripRetailUsd: number; stripWhaleUsd: number; stripSmall: boolean; stripBlink: boolean;
+  /**
+   * The phone's chart (the aggregate row over the price, panes/cvd-pane.ts): `shared` draws spot and perpetual on one axis of dollars, so the
+   * sizes of the two can be read against each other; `own` gives each its own range, as every row of the column does, so their shapes can.
+   */
+  scale: HeroScale;
 }
 
+export type HeroScale = 'shared' | 'own';
+export const HERO_SCALES: readonly HeroScale[] = ['shared', 'own'];
+
 export const CVD_DEFAULTS: Readonly<CvdSettings> = { span: 'map', rank: '1h', top: 0, v: 2, heights: 'golden', auto: true, refreshMin: 1, pinned: [], quietFlag: true, rebase: true, bursts: false,
-  strip: true, stripRetailUsd: DEFAULT_STAT_OPTIONS.retailUsd, stripWhaleUsd: DEFAULT_STAT_OPTIONS.whaleUsd, stripSmall: true, stripBlink: true };
+  strip: true, stripRetailUsd: DEFAULT_STAT_OPTIONS.retailUsd, stripWhaleUsd: DEFAULT_STAT_OPTIONS.whaleUsd, stripSmall: true, stripBlink: true, scale: 'shared' };
 
 /** The settings that decide which exchanges are rows and in what order: when only the others change, the rows stay where they are. */
 export const rankingKey = (c: CvdSettings): string => [c.span, c.rank, c.top, c.heights, c.auto, c.refreshMin, c.pinned.join(','), c.quietFlag, c.rebase].join('|');
@@ -77,5 +85,6 @@ export function readCvd(saved: unknown): CvdSettings {
     bursts: typeof s.bursts === 'boolean' ? s.bursts : d.bursts,
     strip: typeof s.strip === 'boolean' ? s.strip : d.strip, stripRetailUsd, stripWhaleUsd,
     stripSmall: typeof s.stripSmall === 'boolean' ? s.stripSmall : d.stripSmall, stripBlink: typeof s.stripBlink === 'boolean' ? s.stripBlink : d.stripBlink,
+    scale: oneOf(HERO_SCALES, s.scale, d.scale),
   };
 }

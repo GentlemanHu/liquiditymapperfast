@@ -102,3 +102,19 @@ test('intraday ticks keep the existing clock labels and invalid or empty plots p
     assert.deepEqual(timeAxis(start!, end!, width!, measure), { ticks: [], labels: [] });
   }
 });
+
+test('a chart of a few hours reads by the clock: no date on its first label, so the labels that fit are all kept', () => {
+  // The Flow view's hour in 218 px (Karl, 2026-10-26): with the date on the first label its width took the room of the ones after it and one label was left.
+  const t0 = Date.UTC(2026, 9, 26, 13, 27), t1 = t0 + 3_600_000, width = 218, small = (text: string): number => text.length * 6;
+  // 42 px is what a label of five characters and the gap before the next need: a tick every quarter of an hour in this plot.
+  const dated = timeAxis(t0, t1, width, small, { minPx: 42 }), plain = timeAxis(t0, t1, width, small, { minPx: 42, dateOnFirst: false });
+  assert.deepEqual(plain.ticks, dated.ticks, 'the same ticks; only the words differ');
+  assert.deepEqual(plain.labels.map(label => label.text), ['13:45', '14:00', '14:15'], 'the clock alone, the first included');
+  assert.ok(plain.labels.length > dated.labels.length, `${plain.labels.length} labels against ${dated.labels.length} with the date`);
+  // A date still appears where the day changes between two labels.
+  const night = timeAxis(Date.UTC(2026, 9, 26, 22), Date.UTC(2026, 9, 27, 2), 300, small, { minPx: 42, dateOnFirst: false });
+  assert.ok(night.labels.some(label => /Oct 27/.test(label.text)), night.labels.map(label => label.text).join(' | '));
+  assert.ok(!night.labels.some(label => /Oct 26/.test(label.text)), 'the day the window starts in needs no date');
+  // The defaults are the map's: the first label has its date.
+  assert.match(timeAxis(Date.UTC(2026, 9, 26, 13), Date.UTC(2026, 9, 26, 15), 800, small).labels[0]!.text, /Oct 26/);
+});

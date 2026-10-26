@@ -41,7 +41,6 @@
  "Right or up zooms the time or price axis in; left or down zooms out": "向右或向上放大时间轴或价格轴；向左或向下缩小",
  "Double-click, [[R]], [[Home]], **Recenter**": "双击、[[R]]、[[Home]]、**重新居中**",
  "Back to the live edge, price range fitted": "回到实时边缘，价格范围自动适配",
- "On a **phone or tablet** the map sits on top and the bar at the bottom picks the pane under it (beside it when the phone is on its side): the order book, depth, open interest, the tracker or the statistics. **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "在**手机或平板**上，地图在上方，底部的栏选择它下面的面板（手机横置时在其旁边）：订单簿、深度、持仓量、追踪器或统计。**地图**让图表占满整个屏幕，其余一切都在 **⋯** 按钮后面。同样的操作用手指完成：",
  "**Drag**": "**拖动**",
  "Pan both ways. It carries on a little after you lift": "向两个方向平移。抬起手指后会再滑行一小段",
  "**Pinch**": "**捏合**",
@@ -186,5 +185,6 @@
  "The **volume profile** adds up what traded at each price. In its settings (≡ beside **Volume profile**), tick where each measure goes: a column right or left of the map adds it up by price, a band along the top by time, each over what is on the chart.": "**成交量分布**汇总每个价格上的成交量。在它的设置中(**成交量分布**旁的 ≡),勾选每个指标放在哪里:地图右侧或左侧的列按价格汇总,顶部的条带按时间汇总,范围都是图表上显示的内容。",
  "**Traded volume by period** draws days, weeks, months or sessions on the chart over their own time, as lines or bar profiles. Point at a row of a profile for its figures.": "**按周期的成交量**会在图表上按各自的时间,以线或柱状分布画出日、周、月或时段。指向分布的某一行即可查看其数据。",
  "**Months** come from 5-minute candles of the most traded market (Binance's perpetual, with its spot market where the coin has one), split by their taker buys: an estimate, so they are outlined in the profile colour and labelled ≈ with their source. Days, weeks and sessions come from the recorded trades unless set to candles.": "**月份**来自成交最多的市场(币安永续合约,若该币有现货市场则一并合并)的 5 分钟 K 线,按主动买入拆分:这是估算,因此带有分布颜色的轮廓和标明来源的 ≈ 标签。除非选择 K 线,日、周和时段来自已记录的成交。",
- "**Cues**, in the book's header, light an exchange's cell when the size it shows at a price changes: outward for added depth, back inward for removed. Point at a cell for what changed and what traded meanwhile; it says what was *shown*, never an order.": "订单簿标题栏里的 **Cues** 会在某个交易所在某个价格显示的数量变化时点亮它的单元格:增加挂单时向外扩散,减少时向内收回。指向一个单元格,可以看到什么变了,以及这期间成交了什么;它说的是*显示*过的内容,绝不是某个订单。"
+ "**Cues**, in the book's header, light an exchange's cell when the size it shows at a price changes: outward for added depth, back inward for removed. Point at a cell for what changed and what traded meanwhile; it says what was *shown*, never an order.": "订单簿标题栏里的 **Cues** 会在某个交易所在某个价格显示的数量变化时点亮它的单元格:增加挂单时向外扩散,减少时向内收回。指向一个单元格,可以看到什么变了,以及这期间成交了什么;它说的是*显示*过的内容,绝不是某个订单。",
+ "On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "在**手机或平板**上，底部的栏选择视图。**逐笔**、**资金流**和竖持时的订单簿占满整个屏幕；其余的位于地图下方（手机横置时在其旁边）。**地图**让图表占满整个屏幕，其余一切都在 **⋯** 按钮后面。同样的操作用手指完成："
 }

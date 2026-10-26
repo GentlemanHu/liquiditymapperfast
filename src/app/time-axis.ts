@@ -48,15 +48,23 @@ export function timeTicks(t0: number, t1: number, widthPx: number, minPx = 96): 
   return step ? ticksFor(t0, t1, step) : [];
 }
 
+export interface TimeAxisOptions {
+  /** The least room a tick has (a narrow plot, as a phone's, asks for less than the map's 96). */
+  minPx?: number;
+  /** Whether the first label carries its date (the map's does; a chart of a few hours, as the Flow view's, reads by the clock alone and gives the date only where the day changes). */
+  dateOnFirst?: boolean;
+}
+
 /** Centre only labels whose measured text fits inside the plot and leaves twelve pixels before the next label. */
-export function timeAxis(t0: number, t1: number, width: number, measure: (text: string) => number): { ticks: number[]; labels: TimeLabel[] } {
-  const step = stepFor(t0, t1, width, 96), labels: TimeLabel[] = [];
+export function timeAxis(t0: number, t1: number, width: number, measure: (text: string) => number, { minPx = 96, dateOnFirst = true }: TimeAxisOptions = {}): { ticks: number[]; labels: TimeLabel[] } {
+  const step = stepFor(t0, t1, width, minPx), labels: TimeLabel[] = [];
   if (!step) return { ticks: [], labels };
   const ticks = ticksFor(t0, t1, step);
   let right = -Infinity, lastDay: number | undefined, lastYear: number | undefined;
   for (const t of ticks) {
     const wall = new Date(t + zoneOffsetMs(t)), day = Math.floor(wall.getTime() / DAY), year = wall.getUTCFullYear();
-    const marksDay = lastDay === undefined || ticks.length < 3 && day !== lastDay;
+    // Judged before the label is measured: a date the first label would have carried made it wide, and the ones after it were turned away for its room.
+    const marksDay = lastDay === undefined ? dateOnFirst : ticks.length < 3 && day !== lastDay;
     const text = tickLabel(t, step.unit === 'month' ? year !== lastYear : marksDay, step.unit);
     const x = (t - t0) / (t1 - t0) * width, half = measure(text) / 2;
     if (x - half < 4 || x + half > width - 4 || x - half < right + 12) continue;

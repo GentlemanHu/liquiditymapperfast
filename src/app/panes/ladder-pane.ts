@@ -3,6 +3,7 @@ import { activeIds, emptyScopeMessage, kindOf } from '../scope.ts';
 import { el } from '../dom.ts';
 import { setTip } from '../tip.ts';
 import { helpButton } from '../help.ts';
+import { addTune } from '../pane-tune.ts';
 import { button, checkRow, note, selectRow, switchRow, togglePanel, type Panel } from '../ui.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, textOn } from '../theme.ts';
@@ -371,14 +372,17 @@ export class LadderPane {
     this.#cuesButton.className = 'cues-btn'; this.#cuesButton.textContent = t('Cues');
     setTip(this.#cuesButton, t('What lights in the book when a venue\'s displayed depth changes, and the heat strip under each cell. Hover a cell, or the mark beside a row, to see what changed.'));
     this.#cuesButton.onclick = () => { this.#cuesPanel = togglePanel(this.#cuesButton, { title: t('Order book cues'), width: 340, align: 'right', onClose: () => { this.#cuesPanel = null; } }, (_tools, body) => this.#buildCues(body)); };
+    const show = this.#select(t('Show'), [['both', t('Levels + cum')], ['levels', t('Levels')], ['cumulative', t('Cumulative')]], () => s().ladderShow, v => this.store.set({ ladderShow: v as AppState['ladderShow'] }));
     this.controls.append(title, helpButton('orderBook'),
       this.#select(t('Mode'), [['aggregated', t('Aggregated')], ['single', t('Single')], ['compact', t('Compact')]], () => s().ladderMode, v => this.store.set({ ladderMode: v as AppState['ladderMode'] })),
       // The header's one action is on its first line, beside the title, the "?" and the mode: alone on the last line it read as an afterthought.
       recenter,
       group, curves,
-      this.#select(t('Show'), [['both', t('Levels + cum')], ['levels', t('Levels')], ['cumulative', t('Cumulative')]], () => s().ladderShow, v => this.store.set({ ladderShow: v as AppState['ladderShow'] })),
+      show,
       pull, this.#cuesButton, this.#booksButton);
     this.syncVenues();
+    // On a phone the mode and the grouping stay in the row; the rest waits behind the key at its end (pane-tune.ts).
+    addTune(this.controls, [curves, show, pull, this.#cuesButton, this.#booksButton], t('Order Book'));
   }
 
   /** The cue settings the book is drawn from, changed from the Cues panel. */

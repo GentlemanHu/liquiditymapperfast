@@ -73,7 +73,7 @@ export const SECTIONS: readonly Section[] = [
         ['Right-drag', 'Right or up zooms the time or price axis in; left or down zooms out'],
         ['Double-click, [[R]], [[Home]], **Recenter**', 'Back to the live edge, price range fitted'],
       ] },
-      { t: 'p', text: 'On a **phone or tablet** the map sits on top and the bar at the bottom picks the pane under it (beside it when the phone is on its side): the order book, depth, open interest, the tracker or the statistics. **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:' },
+      { t: 'p', text: 'On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:' },
       { t: 'keys', rows: [
         ['**Drag**', 'Pan both ways. It carries on a little after you lift'],
         ['**Pinch**', 'Sideways zooms **time**, up and down zooms **price**, a diagonal pinch does both; what is under each finger stays under it'],
