@@ -1,0 +1,59 @@
+import { t, tn } from '../i18n.ts';
+import type { Analysis } from './lang/analysis.ts';
+import type { ScriptError } from './lang/lexer.ts';
+import type { ScriptResult, Warning } from './protocol.ts';
+import { cleanName, type OptionValue, type ScriptRecord } from './records.ts';
+
+/*
+ * What the Scripts panel decides without drawing anything (so it can be tested without a page): what a script's row says, whether the
+ * script being written has changes not saved, and where the panel opens again after it closed.
+ */
+
+/** What the panel needs of the pane that runs the scripts. */
+export interface ScriptsHost {
+  readonly records: readonly ScriptRecord[];
+  setRecords(list: ScriptRecord[]): boolean;
+  resultOf(id: string): ScriptResult | null;
+  warningsOf(id: string): readonly Warning[];
+  analysisOf(r: ScriptRecord): Analysis | ScriptError;
+  /** Whether Scripts is on (the scripts run and draw); off, a script that is on waits for it. */
+  readonly running: boolean;
+  /** Switch Scripts on (a script was added or switched on: the person should see it). */
+  showScripts(): void;
+}
+
+/** What the panel keeps while it is open: the script being written (a new one has the id `new`), its text so far, a message, and which Delete waits for its second press. */
+export interface ScriptsPanelState {
+  editing: string | null;
+  draft: { name: string; source: string; options: Record<string, OptionValue>; place: ScriptRecord['place'] } | null;
+  message: { text: string; error: boolean } | null;
+  armed: string | null;
+}
+
+/** What a script's row says: where it draws, then off, waiting for its first run, an error, its warnings or its plots. */
+export function statusOf(host: ScriptsHost, r: ScriptRecord): { text: string; error: boolean } {
+  const res = host.resultOf(r.id), notes = host.warningsOf(r.id).length + (res?.ok ? res.warnings.length : 0);
+  const status = !r.on ? t('off') : !res ? (host.running ? t('running…') : t('not run yet')) : !res.ok ? t('error') : notes ? tn(notes, '{n} warning', '{n} warnings') : tn(res.plots.length, '{n} plot', '{n} plots');
+  return { text: `${r.place === 'map' ? t('On the map') : t('In its own row')} · ${status}`, error: r.on && !!res && !res.ok };
+}
+
+/** A value written with the keys of its objects in order, so two option sets compare by what they hold, not by the order they were set in. */
+const stable = (v: unknown): string => JSON.stringify(v, (_k, x: unknown) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : x);
+
+/** Whether the script being written differs from what is kept (a new one: whether anything was written). */
+export function unsaved(host: ScriptsHost, ui: ScriptsPanelState): boolean {
+  const d = ui.draft; if (!d) return false;
+  const r = host.records.find(x => x.id === ui.editing);
+  if (!r) return d.source.trim() !== '' || d.name.trim() !== '';
+  return (cleanName(d.name) ?? '') !== r.name || d.source !== r.source || d.place !== r.place || stable(d.options) !== stable(r.options);
+}
+
+/**
+ * The panel closed: it opens on the list again next time, unless a script was being written and has changes not saved; that one opens again
+ * where it was, saying so. Messages and a Delete waiting for its second press are let go.
+ */
+export function panelClosed(host: ScriptsHost, ui: ScriptsPanelState): void {
+  ui.armed = null;
+  if (ui.editing && unsaved(host, ui)) { ui.message = { text: t('Not saved'), error: false }; return; }
+  ui.editing = null; ui.draft = null; ui.message = null;
+}

@@ -8,8 +8,12 @@ import { appRoot, keysInSource, sources, template } from '../scripts/i18n-keys.m
 
 const packsDir = path.join(appRoot, 'i18n');
 
-/** Files that carry the page's words: everything but the guide's long text, the language machinery, workers and brand tables. */
-const SKIPPED = /^(format\.ts|guide\/|venues\.ts|i18n|boot\.ts|worker\/|wire\.ts|watermark\.ts|theme\.ts$|browser\/feeds)/;
+/**
+ * Files that carry the page's words: everything but the guide's long text, the language machinery, workers and brand tables, and the scripts'
+ * language (`script/lang/`: its words are the language's own, `Math` or `Invalid Date`, which scripts read as code; what a person reads of it
+ * goes through `script/messages.ts`).
+ */
+const SKIPPED = /^(format\.ts|guide\/|venues\.ts|i18n|boot\.ts|worker\/|wire\.ts|watermark\.ts|theme\.ts$|browser\/feeds|script\/lang\/)/;
 
 /** Every English text the page asks to have translated (the calls to t() and tn() in the source, the guide's own chrome included). */
 const keysInPage = (): Set<string> => new Set(keysInSource().keys());

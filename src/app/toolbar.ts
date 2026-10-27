@@ -151,6 +151,14 @@ export class Toolbar {
   flow: FlowBook | null = null;
   /** The VWAP lines (vwap/), set in its panel. */
   #vwap = el('button', { class: 'led-btn', textContent: t('VWAP'), tip: HELP.vwap.tip });
+  /**
+   * The person's scripts (script/): the lamp is `show.script` (they run and draw: on the map, and in rows under it for those placed there),
+   * the key opens the Scripts panel, where they are written and switched on one by one (`onOpenScripts`, set by the page).
+   */
+  #scripts = el('button', { class: 'led-btn', textContent: t('Scripts'), tip: HELP.script.tip });
+  #scriptsKey = settingsKey(t('Scripts'));
+  #scriptsSplit = splitButton(this.#scripts, this.#scriptsKey);
+  onOpenScripts: (anchor: HTMLElement) => void = () => {};
   #vwapPanel: Panel | null = null;
   /** What the page knows of the whale sums (set by the page), for the VWAP panel. */
   whaleInfo: () => WhaleInfo | null = () => null;
@@ -255,6 +263,15 @@ export class Toolbar {
   /** The person applied a venue selection (a server brings the new feeds up some seconds later). */
   onVenuesApplied: () => void = () => {};
 
+  /**
+   * What the scripts are doing, on their lamp (set by the Scripts pane): `running` while one that is on waits for its first answer (the first
+   * can take a while on a busy page), `error` with the name of one that stopped, '' otherwise. The tip says it.
+   */
+  setScriptsStatus(note: 'running' | 'error' | '', name: string): void {
+    if ((this.#scripts.dataset.note ?? '') !== note) { if (note) this.#scripts.dataset.note = note; else delete this.#scripts.dataset.note; }
+    this.#scripts.dataset.tip = note === 'error' ? `${HELP.script.tip} ${t('“{name}” stopped with an error: open Scripts to see it.', { name })}` : note === 'running' ? `${HELP.script.tip} ${t('running…')}` : HELP.script.tip;
+  }
+
   constructor(private store: Store, private venueControl: VenueControl) {
     const missing = coinChoice().notice;
     if (missing) {
@@ -289,6 +306,8 @@ export class Toolbar {
       this.#vwapPanel = this.#track(togglePanel(this.#settingsKeys.vwap, { title: t('VWAP'), width: 420, align: 'left', stays: true, onClose: () => { this.#vwapPanel = null; if (this.store.state.vwapAnchoring) this.store.set({ vwapAnchoring: false }); } }, build), build);
     };
     this.#vwap.onclick = () => this.store.set(togglePatch(this.store.state, 'vwap'));
+    this.#scripts.onclick = () => this.store.set({ show: { ...this.store.state.show, script: !this.store.state.show.script } });
+    this.#scriptsKey.onclick = () => this.onOpenScripts(this.#scriptsKey);
     this.#settingsKeys.keyLevels.onclick = () => {
       const build = (tools: HTMLElement, body: HTMLElement): void => buildKeyLevelPanel(this.store, tools, body, () => this.#keyLevelPanel?.render(build), this.keyHistory);
       this.#keyLevelPanel = this.#track(togglePanel(this.#settingsKeys.keyLevels, { title: t('Key levels'), width: 420, align: 'left', onClose: () => { this.#keyLevelPanel = null; } }, build), build);
@@ -511,7 +530,8 @@ export class Toolbar {
         deck('time', t('Time'), [this.#timeframes], inCorner ? [] : [this.#recenter]),
         deck('heat', t('Heatmap'), [this.#source, this.#layer, this.#heat.style], [this.#heatScale, this.#heat.auto, this.#heat.smooth]),
         deck('panels', t('Panels'), [this.#toggles]),
-        deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#range]),
+        // The Range tool is the map corner's Select when the map holds its tools (Karl, 2026-10-27: the deck's Range was the same button twice).
+        deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound]),
         tools, this.#expand, this.#notice.root, this.#coinNotice);
       this.#fit();
@@ -574,7 +594,7 @@ export class Toolbar {
       body.append(
         section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#range, this.#guide, this.#shot, this.#author, this.#install.root)]),
         section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S, LT and Stats each add a tab to the bar under the map.') })]),
-        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]))]),
+        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#scriptsSplit)]),
         // Only a phone has the Tape tab; a touch tablet keeps the desktop's panes and gets this sheet without it.
         ...(this.tapeFields && isPhone() ? [section(t('Tape'), this.tapeFields().map(([label, control]) => field(label, control)), helpButton('candlePane'))] : []),
         section(t('Heatmap'), [
@@ -610,7 +630,7 @@ export class Toolbar {
     [...this.#timeframes.children].forEach(b => b.classList.toggle('on', b.textContent === state.timeframe));
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
-    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
+    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#scripts, state.show.script); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
     if (this.#awake.checked !== state.keepAwake) this.#awake.checked = state.keepAwake;
     lamp(this.#glass, state.material === 'glass');
     if (this.#glassSwitch.checked !== (state.material === 'glass')) this.#glassSwitch.checked = state.material === 'glass';

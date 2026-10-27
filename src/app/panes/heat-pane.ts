@@ -170,6 +170,11 @@ const TIME_H = 22;
 
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
 const NARROW_PLOT = 420;
+/** The legend's script lines: how many at most (the others are counted), and the room at a line's right for its two buttons (px). */
+const SCRIPT_LINES = 6, SCRIPT_TOOLS_W = 40;
+
+/** A line of the map's legend for a script drawn on the map (given by the Scripts pane): its name, colour, and values or state. */
+export interface ScriptLegendLine { id: string; name: string; color: string; text: string; tone: 'text' | 'muted' | 'error' }
 /** A map pane narrower than this gets the narrow price axis and profile column. */
 const COMPACT_PANE = 520;
 
@@ -217,6 +222,19 @@ export class HeatPane {
   onFrame: () => void = () => {};
   /** The Delta pane's price/CVD divergences in view (set in main; none while that pane is not drawn). */
   divergences: () => readonly Divergence[] = () => [];
+  /** A script's colour for the candle starting at `t` (`$price.color = ...`), or '' for the candle's own (set by the Scripts pane). */
+  candleColor: (t: number) => string = () => '';
+  /** The scripts placed on the map draw here, over the candles and the lines, in the map's price and time (set by the Scripts pane). */
+  scriptLayer: ((ctx: CanvasRenderingContext2D, pw: number, ph: number) => void) | null = null;
+  /** The popup lines of the person's scripts drawn on the map, at the candle starting at `t` (set by the Scripts pane). */
+  scriptHover: (t: number) => InfoLine[] = () => [];
+  /**
+   * The legend's lines for the scripts drawn on the map, at the candle starting at `t` (null: the newest), with values for the first `valued`
+   * of them only (set by the Scripts pane).
+   */
+  scriptLegend: (t: number | null, valued: number) => ScriptLegendLine[] = () => [];
+  /** Where each script line's buttons go, in this pane's own pixels, once the legend is drawn (the Scripts pane places them). */
+  onScriptLegend: (places: readonly { id: string; x: number; y: number }[]) => void = () => {};
   #glCanvas = document.createElement('canvas');
   #ctx: CanvasRenderingContext2D;
   /** The pane's whole width; the plot and everything right of it start after the columns left of the map (`#left`). */
@@ -793,6 +811,7 @@ export class HeatPane {
     this.#valueTags = this.#paintValueLines(ctx, state, pw, ph);
     this.#keyTags = state.keyLevels.on ? paintKeyLevels(ctx, this.#keyLevelLines(state), v, pw, ph, p, state.keyLevels, pageNow(), this.#keyLevelContext(state).zone, this.#labels) : [];
     this.#vwapTags = state.vwap.on ? paintVwap(ctx, this.#vwapLines(state), v, pw, ph, p, state.vwap, this.#labels) : [];
+    this.scriptLayer?.(ctx, pw, ph);
     // Replay: nothing after its moment is shown (the heatmap under this canvas included), and a line marks it.
     if (replaying()) {
       const x = Math.max(0, Math.min(pw, v.xOf(pageNow(), pw)));
@@ -918,9 +937,20 @@ export class HeatPane {
     detail = fitText(wide, detail, room);
     const extra = [phone && borrowed ? borrowed.replace(/^\s*·\s*/, '') : '', this.#overviewLegend(state)].filter(Boolean).join('  ·  ');
     const note = fitText(wide, extra, room), noteW = note ? wide(note) : 0, detailW = detail ? wide(detail) : 0;
+    // The scripts drawn on the map, a line each under the candle's: a swatch of its colour, its name, its two buttons right after the name
+    // (where they stay whatever the values beside them, so they do not move from under a pointer coming to them), then its values at this
+    // candle or what it is doing. At most a few, the others counted. In a phone's arrangement the buttons are a finger's size (as their
+    // style makes them) and the lines as tall; there, and on a narrow map, the names alone.
+    const touch = isPhone(), namesOnly = phone || touch, toolsW = touch ? 58 : SCRIPT_TOOLS_W, lineH = touch ? 24 : 16;
+    const scripts = this.scriptLegend(hovered ? hovered[0] : null, namesOnly ? 0 : SCRIPT_LINES), listed = scripts.slice(0, SCRIPT_LINES), unlisted = scripts.length - listed.length;
+    const scriptNames = listed.map(s => fitText(wide, s.name, room - toolsW - 30));
+    const scriptValues = listed.map((s, k) => namesOnly || !s.text ? '' : fitText(wide, s.text, Math.max(0, room - 30 - wide(scriptNames[k]!) - toolsW - 12)));
+    const moreScripts = unlisted > 0 ? tn(unlisted, '+{n} more script', '+{n} more scripts') : '';
+    const scriptsW = Math.max(0, ...listed.map((_, k) => 18 + wide(scriptNames[k]!) + 6 + toolsW + (scriptValues[k] ? 6 + wide(scriptValues[k]!) : 0)), moreScripts ? wide(moreScripts) : 0);
+    const textH = (detail ? 36 : 22) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     const shownTitle = fitText(wide, phone ? `${name}  ${state.timeframe}` : title, room - tailW), titleW = wide(shownTitle);
-    const plateW = Math.max(titleW + tailW, detailW, noteW) + 14, plateH = (detail ? 36 : 22) + (note ? 14 : 0);
+    const plateW = Math.max(titleW + tailW, detailW, noteW, scriptsW) + 14, plateH = textH + (scriptRows ? scriptRows * lineH + 2 : 0);
     this.#legendBox = { right: 6 + plateW, bottom: 6 + plateH };
     ctx.globalAlpha = 0.82; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(6, 6, plateW, plateH, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
     ctx.textAlign = 'left'; ctx.fillStyle = p.text; ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
@@ -928,7 +958,23 @@ export class HeatPane {
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     if (tail) { ctx.fillStyle = p.muted; ctx.fillText(tail, 12 + titleW + 10, 16); }
     if (detail) { ctx.fillStyle = up ? p.candleUp : p.candleDown; ctx.fillText(detail, 12, 32); }
-    if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, 46); }
+    // The note stands under the prices, or under the title where there are none (it stood below the plate then, over what follows).
+    if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, detail ? 46 : 32); }
+    const places: { id: string; x: number; y: number }[] = [];
+    let y = 6 + textH + lineH / 2;
+    listed.forEach((s, k) => {
+      ctx.fillStyle = s.color || p.vwap; ctx.fillRect(12, y - 4, 8, 8);
+      // Where no values are shown (names alone) the name carries the script's state: muted while it waits, red when it stopped.
+      ctx.fillStyle = !scriptValues[k] && s.tone === 'error' ? p.ask : !scriptValues[k] && s.tone === 'muted' ? p.muted : p.text; ctx.fillText(scriptNames[k]!, 24, y);
+      const toolsX = 24 + wide(scriptNames[k]!) + 6;
+      places.push({ id: s.id, x: toolsX, y: y - (touch ? 11 : 8) });
+      if (scriptValues[k]) { ctx.fillStyle = s.tone === 'error' ? p.ask : p.muted; ctx.fillText(scriptValues[k]!, toolsX + toolsW + 6, y); }
+      y += lineH;
+    });
+    if (moreScripts) { ctx.fillStyle = p.muted; ctx.fillText(moreScripts, 12, y); }
+    // The buttons are page elements over this canvas, placed in the pane's own pixels (the plot starts after the columns left of it).
+    const canvas = ctx.canvas as HTMLCanvasElement;
+    this.onScriptLegend(places.map(q => ({ id: q.id, x: canvas.offsetLeft + this.#left + q.x, y: canvas.offsetTop + q.y })));
   }
 
   /** Plan only when the data or a whole minute of the view changes; pointer redraws never scan coverage or start a read. */
@@ -1296,7 +1342,7 @@ export class HeatPane {
       if (c[0] + tf < v.t0 || c[0] > v.t1) continue;
       // Every candle, the one still forming too, has the same body and stands in the middle of its slot, so the spacing is the same all along.
       const xClassic = v.xOf(c[0] + tf / 2, pw), x = xClassic + (v.xOf(c[0], pw) + layout.candleCenter - xClassic) * narrowing, up = c[4] >= c[1];
-      const color = up ? p.candleUp : p.candleDown;
+      const color = this.candleColor(c[0]) || (up ? p.candleUp : p.candleDown);
       const yh = v.yOf(c[2], ph), yl = v.yOf(c[3], ph), yo = v.yOf(c[1], ph), yc = v.yOf(c[4], ph), cx = Math.round(x) + 0.5;
       const top = Math.min(yo, yc), height = Math.max(1.5, Math.abs(yc - yo));
       if (hollow) {
@@ -2390,13 +2436,20 @@ export class HeatPane {
       this.#paintFootprintPopup(ctx, rowHit, x, y, pw, ph, touch);
     } else if (ownY && here && (measured = this.#bands.readout(x, y, hv.t))) { // a bucket of a band along the top: its box, under the band
       paintInfoBox(ctx, measured.lines, x, measured.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'down' });
-    } else if (ownY && here && state.layer === 'liquidity') {
-      const cell = this.valueAt(hv.t, hv.price!);
-      const side = cell && cell.ask > cell.bid ? 'ask' : 'bid', source = cell ? this.#sourceOf(hv.t, hv.price!, side) : '';
-      const lines: InfoLine[] = [{ label: t('Price'), text: fmtPrice(hv.price!) }];
-      if (cell) lines.push({ label: side === 'ask' ? t('Ask') : t('Bid'), text: `$${usd(Math.max(cell.bid, cell.ask))}`, color: side === 'ask' ? 'above' : 'below', bold: true });
-      if (source) lines.push({ label: t('Source'), text: source });
-      paintInfoBox(ctx, lines, x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
+    } else if (ownY && here) {
+      // The price and the book there, then what the scripts on the map draw at that candle.
+      const scripted = this.scriptHover(hv.t);
+      if (state.layer === 'liquidity' || scripted.length) {
+        const lines: InfoLine[] = [{ label: t('Price'), text: fmtPrice(hv.price!) }];
+        if (state.layer === 'liquidity') {
+          const cell = this.valueAt(hv.t, hv.price!);
+          const side = cell && cell.ask > cell.bid ? 'ask' : 'bid', source = cell ? this.#sourceOf(hv.t, hv.price!, side) : '';
+          if (cell) lines.push({ label: side === 'ask' ? t('Ask') : t('Bid'), text: `$${usd(Math.max(cell.bid, cell.ask))}`, color: side === 'ask' ? 'above' : 'below', bold: true });
+          if (source) lines.push({ label: t('Source'), text: source });
+        }
+        lines.push(...scripted);
+        paintInfoBox(ctx, lines, x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
+      }
     }
     if (inX) { ctx.fillStyle = p.text; ctx.fillRect(x - 40, ph + 2, 80, 18); ctx.fillStyle = p.bg; ctx.textAlign = 'center'; ctx.fillText(clock(hv.t, true), x, ph + 11); }
   }

@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'keyLevels' | 'vwap' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
 
 export interface HelpTopic {
   title: string;
@@ -222,6 +222,19 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     body: [t('The tape starts when the page opens and runs for as long as it stays open: nothing is fetched first, so it opens at once, and no timeframe ever starts it again. Each row is a price: sold at market on the left, bought on the right, by every market counted, its winning side shown more strongly the more it won, and the row where the most traded is outlined. The header says since when the tape runs, how many markets it counts, and how long the page was hidden: a phone in the background gets no trades, so that time is missing from the tape. Bids rest left of the tape, asks right.'),
       t('The rail at the right lights each row where a large order just arrived, by when it arrived, with the mark of the exchange that sent the largest. The trail is every market order of the last seconds at the time it traded, now at the rail and older to the left: filled dots are buys, rings are sells, larger dots larger orders, and orders from the whale size up carry their exchange\'s mark. Glass lays the book and the tape over the trail as three pieces of glass welded together: the trail shows through the book clearly and through the tape frosted. Bricks makes each of the book\'s bars a block of glass. Drag to move the prices, pinch to zoom, double-tap to reset. Look, in Settings, changes how the trail is drawn, not what it shows.'),
       t('On glass the book follows its liquidity: a row lights up when orders are added there, a shock running out along it, and dims when they are pulled, the shock running back in; a ripple runs along a row when trades reached it. Where the price passed and no trade shows, nothing is called pulled. A large order sends a wave through the glass from where it arrived, slowed by the panes and turned back at the welds. Rows and Pulses, in Settings, change how the rows and these changes are shown.')],
+  },
+  script: {
+    title: t('Scripts'), guide: 'lower-panes',
+    tip: t('Your own indicators, written as scripts over the candles and the taker flow: on the map, or in rows of their own under it.'),
+    body: [],
+  },
+  scriptPane: {
+    title: t('Scripts'), guide: 'lower-panes',
+    tip: t('Your own indicators, written as scripts over the candles and the taker flow.'),
+    body: [t('A script is a short program that is run once for each candle of the chart, oldest first, and draws lines, bars or bands from what it reads: the candle, what was bought and sold at market over the exchanges of the flow column (or the ones it names with source), and the liquidations. Each script has a row of its own here, with its own scale.'),
+      t('Write one, paste one or start from an example in Scripts…. The language is the one indicator scripts are written in on other charting pages, so most such scripts run here as they are; Scripts… lists what is not supported. A script runs on a thread of its own and can read nothing but those inputs: no page, no network, no storage.'),
+      t('The taker flow is what the page holds (a day a second at a time, older minutes where the server keeps them): a candle before that reads NaN and draws nothing, and the functions carry on past it.'),
+      t('A script runs again at most once a second, and less often when it is slow: four times as long apart as it takes. One that loops too long, or grows too large, is stopped and says where.')],
   },
   orderBook: {
     title: t('Order book'), guide: 'order-book',

@@ -1,0 +1,214 @@
+import { el } from '../dom.ts';
+import { t, tn } from '../i18n.ts';
+import { button, heading, note } from '../ui.ts';
+import type { Analysis } from './lang/analysis.ts';
+import type { ScriptError } from './lang/lexer.ts';
+import type { ScriptResult, Warning } from './protocol.ts';
+import { MAX_SCRIPTS, MAX_SOURCE_CHARS, ROW_DEFAULT, SCRIPT_API, cleanName, exportFile, importText, inferredOption, mergeScripts, newId, type OptionValue, type ScriptRecord } from './records.ts';
+import { errorText, warningText } from './messages.ts';
+import { exampleHeight, examples } from './examples.ts';
+import { statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
+
+export { panelClosed, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
+
+const isError = (a: Analysis | ScriptError): a is ScriptError => !('program' in a);
+
+/**
+ * The list's statuses written again where they stand, after a run: the list is not built again, so a menu, a switch or a Delete that waits
+ * for its second press is not lost under the person's pointer.
+ */
+export function refreshStatuses(host: ScriptsHost, body: HTMLElement): void {
+  for (const cell of body.querySelectorAll<HTMLElement>('[data-script-status]')) {
+    const r = host.records.find(x => x.id === cell.dataset.scriptStatus); if (!r) continue;
+    const st = statusOf(host, r);
+    if (cell.textContent !== st.text) cell.textContent = st.text;
+    cell.classList.toggle('error', st.error);
+  }
+}
+
+/** The options a script shows in its panel: those it declares, then those it reads without declaring them. */
+function optionRows(a: Analysis | ScriptError, set: Readonly<Record<string, OptionValue>> = {}): { name: string; label: string; type: string; value: OptionValue; declared: boolean; min?: number; max?: number; step?: number }[] {
+  if (isError(a)) return [];
+  const rows = a.declared.map(d => ({ name: d.name, label: d.label ?? d.name, type: d.type, value: d.value, declared: true, ...(d.min !== undefined ? { min: d.min } : {}), ...(d.max !== undefined ? { max: d.max } : {}), ...(d.step !== undefined ? { step: d.step } : {}) }));
+  for (const name of a.read) {
+    // What it is: the value it already has says (a text stays a text), else its name, else it is a text.
+    const had = Object.prototype.hasOwnProperty.call(set, name) ? set[name] : undefined, guess = had !== undefined ? had : inferredOption(name);
+    const type = typeof guess === 'boolean' ? 'boolean' : typeof guess === 'number' ? 'number' : typeof guess === 'string' && /^(#|rgb|hsl)/i.test(guess) ? 'color' : 'text';
+    rows.push({ name, label: name, type, value: guess ?? '', declared: false });
+  }
+  return rows;
+}
+
+/**
+ * The Scripts panel: the list (switch each on or off, open it to write, delete it), and the editor (its name, its text, its options, and what
+ * the last run said). Saving reads the text first and keeps it only once it reads; a run's error is shown with its line and column. A text that
+ * is an indicator file or a workspace from another charting page is read as the scripts it holds.
+ */
+export function buildScriptsPanel(host: ScriptsHost, body: HTMLElement, redraw: () => void, ui: ScriptsPanelState): void {
+  const say = (text: string, error = false): void => { ui.message = { text, error }; redraw(); };
+  const keep = (list: ScriptRecord[], done: string): void => { if (host.setRecords(list)) say(done); else say(t('This browser did not let the page keep it.'), true); };
+  if (ui.editing) { buildEditor(host, body, redraw, ui, keep, say); return; }
+
+  body.append(note(t('Scripts draw your own indicators from the candles and the taker flow and liquidations of the exchanges on the page. Each runs on its own, apart from the page, and can read nothing else. Their language is the indicator-script language other charting pages use: JavaScript with plots and functions such as sma and ema.')));
+  if (ui.message) body.append(el('p', { class: ui.message.error ? 'panel-note layout-message error' : 'panel-note layout-message', textContent: ui.message.text }));
+  body.append(heading(t('Your scripts')));
+  const list = host.records;
+  if (!list.length) body.append(note(t('No scripts yet.')));
+  for (const r of list) {
+    const st = statusOf(host, r);
+    const box = el('input', { type: 'checkbox', checked: r.on, ariaLabel: t('On') });
+    box.onchange = () => {
+      if (box.checked) host.showScripts();
+      keep(list.map(x => x.id === r.id ? { ...x, on: box.checked } : x), box.checked ? t('“{name}” is on.', { name: r.name }) : t('“{name}” is off.', { name: r.name }));
+    };
+    const armed = ui.armed === r.id;
+    const remove = button(armed ? t('Sure?') : t('Delete'), () => {
+      if (!armed) { ui.armed = r.id; redraw(); return; }
+      ui.armed = null; keep(list.filter(x => x.id !== r.id), t('Deleted “{name}”.', { name: r.name }));
+    }, t('Delete this script (press twice)'));
+    if (armed) remove.classList.add('armed');
+    const up = button('↑', () => { const i = list.indexOf(r); if (i > 0) { const next = [...list]; [next[i - 1], next[i]] = [next[i]!, next[i - 1]!]; keep(next, t('Moved “{name}”.', { name: r.name })); } }, t('Move this script up (its row goes higher in the pane)'));
+    up.disabled = list.indexOf(r) === 0;
+    const status = el('span', { class: `layout-date${st.error ? ' error' : ''}`, textContent: st.text });
+    status.dataset.scriptStatus = r.id;
+    body.append(el('div', { class: 'layout-row script-row' },
+      el('label', { class: 'script-on' }, box),
+      button(r.name, () => { ui.editing = r.id; ui.draft = { name: r.name, source: r.source, options: { ...r.options }, place: r.place }; ui.message = null; redraw(); }, t('Open this script to change it')),
+      status, up, remove));
+  }
+
+  // The examples, each a row with its own Add (no menu to pick from first), and a script of one's own.
+  body.append(heading(t('Add')));
+  const full = list.length >= MAX_SCRIPTS;
+  for (const ex of examples()) {
+    const place = ex.place ?? 'pane';
+    const add = button(t('Add'), () => {
+      host.showScripts();
+      keep([...list, { id: newId(ex.name), name: ex.name, source: ex.source, options: {}, on: true, api: SCRIPT_API, height: exampleHeight(ex.source) ?? ROW_DEFAULT, place }], t('Added “{name}”.', { name: ex.name }));
+    }, t('Add a ready-made script to start from'));
+    add.disabled = full;
+    body.append(el('div', { class: 'layout-row script-example' }, el('span', { class: 'script-example-name', textContent: ex.name }), el('span', { class: 'layout-date', textContent: place === 'map' ? t('On the map') : t('In its own row') }), add));
+  }
+  const create = button(t('New script'), () => { ui.editing = 'new'; ui.draft = { name: '', source: '', options: {}, place: 'pane' }; ui.message = null; redraw(); }, t('Write a script, or paste one (an indicator file or a workspace works too)'));
+  create.disabled = full;
+  body.append(el('div', { class: 'layout-tools' }, create));
+  if (full) body.append(note(t('At most {n} scripts: delete one first.', { n: MAX_SCRIPTS })));
+
+  const file = el('input', { type: 'file', accept: '.json,.txt,.js,application/json,text/plain', hidden: true });
+  file.onchange = () => {
+    const chosen = file.files?.[0]; if (!chosen) return;
+    void chosen.text().then(text => {
+      const read = importText(text, cleanName(chosen.name.replace(/\.[a-z0-9]+$/i, '')) ?? t('Imported script'));
+      if ('error' in read) { say(read.error === 'too-large' ? t('The file is too large to be scripts.') : read.error === 'newer' ? t('The file was written by a newer version of the page: update this page to read it.') : t('The file holds no script this page can read.'), true); return; }
+      // An imported script is off until it is switched on: one from elsewhere should be read before it runs.
+      const merged = mergeScripts(list, read.scripts.map(s => ({ ...s, on: false }))), n = merged.added + merged.replaced;
+      const done = tn(n, 'Read {n} script: switch it on to run it.', 'Read {n} scripts: switch them on to run them.') + (merged.skipped ? ` ${t('{n} did not fit: at most {max}.', { n: merged.skipped, max: MAX_SCRIPTS })}` : '');
+      if (n) keep(merged.list, done); else say(done, true);
+    }, () => say(t('The file holds no script this page can read.'), true));
+  };
+  const exportAll = button(t('Export'), () => {
+    const url = URL.createObjectURL(new Blob([exportFile(list)], { type: 'application/json' }));
+    el('a', { href: url, download: 'liquiditymapperfast-scripts.json' }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }, t('Write the scripts to a file, to keep them or use them in another browser'));
+  exportAll.disabled = !list.length;
+  body.append(heading(t('More')), el('div', { class: 'layout-tools' }, button(t('Import'), () => file.click(), t('Read scripts from a file: one written by Export, an indicator file or a workspace from another charting page, or a script as text')), exportAll, file));
+  body.append(heading(t('Language')), ...reference().map(line => note(line)));
+}
+
+/** The short reference shown under the list. */
+function reference(): string[] {
+  return [
+    t('Each candle runs the script once. A name set without var (x = ...) keeps its value from candle to candle and starts at 0; x[1] is its value one candle back. A var starts again each candle.'),
+    t('Inputs: time (seconds), vbuy, vsell (dollars bought and sold at market), lbuy, lsell (dollars of shorts and longs liquidated), $price.open, .high, .low, .close (the chart\'s candle), renderer.length (candles so far), options.name.'),
+    t('source(vbuy, type=spot, exchange=BINANCE, quote=USDT) reads over those markets only (the flow column\'s markets are the rest). Options: name = option(default=14, type=number|color|checkbox|text, label=...).'),
+    t('Functions: sma, ema, rma, sum, cum, cma, highest, lowest, last, linreg, stoch, pivot_high, pivot_low, avg, avg_ohlc, heikinashi, ohlc, cum_ohlc, interpolate; Math and Number as in JavaScript.'),
+    t('Plots: line, histogram, area, baseline, candlestick, plotbar, cloudarea, brokenarea, each with title=, color=, lineWidth=, priceScaleId=, scaleMargins=. A point can be an object: {time: time, value: x, color: c}.'),
+    t('Not here: trade counts (cbuy, csell read NaN), single markets by name (EXCHANGE:pair), the chart library\'s series objects, try, switch. A candle that was not recorded reads NaN and draws nothing; the functions skip it.'),
+  ];
+}
+
+function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, ui: ScriptsPanelState, keep: (list: ScriptRecord[], done: string) => void, say: (text: string, error?: boolean) => void): void {
+  const draft = ui.draft ??= { name: '', source: '', options: {}, place: 'pane' };
+  const existing = host.records.find(r => r.id === ui.editing) ?? null;
+  const name = el('input', { type: 'text', class: 'layout-name', maxLength: 40, placeholder: t('Name'), ariaLabel: t('Name'), value: draft.name });
+  name.oninput = () => { draft.name = name.value; };
+  const source = el('textarea', { class: 'script-source', spellcheck: false, rows: 16, ariaLabel: t('Script'), placeholder: t('line(cum(vbuy - vsell), title=CVD)'), value: draft.source });
+  source.maxLength = MAX_SOURCE_CHARS;
+  source.wrap = 'off';
+  source.oninput = () => { draft.source = source.value; };
+  // A tab key writes two spaces rather than leaving the box.
+  source.onkeydown = e => {
+    if (e.key !== 'Tab' || e.shiftKey) return;
+    e.preventDefault();
+    const s = source.selectionStart, end = source.selectionEnd;
+    source.setRangeText('  ', s, end, 'end'); draft.source = source.value;
+  };
+  const place = el('select', { ariaLabel: t('Where') });
+  place.append(new Option(t('In its own row'), 'pane'), new Option(t('On the map'), 'map'));
+  place.value = draft.place;
+  place.onchange = () => { draft.place = place.value === 'map' ? 'map' : 'pane'; };
+  const where = el('label', { class: 'row script-option', tip: t('A row of its own in this pane, or on the map: the plots on the price scale (the default) at their prices, the others each on a scale of their own.') }, el('span', { textContent: t('Draw') }), place);
+  body.append(el('div', { class: 'layout-save' }, name), where, source);
+  if (ui.message) body.append(el('p', { class: ui.message.error ? 'panel-note layout-message error' : 'panel-note layout-message', textContent: ui.message.text }));
+
+  // What the last run said about the script as it is kept.
+  if (existing) {
+    const res = host.resultOf(existing.id);
+    if (res && !res.ok) body.append(el('p', { class: 'panel-note layout-message error', textContent: errorText(res.error) }));
+    const notes = [...host.warningsOf(existing.id), ...(res?.ok ? res.warnings : [])];
+    for (const w of notes) body.append(note(warningText(w)));
+  }
+
+  // Its options, as the text reads now: the declared ones and those it reads without declaring.
+  const probe: ScriptRecord = { id: existing?.id ?? 'new', name: draft.name || 'x', source: draft.source, options: draft.options, on: true, api: SCRIPT_API, height: ROW_DEFAULT, place: draft.place };
+  const rows = optionRows(host.analysisOf(probe), draft.options);
+  if (rows.length) {
+    body.append(heading(t('Options')));
+    for (const o of rows) {
+      const current = o.name in draft.options ? draft.options[o.name] : o.value;
+      let input: HTMLInputElement;
+      if (o.type === 'boolean') { input = el('input', { type: 'checkbox', checked: current === true || current === 1 }); input.onchange = () => { draft.options[o.name] = input.checked; }; }
+      else if (o.type === 'number' || o.type === 'range') {
+        input = el('input', { type: 'number', value: typeof current === 'number' ? String(current) : '', step: o.step !== undefined ? String(o.step) : 'any' });
+        input.oninput = () => { const v = Number(input.value); if (input.value.trim() === '') delete draft.options[o.name]; else if (Number.isFinite(v)) draft.options[o.name] = v; };
+      } else { input = el('input', { type: 'text', value: typeof current === 'string' ? current : current === null || current === undefined ? '' : JSON.stringify(current) }); input.oninput = () => { const v = input.value.trim(); draft.options[o.name] = o.type === 'text' && !o.declared && v !== '' && Number.isFinite(Number(v)) ? Number(v) : input.value; }; }
+      input.ariaLabel = o.label;
+      body.append(el('label', { class: 'row script-option' }, el('span', { textContent: o.label }), input));
+    }
+  }
+
+  const close = (): void => { ui.editing = null; ui.draft = null; redraw(); };
+  const save = (): void => {
+    const text = draft.source;
+    // A pasted indicator file or workspace becomes the scripts it holds.
+    if (text.trim().startsWith('{')) {
+      const read = importText(text, cleanName(draft.name) ?? t('Pasted script'));
+      if ('scripts' in read && read.scripts.length && read.scripts[0]!.source !== text.replace(/\r\n?/g, '\n')) {
+        const list = host.records.filter(r => r.id !== existing?.id), merged = mergeScripts(list, read.scripts.map(s => ({ ...s, on: false })));
+        ui.editing = null; ui.draft = null;
+        keep(merged.list, tn(merged.added + merged.replaced, 'Read {n} script: switch it on to run it.', 'Read {n} scripts: switch them on to run them.'));
+        return;
+      }
+    }
+    const n = cleanName(draft.name) ?? cleanName(text.split('\n').find(l => l.trim())?.replace(/^\/\/\s*/, '').slice(0, 30)) ?? t('Script');
+    const a = host.analysisOf({ ...probe, source: text });
+    if (isError(a)) { say(errorText(a), true); return; }
+    // Options it reads without declaring that nothing set yet get a value guessed from their names.
+    const options = { ...draft.options };
+    for (const o of optionRows(a, options)) if (!(o.name in options) && o.value !== '') options[o.name] = o.value;
+    // What the script is now (it may have been switched off from its row or the map's legend while its editor was open), not when it opened.
+    const now = existing ? host.records.find(r => r.id === existing.id) ?? existing : null;
+    const record: ScriptRecord = { id: now?.id ?? newId(n), name: n, source: text.replace(/\r\n?/g, '\n'), options, on: now?.on ?? true, api: now?.api ?? SCRIPT_API, height: now?.height ?? ROW_DEFAULT, place: draft.place };
+    const list = existing ? host.records.map(r => r.id === existing.id ? record : r) : [...host.records, record];
+    if (!existing && host.records.length >= MAX_SCRIPTS) { say(t('At most {n} scripts: delete one first.', { n: MAX_SCRIPTS }), true); return; }
+    ui.editing = record.id; ui.draft = { name: record.name, source: record.source, options: { ...record.options }, place: record.place };
+    if (!existing) host.showScripts();
+    keep(list, t('Saved “{name}”: it runs with the next update.', { name: record.name }));
+  };
+  const check = (): void => { const a = host.analysisOf({ ...probe, source: draft.source }); say(isError(a) ? errorText(a) : t('The script reads.'), isError(a)); };
+  body.append(el('div', { class: 'layout-tools' },
+    button(t('Save'), save, t('Keep the script and run it')),
+    button(t('Check'), check, t('Read the script without saving it, to see whether it reads')),
+    button(t('Back'), close, t('Back to the list (what is not saved is dropped)'))));
+}

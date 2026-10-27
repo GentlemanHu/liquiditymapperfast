@@ -20,6 +20,7 @@ test('the tab a phone opens on is the leftmost of the bar (Karl, 2026-10-26), an
   const all = { ...DEFAULT_SHOW, cvd: true, book: true, depth: true, oi: true, delta: true, ls: true, lt: true, stats: true };
   assert.deepEqual(tabsFor(all), ['candle', 'flow', 'map', 'book', 'lt', 'depth', 'oi', 'delta', 'ls', 'stats']);
   assert.equal(tabsFor(all)[0], defaultTab('phone'), 'the first tab is the one a phone opens on');
+  assert.equal(tabsFor({ ...all, script: true }).at(-1), 'script', 'the Scripts tab comes last, once its pane is switched on');
   // The panes a phone starts with (Flow, LT and the Book are on; the rest are one switch away) give five tabs, the Tape first.
   assert.deepEqual(tabsFor({ ...DEFAULT_SHOW, cvd: true, book: true, lt: true }), ['candle', 'flow', 'map', 'book', 'lt']);
   // Every tab is in the bar once.

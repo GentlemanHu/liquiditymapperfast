@@ -15,7 +15,7 @@ import { t } from './i18n.ts';
  * The order is the order of the bar (Karl, 2026-10-26: the tab a phone opens on is the leftmost): what has been traded (Tape, Flow), what
  * rests in the book (Map, Book, LT, Depth), then the figures worked out from both (OI, Delta, L/S, Stats).
  */
-export type DockTab = 'map' | 'candle' | 'flow' | 'book' | 'depth' | 'oi' | 'delta' | 'ls' | 'lt' | 'stats';
+export type DockTab = 'map' | 'candle' | 'flow' | 'book' | 'depth' | 'oi' | 'delta' | 'ls' | 'lt' | 'stats' | 'script';
 
 interface TabSpec { id: DockTab; label: string; tip: string; icon: string; /** The `show` switch that must be on; absent when the pane is always available. */ needs?: keyof AppState['show'] }
 const svg = (body: string): string => `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
@@ -42,6 +42,8 @@ export const DOCK_TABS: readonly TabSpec[] = [
     icon: svg('<path d="M3.5 12h17" stroke-dasharray="2 2.5"/><path d="M3.5 9h5v-2h5v3h7"/><path d="M3.5 16h6v1.5h4v-2h7"/>') },
   { id: 'stats', label: t('Stats'), tip: t('The Bar stats table: a row of numbers per statistic, a cell per candle.'), needs: 'stats',
     icon: svg('<path d="M5 20V11M12 20V5M19 20V13"/>') },
+  { id: 'script', label: t('Scripts'), tip: t('Your own indicators, written as scripts over the candles and the taker flow.'), needs: 'script',
+    icon: svg('<path d="M8.5 7 4 12l4.5 5M15.5 7 20 12l-4.5 5M13.5 5l-3 14"/>') },
 ];
 
 
@@ -68,8 +70,8 @@ export const resolveTab = (wanted: DockTab, show: AppState['show']): DockTab => 
  * or the pixels the person dragged it to. The result is a CSS length for `--dock-size`.
  */
 export const DEFAULT_SHARE: Readonly<Record<Axis, Readonly<Partial<Record<DockTab, number>>>>> = {
-  portrait: { depth: 0.38, oi: 0.38, delta: 0.38, ls: 0.34, lt: 0.5, stats: 0.3 },
-  landscape: { book: 0.46, depth: 0.42, oi: 0.42, delta: 0.42, ls: 0.4, lt: 0.46, stats: 0.38 },
+  portrait: { depth: 0.38, oi: 0.38, delta: 0.38, ls: 0.34, lt: 0.5, stats: 0.3, script: 0.4 },
+  landscape: { book: 0.46, depth: 0.42, oi: 0.42, delta: 0.42, ls: 0.4, lt: 0.46, stats: 0.38, script: 0.42 },
 };
 /** The orientation of the phone arrangement the dock sizes for. */
 export const axisOf = (mode: LayoutMode): Axis => mode === 'phone-landscape' ? 'landscape' : 'portrait';

@@ -1,0 +1,239 @@
+import type { PlotOut } from './protocol.ts';
+import type { OptionValue } from './records.ts';
+import { safeColor, withAlpha } from './lang/colors.ts';
+
+/**
+ * Drawing a script's plots in its row of the Scripts pane. The plots of a script that name the same `priceScaleId` share a vertical scale, as
+ * they would share a price axis, each fitted to what is in view and kept inside its `scaleMargins` (fractions of the row left free above and
+ * below). The scale and the visible range are plain functions; the painters take a canvas.
+ */
+
+export interface Margins { top: number; bottom: number }
+export interface Scale { min: number; max: number; margins: Margins }
+
+/** The default room above and below a scale (fractions of the row). */
+export const DEFAULT_MARGINS: Margins = { top: 0.12, bottom: 0.08 };
+
+/** A style value as a number, or `fallback`. */
+export const styleNum = (v: OptionValue | undefined, fallback: number): number => typeof v === 'number' && Number.isFinite(v) ? v : fallback;
+
+/** The scale id of a plot: its own `priceScaleId`, else its script's, else the one shared by the script's plots. */
+export function scaleIdOf(plot: Pick<PlotOut, 'style'>, scriptOptions: Readonly<Record<string, OptionValue>>): string {
+  const own = plot.style.priceScaleId ?? scriptOptions.priceScaleId;
+  return typeof own === 'string' && own ? own : 'right';
+}
+
+/** The margins a plot asks for (`scaleMargins: { top, bottom }`), held so the two leave room for the line. */
+export function marginsOf(plot: Pick<PlotOut, 'style'>, scriptOptions: Readonly<Record<string, OptionValue>>): Margins {
+  const m = plot.style.scaleMargins ?? scriptOptions.scaleMargins;
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return DEFAULT_MARGINS;
+  const r = m as Record<string, OptionValue>;
+  let top = Math.max(0, Math.min(0.95, styleNum(r.top, DEFAULT_MARGINS.top))), bottom = Math.max(0, Math.min(0.95, styleNum(r.bottom, DEFAULT_MARGINS.bottom)));
+  if (top + bottom > 0.95) { const k = 0.95 / (top + bottom); top *= k; bottom *= k; }
+  return { top, bottom };
+}
+
+/** The first and last index of `time` (candle starts, ms) that fall in [t0, t1] with one candle either side (lines run off the edge). */
+export function visibleRange(time: Float64Array, t0: number, t1: number, tf: number): [number, number] {
+  const n = time.length;
+  let lo = 0, hi = n;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (time[m]! + tf < t0) lo = m + 1; else hi = m; }
+  let end = lo;
+  while (end < n && time[end]! <= t1) end++;
+  return [Math.max(0, lo - 1), Math.min(n - 1, end)];
+}
+
+/** The values of a plot that set its scale: a histogram and a baseline include their base, so the bars stand on it. */
+export function plotExtent(plot: PlotOut, from: number, to: number): [number, number] | null {
+  let lo = Infinity, hi = -Infinity;
+  for (const f of Object.values(plot.fields)) for (let i = from; i <= to && i < f.length; i++) { const v = f[i]!; if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } }
+  if (lo === Infinity) return null;
+  if (plot.kind === 'histogram' || plot.kind === 'baseline') { const base = styleNum(plot.style.base ?? plot.style.baseValue, 0); if (base < lo) lo = base; if (base > hi) hi = base; }
+  return [lo, hi];
+}
+
+/** One scale per scale id over the plots in view (a plot set invisible counts for nothing). */
+export function scalesOf(plots: readonly PlotOut[], scriptOptions: Readonly<Record<string, OptionValue>>, from: number, to: number): Map<string, Scale> {
+  const out = new Map<string, Scale>();
+  for (const p of plots) {
+    if (p.style.visible === false) continue;
+    const ext = plotExtent(p, from, to); if (!ext) continue;
+    const id = scaleIdOf(p, scriptOptions), have = out.get(id);
+    if (have) { have.min = Math.min(have.min, ext[0]); have.max = Math.max(have.max, ext[1]); }
+    else out.set(id, { min: ext[0], max: ext[1], margins: marginsOf(p, scriptOptions) });
+  }
+  for (const s of out.values()) if (s.max === s.min) { const pad = Math.abs(s.max) * 0.01 || 1; s.min -= pad; s.max += pad; }
+  return out;
+}
+
+/** The y of `v` in a row from `top`, `height` px tall. */
+export function yOf(v: number, s: Scale, top: number, height: number): number {
+  const inner = height * (1 - s.margins.top - s.margins.bottom), y0 = top + height * s.margins.top;
+  return y0 + (s.max - v) / (s.max - s.min) * inner;
+}
+
+/** A number for an axis tag or a readout: short (12.3K, 4.56M), with as many decimals as small values need. */
+export function shortNumber(v: number): string {
+  if (!Number.isFinite(v)) return '–';
+  const a = Math.abs(v), sign = v < 0 ? '−' : '';
+  if (a >= 1e9) return `${sign}${(a / 1e9).toFixed(a >= 1e10 ? 1 : 2)}B`;
+  if (a >= 1e6) return `${sign}${(a / 1e6).toFixed(a >= 1e7 ? 1 : 2)}M`;
+  if (a >= 1e4) return `${sign}${(a / 1e3).toFixed(a >= 1e5 ? 0 : 1)}K`;
+  if (a >= 100) return `${sign}${a.toFixed(0)}`;
+  if (a >= 1) return `${sign}${a.toFixed(2)}`;
+  if (a === 0) return '0';
+  return `${sign}${a.toPrecision(3)}`;
+}
+
+/** What the painters need of the pane. */
+export interface Frame {
+  ctx: CanvasRenderingContext2D;
+  /** The x of a candle's start (ms). */
+  x(t: number): number;
+  /** A candle's width in px. */
+  barW: number;
+  tf: number;
+  time: Float64Array;
+  from: number; to: number;
+  top: number; height: number;
+  /** The plot's width: nothing is drawn right of it (the axis). */
+  w: number;
+  /** The colours the plot falls back on: its place's colour, and the page's up and down colours. */
+  color: string; up: string; down: string;
+}
+
+const color = (raw: OptionValue | undefined, fallback: string): string => safeColor(raw, fallback);
+/** The colour of point `i`: its own, else the plot's. */
+const pointColor = (plot: PlotOut, i: number, fallback: string): string => { const c = plot.colors?.[i]; return c ? safeColor(c, fallback) : fallback; };
+
+/**
+ * The colour a plot is drawn in at point `i`, as `paintPlot` chooses it (for a legend's swatch): a point's own colour first, then the plot's
+ * for its kind (a line's color or lineColor, a baseline's line above or below its base, a candle's up or down colour, a cloud's upper line),
+ * else `fallback` (the page's colour for the plot's place) or the page's up and down colours.
+ */
+export function plotColorAt(plot: PlotOut, i: number, fallback: string, up: string, down: string): string {
+  const v = plot.fields.value?.[i] ?? NaN;
+  switch (plot.kind) {
+    case 'line': case 'area': return pointColor(plot, i, color(plot.style.color ?? plot.style.lineColor, fallback));
+    case 'baseline': return pointColor(plot, i, v >= styleNum(plot.style.baseValue ?? plot.style.base, 0) ? color(plot.style.topLineColor, up) : color(plot.style.bottomLineColor, down));
+    case 'histogram': return pointColor(plot, i, color(plot.style.color, fallback));
+    case 'candlestick': case 'bar': { const o = plot.fields.open?.[i] ?? NaN, c = plot.fields.close?.[i] ?? NaN; return pointColor(plot, i, c >= o ? color(plot.style.upColor, up) : color(plot.style.downColor, down)); }
+    case 'cloudarea': return color(plot.style.higherLineColor ?? plot.style.positiveLineColor, up);
+    case 'brokenarea': return pointColor(plot, i, color(plot.style.color, withAlpha(up, 0.2)));
+  }
+  return fallback;
+}
+
+/** Draw one plot in its row on its scale. */
+export function paintPlot(f: Frame, plot: PlotOut, s: Scale): void {
+  if (plot.style.visible === false) return;
+  const { ctx } = f;
+  const y = (v: number): number => yOf(v, s, f.top, f.height);
+  const cx = (i: number): number => f.x(f.time[i]!) + f.barW / 2;
+  const width = Math.max(1, Math.min(6, styleNum(plot.style.lineWidth, plot.kind === 'area' ? 2 : 1.5)));
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, f.top, f.w, f.height); ctx.clip();
+  switch (plot.kind) {
+    case 'line': case 'area': case 'baseline': {
+      const v = plot.fields.value!, base = color(plot.style.color ?? plot.style.lineColor, f.color);
+      if (plot.kind === 'area') fillUnder(f, v, y, color(plot.style.topColor, withAlpha(base, 0.3)), color(plot.style.bottomColor, withAlpha(base, 0)));
+      if (plot.kind === 'baseline') fillBaseline(f, v, y, styleNum(plot.style.baseValue ?? plot.style.base, 0), color(plot.style.topFillColor1, withAlpha(f.up, 0.25)), color(plot.style.bottomFillColor1, withAlpha(f.down, 0.25)));
+      strokeLine(f, v, y, i => pointColor(plot, i, plot.kind === 'baseline' ? (v[i]! >= styleNum(plot.style.baseValue ?? plot.style.base, 0) ? color(plot.style.topLineColor, f.up) : color(plot.style.bottomLineColor, f.down)) : base), width, styleNum(plot.style.lineStyle, 0));
+      break;
+    }
+    case 'histogram': {
+      const v = plot.fields.value!, base = styleNum(plot.style.base, 0), y0 = y(base), fallback = color(plot.style.color, f.color);
+      const w = Math.max(1, f.barW * 0.72);
+      for (let i = f.from; i <= f.to; i++) {
+        const val = v[i]!; if (!Number.isFinite(val)) continue;
+        const y1 = y(val);
+        ctx.fillStyle = pointColor(plot, i, fallback);
+        ctx.fillRect(cx(i) - w / 2, Math.min(y0, y1), w, Math.max(1, Math.abs(y1 - y0)));
+      }
+      break;
+    }
+    case 'candlestick': case 'bar': {
+      const { open, high, low, close } = plot.fields as Record<'open' | 'high' | 'low' | 'close', Float64Array>;
+      const up = color(plot.style.upColor, f.up), down = color(plot.style.downColor, f.down), w = Math.max(1, f.barW * 0.7);
+      for (let i = f.from; i <= f.to; i++) {
+        const o = open[i]!, h = high[i]!, l = low[i]!, c = close[i]!;
+        if (![o, h, l, c].every(Number.isFinite)) continue;
+        const col = pointColor(plot, i, c >= o ? up : down), x = cx(i);
+        ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, y(h)); ctx.lineTo(Math.round(x) + 0.5, y(l)); ctx.stroke();
+        if (plot.kind === 'candlestick') { const y1 = y(Math.max(o, c)), y2 = y(Math.min(o, c)); ctx.fillRect(x - w / 2, y1, w, Math.max(1, y2 - y1)); }
+        else { ctx.beginPath(); ctx.moveTo(x - w / 2, y(o)); ctx.lineTo(x, y(o)); ctx.moveTo(x, y(c)); ctx.lineTo(x + w / 2, y(c)); ctx.stroke(); }
+      }
+      break;
+    }
+    case 'cloudarea': {
+      const lo = plot.fields.lowerValue!, hi = plot.fields.higherValue!;
+      const pos = color(plot.style.positiveColor, withAlpha(f.up, 0.12)), neg = color(plot.style.negativeColor, withAlpha(f.down, 0.12));
+      for (let i = f.from; i < f.to; i++) {
+        const a = lo[i]!, b = hi[i]!, a2 = lo[i + 1]!, b2 = hi[i + 1]!;
+        if (![a, b, a2, b2].every(Number.isFinite)) continue;
+        ctx.fillStyle = b >= a ? pos : neg;
+        ctx.beginPath(); ctx.moveTo(cx(i), y(a)); ctx.lineTo(cx(i + 1), y(a2)); ctx.lineTo(cx(i + 1), y(b2)); ctx.lineTo(cx(i), y(b)); ctx.closePath(); ctx.fill();
+      }
+      strokeLine(f, hi, y, () => color(plot.style.higherLineColor ?? plot.style.positiveLineColor, f.up), Math.max(1, styleNum(plot.style.higherLineWidth, 1)), styleNum(plot.style.higherLineStyle, 0));
+      strokeLine(f, lo, y, () => color(plot.style.lowerLineColor ?? plot.style.negativeLineColor, f.down), Math.max(1, styleNum(plot.style.lowerLineWidth, 1)), styleNum(plot.style.lowerLineStyle, 0));
+      break;
+    }
+    case 'brokenarea': {
+      const lo = plot.fields.lowerValue!, hi = plot.fields.higherValue!, fallback = color(plot.style.color, withAlpha(f.up, 0.2));
+      for (let i = f.from; i <= f.to; i++) {
+        const a = lo[i]!, b = hi[i]!; if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        const x = f.x(f.time[i]!), y1 = y(Math.max(a, b)), y2 = y(Math.min(a, b));
+        ctx.fillStyle = pointColor(plot, i, fallback);
+        ctx.fillRect(x, y1, Math.max(1, f.barW + 0.5), Math.max(1, y2 - y1));
+      }
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+/** A line through the points that are numbers, broken where one is not; each segment in the colour of the point it ends at. */
+function strokeLine(f: Frame, v: Float64Array, y: (v: number) => number, colorAt: (i: number) => string, width: number, lineStyle: number): void {
+  const { ctx } = f;
+  ctx.lineWidth = width; ctx.lineJoin = 'round';
+  ctx.setLineDash(lineStyle === 1 ? [1, 2] : lineStyle === 2 ? [4, 3] : lineStyle === 3 ? [8, 4] : lineStyle === 4 ? [1, 5] : []);
+  let prev = -1, current = '';
+  const cx = (i: number): number => f.x(f.time[i]!) + f.barW / 2;
+  for (let i = f.from; i <= f.to; i++) {
+    const val = v[i]!;
+    if (!Number.isFinite(val)) { if (prev >= 0) ctx.stroke(); prev = -1; current = ''; continue; }
+    const c = colorAt(i);
+    if (prev < 0) { ctx.beginPath(); ctx.strokeStyle = c; current = c; ctx.moveTo(cx(i), y(val)); prev = i; continue; }
+    if (c !== current) { ctx.stroke(); ctx.beginPath(); ctx.strokeStyle = c; current = c; ctx.moveTo(cx(prev), y(v[prev]!)); ctx.lineTo(cx(i), y(val)); }
+    else ctx.lineTo(cx(i), y(val));
+    prev = i;
+  }
+  if (prev >= 0) ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function fillUnder(f: Frame, v: Float64Array, y: (v: number) => number, top: string, bottom: string): void {
+  const { ctx } = f, bottomY = f.top + f.height;
+  const g = ctx.createLinearGradient(0, f.top, 0, bottomY); g.addColorStop(0, top); g.addColorStop(1, bottom);
+  ctx.fillStyle = g;
+  const cx = (i: number): number => f.x(f.time[i]!) + f.barW / 2;
+  let start = -1;
+  const close = (end: number): void => { ctx.lineTo(cx(end), bottomY); ctx.lineTo(cx(start), bottomY); ctx.closePath(); ctx.fill(); };
+  for (let i = f.from; i <= f.to; i++) {
+    const val = v[i]!;
+    if (!Number.isFinite(val)) { if (start >= 0) close(i - 1); start = -1; continue; }
+    if (start < 0) { start = i; ctx.beginPath(); ctx.moveTo(cx(i), y(val)); } else ctx.lineTo(cx(i), y(val));
+  }
+  if (start >= 0) close(f.to);
+}
+
+function fillBaseline(f: Frame, v: Float64Array, y: (v: number) => number, base: number, above: string, below: string): void {
+  const { ctx } = f, baseY = y(base);
+  const cx = (i: number): number => f.x(f.time[i]!) + f.barW / 2;
+  for (let i = f.from; i < f.to; i++) {
+    const a = v[i]!, b = v[i + 1]!; if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+    ctx.fillStyle = (a + b) / 2 >= base ? above : below;
+    ctx.beginPath(); ctx.moveTo(cx(i), baseY); ctx.lineTo(cx(i), y(a)); ctx.lineTo(cx(i + 1), y(b)); ctx.lineTo(cx(i + 1), baseY); ctx.closePath(); ctx.fill();
+  }
+}

@@ -22,6 +22,7 @@ Permanent non-TypeScript exceptions: generated build output (`dist/`, `build/`),
 | `src/app/vwap/` | VWAP: the running average and its bands (`vwap.ts`, pure), settings with each coin's anchors, drawing and the panel. |
 | `src/app/range/` | The Range tool: `selection.ts` (a drag as whole minutes, live, which press selects), `stats.ts` (every number and word of its panel), `tool.ts` (the controller, the panel, the live refresh). |
 | `src/app/sound/` | Sound settings, the trade tiers, the panel alerts (`alerts.ts`, detectors in `alert-rules.ts`). |
+| `src/app/script/` | Scripts (the README's Scripts section): `lang/` the language (lexer, parser, interpreter, values, builtins, colours, `engine.ts`: what a script reads and draws, and `createRunner`, which keeps a script between runs and runs only the candle under way when the closed candles are the same), `records.ts` the versioned records and their files, `inputs.ts`/`data.ts` the per-candle inputs, `host.ts` the worker host (ready handshake, deadline, respawn), `script.worker.ts`, `paint.ts`, `panel.ts` (the panel; what it decides without drawing is in `panel-state.ts`), `starter.ts` (the script a page starts with), `messages.ts`; `panes/script-pane.ts` is the pane (laid out only while a script that is on draws in a row: `hasRows`), the map's script layer and popup lines, and the status of the Chart deck's Scripts lamp (`toolbar.ts setScriptsStatus`). |
 | `crates/hlm-kernels/` | Rust/WASM compute kernels. |
 | `tests/`, `scripts/` | Node tests (`node --test`) and operational scripts. |
 
@@ -34,6 +35,13 @@ Compute-bound inner loops (heatmap rasterisation, level grouping) live in `crate
 - Build with `npm run build:wasm` (needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129). The generated glue and `.wasm` in `src/app/wasm/` are committed so a checkout builds without a Rust toolchain; regenerate whenever the crate changes.
 - The crate keeps its default `crates/hlm-kernels/target/` (gitignored); create no other Cargo target directories.
 - Do not add WASM for work that should not run at all. Memoise or delete first; profile before and after and record the numbers in `Research_Findings.md`.
+
+## Scripts (code people write and share)
+
+- A script's text is never given to `eval`, `new Function`, a Blob or a `<script>`: `src/app/script/lang/` interprets it, and that interpreter is what keeps a script from the page. Keep it so: a script sees only values the interpreter made for it (numbers, texts, its own arrays and prototype-less objects, `NativeFunction`s and `HostObject`s with listed members). Every lookup by a name a script wrote goes through `own()` (or a `Map`/`Set`) so an inherited name (`constructor`, `toString`) finds nothing, and `isPlain` accepts only objects without a prototype.
+- Everything a script does costs steps (statements, loop turns, calls) and so does what it makes (`charge()`: an array element a step, sixteen characters of text a step); arrays and texts have hard caps. The worker host ends a run that passes its deadline. A new function of the language that makes or grows something must charge for it.
+- The language's words (`Math`, `Invalid Date`, function names) are code, not text a person reads: `script/lang/` is skipped by the i18n test, and what a person reads of an error goes through `script/messages.ts` (error codes, never sentences, in `lang/`).
+- The reference language for compatibility is described behaviourally in a clean-room note outside the repository (`Research_Results/`); its implementation is GPL and must never be copied here, and nothing in the repository names it.
 
 ## Performance and memory
 

@@ -638,6 +638,9 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .led-btn { position: relative; padding-left: 22px; }
 .led-btn::before { content: ""; position: absolute; left: 8px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: var(--edge); opacity: 1; transition: background .2s, box-shadow .2s; }
 .led-btn[data-state="on"]::before { background: var(--bid); opacity: 1; }
+/* The Scripts lamp (toolbar.ts setScriptsStatus): amber while a script waits for its first answer, red when one stopped with an error. */
+.led-btn[data-state="on"][data-note="running"]::before { background: var(--warn); }
+.led-btn[data-state="on"][data-note="error"]::before { background: var(--ask); }
 /* Held sound is a caution, not a failure: amber, never the sell colour (theme.ts CAUTION). */
 .sound-btn[data-state="locked"]::before { background: #e6a700; opacity: 1; }
 .sound-btn.flash::before { box-shadow: 0 0 0 4px color-mix(in srgb, var(--bid) 35%, transparent); }
@@ -673,6 +676,22 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .layout-date { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .layout-row button.armed { color: var(--ask); }
 .layout-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+/* The Scripts panel (script/panel.ts): a row per script with its switch, and the text box a script is written in. */
+.script-row > .script-on { display: inline-flex; flex: none; }
+.script-row > button:nth-child(2) { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.script-row .layout-date.error { color: var(--ask); }
+.script-example > .script-example-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The Scripts pane's row buttons (script-pane.ts #placeRowTools): open the script, switch it off; after the row's name, over the canvas. */
+.script-row-tool { position: absolute; z-index: 2; display: inline-flex; gap: 2px; }
+.script-row-tool > button { position: relative; width: 18px; height: 16px; min-height: 0; padding: 0; font-size: 13px; line-height: 14px; opacity: .6; }
+.script-row-tool > button:hover, .script-row-tool > button:focus-visible { opacity: 1; }
+.script-row-open::before { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: var(--mark-settings) center / contain no-repeat; mask: var(--mark-settings) center / contain no-repeat; }
+html[data-layout^="phone"] .script-row-tool > button { width: 26px; height: 22px; }
+/* The map legend's script lines keep their buttons over the map, under its corner tools' level (script-pane.ts placeLegendTools). */
+.pane.heat .script-legend-tools .script-row-tool { z-index: 3; }
+.script-source { display: block; box-sizing: border-box; width: 100%; min-height: 220px; margin: 6px 0; padding: 6px 8px; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; tab-size: 2; resize: vertical; white-space: pre; overflow: auto; color: var(--text); background: var(--bg); border: 1px solid var(--line); }
+.script-option { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.script-option > input[type="number"], .script-option > input[type="text"] { width: 150px; font: inherit; }
 /* Go to (toolbar.ts openGoTo): a calendar, drawn. */
 .pane.heat .map-goto::before { content: ""; width: 13px; height: 13px; background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='16'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E") center / contain no-repeat;
