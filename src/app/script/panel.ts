@@ -7,7 +7,9 @@ import type { ScriptResult, Warning } from './protocol.ts';
 import { MAX_SCRIPTS, MAX_SOURCE_CHARS, ROW_DEFAULT, SCRIPT_API, cleanName, exportFile, importText, inferredOption, mergeScripts, newId, type OptionValue, type ScriptRecord } from './records.ts';
 import { errorText, warningText } from './messages.ts';
 import { exampleHeight, examples } from './examples.ts';
-import { statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
+import { NEW_SCRIPT, sameOptions, statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
+import { aiBundle, type BundleInput } from './lang/reference.ts';
+import { newestOf } from './protocol.ts';
 
 export { panelClosed, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
 
@@ -89,7 +91,7 @@ export function buildScriptsPanel(host: ScriptsHost, body: HTMLElement, redraw: 
     add.disabled = full;
     body.append(el('div', { class: 'layout-row script-example' }, el('span', { class: 'script-example-name', textContent: ex.name }), el('span', { class: 'layout-date', textContent: place === 'map' ? t('On the map') : t('In its own row') }), add));
   }
-  const create = button(t('New script'), () => { ui.editing = 'new'; ui.draft = { name: '', source: '', options: {}, place: 'pane' }; ui.message = null; redraw(); }, t('Write a script, or paste one (an indicator file or a workspace works too)'));
+  const create = button(t('New script'), () => { ui.editing = NEW_SCRIPT; ui.draft = { name: '', source: '', options: {}, place: 'pane' }; ui.message = null; redraw(); }, t('Write a script, or paste one (an indicator file or a workspace works too)'));
   create.disabled = full;
   body.append(el('div', { class: 'layout-tools' }, create));
   if (full) body.append(note(t('At most {n} scripts: delete one first.', { n: MAX_SCRIPTS })));
@@ -114,6 +116,8 @@ export function buildScriptsPanel(host: ScriptsHost, body: HTMLElement, redraw: 
   exportAll.disabled = !list.length;
   body.append(heading(t('More')), el('div', { class: 'layout-tools' }, button(t('Import'), () => file.click(), t('Read scripts from a file: one written by Export, an indicator file or a workspace from another charting page, or a script as text')), exportAll, file));
   body.append(heading(t('Language')), ...reference().map(line => note(line)));
+  // The whole language, as the page publishes it for people and for AI assistants.
+  body.append(el('p', { class: 'panel-note' }, el('a', { href: './script-reference.md', target: '_blank', rel: 'noopener', textContent: t('The full language reference') })));
 }
 
 /** The short reference shown under the list. */
@@ -150,7 +154,17 @@ function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, u
   place.onchange = () => { draft.place = place.value === 'map' ? 'map' : 'pane'; };
   const where = el('label', { class: 'row script-option', tip: t('A row of its own in this pane, or on the map: the plots on the price scale (the default) at their prices, the others each on a scale of their own.') }, el('span', { textContent: t('Draw') }), place);
   body.append(el('div', { class: 'layout-save' }, name), where, source);
-  if (ui.message) body.append(el('p', { class: ui.message.error ? 'panel-note layout-message error' : 'panel-note layout-message', textContent: ui.message.text }));
+  const messageClass = (error: boolean): string => error ? 'panel-note layout-message error' : 'panel-note layout-message';
+  let message = ui.message ? el('p', { class: messageClass(ui.message.error), textContent: ui.message.text }) : null;
+  if (message) body.append(message);
+  // Said in place (Copy for AI): the text keeps its selection and scroll, and the keyboard stays where it was. An editor rebuilt meanwhile
+  // (by Check, Back or a run) has moved on: its message is not replaced and it is not rebuilt again.
+  const tell = (text: string, error: boolean): void => {
+    if (!source.isConnected) return;
+    ui.message = { text, error };
+    if (!message) { message = el('p'); source.after(message); }
+    message.className = messageClass(error); message.textContent = text;
+  };
 
   // What the last run said about the script as it is kept.
   if (existing) {
@@ -161,7 +175,7 @@ function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, u
   }
 
   // Its options, as the text reads now: the declared ones and those it reads without declaring.
-  const probe: ScriptRecord = { id: existing?.id ?? 'new', name: draft.name || 'x', source: draft.source, options: draft.options, on: true, api: SCRIPT_API, height: ROW_DEFAULT, place: draft.place };
+  const probe: ScriptRecord = { id: existing?.id ?? NEW_SCRIPT, name: draft.name || 'x', source: draft.source, options: draft.options, on: true, api: SCRIPT_API, height: ROW_DEFAULT, place: draft.place };
   const rows = optionRows(host.analysisOf(probe), draft.options);
   if (rows.length) {
     body.append(heading(t('Options')));
@@ -207,8 +221,45 @@ function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, u
     keep(list, t('Saved “{name}”: it runs with the next update.', { name: record.name }));
   };
   const check = (): void => { const a = host.analysisOf({ ...probe, source: draft.source }); say(isError(a) ? errorText(a) : t('The script reads.'), isError(a)); };
+  const forAi = (): void => {
+    const text = aiBundle(bundleOf(host, draft, existing, probe));
+    void copyText(text).then(ok => tell(ok ? t('Copied. Paste it into your AI assistant, then paste its answer back here and press Check.') : t('This browser did not let the page copy.'), !ok));
+  };
+  // Each keeps the keyboard when what it does rebuilds the panel.
+  const tool = (label: string, act: () => void, tip: string, key: string): HTMLButtonElement => { const b = button(label, act, tip); b.dataset.focus = `script-${key}`; return b; };
   body.append(el('div', { class: 'layout-tools' },
-    button(t('Save'), save, t('Keep the script and run it')),
-    button(t('Check'), check, t('Read the script without saving it, to see whether it reads')),
-    button(t('Back'), close, t('Back to the list (what is not saved is dropped)'))));
+    tool(t('Save'), save, t('Keep the script and run it'), 'save'),
+    tool(t('Copy for AI'), forAi, t('Copy the script, its errors and what it drew, with the language\'s rules, to paste into an AI assistant'), 'ai'),
+    tool(t('Check'), check, t('Read the script without saving it, to see whether it reads'), 'check'),
+    tool(t('Back'), close, t('Back to the list (what is not saved is dropped)'), 'back')));
+}
+
+/**
+ * What Copy for AI hands an assistant about the script in the editor: its text as it stands and the options set, the error that text meets
+ * on reading, and the last run (its error, its warnings, each plot's newest values and the chart it worked on) only when the text and the
+ * options are those that ran: with others it would have drawn something else.
+ */
+function bundleOf(host: ScriptsHost, draft: NonNullable<ScriptsPanelState['draft']>, existing: ScriptRecord | null, probe: ScriptRecord): BundleInput {
+  const a = host.analysisOf({ ...probe, source: draft.source });
+  const kept = existing ? host.records.find(r => r.id === existing.id) ?? null : null;
+  const same = kept && kept.source === draft.source && sameOptions(kept.options, draft.options) ? kept : null;
+  const ran = same ? host.resultOf(same.id) : null, on = same && ran?.ok ? host.ranOn(same.id) : null;
+  const errors = isError(a) ? [a] : ran && !ran.ok ? [ran.error] : [];
+  // A run's warnings hold the reading's; the page's own (an option not set, markets it has none of) come apart.
+  const page = same ? host.warningsOf(same.id) : [];
+  const warnings = isError(a) ? [] : ran?.ok ? [...page, ...ran.warnings] : [...a.warnings, ...page];
+  const plots = ran?.ok && on ? ran.plots.map(p => ({ title: p.title, kind: p.kind, last: newestOf(p, on.candles) })) : [];
+  return { name: draft.name, source: draft.source, place: draft.place, options: draft.options, errors, warnings, plots, chart: on };
+}
+
+/**
+ * Put `text` on the clipboard: the browser's clipboard, else a selected text box copied the older way, the keyboard given back to where it
+ * was. Whether it worked.
+ */
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* the older way below */ }
+  const was = document.activeElement, box = el('textarea', { value: text });
+  box.readOnly = true; box.style.position = 'fixed'; box.style.left = '-10000px'; box.style.top = '0'; box.style.opacity = '0';
+  document.body.append(box); box.select();
+  try { return document.execCommand('copy'); } catch { return false; } finally { box.remove(); if (was instanceof HTMLElement && was.isConnected) was.focus({ preventScroll: true }); }
 }

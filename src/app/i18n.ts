@@ -60,6 +60,16 @@ export function t(text: string, params?: Params): string {
 }
 
 /**
+ * What `make` says in English, whatever language the page speaks: for text read by a machine rather than the person (a script's errors in
+ * what Copy for AI hands an assistant), which must be one language everywhere.
+ */
+export function inEnglish<T>(make: () => T): T {
+  const was = { pack, current, rules };
+  pack = {}; current = 'en'; rules = new Intl.PluralRules('en');
+  try { return make(); } finally { ({ pack, current, rules } = was); }
+}
+
+/**
  * A count that changes the wording: `tn(n, '{n} note', '{n} notes')`. `{n}` is the count. The English forms are the key (the second is
  * how the pack finds it); a language with more forms than English (Russian has three) lists each of its own in the pack.
  */

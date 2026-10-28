@@ -38,3 +38,11 @@ export interface Warning { code: string; detail?: string }
 export type ScriptResult =
   | { id: string; ok: true; plots: PlotOut[]; warnings: Warning[]; steps: number; ms: number; candleColors?: string[] }
   | { id: string; ok: false; error: ScriptError };
+
+/** A plot's newest values: its fields at the last of its first `upTo` candles where any of them is a number ([NaN] for a plot that drew none). */
+export function newestOf(p: PlotOut, upTo = Infinity): number[] {
+  const fields = PLOT_FIELDS[p.kind];
+  let i = Math.min(p.fields[fields[0]!]?.length ?? 0, upTo) - 1;
+  while (i >= 0 && !fields.some(f => Number.isFinite(p.fields[f]?.[i] ?? NaN))) i--;
+  return i >= 0 ? fields.map(f => p.fields[f]?.[i] ?? NaN) : [NaN];
+}

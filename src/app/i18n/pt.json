@@ -1813,5 +1813,11 @@
   "one": "+{n} script a mais",
   "other": "+{n} scripts a mais",
   "many": "+{n} scripts a mais"
- }
+ },
+ "Copy for AI": "Copiar para IA",
+ "Copy the script, its errors and what it drew, with the language's rules, to paste into an AI assistant": "Copiar o script, os seus erros e o que desenhou, com as regras da linguagem, para colar num assistente de IA",
+ "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Copiado. Cole-o no seu assistente de IA, depois cole aqui a resposta e prima Verificar.",
+ "This browser did not let the page copy.": "Este navegador não deixou a página copiar.",
+ "The full language reference": "A referência completa da linguagem",
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Um assistente do seu navegador escreveu este script. Leia-o e prima Guardar para o manter, ou Voltar para o descartar."
 }

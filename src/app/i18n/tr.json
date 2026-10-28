@@ -1790,5 +1790,11 @@
  "+{n} more scripts": {
   "one": "+{n} betik daha",
   "other": "+{n} betik daha"
- }
+ },
+ "Copy for AI": "Yapay zekâ için kopyala",
+ "Copy the script, its errors and what it drew, with the language's rules, to paste into an AI assistant": "Betiği, hatalarını ve çizdiklerini dilin kurallarıyla birlikte kopyala; bir yapay zekâ asistanına yapıştırmak için",
+ "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Kopyalandı. Yapay zekâ asistanına yapıştır, sonra yanıtını buraya yapıştırıp Denetle’ye bas.",
+ "This browser did not let the page copy.": "Bu tarayıcı sayfanın kopyalamasına izin vermedi.",
+ "The full language reference": "Dilin tam başvuru kılavuzu",
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Bu betiği tarayıcındaki bir asistan yazdı. Oku, sonra saklamak için Kaydet’e, vazgeçmek için Geri’ye bas."
 }

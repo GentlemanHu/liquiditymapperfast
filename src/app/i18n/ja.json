@@ -1723,5 +1723,11 @@
  "Buyer and seller VWAPs": "買い手と売り手の VWAP",
  "Volume anomalies": "出来高の異常",
  "+{n} more plots": "ほかにプロット {n} 個",
- "+{n} more scripts": "ほかにスクリプト {n} 個"
+ "+{n} more scripts": "ほかにスクリプト {n} 個",
+ "Copy for AI": "AI 用にコピー",
+ "Copy the script, its errors and what it drew, with the language's rules, to paste into an AI assistant": "スクリプトとそのエラー、描いた内容を、言語のルールと一緒にコピーして AI アシスタントに貼り付けます",
+ "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "コピーしました。AI アシスタントに貼り付け、その回答をここに貼り戻して「確認」を押してください。",
+ "This browser did not let the page copy.": "このブラウザーはページのコピーを許可しませんでした。",
+ "The full language reference": "言語リファレンスの全文",
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "ブラウザーのアシスタントがこのスクリプトを書きました。読んでから、残すには「保存」、破棄するには「戻る」を押してください。"
 }

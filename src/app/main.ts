@@ -114,6 +114,10 @@ async function main(): Promise<void> {
   heat.scriptLegend = (t, valued) => script.mapLegend(t, valued); heat.onScriptLegend = places => script.placeLegendTools(places); heat.root.append(script.legendTools);
   // The Scripts lamp and key in the top bar: the key opens the panel (from the pane's own button too), the lamp says what the scripts do.
   toolbar.onOpenScripts = anchor => script.openPanel(anchor); script.onStatus = (note, name) => toolbar.setScriptsStatus(note, name);
+  script.panelAnchor = () => toolbar.scriptsAnchor;
+  // Tools an agent in the browser may call (agent/): read the chart and the scripts, try one, show one as a draft. Only a browser with page
+  // tools loads them; nothing they do saves a script.
+  if ('modelContext' in document) void lazy(() => import('./agent/register.ts')).then(m => { m?.registerAgentTools(store, script); });
   /** Whether the Scripts pane has rows to show: Scripts is on and a script that is on draws in a row (one on the map needs no pane). */
   const scriptRows = (s: typeof store.state): boolean => s.show.script && script.hasRows;
   const ladder = new LadderPane(side, store, kernels, hub);

@@ -1836,5 +1836,11 @@
   "few": "ещё {n} скрипта",
   "many": "ещё {n} скриптов",
   "other": "ещё {n} скрипта"
- }
+ },
+ "Copy for AI": "Копировать для ИИ",
+ "Copy the script, its errors and what it drew, with the language's rules, to paste into an AI assistant": "Скопировать скрипт, его ошибки и то, что он нарисовал, вместе с правилами языка, чтобы вставить в ИИ-ассистента",
+ "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Скопировано. Вставьте это в ИИ-ассистента, затем вставьте его ответ сюда и нажмите «Проверить».",
+ "This browser did not let the page copy.": "Этот браузер не позволил странице скопировать.",
+ "The full language reference": "Полный справочник языка",
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Этот скрипт написал ассистент в вашем браузере. Прочитайте его, затем нажмите «Сохранить», чтобы оставить, или «Назад», чтобы отказаться."
 }

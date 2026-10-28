@@ -1723,5 +1723,11 @@
  "Buyer and seller VWAPs": "买方与卖方 VWAP",
  "Volume anomalies": "成交量异常",
  "+{n} more plots": "另有 {n} 个绘图",
- "+{n} more scripts": "另有 {n} 个脚本"
+ "+{n} more scripts": "另有 {n} 个脚本",
+ "Copy for AI": "复制给 AI",
+ "Copy the script, its errors and what it drew, with the language's rules, to paste into an AI assistant": "复制脚本、其错误和绘制的内容以及语言规则，粘贴到 AI 助手中",
+ "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "已复制。粘贴到你的 AI 助手中，再把它的回答粘贴回这里并点击“检查”。",
+ "This browser did not let the page copy.": "此浏览器不允许页面复制。",
+ "The full language reference": "完整的语言参考",
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "这个脚本是你浏览器中的助手写的。请先阅读，然后点击“保存”保留它，或点击“返回”放弃它。"
 }

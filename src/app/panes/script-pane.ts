@@ -17,14 +17,14 @@ import { ScriptHost, type WorkerLike } from '../script/host.ts';
 import { ScriptData } from '../script/data.ts';
 import { UNREAD_VENUE, analyze, sourcesWith, type Analysis } from '../script/lang/analysis.ts';
 import { ScriptSyntaxError, type ScriptError } from '../script/lang/lexer.ts';
-import { SCRIPT_API, loadScripts, storeScripts, type ScriptRecord } from '../script/records.ts';
+import { SCRIPT_API, loadScripts, storeScripts, type OptionValue, type ScriptRecord } from '../script/records.ts';
 import { starterScripts } from '../script/starter.ts';
 import { PLOT_FIELDS, type PlotOut, type ScriptResult, type Warning } from '../script/protocol.ts';
 import { paintPlot, plotColorAt, scaleIdOf, scalesOf, shortNumber, visibleRange, yOf, type Frame } from '../script/paint.ts';
 import { errorText } from '../script/messages.ts';
 import { safeColor } from '../script/lang/colors.ts';
 import type { SourceFilter } from '../script/inputs.ts';
-import { unsaved, type ScriptsPanelState } from '../script/panel-state.ts';
+import { NEW_SCRIPT, unsaved, type ScriptsPanelState } from '../script/panel-state.ts';
 import { lazy } from '../lazy.ts';
 
 /**
@@ -32,6 +32,9 @@ import { lazy } from '../lazy.ts';
  * replay's moment then, Infinity live, -Infinity for an answer made on the page (a script that does not read).
  */
 interface Held { result: ScriptResult; time: Float64Array; tf: number; inst: string; at: number }
+
+/** A script worker: the pane's own runs have one, an agent's trials another. */
+const spawnScriptWorker = (): WorkerLike => new Worker(new URL('../script/script.worker.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike;
 
 /** The replay candle the page is at (a run's inputs stop at the candles closed by then), or -1 live. */
 const replayKey = (tf: number): number => replaying() ? Math.floor(pageNow() / tf) : -1;
@@ -76,7 +79,7 @@ const MIN_INTERVAL = 1_000, REFRESH = 15_000;
 export class ScriptPane extends TimePane {
   #records: ScriptRecord[] = loadScripts(undefined, starterScripts);
   #version = 0;
-  #host = new ScriptHost({ spawn: () => new Worker(new URL('../script/script.worker.ts', import.meta.url), { type: 'module' }) as unknown as WorkerLike });
+  #host = new ScriptHost({ spawn: spawnScriptWorker });
   #data: ScriptData;
   #analysis = new Map<string, Analysis | ScriptError>();
   /** Each script's last answer; a new map at every run, so what is worked out from it can tell when to work it out again. */
@@ -112,6 +115,11 @@ export class ScriptPane extends TimePane {
   resultOf(id: string): ScriptResult | null { const held = this.#held.get(id); return held && this.#fresh(held) ? held.result : null; }
   warningsOf(id: string): readonly Warning[] { return this.#warnings.get(id) ?? []; }
   analysisOf(r: ScriptRecord): Analysis | ScriptError { return this.#analyze(r.source); }
+  /** The chart a script's last run worked on, as far as it is shown (in a replay, the candles closed by its moment): for Copy for AI. */
+  ranOn(id: string): { market: string; timeframe: string; candles: number } | null {
+    const held = this.#held.get(id), tf = TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000;
+    return held && this.#fresh(held) ? { market: held.inst, timeframe: this.store.state.timeframe, candles: shownCount(held.time, tf) } : null;
+  }
   /** Whether Scripts is on: the scripts run and draw. */
   get running(): boolean { return this.store.state.show.script; }
   /** Switch Scripts on: a script was added or switched on, and should be seen. */
@@ -310,6 +318,73 @@ export class ScriptPane extends TimePane {
     this.#timer = window.setTimeout(() => { this.#timer = 0; this.#wakeAt = 0; this.refresh(); }, at - Date.now());
   }
 
+  /** What a script reads that the page cannot give it: an option it reads but does not declare that is not set, a set of markets with none. */
+  #pageWarnings(a: Analysis, options: Readonly<Record<string, OptionValue>>, markets: ReturnType<ScriptData['markets']>): Warning[] {
+    const w: Warning[] = [];
+    for (const name of a.read) if (!(name in options)) w.push({ code: 'unset-option', detail: name });
+    for (const [k, f] of sourcesWith(a, options)) {
+      if (f.venues?.includes(UNREAD_VENUE)) w.push({ code: 'unread-source' });
+      else if (k && !markets.get(k)?.length) w.push({ code: 'no-markets', detail: k.replace(/;/g, ', ') });
+    }
+    if (this.#data.liquidationsCut && (a.inputs.has('lbuy') || a.inputs.has('lsell'))) w.push({ code: 'liquidations-cut' });
+    return w;
+  }
+
+  /** A worker of its own for the trial runs of an agent in the browser (`tryScript`), made at the first: a trial neither waits behind the
+   * pane's runs nor takes their place. One trial at a time. */
+  #trialHost: ScriptHost | null = null;
+  #trialBusy = false;
+
+  /**
+   * Run a script once over the chart as it is, for an agent in the browser (agent/), under the limits of the pane's own runs: nothing is
+   * kept, drawn or saved. 'busy' while another trial runs; null while the chart has no candles. `signal` drops a trial not yet started.
+   */
+  async tryScript(source: string, options: Record<string, OptionValue>, signal?: AbortSignal): Promise<{ result: ScriptResult; warnings: Warning[]; candles: number } | 'busy' | null> {
+    // Given up on before it started: never sent (the listener below only drops a trial given up on later).
+    signal?.throwIfAborted();
+    const a = this.#analyze(source);
+    if (!('program' in a)) return { result: { id: 'trial', ok: false, error: a }, warnings: [], candles: 0 };
+    if (this.#trialBusy) return 'busy';
+    const state = this.store.state, filters = new Map<string, SourceFilter>([['', {}], ...sourcesWith(a, options)]);
+    const inputs = this.#data.inputs(state, filters);
+    if (!inputs) return null;
+    const warnings = this.#pageWarnings(a, options, this.#data.markets(state, filters));
+    // Counted now: the run hands the inputs' arrays over to the worker, which leaves them empty here.
+    const candles = shownCount(inputs.time, inputs.tf);
+    const host = this.#trialHost ??= new ScriptHost({ spawn: spawnScriptWorker });
+    this.#trialBusy = true;
+    const drop = (): void => host.dropUnsent();
+    signal?.addEventListener('abort', drop, { once: true });
+    try {
+      const { results } = await host.run([{ id: 'trial', source, options, api: SCRIPT_API }], inputs);
+      const result: ScriptResult = results[0] ?? { id: 'trial', ok: false, error: { code: 'no-answer', line: 0, col: 0 } };
+      return { result, warnings, candles };
+    } finally { this.#trialBusy = false; signal?.removeEventListener('abort', drop); }
+  }
+
+  /** Load the trials' worker now (the page offers agent tools): a first trial then does not wait for it. */
+  warmTrials(): void { (this.#trialHost ??= new ScriptHost({ spawn: spawnScriptWorker })).warm(); }
+
+  /** Where the Scripts panel opens from when nothing was pressed (an agent's draft): the page sets the top bar's Scripts key. */
+  panelAnchor: () => HTMLElement = () => this.#button;
+
+  /**
+   * Show a script an agent in the browser wrote as a draft in the Scripts panel, for the person to read and then save or drop: a new script,
+   * or new text for one that exists (`id`). Nothing is kept until they press Save. Refused while a script is being written with changes
+   * not saved.
+   */
+  proposeScript(p: { name: string; source: string; place?: 'pane' | 'map'; id?: string }): 'shown' | 'busy' | 'unknown-script' {
+    if (this.#ui.editing && unsaved(this, this.#ui)) return 'busy';
+    const r = p.id === undefined ? null : this.#records.find(x => x.id === p.id) ?? null;
+    if (p.id !== undefined && !r) return 'unknown-script';
+    this.#ui.editing = r ? r.id : NEW_SCRIPT;
+    this.#ui.draft = { name: p.name || r?.name || '', source: p.source, options: r ? { ...r.options } : {}, place: p.place ?? r?.place ?? 'pane' };
+    this.#ui.message = { text: t('An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.'), error: false };
+    this.#ui.armed = null;
+    if (this.#panel) this.#panel.render(this.#build); else this.openPanel(this.panelAnchor());
+    return 'shown';
+  }
+
   #run(on: readonly ScriptRecord[]): void {
     const state = this.store.state;
     const filters = new Map<string, SourceFilter>([['', {}]]);
@@ -326,18 +401,8 @@ export class ScriptPane extends TimePane {
     if (!runnable.length) { this.#host.dropUnsent(); this.#lastRun = Date.now(); return; }
     const inputs = this.#data.inputs(state, filters);
     if (!inputs) { this.#host.dropUnsent(); return; }
-    // What each script reads that the page cannot give it: an option it reads but does not declare that is not set, a set of markets with none.
     const markets = this.#data.markets(state, filters);
-    for (const r of runnable) {
-      const a = this.#analyze(r.source) as Analysis, w: Warning[] = [];
-      for (const name of a.read) if (!(name in r.options)) w.push({ code: 'unset-option', detail: name });
-      for (const [k, f] of sourcesWith(a, r.options)) {
-        if (f.venues?.includes(UNREAD_VENUE)) w.push({ code: 'unread-source' });
-        else if (k && !markets.get(k)?.length) w.push({ code: 'no-markets', detail: k.replace(/;/g, ', ') });
-      }
-      if (this.#data.liquidationsCut && (a.inputs.has('lbuy') || a.inputs.has('lsell'))) w.push({ code: 'liquidations-cut' });
-      this.#warnings.set(r.id, w);
-    }
+    for (const r of runnable) this.#warnings.set(r.id, this.#pageWarnings(this.#analyze(r.source) as Analysis, r.options, markets));
     const time = inputs.time.slice(), tf = inputs.tf, inst = state.seriesInstrument, at = replaying() ? pageNow() : Infinity, started = Date.now();
     const token = ++this.#runToken;
     this.#running = true; this.#lastRun = started;
