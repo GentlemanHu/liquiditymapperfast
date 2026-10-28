@@ -1,6 +1,6 @@
 import type { PlotOut } from './protocol.ts';
 import type { OptionValue } from './records.ts';
-import { safeColor, withAlpha } from './lang/colors.ts';
+import { parseColor, safeColor, withAlpha } from './lang/colors.ts';
 
 /**
  * Drawing a script's plots in its row of the Scripts pane. The plots of a script that name the same `priceScaleId` share a vertical scale, as
@@ -100,6 +100,34 @@ export interface Frame {
   w: number;
   /** The colours the plot falls back on: its place's colour, and the page's up and down colours. */
   color: string; up: string; down: string;
+  /** Told where each mark was drawn, so the pane can say what it is when the pointer is on it. */
+  marks?: (box: MarkBox) => void;
+}
+
+/** The shapes a mark can take: a plate with its text (the default), the text alone, or a shape with the text beyond it. */
+export const MARK_SHAPES = ['label', 'text', 'dot', 'circle', 'square', 'diamond', 'triangleUp', 'triangleDown', 'arrowUp', 'arrowDown', 'cross'] as const;
+export type MarkShape = typeof MARK_SHAPES[number];
+export const markShape = (v: OptionValue | undefined): MarkShape => typeof v === 'string' && (MARK_SHAPES as readonly string[]).includes(v) ? v as MarkShape : 'label';
+/** Where a mark stands against its value: above it, below it (a gap away, so a mark at a candle's high or low stands clear of it), or on it. */
+export const markPosition = (v: OptionValue | undefined): 'above' | 'below' | 'at' => v === 'above' || v === 'below' ? v : 'at';
+/** A mark's box as drawn (the pane's pixels) and its candle. */
+export interface MarkBox { x: number; y: number; w: number; h: number; i: number }
+
+/** Black or white, whichever reads on `color` (by its luminance; a colour this page does not read takes white). */
+export function textOn(color: string): string {
+  const c = parseColor(color);
+  if (!c) return '#fff';
+  const lin = (v: number): number => { const x = v / 255; return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]) > 0.4 ? '#111' : '#fff';
+}
+
+/**
+ * Where a mark goes: its box (`w` by `h`, centred on `cx`) above, below or on the value's `y`, `gap` px clear of it. Pure, for the tests and
+ * the hover.
+ */
+export function markBox(cx: number, y: number, w: number, h: number, at: 'above' | 'below' | 'at', gap: number): { x: number; y: number; w: number; h: number } {
+  const top = at === 'above' ? y - gap - h : at === 'below' ? y + gap : y - h / 2;
+  return { x: cx - w / 2, y: top, w, h };
 }
 
 const color = (raw: OptionValue | undefined, fallback: string): string => safeColor(raw, fallback);
@@ -115,6 +143,7 @@ export function plotColorAt(plot: PlotOut, i: number, fallback: string, up: stri
   const v = plot.fields.value?.[i] ?? NaN;
   switch (plot.kind) {
     case 'line': case 'area': return pointColor(plot, i, color(plot.style.color ?? plot.style.lineColor, fallback));
+    case 'mark': return pointColor(plot, i, color(plot.style.color, fallback));
     case 'baseline': return pointColor(plot, i, v >= styleNum(plot.style.baseValue ?? plot.style.base, 0) ? color(plot.style.topLineColor, up) : color(plot.style.bottomLineColor, down));
     case 'histogram': return pointColor(plot, i, color(plot.style.color, fallback));
     case 'candlestick': case 'bar': { const o = plot.fields.open?.[i] ?? NaN, c = plot.fields.close?.[i] ?? NaN; return pointColor(plot, i, c >= o ? color(plot.style.upColor, up) : color(plot.style.downColor, down)); }
@@ -138,9 +167,10 @@ export function paintPlot(f: Frame, plot: PlotOut, s: Scale): void {
       const v = plot.fields.value!, base = color(plot.style.color ?? plot.style.lineColor, f.color);
       if (plot.kind === 'area') fillUnder(f, v, y, color(plot.style.topColor, withAlpha(base, 0.3)), color(plot.style.bottomColor, withAlpha(base, 0)));
       if (plot.kind === 'baseline') fillBaseline(f, v, y, styleNum(plot.style.baseValue ?? plot.style.base, 0), color(plot.style.topFillColor1, withAlpha(f.up, 0.25)), color(plot.style.bottomFillColor1, withAlpha(f.down, 0.25)));
-      strokeLine(f, v, y, i => pointColor(plot, i, plot.kind === 'baseline' ? (v[i]! >= styleNum(plot.style.baseValue ?? plot.style.base, 0) ? color(plot.style.topLineColor, f.up) : color(plot.style.bottomLineColor, f.down)) : base), width, styleNum(plot.style.lineStyle, 0));
+      strokeLine(f, v, y, i => pointColor(plot, i, plot.kind === 'baseline' ? (v[i]! >= styleNum(plot.style.baseValue ?? plot.style.base, 0) ? color(plot.style.topLineColor, f.up) : color(plot.style.bottomLineColor, f.down)) : base), width, styleNum(plot.style.lineStyle, 0), plot.kind === 'line' && styleNum(plot.style.lineType, 0) === 1);
       break;
     }
+    case 'mark': paintMarks(f, plot, y); break;
     case 'histogram': {
       const v = plot.fields.value!, base = styleNum(plot.style.base, 0), y0 = y(base), fallback = color(plot.style.color, f.color);
       const w = Math.max(1, f.barW * 0.72);
@@ -193,12 +223,35 @@ export function paintPlot(f: Frame, plot: PlotOut, s: Scale): void {
   ctx.restore();
 }
 
-/** A line through the points that are numbers, broken where one is not; each segment in the colour of the point it ends at. */
-function strokeLine(f: Frame, v: Float64Array, y: (v: number) => number, colorAt: (i: number) => string, width: number, lineStyle: number): void {
+/**
+ * A line through the points that are numbers, broken where one is not; each segment in the colour of the point it ends at. With `steps`
+ * (lineType 1) each point is a level across its own candle, joined straight up or down to the next candle's: a point alone draws its level.
+ */
+function strokeLine(f: Frame, v: Float64Array, y: (v: number) => number, colorAt: (i: number) => string, width: number, lineStyle: number, steps = false): void {
   const { ctx } = f;
   ctx.lineWidth = width; ctx.lineJoin = 'round';
   ctx.setLineDash(lineStyle === 1 ? [1, 2] : lineStyle === 2 ? [4, 3] : lineStyle === 3 ? [8, 4] : lineStyle === 4 ? [1, 5] : []);
   let prev = -1, current = '';
+  if (steps) {
+    let prevY = 0;
+    for (let i = f.from; i <= f.to; i++) {
+      const val = v[i]!;
+      if (!Number.isFinite(val)) { if (prev >= 0) ctx.stroke(); prev = -1; current = ''; continue; }
+      const x0 = f.x(f.time[i]!), x1 = x0 + f.barW, yy = y(val), c = colorAt(i);
+      // Joined to the level of the candle just before (no gap between them), its step in this candle's colour.
+      const joined = prev === i - 1 && f.time[i]! - f.time[prev]! <= f.tf;
+      if (joined && c === current) { ctx.lineTo(x0, yy); ctx.lineTo(x1, yy); }
+      else {
+        if (prev >= 0) ctx.stroke();
+        ctx.beginPath(); ctx.strokeStyle = c; current = c;
+        ctx.moveTo(x0, joined ? prevY : yy); if (joined) ctx.lineTo(x0, yy); ctx.lineTo(x1, yy);
+      }
+      prev = i; prevY = yy;
+    }
+    if (prev >= 0) ctx.stroke();
+    ctx.setLineDash([]);
+    return;
+  }
   const cx = (i: number): number => f.x(f.time[i]!) + f.barW / 2;
   for (let i = f.from; i <= f.to; i++) {
     const val = v[i]!;
@@ -211,6 +264,92 @@ function strokeLine(f: Frame, v: Float64Array, y: (v: number) => number, colorAt
   }
   if (prev >= 0) ctx.stroke();
   ctx.setLineDash([]);
+}
+
+/** The face of a mark's text, at a size (1 is 10 px). */
+const markFont = (size: number): string => `600 ${Math.round(10 * size)}px ui-sans-serif, system-ui, sans-serif`;
+/** The width of a mark's text in its face, kept across frames (marks repeat a few texts; the map draws again on every pointer move). */
+const MARK_WIDTHS = new Map<string, number>();
+
+/**
+ * A mark at each point that is a number: a plate with its text, the text alone, or a shape (with the text beyond it, away from the value).
+ * Marks of one plot never cover one another: one that would reach over the mark before it is drawn as a dot (a text alone is left out), so
+ * a chart zoomed out shows dots and one zoomed in shows the texts. Each drawn mark's box is told to `f.marks`.
+ */
+function paintMarks(f: Frame, plot: PlotOut, y: (v: number) => number): void {
+  const { ctx } = f, v = plot.fields.value!, texts = plot.texts ?? null, base = color(plot.style.color, f.color);
+  const shape = markShape(plot.style.shape), at = markPosition(plot.style.position);
+  // `offset` stands a mark further off its value (px), so marks of two plots at one candle can stack.
+  const size = Math.max(0.6, Math.min(2.5, styleNum(plot.style.size, 1))), gap = 3 + Math.max(0, Math.min(200, styleNum(plot.style.offset, 0))), lineH = Math.round(14 * size);
+  const ownText = typeof plot.style.textColor === 'string' ? safeColor(plot.style.textColor, '') : '';
+  const font = markFont(size);
+  ctx.font = font; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+  const wide = (s: string): number => {
+    const key = `${font}|${s}`;
+    let w = MARK_WIDTHS.get(key);
+    if (w === undefined) { if (MARK_WIDTHS.size >= 2_048) MARK_WIDTHS.clear(); w = ctx.measureText(s).width; MARK_WIDTHS.set(key, w); }
+    return w;
+  };
+  let lastRight = -Infinity;
+  // What is drawn of a mark inside the plot's clip is where the pointer finds it; one drawn wholly outside is not found.
+  const tell = (b: { x: number; y: number; w: number; h: number }, i: number): void => {
+    const x0 = Math.max(0, b.x), x1 = Math.min(f.w, b.x + b.w), y0 = Math.max(f.top, b.y), y1 = Math.min(f.top + f.height, b.y + b.h);
+    if (x1 > x0 && y1 > y0) f.marks?.({ x: x0, y: y0, w: x1 - x0, h: y1 - y0, i });
+  };
+  for (let i = f.from; i <= f.to; i++) {
+    const val = v[i]!;
+    if (!Number.isFinite(val)) continue;
+    const cx = f.x(f.time[i]!) + f.barW / 2, yy = y(val), c = pointColor(plot, i, base), label = texts?.[i] ?? '';
+    const r = Math.max(2, 4 * size);
+    const asShape = shape !== 'label' && shape !== 'text';
+    // The box the whole mark takes: the shape, and its text beyond it.
+    const textW = label ? wide(label) : 0;
+    const w = asShape ? Math.max(2 * r, textW) : shape === 'label' ? textW + 8 : textW;
+    const crowded = !label && !asShape ? false : cx - w / 2 < lastRight + 2;
+    // A text alone gives way where there is no room (a row of them under the candles would be a row of dots zoomed out).
+    if (crowded && shape === 'text') continue;
+    if ((!label && !asShape) || crowded) {
+      // Nothing to show but a place (a label with no text), or no room: a dot.
+      const box = markBox(cx, yy, 2 * r * 0.7, 2 * r * 0.7, at, gap);
+      if (crowded && box.x < lastRight - 0.5 * box.w) continue;
+      ctx.fillStyle = c; ctx.beginPath(); ctx.arc(cx, box.y + box.h / 2, box.w / 2, 0, Math.PI * 2); ctx.fill();
+      tell(box, i); lastRight = box.x + box.w;
+      continue;
+    }
+    if (!asShape) {
+      const box = markBox(cx, yy, w, lineH, at, gap);
+      if (shape === 'label') {
+        ctx.fillStyle = c; ctx.beginPath(); ctx.roundRect(box.x, box.y, box.w, box.h, 3); ctx.fill();
+        ctx.fillStyle = ownText || textOn(c);
+      } else ctx.fillStyle = ownText || c;
+      ctx.fillText(label, cx, box.y + box.h / 2 + 0.5);
+      tell(box, i); lastRight = box.x + box.w;
+      continue;
+    }
+    // A shape, and its text beyond it (above a shape above the value, below one below it, under one on it).
+    const sb = markBox(cx, yy, 2 * r, 2 * r, at, gap), sy = sb.y + r;
+    ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = Math.max(1, 1.4 * size);
+    ctx.beginPath();
+    switch (shape) {
+      case 'dot': ctx.arc(cx, sy, r * 0.6, 0, Math.PI * 2); ctx.fill(); break;
+      case 'circle': ctx.arc(cx, sy, r - 0.5, 0, Math.PI * 2); ctx.stroke(); break;
+      case 'square': ctx.rect(cx - r * 0.8, sy - r * 0.8, r * 1.6, r * 1.6); ctx.fill(); break;
+      case 'diamond': ctx.moveTo(cx, sy - r); ctx.lineTo(cx + r, sy); ctx.lineTo(cx, sy + r); ctx.lineTo(cx - r, sy); ctx.closePath(); ctx.fill(); break;
+      case 'triangleUp': ctx.moveTo(cx, sy - r); ctx.lineTo(cx + r, sy + r * 0.8); ctx.lineTo(cx - r, sy + r * 0.8); ctx.closePath(); ctx.fill(); break;
+      case 'triangleDown': ctx.moveTo(cx, sy + r); ctx.lineTo(cx + r, sy - r * 0.8); ctx.lineTo(cx - r, sy - r * 0.8); ctx.closePath(); ctx.fill(); break;
+      case 'arrowUp': ctx.moveTo(cx, sy - r); ctx.lineTo(cx + r * 0.8, sy); ctx.lineTo(cx + r * 0.3, sy); ctx.lineTo(cx + r * 0.3, sy + r); ctx.lineTo(cx - r * 0.3, sy + r); ctx.lineTo(cx - r * 0.3, sy); ctx.lineTo(cx - r * 0.8, sy); ctx.closePath(); ctx.fill(); break;
+      case 'arrowDown': ctx.moveTo(cx, sy + r); ctx.lineTo(cx + r * 0.8, sy); ctx.lineTo(cx + r * 0.3, sy); ctx.lineTo(cx + r * 0.3, sy - r); ctx.lineTo(cx - r * 0.3, sy - r); ctx.lineTo(cx - r * 0.3, sy); ctx.lineTo(cx - r * 0.8, sy); ctx.closePath(); ctx.fill(); break;
+      case 'cross': ctx.moveTo(cx - r * 0.8, sy - r * 0.8); ctx.lineTo(cx + r * 0.8, sy + r * 0.8); ctx.moveTo(cx + r * 0.8, sy - r * 0.8); ctx.lineTo(cx - r * 0.8, sy + r * 0.8); ctx.stroke(); break;
+    }
+    let box = sb;
+    if (label) {
+      const ty = at === 'above' ? sb.y - lineH / 2 : sb.y + sb.h + lineH / 2;
+      ctx.fillStyle = ownText || c; ctx.fillText(label, cx, ty + 0.5);
+      const top = Math.min(sb.y, ty - lineH / 2), bottom = Math.max(sb.y + sb.h, ty + lineH / 2);
+      box = { x: cx - w / 2, y: top, w, h: bottom - top };
+    }
+    tell(box, i); lastRight = box.x + box.w;
+  }
 }
 
 function fillUnder(f: Frame, v: Float64Array, y: (v: number) => number, top: string, bottom: string): void {

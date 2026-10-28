@@ -1729,5 +1729,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "복사했습니다. AI 어시스턴트에 붙여 넣은 뒤 답변을 여기에 다시 붙여 넣고 확인을 누르세요.",
  "This browser did not let the page copy.": "이 브라우저가 페이지의 복사를 허용하지 않았습니다.",
  "The full language reference": "전체 언어 레퍼런스",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "브라우저의 어시스턴트가 이 스크립트를 작성했습니다. 읽어 본 뒤 유지하려면 저장을, 버리려면 뒤로를 누르세요."
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "브라우저의 어시스턴트가 이 스크립트를 작성했습니다. 읽어 본 뒤 유지하려면 저장을, 버리려면 뒤로를 누르세요.",
+ "Bar patterns": "캔들 패턴",
+ "hidden": "숨김",
+ "Show this script": "이 스크립트 표시",
+ "Hide this script (it still runs and alerts)": "이 스크립트 숨기기 (계속 실행되고 알림을 보냅니다)"
 }

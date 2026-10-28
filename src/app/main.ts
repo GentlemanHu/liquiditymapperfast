@@ -109,7 +109,7 @@ async function main(): Promise<void> {
   const script = new ScriptPane(chart, store, heat.view, hub);
   // The scripts placed on the map draw over it, and a script's candle colours (`$price.color`) colour its candles.
   heat.scriptLayer = (ctx, pw, ph) => script.paintOnMap(ctx, pw, ph); heat.candleColor = t => script.candleColorAt(t); script.onMapChanged = () => heat.invalidate();
-  heat.scriptHover = t => script.mapHoverLines(t);
+  heat.scriptHover = t => script.mapHoverLines(t); heat.scriptMarkAt = (x, y, touch) => script.mapMarkAt(x, y, touch);
   // The map's legend lists the scripts drawn on it, each with its buttons (open, switch off) in a layer over the map.
   heat.scriptLegend = (t, valued) => script.mapLegend(t, valued); heat.onScriptLegend = places => script.placeLegendTools(places); heat.root.append(script.legendTools);
   // The Scripts lamp and key in the top bar: the key opens the panel (from the pane's own button too), the lamp says what the scripts do.
@@ -174,6 +174,8 @@ async function main(): Promise<void> {
   // Sounds the panels may make about what happens in them (flow bursts, walls, the balance, the depth, candle closes); the bursts are also marked on the flow column.
   const alerts = new Alerts(store, hub.flow, sounds.engine, Date.now, (ids, from) => { void hub.ensureFlow(ids, from); }, (ids, from, to) => hub.source.columns(ids, from, to, 60_000));
   toolbar.attachAlerts(alerts); alerts.start();
+  // A script's alerts sound through the same Sounds switch, cap and list as the panels'.
+  script.onAlert = a => alerts.script(Date.now(), a.text, a.sound, a.key);
   alerts.onChange = () => cvd.invalidate(); cvd.events = alerts.bursts;
   hub.onPrints = fresh => { if (replaying()) return; sounds.feed(fresh); cvd.flash(fresh); };
   hub.onPrintsChanged = () => { heat.invalidate(); range.refreshHeld(); };
@@ -291,6 +293,8 @@ async function main(): Promise<void> {
     if (changed.has('replay')) { ladder.invalidate(); cvd.invalidate(); heat.invalidate(); lower(); }
     if (changed.has('layers') || changed.has('layer') || changed.has('candles') || changed.has('mark') || changed.has('heat') || changed.has('show')) heat.invalidate();
     if (changed.has('oi') || changed.has('show')) { oi.invalidate(); bars.invalidate(); }
+    // A script that reads the change in open interest runs again once it lands, not at its next refresh.
+    if (changed.has('oi') || changed.has('oiParts')) script.refresh();
     if (changed.has('show')) script.showChanged();
     if (changed.has('lt') || changed.has('show') || changed.has('sounds')) lt.refresh();
     if (changed.has('sounds')) depth.syncSound();

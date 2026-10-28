@@ -8,6 +8,7 @@ import { DAY_MS, liquidationBuckets, type LiquidationDay } from '../panes/bar-st
 import { LIQUIDATIONS_PER_ANSWER, LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
 import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
+import { oiPartsUntil, oiUsdChangeByTime } from '../oi-change.ts';
 import { candleArrays, filterKey, marketInfo, marketsMatching, sourceInputs, type BarInputs, type SourceFilter } from './inputs.ts';
 
 /**
@@ -35,8 +36,8 @@ export class ScriptData {
     return out;
   }
 
-  /** The inputs over the chart's candles for each filter; null while there are no candles. */
-  inputs(state: AppState, filters: ReadonlyMap<string, SourceFilter>): BarInputs | null {
+  /** The inputs over the chart's candles for each filter (and the change in open interest, `withOi`); null while there are no candles. */
+  inputs(state: AppState, filters: ReadonlyMap<string, SourceFilter>, withOi = false): BarInputs | null {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, now = pageNow();
     // In a replay a script reads only the candles that had closed by its moment: the candle under way then is not known yet, nor anything after.
     const rows = replaying() ? state.candles.filter(r => r[0] + tf <= now) : state.candles;
@@ -60,7 +61,19 @@ export class ScriptData {
         liquidations: list => { if (!liq) return undefined; const b = liquidationBuckets(this.#liqDays, list, starts, tf, liq.cover, now); if (b.cut) this.liquidationsCut = true; return b; },
       });
     }
-    return { tf, ...candles, sources };
+    return { tf, ...candles, sources, ...(withOi ? { oichg: ScriptData.oiChange(state, candles.time, candles.close, tf, now) } : {}) };
+  }
+
+  /**
+   * Each candle's change in open interest in USD, as the OI pane and the Bar stats count it (`oiUsdChangeByTime` over the same venues, the
+   * candle's close as the price; in a replay only the venues' readings up to its moment). NaN where it was not read.
+   */
+  static oiChange(state: Pick<AppState, 'oi' | 'oiParts' | 'oiPrice'>, time: Float64Array, close: Float64Array, tf: number, now: number): Float64Array {
+    const parts = oiPartsUntil(state.oiParts, tf, replaying() ? Math.floor(now / tf) * tf : Infinity);
+    const closes = new Map<number, number>();
+    for (let k = 0; k < time.length; k++) if (Number.isFinite(close[k]!)) closes.set(time[k]!, close[k]!);
+    const change = oiUsdChangeByTime(state.oi, parts, tf, t => closes.get(t), state.oiPrice);
+    return Float64Array.from(time, t => change.get(t) ?? NaN);
   }
 
   /** A filter's key (the same `filterKey` the scripts' analysis gives). */

@@ -165,7 +165,21 @@ export function chimeNotes(volume: number): Note[] {
 }
 
 /** What an alert sounds like. Each panel has its own register and wave, so the ear can tell the panel before the eye finds it. */
-export type AlertKind = 'flow-burst' | 'bar-delta' | 'wall-appeared' | 'wall-pulled' | 'imbalance' | 'depth-extreme' | 'oi-jump';
+export type AlertKind = 'flow-burst' | 'bar-delta' | 'wall-appeared' | 'wall-pulled' | 'imbalance' | 'depth-extreme' | 'oi-jump' | 'script';
+
+/**
+ * The notes of a script's alert (`alert(text, sound=...)`), from the sounds the page already makes: the candle chime, the bar sound rising
+ * or falling, the open-interest tick; `none` sounds nothing. A script picks one of these by name and never makes notes of its own.
+ */
+export function scriptNotes(sound: 'chime' | 'rise' | 'fall' | 'tick' | 'none', volume: number): Note[] {
+  switch (sound) {
+    case 'chime': return chimeNotes(volume);
+    case 'rise': return alertNotes('bar-delta', 'buy', volume);
+    case 'fall': return alertNotes('bar-delta', 'sell', volume);
+    case 'tick': return alertNotes('oi-jump', null, volume);
+    case 'none': return [];
+  }
+}
 
 /**
  * Notes for a panel alert. Buying rises and selling falls (a bid-heavy book rises, an ask-heavy one falls), as the trade sounds do.
@@ -186,5 +200,6 @@ export function alertNotes(kind: AlertKind, side: 'buy' | 'sell' | null, volume:
     case 'imbalance': return (up ? [392, 493.88, 587.33] : [587.33, 493.88, 392]).map((freq, i) => ({ freq, gain: 0.14 * v, decay: 0.3, delay: i * 0.1, wave: 'triangle' as const }));
     case 'depth-extreme': return (up ? [220, 329.63] : [329.63, 220]).map((freq, i) => ({ freq, gain: (i ? 0.26 : 0.22) * v, decay: i ? 0.9 : 0.6, delay: i * 0.22, wave: 'sine' as const }));
     case 'oi-jump': return [{ freq: 1046.5, gain: 0.1 * v, decay: 0.12, delay: 0, wave: 'sine' }, { freq: 1046.5, gain: 0.1 * v, decay: 0.12, delay: 0.11, wave: 'sine' }];
+    case 'script': return chimeNotes(v);
   }
 }

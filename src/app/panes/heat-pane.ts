@@ -40,7 +40,7 @@ import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
 import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
-import { layoutInfo, paintInfoBox, type InfoLine } from '../infobox.ts';
+import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, holdPixel, limitFactor, regionAt, wheelAxis } from './heat-zoom.ts';
@@ -171,7 +171,7 @@ const TIME_H = 22;
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
 const NARROW_PLOT = 420;
 /** The legend's script lines: how many at most (the others are counted), and the room at a line's right for its two buttons (px). */
-const SCRIPT_LINES = 6, SCRIPT_TOOLS_W = 40;
+const SCRIPT_LINES = 6, SCRIPT_TOOLS_W = 60;
 
 /** A line of the map's legend for a script drawn on the map (given by the Scripts pane): its name, colour, and values or state. */
 export interface ScriptLegendLine { id: string; name: string; color: string; text: string; tone: 'text' | 'muted' | 'error' }
@@ -228,6 +228,8 @@ export class HeatPane {
   scriptLayer: ((ctx: CanvasRenderingContext2D, pw: number, ph: number) => void) | null = null;
   /** The popup lines of the person's scripts drawn on the map, at the candle starting at `t` (set by the Scripts pane). */
   scriptHover: (t: number) => InfoLine[] = () => [];
+  /** The popup of a script's mark under the pointer (`x`, `y` in the plot), its colour and its box; null where none is (set by the Scripts pane). */
+  scriptMarkAt: (x: number, y: number, touch: boolean) => { lines: InfoLine[]; color: string; box: { x: number; y: number; w: number; h: number } } | null = () => null;
   /**
    * The legend's lines for the scripts drawn on the map, at the candle starting at `t` (null: the newest), with values for the first `valued`
    * of them only (set by the Scripts pane).
@@ -941,7 +943,7 @@ export class HeatPane {
     // (where they stay whatever the values beside them, so they do not move from under a pointer coming to them), then its values at this
     // candle or what it is doing. At most a few, the others counted. In a phone's arrangement the buttons are a finger's size (as their
     // style makes them) and the lines as tall; there, and on a narrow map, the names alone.
-    const touch = isPhone(), namesOnly = phone || touch, toolsW = touch ? 58 : SCRIPT_TOOLS_W, lineH = touch ? 24 : 16;
+    const touch = isPhone(), namesOnly = phone || touch, toolsW = touch ? 84 : SCRIPT_TOOLS_W, lineH = touch ? 24 : 16;
     const scripts = this.scriptLegend(hovered ? hovered[0] : null, namesOnly ? 0 : SCRIPT_LINES), listed = scripts.slice(0, SCRIPT_LINES), unlisted = scripts.length - listed.length;
     const scriptNames = listed.map(s => fitText(wide, s.name, room - toolsW - 30));
     const scriptValues = listed.map((s, k) => namesOnly || !s.text ? '' : fitText(wide, s.text, Math.max(0, room - 30 - wide(scriptNames[k]!) - toolsW - 12)));
@@ -2402,7 +2404,9 @@ export class HeatPane {
     const touch = hv.touch === true;
     if (touch && ownY && inX && y >= 0 && y <= ph) { ctx.strokeStyle = p.text; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke(); ctx.lineWidth = 1; }
     stripped = ownY && here ? this.#stripAt(x, y, ph, pw) : -1;
-    const absorbed = ownY && here && stripped < 0 ? this.#absorptionAt(x, y) : null;
+    // A script's mark is a small target someone aimed at: it answers before what is drawn under it.
+    const marked = ownY && here && stripped < 0 ? this.scriptMarkAt(x, y, touch) : null;
+    const absorbed = ownY && here && stripped < 0 && !marked ? this.#absorptionAt(x, y) : null;
     const forced = ownY && here && stripped < 0 && !absorbed ? this.#diamondAt(x, y) : null;
     const hit = ownY && here && stripped < 0 && !absorbed && !forced ? this.#bubbleAt(x, y) : null;
     if (stripped < 0) this.#orders.rest();
@@ -2410,6 +2414,9 @@ export class HeatPane {
       const s = this.#strip!, bar = s.bars[stripped]!, whale = scaledUsd(state.barStatOptions.whaleUsd);
       const lines = stripLines(bar, { rows: s.rows, tf: s.tf, now: pageNow(), market: s.market, tfName: s.tfName, reports: s.reports, total: s.total, orders: this.#stripOrders(state, s, bar, whale), whaleUsd: whale });
       paintInfoBox(ctx, lines, x, s.top - 8, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: 'up' });
+    } else if (marked) { // a script's mark: its text in its colour, what the script says of it, and the script's name
+      const edge = marked.color, pick = (c: InfoColor): string => c === 'above' ? edge : c === 'muted' ? p.muted : p.text;
+      paintInfoBox(ctx, marked.lines, x, touch ? marked.box.y - 8 : marked.box.y + marked.box.h / 2, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { edge, pick, gap: Math.max(10, marked.box.w / 2 + 8), placement: touch ? 'up' : 'center' });
     } else if (forced) { // a liquidation under the pointer: which positions were closed, where, and what the exchange reported
       const long = forced.liq.side === 'long';
       paintInfoBox(ctx, liquidationLines(forced.liq), x, touch ? forced.y - forced.r - 8 : forced.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { edge: long ? p.candleDown : p.candleUp, gap: forced.r + 10, placement: touch ? 'up' : 'center' });

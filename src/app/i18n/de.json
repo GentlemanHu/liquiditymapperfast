@@ -1796,5 +1796,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Kopiert. Füge es in deinen KI-Assistenten ein, füge seine Antwort hier wieder ein und drücke Prüfen.",
  "This browser did not let the page copy.": "Dieser Browser hat der Seite das Kopieren nicht erlaubt.",
  "The full language reference": "Die vollständige Sprachreferenz",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Ein Assistent in deinem Browser hat dieses Skript geschrieben. Lies es, dann drücke Speichern, um es zu behalten, oder Zurück, um es zu verwerfen."
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Ein Assistent in deinem Browser hat dieses Skript geschrieben. Lies es, dann drücke Speichern, um es zu behalten, oder Zurück, um es zu verwerfen.",
+ "Bar patterns": "Kerzenmuster",
+ "hidden": "ausgeblendet",
+ "Show this script": "Dieses Skript einblenden",
+ "Hide this script (it still runs and alerts)": "Dieses Skript ausblenden (es läuft und meldet weiter)"
 }

@@ -1819,5 +1819,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Copié. Collez-le dans votre assistant IA, puis collez sa réponse ici et appuyez sur Vérifier.",
  "This browser did not let the page copy.": "Ce navigateur n’a pas laissé la page copier.",
  "The full language reference": "La référence complète du langage",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Un assistant de votre navigateur a écrit ce script. Lisez-le, puis appuyez sur Enregistrer pour le garder, ou sur Retour pour l’abandonner."
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Un assistant de votre navigateur a écrit ce script. Lisez-le, puis appuyez sur Enregistrer pour le garder, ou sur Retour pour l’abandonner.",
+ "Bar patterns": "Figures de bougies",
+ "hidden": "masqué",
+ "Show this script": "Afficher ce script",
+ "Hide this script (it still runs and alerts)": "Masquer ce script (il tourne et alerte toujours)"
 }

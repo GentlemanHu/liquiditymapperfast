@@ -1842,5 +1842,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Скопировано. Вставьте это в ИИ-ассистента, затем вставьте его ответ сюда и нажмите «Проверить».",
  "This browser did not let the page copy.": "Этот браузер не позволил странице скопировать.",
  "The full language reference": "Полный справочник языка",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Этот скрипт написал ассистент в вашем браузере. Прочитайте его, затем нажмите «Сохранить», чтобы оставить, или «Назад», чтобы отказаться."
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Этот скрипт написал ассистент в вашем браузере. Прочитайте его, затем нажмите «Сохранить», чтобы оставить, или «Назад», чтобы отказаться.",
+ "Bar patterns": "Свечные паттерны",
+ "hidden": "скрыт",
+ "Show this script": "Показать этот скрипт",
+ "Hide this script (it still runs and alerts)": "Скрыть этот скрипт (он продолжит работать и оповещать)"
 }

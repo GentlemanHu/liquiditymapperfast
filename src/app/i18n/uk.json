@@ -1847,5 +1847,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "Скопійовано. Вставте це в ШІ-асистента, потім вставте його відповідь сюди й натисніть «Перевірити».",
  "This browser did not let the page copy.": "Цей браузер не дозволив сторінці скопіювати.",
  "The full language reference": "Повний довідник мови",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Цей скрипт написав асистент у вашому браузері. Прочитайте його, потім натисніть «Зберегти», щоб залишити, або «Назад», щоб відкинути."
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "Цей скрипт написав асистент у вашому браузері. Прочитайте його, потім натисніть «Зберегти», щоб залишити, або «Назад», щоб відкинути.",
+ "Bar patterns": "Свічкові патерни",
+ "hidden": "приховано",
+ "Show this script": "Показати цей скрипт",
+ "Hide this script (it still runs and alerts)": "Приховати цей скрипт (він і далі працює та сповіщає)"
 }

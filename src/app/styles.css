@@ -2,6 +2,8 @@
   --bg: #fff; --panel: #fff; --text: #1b1d21; --muted: #7b8088; --line: #e7e9ec; --accent: #1b1d21;
   /* A drawn check mark (mask it in the colour of the text): a typed one looks as its font draws it. */
   /* Drawn sliders, the key that opens a feature's settings (a split button's right part): clearer than a gear at 10 px. */
+  --mark-eye: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linejoin='round'%3E%3Cpath d='M1.8 12C4.4 7.3 7.9 5 12 5s7.6 2.3 10.2 7c-2.6 4.7-6.1 7-10.2 7S4.4 16.7 1.8 12z'/%3E%3Ccircle cx='12' cy='12' r='3.4' fill='black' stroke='none'/%3E%3C/svg%3E");
+  --mark-eye-off: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.8 12C4.4 7.3 7.9 5 12 5s7.6 2.3 10.2 7c-2.6 4.7-6.1 7-10.2 7S4.4 16.7 1.8 12z' opacity='.55'/%3E%3Cpath d='M3.5 3.5l17 17'/%3E%3C/svg%3E");
   --mark-settings: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M3.5 6.5h17M3.5 12h17M3.5 17.5h17'/%3E%3Ccircle cx='9' cy='6.5' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='15.5' cy='12' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='7.5' cy='17.5' r='2.7' fill='black' stroke='none'/%3E%3C/svg%3E");
   --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12.5l5 5L20 6.5'/%3E%3C/svg%3E");
   --ui: #2f6bff; --bid: #0fa44a; --bid-soft: #cdeed8; --ask: #e0066f; --ask-soft: #ffd0e6; --gutter: 192px;
@@ -691,6 +693,12 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .layout-row > button:first-child { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layout-date { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .layout-row button.armed { color: var(--ask); }
+/* A row lights while one of its buttons is under the pointer or the keyboard's focus: its Add, Delete or ↑ sits at the far end, and the eye
+   need not follow the line back to the name to see which row it acts on (Karl, 2026-10-28). Its own padding, taken back by the margin, keeps
+   the text where it was. Each frame lights it as it lights a menu's row (chrome.css). */
+.layout-row { margin: 0 -6px; padding-left: 6px; padding-right: 6px; border-radius: var(--radius); }
+.layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) { background: color-mix(in srgb, var(--ui) 14%, transparent); }
+:where(:root[data-theme="dark"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) { background: color-mix(in srgb, var(--ui) 22%, transparent); }
 .layout-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 /* The Scripts panel (script/panel.ts): a row per script with its switch, and the text box a script is written in. */
 .script-row > .script-on { display: inline-flex; flex: none; }
@@ -702,6 +710,10 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .script-row-tool > button { position: relative; width: 18px; height: 16px; min-height: 0; padding: 0; font-size: 13px; line-height: 14px; opacity: .6; }
 .script-row-tool > button:hover, .script-row-tool > button:focus-visible { opacity: 1; }
 .script-row-open::before { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: var(--mark-settings) center / contain no-repeat; mask: var(--mark-settings) center / contain no-repeat; }
+/* Hide or show: an open eye while the script draws, a struck one while it is hidden (it still runs). */
+.script-row-hide::before { content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: var(--mark-eye) center / contain no-repeat; mask: var(--mark-eye) center / contain no-repeat; }
+.script-row-hide[data-hidden="true"]::before { -webkit-mask-image: var(--mark-eye-off); mask-image: var(--mark-eye-off); }
+.script-row-tool > .script-row-hide[data-hidden="true"] { opacity: .9; }
 html[data-layout^="phone"] .script-row-tool > button { width: 26px; height: 22px; }
 /* The map legend's script lines keep their buttons over the map, under its corner tools' level (script-pane.ts placeLegendTools). */
 .pane.heat .script-legend-tools .script-row-tool { z-index: 3; }

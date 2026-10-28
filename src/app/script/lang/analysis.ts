@@ -13,13 +13,14 @@ import type { OptionValue } from '../records.ts';
  * `engine.ts`, in the worker.
  */
 
-export const API_VERSION = 1;
+export const API_VERSION = 2;
 
 /** The plot functions and the kind each draws. */
 export const PLOTS: Readonly<Record<string, PlotKind>> = {
   plotline: 'line', line: 'line', plotarea: 'area', area: 'area', plothistogram: 'histogram', histogram: 'histogram',
   plotbaseline: 'baseline', baseline: 'baseline', plotcandlestick: 'candlestick', candlestick: 'candlestick', plotbar: 'bar', bar_plot: 'bar',
   plotcloudarea: 'cloudarea', cloudarea: 'cloudarea', plotbrokenarea: 'brokenarea', brokenarea: 'brokenarea',
+  mark: 'mark', plotmark: 'mark',
 };
 
 /** The most plots a script may make, and the most named sets of markets it may read. */
@@ -31,7 +32,7 @@ export interface Analysis {
   program: Stmt[];
   /** The `source(...)` calls, for their filters (`sourcesWith`). */
   sourceCalls: Extract<Expr, { k: 'call' }>[];
-  /** The candle inputs it reads (`vbuy`, `lsell`, ...). */
+  /** The candle inputs it reads (`vbuy`, `lsell`, `oichg`, ...). */
   inputs: Set<string>;
   /** Names kept from candle to candle. */
   persistent: Set<string>;
@@ -45,8 +46,12 @@ export interface Analysis {
 }
 
 /** What `renderer` answers when a script runs (the engine's `rendererObject`); any other member reads nothing and is warned of. */
-export const RENDERER_MEMBERS = new Set(['length', 'timestamp', 'localTimestamp', 'timeframe', 'type', 'lastTradeTimestamp']);
+export const RENDERER_MEMBERS = new Set(['length', 'timestamp', 'localTimestamp', 'timeframe', 'type', 'lastTradeTimestamp', 'forming']);
 export const KNOWN_INPUTS = new Set(['time', 'vbuy', 'vsell', 'cbuy', 'csell', 'lbuy', 'lsell', 'bar', '$price', 'options', 'renderer', 'fns', 'Math', 'Number', 'String', 'Boolean', 'Date', 'Array', 'Object', 'JSON', 'Infinity', 'NaN', 'undefined', 'isFinite', 'isNaN', 'parseFloat', 'parseInt', 'rgb', 'rgba', 'option', 'source', 'nz', 'na']);
+/**
+ * Names version 2 added (`oichg`, `alert`) are not in `KNOWN_INPUTS`: a script written before them that uses one as its own name keeps it,
+ * since a script's own names are looked up before the page's.
+ */
 
 /** An exchange's name as scripts write it, as the page's exchange (and the kind its name implies, where it does). */
 export function exchangeOf(name: string): { venue: string; kind?: 'spot' | 'perp' } {
@@ -174,6 +179,11 @@ function analyzeOnce(text: string): Analysis {
       if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'options') read.add(n.name);
       if (n.k === 'call' && n.callee.k === 'id' && n.callee.name === 'source') sourceCalls.push(n);
       if (n.k === 'id' && (n.name === 'vbuy' || n.name === 'vsell' || n.name === 'lbuy' || n.name === 'lsell' || n.name === 'cbuy' || n.name === 'csell')) inputs.add(n.name);
+      if (n.k === 'id' && n.name === 'oichg' && !persistent.has('oichg') && !declared.has('oichg')) inputs.add('oichg');
+      // `bar` read any way but as `bar.name` with another name (bar["oichg"], kept under another name, handed to a function) may read the
+      // change in open interest: the page then works it out.
+      if (n.k === 'id' && n.name === 'bar') bars++;
+      if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'bar' && n.name !== 'oichg') plainBars++;
       if (n.k === 'assign' && n.target.k === 'id' && n.value.k === 'call' && n.value.callee.k === 'id' && n.value.callee.name === 'option') {
         const name = n.target.name;
         if (!optionNames.has(name)) { optionNames.add(name); options.push(optionDecl(name, n.value)); }
@@ -185,7 +195,9 @@ function analyzeOnce(text: string): Analysis {
     }
     for (const v of Object.values(n)) if (v && typeof v === 'object') visit(v, false);
   };
+  let bars = 0, plainBars = 0;
   visit(program, true);
+  if (bars > plainBars && !declared.has('bar') && !persistent.has('bar')) inputs.add('oichg');
   // What only a full browser engine has (the chart library's series objects, the raw function library): refused with where it is used.
   const refuse = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;

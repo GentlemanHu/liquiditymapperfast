@@ -1729,5 +1729,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "已复制。粘贴到你的 AI 助手中，再把它的回答粘贴回这里并点击“检查”。",
  "This browser did not let the page copy.": "此浏览器不允许页面复制。",
  "The full language reference": "完整的语言参考",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "这个脚本是你浏览器中的助手写的。请先阅读，然后点击“保存”保留它，或点击“返回”放弃它。"
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "这个脚本是你浏览器中的助手写的。请先阅读，然后点击“保存”保留它，或点击“返回”放弃它。",
+ "Bar patterns": "K线形态",
+ "hidden": "已隐藏",
+ "Show this script": "显示此脚本",
+ "Hide this script (it still runs and alerts)": "隐藏此脚本（仍会运行并提醒）"
 }

@@ -6,7 +6,7 @@ import { MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTab
 import { DateValue, HostObject, NativeFunction, ScriptRuntimeError, isPlain, num, own, plain, text, toData, truthy, type Value } from './values.ts';
 import { BUILTINS, makeInstance, type Instance } from './builtins.ts';
 import { COLOR_NAMES, interpolateColors, rgb, safeColor } from './colors.ts';
-import { PLOT_FIELDS, type PlotKind, type PlotOut, type ScriptResult } from '../protocol.ts';
+import { ALERT_SOUNDS, ALERT_TEXT, MARK_TEXT, MARK_TIP, MAX_ALERTS, PLOT_FIELDS, type AlertOut, type AlertSound, type PlotKind, type PlotOut, type ScriptResult } from '../protocol.ts';
 import { filterKey, type BarInputs, type SourceInputs } from '../inputs.ts';
 import type { OptionValue } from '../records.ts';
 
@@ -16,12 +16,15 @@ import type { OptionValue } from '../records.ts';
  *
  * The language (version 1): JavaScript's expressions and statements as `parser.ts` reads them, with these names:
  * - inputs of the candle: `time` (its start, seconds), `vbuy`, `vsell` (USD bought and sold at market over the markets read), `lbuy`, `lsell`
- *   (USD of shorts and longs liquidated), `cbuy`, `csell` (trade counts: not recorded, always NaN), `bar` (all of those, and `timestamp`),
- *   `$price` (the chart's candle: `open`, `high`, `low`, `close`; setting `$price.color` colours it), `renderer.length` (candles so far);
+ *   (USD of shorts and longs liquidated), `oichg` (USD of open interest opened or closed, over the OI pane's venues), `cbuy`, `csell` (trade
+ *   counts: not recorded, always NaN), `bar` (all of those, and `timestamp`),
+ *   `$price` (the chart's candle: `open`, `high`, `low`, `close`, `volume`; setting `$price.color` colours it), `renderer.length` (candles so
+ *   far), `renderer.forming` (whether this is the candle under way);
  * - `options.name` and `name = option(default = ..., type = ..., label = ..., min, max, step)`: the script's settings;
  * - `source(expr, type = spot|perp, exchange = NAME, quote = USDT)`: `expr` read over those markets only;
  * - a name assigned at the top without `var`/`let`/`const` keeps its value from candle to candle, and `name[1]` is its value one candle back;
- * - the functions of `builtins.ts` (`sma`, `ema`, `cum`, ...), each call keeping its own state, and the plots (`line`, `histogram`, ...).
+ * - the functions of `builtins.ts` (`sma`, `ema`, `cum`, ...), each call keeping its own state, and the plots (`line`, `histogram`, `mark`, ...);
+ * - `alert(text, sound=..., when=bar|close)`: an alert at the candle under way or the last one closed (older candles are history).
  * A candle that was not recorded reads NaN, and a function given NaN answers NaN and keeps its state, so a line starts where the data does.
  */
 
@@ -55,7 +58,7 @@ function styleData(v: OptionValue | undefined): OptionValue | undefined {
 }
 
 /** What a run of a script keeps per plot while it goes from candle to candle. */
-interface PlotBuild { kind: PlotKind; title: string; style: Record<string, OptionValue>; fields: Record<string, Float64Array>; colors: string[] | null }
+interface PlotBuild { kind: PlotKind; title: string; style: Record<string, OptionValue>; fields: Record<string, Float64Array>; colors: string[] | null; texts: string[] | null; tips: string[] | null }
 
 /**
  * Run a script over every candle of `inputs`. `optionValues` are the values set for its options (a declared option not set reads its default).
@@ -81,6 +84,7 @@ export function sameCandles(a: BarInputs, b: BarInputs, m: number): boolean {
   if (ka.length !== kb.length || ka.some(k => !(k in b.sources))) return false;
   const eq = (x: Float64Array, y: Float64Array): boolean => { for (let k = 0; k < m; k++) { const u = x[k]!, v = y[k]!; if (u !== v && !(u !== u && v !== v)) return false; } return true; };
   if (!eq(a.time, b.time) || !eq(a.open, b.open) || !eq(a.high, b.high) || !eq(a.low, b.low) || !eq(a.close, b.close) || !eq(a.volume, b.volume)) return false;
+  if (!a.oichg !== !b.oichg || (a.oichg && b.oichg && !eq(a.oichg, b.oichg))) return false;
   for (const k of ka) { const x = a.sources[k]!, y = b.sources[k]!; if (!eq(x.vbuy, y.vbuy) || !eq(x.vsell, y.vsell) || !eq(x.lbuy, y.lbuy) || !eq(x.lsell, y.lsell)) return false; }
   return true;
 }
@@ -138,6 +142,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   const priceObject = new HostObject('$price', k => {
     switch (k) {
       case 'open': return inputs.open[i]; case 'high': return inputs.high[i]; case 'low': return inputs.low[i]; case 'close': return inputs.close[i];
+      case 'volume': return inputs.volume[i];
       case 'color': return price.color; case 'borderColor': return price.borderColor; case 'wickColor': return price.wickColor;
       case 'time': return inputs.time[i]! / 1000;
       default: return undefined;
@@ -149,7 +154,9 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       case 'timestamp': return inputs.time[i]! / 1000;
       case 'vbuy': return at(s?.vbuy); case 'vsell': return at(s?.vsell); case 'lbuy': return at(s?.lbuy); case 'lsell': return at(s?.lsell);
       case 'cbuy': case 'csell': return NaN;
+      case 'oichg': return inputs.oichg ? inputs.oichg[i] : NaN;
       case 'open': return inputs.open[i]; case 'high': return inputs.high[i]; case 'low': return inputs.low[i]; case 'close': return inputs.close[i];
+      case 'volume': return inputs.volume[i];
       default: return undefined;
     }
   });
@@ -160,6 +167,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       case 'timeframe': return inputs.tf / 1000;
       case 'type': return 'time';
       case 'lastTradeTimestamp': return i === n - 1 && inputs.forming ? now() / 1000 : (inputs.time[i]! + inputs.tf) / 1000;
+      case 'forming': return i === n - 1 && inputs.forming;
       default: return undefined;
     }
   });
@@ -192,6 +200,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     na: new NativeFunction('na', args => { const v = args[0]; return v === undefined || v === null || (typeof v === 'number' && Number.isNaN(v)); }),
     option: new NativeFunction('option', () => undefined),
     source: new NativeFunction('source', () => undefined),
+    alert: new NativeFunction('alert', () => undefined),
   });
   for (const name of Object.keys(BUILTINS)) globals[name] = new NativeFunction(name, () => undefined);
   for (const name of Object.keys(PLOTS)) if (!Object.prototype.hasOwnProperty.call(globals, name)) globals[name] = new NativeFunction(name, () => undefined);
@@ -205,6 +214,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
         case 'lbuy': return { known: true, value: at(src()?.lbuy) };
         case 'lsell': return { known: true, value: at(src()?.lsell) };
         case 'cbuy': case 'csell': return { known: true, value: NaN };
+        case 'oichg': return { known: true, value: inputs.oichg ? inputs.oichg[i]! : NaN };
         case 'bar': return { known: true, value: barObject };
         case '$price': return { known: true, value: priceObject };
         case 'options': return { known: true, value: optionsObject };
@@ -231,6 +241,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       if (node.callee.k !== 'id') return fn.call(args, named);
       if (name === 'option') { const target = optionTarget(node); return target !== null ? opt[target] : args[0] ?? named?.default; }
       if (name === 'source') return args[0];
+      if (name === 'alert') { alertAt(site, args, named); return undefined; }
       const plotKind = own(PLOTS, name);
       if (plotKind) { plot(site, plotKind, args, named); return undefined; }
       const builtin = own(BUILTINS, name);
@@ -243,6 +254,9 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     },
   };
 
+  // A script that only alerts draws nothing and is not warned of it.
+  let alertSites = 0;
+  for (const node of numberSites(a.program).keys()) if (node.k === 'call' && node.callee.k === 'id' && node.callee.name === 'alert') alertSites++;
   // `source(expr, ...)`: the inputs inside `expr` are read over the call's markets. The argument is evaluated by the interpreter, so the
   // interpreter is told which set to read while it does: the call is found by its place, before its arguments are read.
   const sourceSites = new Map<Expr, string>();
@@ -278,7 +292,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     const style: Record<string, OptionValue> = {};
     for (const nm of node.named) { const v = styleData(staticValue(nm.value, opt, scriptNames)); if (v !== undefined) style[nm.name] = v; }
     const title = typeof style.title === 'string' ? style.title.slice(0, MAX_TITLE) : typeof style.title === 'number' ? String(style.title) : '';
-    plots.set(site, { kind, title, style, fields, colors: null });
+    plots.set(site, { kind, title, style, fields, colors: null, texts: null, tips: null });
     initialStyles.set(site, { title, style: { ...style } });
     plotOrder.push(site);
   }
@@ -295,6 +309,20 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     if (!args.length) return;
     const point = args[0];
     const setColor = (c: Value): void => { if (typeof c !== 'string' || !c) return; const color = c.length <= 64 ? safeColor(c, '') : ''; if (!color) return; if (!p!.colors) p!.colors = new Array<string>(n).fill(''); p!.colors[i] = color; };
+    if (kind === 'mark') {
+      // A mark's value, text and tip: mark(value, text, tip) or mark({value, text, tip, color}); a value that is not a number draws none.
+      const o = isPlain(point) ? point : null, v = o ? o.value : point;
+      const value = typeof v === 'number' ? v : v === undefined || v === null ? NaN : num(v);
+      p.fields.value![i] = value;
+      if (!Number.isFinite(value)) return;
+      const said = (x: Value | undefined, max: number): string => x === undefined || x === null ? '' : text(x).slice(0, max);
+      const label = said(o ? o.text : args[1], MARK_TEXT), tip = said(o ? o.tip : args[2], MARK_TIP);
+      charge(budget, 1 + ((label.length + tip.length) >> 4));
+      if (label) (p.texts ??= new Array<string>(n).fill(''))[i] = label;
+      if (tip) (p.tips ??= new Array<string>(n).fill(''))[i] = tip;
+      setColor(o ? o.color : args[3]);
+      return;
+    }
     if (isPlain(point)) {
       for (const f of PLOT_FIELDS[kind]) { const v = point[f]; p.fields[f]![i] = typeof v === 'number' ? v : v === undefined || v === null ? NaN : num(v); }
       if (kind === 'line' || kind === 'area' || kind === 'histogram' || kind === 'baseline') { if (point.value === undefined && typeof point.close === 'number') p.fields.value![i] = point.close; }
@@ -304,6 +332,25 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     const fields = PLOT_FIELDS[kind];
     for (let f = 0; f < fields.length; f++) { const v = args[f]; p.fields[fields[f]!]![i] = typeof v === 'number' ? v : v === undefined || v === null ? NaN : num(v); }
     if (named && typeof named.color === 'string' && kind === 'histogram') setColor(named.color);
+  }
+  /**
+   * The alerts of a run, from its newest candles only: the one under way and the last one closed (`alertsFrom`). Older candles are history
+   * a run never hands back; one call in the text makes at most one alert a candle, and a candle at most `MAX_ALERTS` (the first calls made),
+   * so a run of the candle under way alone hands back the same ones as a run of every candle.
+   */
+  let alerts: AlertOut[] = [];
+  let alertsFrom = 0;
+  function alertAt(site: number, args: Value[], named: Record<string, Value> | null): void {
+    if (i < alertsFrom) return;
+    const t = inputs.time[i]!;
+    let here = 0;
+    for (const a of alerts) if (a.t === t) { if (a.site === site) return; here++; }
+    if (here >= MAX_ALERTS) return;
+    const said = args[0] === undefined || args[0] === null ? '' : text(args[0]).slice(0, ALERT_TEXT);
+    charge(budget, 1 + (said.length >> 4));
+    const asked = typeof named?.sound === 'string' ? named.sound.toLowerCase() : '';
+    const sound: AlertSound = (ALERT_SOUNDS as readonly string[]).includes(asked) ? asked as AlertSound : 'chime';
+    alerts.push({ site, t, text: said, sound, when: named?.when === 'close' ? 'close' : 'bar', forming: i === n - 1 && inputs.forming });
   }
   /** A histogram bar of 0 is not drawn (an empty candle leaves no stub). */
   const dropZeros = (): void => { for (const p of plots.values()) if (p.kind === 'histogram') { const v = p.fields.value!; for (let k = 0; k < n; k++) if (v[k] === 0) v[k] = NaN; } };
@@ -327,7 +374,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   const interp = new Interpreter(a.program, host, budget);
 
   /** What the script held after candle `at` of `inputs` had closed, and what it had drawn by then. */
-  interface Snapshot { at: number; inputs: BarInputs; kept: Map<string, { v: Value; past: Value[] }>; states: Map<number, unknown>; fields: Map<number, Record<string, Float64Array>>; colors: Map<number, string[] | null>; candleColors: string[]; styles: Map<number, { title: string; style: Record<string, OptionValue> }>; styled: Set<number> }
+  interface Snapshot { at: number; inputs: BarInputs; kept: Map<string, { v: Value; past: Value[] }>; states: Map<number, unknown>; fields: Map<number, Record<string, Float64Array>>; colors: Map<number, string[] | null>; texts: Map<number, [string[] | null, string[] | null]>; candleColors: string[]; styles: Map<number, { title: string; style: Record<string, OptionValue> }>; styled: Set<number> }
   let snap: Snapshot | null = null;
   /**
    * Whether what the script holds can be put back exactly: kept names holding plain values (numbers, texts, true/false, dates) and options it
@@ -348,6 +395,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     states: new Map([...instances].map(([site, inst]) => [site, cloneState(inst.state)])),
     fields: new Map([...plots].map(([site, p]) => [site, p.fields])),
     colors: new Map([...plots].map(([site, p]) => [site, p.colors])),
+    texts: new Map([...plots].map(([site, p]) => [site, [p.texts, p.tips]])),
     candleColors,
     styles: new Map([...plots].map(([site, p]) => [site, { title: p.title, style: JSON.parse(JSON.stringify(p.style)) as Record<string, OptionValue> }])),
     styled: new Set(styled),
@@ -393,7 +441,12 @@ export function createRunner(id: string, source: string, optionValues: Record<st
         p.fields = fields;
         const oldColors = from?.colors.get(site) ?? null;
         p.colors = oldColors ? [...oldColors.slice(0, start), ...new Array<string>(n - start).fill('')] : null;
+        // A mark's texts and tips of the candles taken over, as its colours are.
+        const [oldTexts, oldTips] = from?.texts.get(site) ?? [null, null];
+        p.texts = oldTexts ? [...oldTexts.slice(0, start), ...new Array<string>(n - start).fill('')] : null;
+        p.tips = oldTips ? [...oldTips.slice(0, start), ...new Array<string>(n - start).fill('')] : null;
       }
+      alerts = []; alertsFrom = Math.max(0, inputs.forming ? n - 2 : n - 1);
       candleColors = from ? from.candleColors.slice(0, start) : [];
       colored = candleColors.some(c => c);
       try {
@@ -417,9 +470,9 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       // A run of the candle under way alone keeps the snapshot of the run before (its closed candles are the same); a run over no closed candle has none.
       if (n < 2 || optionsWritten) snap = null;
       dropZeros();
-      const out: PlotOut[] = plotOrder.map(site => { const p = plots.get(site)!; return { kind: p.kind, title: p.title, style: p.style, fields: p.fields, colors: p.colors }; });
-      if (!out.length && !colored) warnings.push({ code: 'no-plots' });
-      return { id, ok: true, plots: out, warnings, steps: budget.steps, ms: now() - started, ...(colored ? { candleColors: Array.from({ length: n }, (_, k) => candleColors[k] ?? '') } : {}) };
+      const out: PlotOut[] = plotOrder.map(site => { const p = plots.get(site)!; return { kind: p.kind, title: p.title, style: p.style, fields: p.fields, colors: p.colors, ...(p.kind === 'mark' ? { texts: p.texts, tips: p.tips } : {}) }; });
+      if (!out.length && !colored && !alertSites) warnings.push({ code: 'no-plots' });
+      return { id, ok: true, plots: out, warnings, steps: budget.steps, ms: now() - started, ...(colored ? { candleColors: Array.from({ length: n }, (_, k) => candleColors[k] ?? '') } : {}), ...(alerts.length ? { alerts } : {}) };
     },
   };
   return runner;

@@ -1,7 +1,7 @@
 import type { AppState } from '../store.ts';
 import type { FlowBook } from '../flow-book.ts';
 import type { Note } from './rules.ts';
-import { alertNotes, type AlertKind } from './rules.ts';
+import { alertNotes, scriptNotes, type AlertKind } from './rules.ts';
 import { Cooldowns, RateCap, WallWatch, ImbalanceWatch, bookBins, imbalanceOf } from './alert-rules.ts';
 import { burst } from '../cvd/burst.ts';
 import { flowIds } from '../cvd/ids.ts';
@@ -20,7 +20,7 @@ import { replaying } from '../replay/clock.ts';
 import { DepthWatch, depthMinutes } from './depth-watch.ts';
 import type { ColumnsFrame } from '../wire.ts';
 
-export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi';
+export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi' | 'script';
 /** What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted. */
 export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean }
 
@@ -29,6 +29,8 @@ export interface AlertsHost { state: AppState }
 export interface Player { play(notes: readonly Note[], force?: boolean): boolean; unlock(): Promise<unknown> }
 
 const FLOW_COOLDOWN_MS = 90_000, WALL_COOLDOWN_MS = 30_000, IMBALANCE_COOLDOWN_MS = 300_000, BOOK_EVERY_MS = 2_000;
+/** One call of a script's `alert` sounds at most this often (a script that alerts on every candle of a one-minute chart still can). */
+const SCRIPT_COOLDOWN_MS = 20_000;
 /** A reading older than this is history (a tab catching up after being asleep): it does not sound. */
 const FRESH_MS = 4_000;
 /** A candle that closed longer ago than this is not news: it was loaded, or the tab slept through it. (A new candle shows when its first tick arrives, a few seconds after the close.) */
@@ -97,11 +99,12 @@ export class Alerts {
 
   get #s(): AppState { return this.host.state; }
 
-  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number): void {
+  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume)): void {
     const sounds = this.#s.sounds;
     if (!sounds.on) return;
     if (!this.#cool.take(key, now, cooldownMs) || !this.#cap.allow(now)) return;
-    const audible = this.player.play(alertNotes(kind, side, sounds.volume));
+    // An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
+    const audible = notes.length ? this.player.play(notes) : true;
     this.log.push({ at: now, panel, kind, side, text, audible });
     if (this.log.length > 100) this.log.splice(0, this.log.length - 100);
     this.onChange();
@@ -263,6 +266,15 @@ export class Alerts {
   }
 
   /** Play a sample of a panel's alert (the Test buttons): works with sounds off, so a person can hear what the rule would sound like. */
+  /**
+   * A script's alert (`alert(...)` in a script that is on, made new by the Scripts pane): under the same Sounds switch, cap and list as the
+   * panels' alerts, with a cool-down of its own per call of `alert` in the script (`key`).
+   */
+  script(now: number, text: string, sound: Parameters<typeof scriptNotes>[0], key: string): void {
+    if (replaying()) return;
+    this.#fire(now, 'script', 'script', null, text, `script:${key}`, SCRIPT_COOLDOWN_MS, scriptNotes(sound, this.#s.sounds.volume));
+  }
+
   test(kind: AlertKind, side: 'buy' | 'sell' | null = 'buy'): void {
     void this.player.unlock().then(() => { this.player.play(alertNotes(kind, side, this.#s.sounds.volume), true); });
   }

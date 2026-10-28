@@ -1729,5 +1729,9 @@
  "Copied. Paste it into your AI assistant, then paste its answer back here and press Check.": "コピーしました。AI アシスタントに貼り付け、その回答をここに貼り戻して「確認」を押してください。",
  "This browser did not let the page copy.": "このブラウザーはページのコピーを許可しませんでした。",
  "The full language reference": "言語リファレンスの全文",
- "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "ブラウザーのアシスタントがこのスクリプトを書きました。読んでから、残すには「保存」、破棄するには「戻る」を押してください。"
+ "An assistant in your browser wrote this script. Read it, then press Save to keep it, or Back to drop it.": "ブラウザーのアシスタントがこのスクリプトを書きました。読んでから、残すには「保存」、破棄するには「戻る」を押してください。",
+ "Bar patterns": "ローソク足のパターン",
+ "hidden": "非表示",
+ "Show this script": "このスクリプトを表示",
+ "Hide this script (it still runs and alerts)": "このスクリプトを非表示（実行とアラートは続きます）"
 }

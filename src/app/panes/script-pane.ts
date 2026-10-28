@@ -20,6 +20,8 @@ import { ScriptSyntaxError, type ScriptError } from '../script/lang/lexer.ts';
 import { SCRIPT_API, loadScripts, storeScripts, type OptionValue, type ScriptRecord } from '../script/records.ts';
 import { starterScripts } from '../script/starter.ts';
 import { PLOT_FIELDS, type PlotOut, type ScriptResult, type Warning } from '../script/protocol.ts';
+import { MARK_SLOP, MARK_SLOP_TOUCH, markAt, markLines, markText, type DrawnMark } from '../script/marks.ts';
+import { AlertNews, fingerprint, type ScriptAlert } from '../script/alert-news.ts';
 import { paintPlot, plotColorAt, scaleIdOf, scalesOf, shortNumber, visibleRange, yOf, type Frame } from '../script/paint.ts';
 import { errorText } from '../script/messages.ts';
 import { safeColor } from '../script/lang/colors.ts';
@@ -90,6 +92,13 @@ export class ScriptPane extends TimePane {
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #panel: Panel | null = null;
+  /** The marks drawn on the map at its last drawing, and in the pane's rows at theirs: what the pointer finds. */
+  #mapMarks: DrawnMark[] = [];
+  #rowMarks: DrawnMark[] = [];
+  /** The alerts already seen, per chart (`AlertNews`). */
+  readonly #alertNews = new AlertNews();
+  /** Called with each new alert of a script that is on (the page sounds it through its alerts). */
+  onAlert: (alert: ScriptAlert) => void = () => {};
   readonly #ui: ScriptsPanelState = { editing: null, draft: null, message: null, armed: null };
   #button: HTMLButtonElement;
 
@@ -143,6 +152,12 @@ export class ScriptPane extends TimePane {
     if (this.#panel) this.#panel.render(this.#build); else this.openPanel(anchor);
   }
 
+  /** Hide a script where it is drawn, or show it again: hidden, it still runs and alerts, and its legend line or row stays. */
+  toggleHidden(id: string): void {
+    this.setRecords(this.#records.map(r => r.id === id ? { ...r, hidden: !r.hidden } : r));
+    if (this.#panel && !this.#ui.editing) this.#panel.render(this.#build);
+  }
+
   /** Switch a script off from where it is drawn (it stays in the list, to be switched on again there). */
   switchOff(id: string): void {
     this.setRecords(this.#records.map(r => r.id === id ? { ...r, on: false } : r));
@@ -152,7 +167,7 @@ export class ScriptPane extends TimePane {
   /** Put each row's buttons beside its name (`places` in the plot's coordinates); nothing changes while no row moved. */
   #placeRowTools(places: readonly { id: string; x: number; y: number }[]): void {
     const dx = this.canvas.offsetLeft + leftGutter(this.store.state), dy = this.canvas.offsetTop;
-    const key = `${dx},${dy}|${places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}`).join('|')}`;
+    const key = `${dx},${dy}|${places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}`).join('|')}`;
     if (key === this.#rowToolsKey) return;
     this.#rowToolsKey = key;
     this.#syncTools(this.#rowTools, this.#rowButtons, places, dx, dy);
@@ -163,16 +178,19 @@ export class ScriptPane extends TimePane {
   readonly legendTools = el('div', { class: 'script-row-tools script-legend-tools' });
   #legendToolsKey = '';
   placeLegendTools(places: readonly { id: string; x: number; y: number }[]): void {
-    const key = places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}`).join('|');
+    const key = places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}`).join('|');
     if (key === this.#legendToolsKey) return;
     this.#legendToolsKey = key;
     this.#syncTools(this.legendTools, this.#legendButtons, places, 0, 0);
   }
   #legendButtons = new Map<string, HTMLElement>();
 
+  #hiddenOf(id: string): boolean { return this.#records.find(r => r.id === id)?.hidden === true; }
+
   /**
-   * Each script's two buttons, open and switch off, at its place (offset by `dx`, `dy`) in `layer`: a script's buttons are made once and moved
-   * after, so a panel opened from one keeps its anchor and a focused one keeps the focus; a script no longer listed loses its buttons.
+   * Each script's three buttons, hide or show, open and switch off, at its place (offset by `dx`, `dy`) in `layer`: a script's buttons are made
+   * once and moved after, so a panel opened from one keeps its anchor and a focused one keeps the focus; a script no longer listed loses its
+   * buttons. The first says whether the script is hidden.
    */
   #syncTools(layer: HTMLElement, made: Map<string, HTMLElement>, places: readonly { id: string; x: number; y: number }[], dx: number, dy: number): void {
     const wanted = new Set(places.map(p => p.id));
@@ -180,12 +198,20 @@ export class ScriptPane extends TimePane {
     for (const place of places) {
       let box = made.get(place.id);
       if (!box) {
+        const hide = el('button', { type: 'button', class: 'script-row-hide' });
+        hide.onclick = () => this.toggleHidden(place.id);
         const open = el('button', { type: 'button', class: 'script-row-open', ariaLabel: t('Open this script to change it'), tip: t('Open this script to change it') });
         open.onclick = () => this.openScript(place.id, open);
         const off = el('button', { type: 'button', class: 'script-row-off', textContent: '×', ariaLabel: t('Switch this script off (it stays in Scripts…)'), tip: t('Switch this script off (it stays in Scripts…)') });
         off.onclick = () => this.switchOff(place.id);
-        box = el('span', { class: 'script-row-tool' }, open, off);
+        box = el('span', { class: 'script-row-tool' }, hide, open, off);
         made.set(place.id, box); layer.append(box);
+      }
+      const hide = box.querySelector<HTMLButtonElement>('.script-row-hide')!, hidden = this.#hiddenOf(place.id);
+      if (hide.dataset.hidden !== String(hidden)) {
+        hide.dataset.hidden = String(hidden);
+        const words = hidden ? t('Show this script') : t('Hide this script (it still runs and alerts)');
+        hide.setAttribute('aria-label', words); hide.setAttribute('aria-pressed', String(hidden)); setTip(hide, words);
       }
       box.style.left = `${Math.round(dx + place.x)}px`; box.style.top = `${Math.round(dy + place.y)}px`;
     }
@@ -201,6 +227,8 @@ export class ScriptPane extends TimePane {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, p = this.palette, fallbacks = [p.vwap, p.poc, p.level, p.accent, p.bid, p.ask];
     for (const r of this.#records) {
       if (!r.on || r.place !== 'map') continue;
+      // A hidden script is listed, muted and with no values, so its eye can show it again.
+      if (r.hidden) { out.push({ id: r.id, name: r.name, color: '', text: '', tone: 'muted' }); continue; }
       // Only the first `valued` lines show values (the legend lists a few, and none on a phone): the others are named, not worked out.
       const withValues = out.length < valued;
       const kept = this.#held.get(r.id), held = kept && this.#fresh(kept) ? kept : undefined;
@@ -219,6 +247,7 @@ export class ScriptPane extends TimePane {
       let text = '';
       if (withValues && i >= 0) {
         const texts = from.slice(0, 3).map(({ plot }) => {
+          if (plot.kind === 'mark') return markText(plot, i);
           const fmt = scaleIdOf(plot, r.options) === 'right' ? (v: number) => fmtPrice(v) : shortNumber;
           return PLOT_FIELDS[plot.kind].map(f => plot.fields[f]![i]!).filter(Number.isFinite).map(fmt).join(' – ');
         });
@@ -296,7 +325,7 @@ export class ScriptPane extends TimePane {
     // A run under way is waited for; one still waiting for its worker to load is replaced by a newer request; one being asked for is not asked twice.
     if (this.#starting || (this.#running && !this.#host.loading)) return;
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf) };
+    const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf), oi: state.oi, oiParts: state.oiParts };
     const was = this.#seen, now = Date.now();
     const changed = !was || Object.keys(seen).some(k => (seen as Record<string, unknown>)[k] !== (was as Record<string, unknown>)[k]);
     // Nothing changed: run again at the refresh anyway (the candle under way fills in from the flow), on a timer, so a quiet page still refreshes.
@@ -346,7 +375,7 @@ export class ScriptPane extends TimePane {
     if (!('program' in a)) return { result: { id: 'trial', ok: false, error: a }, warnings: [], candles: 0 };
     if (this.#trialBusy) return 'busy';
     const state = this.store.state, filters = new Map<string, SourceFilter>([['', {}], ...sourcesWith(a, options)]);
-    const inputs = this.#data.inputs(state, filters);
+    const inputs = this.#data.inputs(state, filters, a.inputs.has('oichg'));
     if (!inputs) return null;
     const warnings = this.#pageWarnings(a, options, this.#data.markets(state, filters));
     // Counted now: the run hands the inputs' arrays over to the worker, which leaves them empty here.
@@ -399,7 +428,8 @@ export class ScriptPane extends TimePane {
     }
     // A look that runs nothing is paced like a run, or a map drawn again for its errors would look again at once, frame after frame.
     if (!runnable.length) { this.#host.dropUnsent(); this.#lastRun = Date.now(); return; }
-    const inputs = this.#data.inputs(state, filters);
+    // The change in open interest is worked out only for a run in which a script reads it.
+    const inputs = this.#data.inputs(state, filters, runnable.some(r => (this.#analyze(r.source) as Analysis).inputs.has('oichg')));
     if (!inputs) { this.#host.dropUnsent(); return; }
     const markets = this.#data.markets(state, filters);
     for (const r of runnable) this.#warnings.set(r.id, this.#pageWarnings(this.#analyze(r.source) as Analysis, r.options, markets));
@@ -420,6 +450,12 @@ export class ScriptPane extends TimePane {
       this.#runMs = ms; this.#lastRun = Date.now() - ms;
       for (const res of results) this.#held.set(res.id, { result: res, time, tf, inst, at });
       this.#held = new Map(this.#held); this.#heldGen++;
+      // The oldest candle a run alerts at: the last one closed, or the newest when none is under way.
+      const since = time.length ? time[Math.max(0, time.length - (inputs.forming ? 2 : 1))]! : 0;
+      // Alerts only from a live answer for the chart as it is now, with Scripts on: one that comes after Scripts was switched off, the chart
+      // changed or a replay began says nothing.
+      const cur = this.store.state, live = at === Infinity && !replaying() && cur.show.script && cur.seriesInstrument === inst && (TIMEFRAMES[cur.timeframe] ?? 3_600_000) === tf;
+      if (live) for (const res of results) { const r = runnable.find(x => x.id === res.id); if (r && res.ok) this.#takeAlerts(r, res, inst, tf, since); }
       this.invalidate();
       this.onMapChanged();
       this.#refreshPanel();
@@ -427,6 +463,14 @@ export class ScriptPane extends TimePane {
       // The next look is set now (the refresh timer), not left to a drawing: a map covered by another tab draws nothing.
       this.#maybeRun();
     });
+  }
+
+  /** Hand on the new alerts of a script's answer (live answers only: a replay never sounds). */
+  #takeAlerts(r: ScriptRecord, res: Extract<ScriptResult, { ok: true }>, inst: string, tf: number, since: number): void {
+    const chart = `${r.id}|${fingerprint(`${r.api}|${JSON.stringify(r.options)}|${r.source}`)}|${inst}|${tf}`;
+    for (const a of this.#alertNews.take(res, chart, tf, since, Date.now())) {
+      this.onAlert({ id: r.id, name: r.name, text: a.text ? `${r.name}: ${a.text}` : r.name, sound: a.sound, key: `${r.id}|${a.site}` });
+    }
   }
 
   /** Keep an error met on the page (a script that does not read, one for a newer page); the same one again changes nothing, so nothing is drawn again for it. */
@@ -490,6 +534,7 @@ export class ScriptPane extends TimePane {
     const hv = state.hover;
     const card: InfoLine[] = [];
     const fallbacks = [p.vwap, p.poc, p.level, p.accent, p.bid, p.ask];
+    this.#rowMarks = [];
     on.forEach((r, k) => {
       const left = on.length - 1 - k, rowH = left === 0 ? Math.max(least, ph - top) : Math.max(least, Math.min(ph - top - left * least, Math.round(ph * r.height / total)));
       const kept = this.#held.get(r.id), held = kept && this.#fresh(kept) ? kept : undefined;
@@ -504,7 +549,8 @@ export class ScriptPane extends TimePane {
       };
       // The row's buttons stand after its name's plate (the name is drawn last, over the plots, so it is measured where it is drawn).
       const tools = (w: number): void => { places.push({ id: r.id, x: Math.min(pw - 44, 2 + w + 4), y: top + 1 }); };
-      if (!held) tools(label(`${r.name} · ${t('running…')}`, p.muted, top + 9));
+      if (r.hidden) tools(label(`${r.name} · ${t('hidden')}`, p.muted, top + 9));
+      else if (!held) tools(label(`${r.name} · ${t('running…')}`, p.muted, top + 9));
       else if (!held.result.ok) { tools(label(r.name, p.text, top + 9)); ctx.save(); ctx.beginPath(); ctx.rect(0, top, pw, rowH); ctx.clip(); label(errorText(held.result.error), p.ask, top + 24); ctx.restore(); }
       else {
         const res = held.result, time = held.time;
@@ -514,8 +560,8 @@ export class ScriptPane extends TimePane {
           const scales = scalesOf(res.plots, r.options, from, to);
           const frame: Frame = { ctx, x: tt => v.xOf(tt, pw), barW: Math.max(1, v.xOf(tf, pw) - v.xOf(0, pw)), tf, time, from, to, top, height: rowH, w: pw, color: p.text, up: p.candleUp, down: p.candleDown };
           res.plots.forEach((plot, j) => {
-            const s = scales.get(scaleIdOf(plot, r.options));
-            if (s) paintPlot({ ...frame, color: fallbacks[j % fallbacks.length]! }, plot, s);
+            const s = scales.get(scaleIdOf(plot, r.options)), fallback = fallbacks[j % fallbacks.length]!;
+            if (s) paintPlot({ ...frame, color: fallback, ...(plot.kind === 'mark' ? { marks: box => { this.#rowMarks.push({ box, id: r.id, name: r.name, plot, color: plotColorAt(plot, box.i, fallback, p.candleUp, p.candleDown) }); } } : {}) }, plot, s);
           });
           // The tags of the row's first scale at its right edge: the highest and the lowest in view.
           const first = scales.values().next().value;
@@ -532,7 +578,10 @@ export class ScriptPane extends TimePane {
       top += rowH;
     });
     this.#placeRowTools(places);
-    if (card.length) this.#lines = card;
+    // A mark under the pointer says what it is, in place of the candle's readout.
+    const marked = hv?.source === 'script' ? markAt(this.#rowMarks, v.xOf(hv.t, pw), hv.y, hv.touch ? MARK_SLOP_TOUCH : MARK_SLOP) : null;
+    if (marked) this.#lines = markLines(marked, 'text');
+    else if (card.length) this.#lines = card;
   }
 
   /** Called when what the scripts draw on the map changed (the map draws again). */
@@ -551,7 +600,7 @@ export class ScriptPane extends TimePane {
   #rebuildColors(): void {
     const out = new Map<number, string>(), tf = TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000;
     for (const r of this.#records) {
-      const held = r.on ? this.#held.get(r.id) : undefined;
+      const held = r.on && !r.hidden ? this.#held.get(r.id) : undefined;
       if (!held?.result.ok || !held.result.candleColors || !this.#current(held, tf)) continue;
       const shown = shownCount(held.time, tf);
       held.result.candleColors.forEach((c, i) => { if (c && i < shown) out.set(held.time[i]!, safeColor(c, '')); });
@@ -571,8 +620,9 @@ export class ScriptPane extends TimePane {
     this.#maybeRun();
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, v = this.view, p = this.palette;
     const fallbacks = [p.vwap, p.poc, p.level, p.accent, p.bid, p.ask];
+    this.#mapMarks = [];
     for (const r of this.#records) {
-      if (!r.on || r.place !== 'map') continue;
+      if (!r.on || r.hidden || r.place !== 'map') continue;
       const held = this.#held.get(r.id);
       if (!held?.result.ok || !this.#current(held, tf) || !held.time.length) continue;
       const res = held.result, time = held.time, [from, last] = visibleRange(time, v.t0, v.t1, tf), to = Math.min(last, shownCount(time, tf) - 1);
@@ -581,10 +631,20 @@ export class ScriptPane extends TimePane {
       scales.set('right', { min: v.p0, max: v.p1, margins: { top: 0, bottom: 0 } });
       const frame: Frame = { ctx, x: tt => v.xOf(tt, pw), barW: Math.max(1, v.xOf(tf, pw) - v.xOf(0, pw)), tf, time, from, to, top: 0, height: ph, w: pw, color: p.text, up: p.candleUp, down: p.candleDown };
       res.plots.forEach((plot, j) => {
-        const s = scales.get(scaleIdOf(plot, r.options));
-        if (s) paintPlot({ ...frame, color: fallbacks[j % fallbacks.length]! }, plot, s);
+        const s = scales.get(scaleIdOf(plot, r.options)), fallback = fallbacks[j % fallbacks.length]!;
+        if (s) paintPlot({ ...frame, color: fallback, ...(plot.kind === 'mark' ? { marks: box => { this.#mapMarks.push({ box, id: r.id, name: r.name, plot, color: plotColorAt(plot, box.i, fallback, p.candleUp, p.candleDown) }); } } : {}) }, plot, s);
       });
     }
+  }
+
+  /**
+   * The popup of the mark under the pointer on the map (`x`, `y` in the map's plot, as it was last drawn), with its colour for the box's edge
+   * and its first line; null where there is none.
+   */
+  mapMarkAt(x: number, y: number, touch: boolean): { lines: InfoLine[]; color: string; box: { x: number; y: number; w: number; h: number } } | null {
+    if (!this.store.state.show.script) return null;
+    const m = markAt(this.#mapMarks, x, y, touch ? MARK_SLOP_TOUCH : MARK_SLOP);
+    return m ? { lines: markLines(m), color: m.color, box: m.box } : null;
   }
 
   /** The map's popup lines for the scripts drawn on it, at the candle starting at `at`: each one's name, then its plots' values there. */
@@ -593,7 +653,7 @@ export class ScriptPane extends TimePane {
     if (!state.show.script) return out;
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
     for (const r of this.#records) {
-      if (!r.on || r.place !== 'map') continue;
+      if (!r.on || r.hidden || r.place !== 'map') continue;
       const held = this.#held.get(r.id);
       if (held?.result.ok && this.#current(held, tf)) this.#cardLines(out, r, held.result, held.time, tf, at, shownCount(held.time, tf), false, true);
     }
@@ -614,6 +674,15 @@ export class ScriptPane extends TimePane {
     let listed = 0, more = 0;
     res.plots.forEach((plot, j) => {
       if (plot.style.visible === false || (valued && band(plot))) return;
+      // A mark reads as its text (its tip is for the mark itself, under the pointer).
+      if (plot.kind === 'mark') {
+        const said = markText(plot, i);
+        if (!said) return;
+        if (listed >= CARD_PLOTS) { more++; return; }
+        listed++;
+        out.push({ label: plot.title || `${plot.kind} ${j + 1}`, text: said });
+        return;
+      }
       const values = PLOT_FIELDS[plot.kind].map(f => plot.fields[f]![i]!);
       if (!values.some(Number.isFinite)) return;
       // On the map a plot on the price scale is a price, written as the price axis writes one; the others are amounts.

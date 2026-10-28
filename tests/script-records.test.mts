@@ -78,3 +78,11 @@ test('scripts are kept in storage and read back; a refusing storage says so', ()
   assert.deepEqual(loadScripts({ getItem: () => '{broken' }), []);
   assert.match(newId('Ünïcode name!', () => 0.5), /^unicode-name-[a-z0-9]{6}$/);
 });
+
+test('a hidden script stays hidden through storage, and a script never hidden carries no flag', () => {
+  const hidden = readScript({ name: 'Marks', source: 'mark(1)', hidden: true })!;
+  assert.equal(hidden.hidden, true);
+  assert.equal(readScripts(JSON.parse(JSON.stringify([hidden])))[0]!.hidden, true);
+  assert.equal('hidden' in readScript({ name: 'Marks', source: 'mark(1)', hidden: 'yes' })!, false, 'only true hides');
+  assert.equal('hidden' in readScript({ name: 'Marks', source: 'mark(1)' })!, false);
+});

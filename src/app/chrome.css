@@ -139,6 +139,7 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 :where([data-frame="paper"]) .statusbar { background: var(--panel); border-top-color: var(--line); }
 :where([data-frame="paper"]) .pane-head { background: var(--panel); }
 :where([data-frame="paper"]) .menu-item:hover, :where([data-frame="paper"]) .menu-item:focus-visible { background: color-mix(in srgb, var(--text) 7%, var(--panel)); }
+:where([data-frame="paper"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) { background: color-mix(in srgb, var(--text) 7%, transparent); }
 
 :where([data-frame="paper"]) .toolbar .deck { border: 1px solid color-mix(in srgb, var(--edge) 55%, var(--line)); }
 
@@ -390,6 +391,9 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 :root[data-frame="bevel"] dialog.coins input[type="search"] { width: calc(100% - 16px); margin-top: 0; }
 :where([data-frame="bevel"]) .coin-row:hover, :where([data-frame="bevel"]) .coin-row:focus-visible, :where([data-frame="bevel"]) .coin-row.on { background: var(--bar); color: var(--bar-text); outline: 0; }
 :where([data-frame="bevel"]) :is(.coin-row:hover, .coin-row:focus-visible, .coin-row.on) .muted { color: var(--bar-text); }
+/* A panel's row while one of its buttons is pointed at (styles.css): the selection's colours, its buttons keeping their own face. */
+:where([data-frame="bevel"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) { background: var(--bar); color: var(--bar-text); }
+:where([data-frame="bevel"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) > :not(button) { color: var(--bar-text); }
 :where([data-frame="bevel"]) .coin-list { background: var(--well); border: 1px solid; border-color: var(--bv-c-sunken); border-image: var(--bv-sunken) 2 / 2px; }
 :where([data-frame="bevel"]) .venue-list { background: transparent; }
 
@@ -542,6 +546,8 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 :where([data-frame="textmode"]) .panel-head, :where([data-frame="textmode"]) .sheet-head { background: var(--text); color: var(--bg); border-bottom: 0; }
 :where([data-frame="textmode"]) .menu-item:hover, :where([data-frame="textmode"]) .menu-item:focus-visible { background: var(--text); color: var(--bg); }
 :where([data-frame="textmode"]) .menu-item:hover .tick, :where([data-frame="textmode"]) .menu-item:focus-visible .tick { color: var(--bg); }
+:where([data-frame="textmode"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) { background: var(--text); color: var(--bg); }
+:where([data-frame="textmode"]) .layout-row:has(> button:not(:disabled):is(:hover, :focus-visible)) > :not(button) { color: var(--bg); }
 :where([data-frame="textmode"]) :is(button, select, summary):focus-visible { outline: 1px solid var(--text); outline-offset: 1px; }
 :where([data-frame="textmode"]) .menu-item:focus-visible { outline: 1px solid var(--bg); outline-offset: -3px; }
 :where([data-frame="textmode"]) .splitter:hover, :where([data-frame="textmode"]) .splitter.active { background: var(--text); }

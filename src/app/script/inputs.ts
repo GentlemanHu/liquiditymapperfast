@@ -54,6 +54,11 @@ export interface BarInputs {
   volume: Float64Array;
   /** By `filterKey` ('' for the flow column's markets). */
   sources: Record<string, SourceInputs>;
+  /**
+   * Open interest opened (+) or closed (-) in each candle, in USD, over the perpetuals the OI pane adds up (NaN where it was not read); there
+   * only when a script reads `oichg`.
+   */
+  oichg?: Float64Array;
   /** Whether the newest candle is still under way. */
   forming: boolean;
 }
@@ -111,5 +116,6 @@ export function transferables(inputs: BarInputs): ArrayBuffer[] {
   const out = new Set<ArrayBuffer>();
   for (const a of [inputs.time, inputs.open, inputs.high, inputs.low, inputs.close, inputs.volume]) out.add(a.buffer as ArrayBuffer);
   for (const s of Object.values(inputs.sources)) for (const a of [s.vbuy, s.vsell, s.lbuy, s.lsell]) out.add(a.buffer as ArrayBuffer);
+  if (inputs.oichg) out.add(inputs.oichg.buffer as ArrayBuffer);
   return [...out];
 }

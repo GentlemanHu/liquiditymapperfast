@@ -36,7 +36,7 @@ export interface ScriptsPanelState {
 export function statusOf(host: ScriptsHost, r: ScriptRecord): { text: string; error: boolean } {
   const res = host.resultOf(r.id), notes = host.warningsOf(r.id).length + (res?.ok ? res.warnings.length : 0);
   const status = !r.on ? t('off') : !res ? (host.running ? t('running…') : t('not run yet')) : !res.ok ? t('error') : notes ? tn(notes, '{n} warning', '{n} warnings') : tn(res.plots.length, '{n} plot', '{n} plots');
-  return { text: `${r.place === 'map' ? t('On the map') : t('In its own row')} · ${status}`, error: r.on && !!res && !res.ok };
+  return { text: `${r.place === 'map' ? t('On the map') : t('In its own row')}${r.on && r.hidden ? ` · ${t('hidden')}` : ''} · ${status}`, error: r.on && !!res && !res.ok };
 }
 
 /** What `editing` holds for a script not kept yet: no script's id can be it (ids are lowercase letters, digits and dashes). */

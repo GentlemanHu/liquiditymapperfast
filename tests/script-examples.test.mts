@@ -19,7 +19,8 @@ function inputs(): BarInputs {
   });
   return {
     tf: HOUR, time: Float64Array.from({ length: N }, (_, i) => i * HOUR),
-    open: Float64Array.from(close, (c, i) => i ? close[i - 1]! : c), high: Float64Array.from(close, c => c * 1.004), low: Float64Array.from(close, c => c * 0.996),
+    // Wicks of their own length a candle, so candles can sit inside or reach past the one before, as real ones do.
+    open: Float64Array.from(close, (c, i) => i ? close[i - 1]! : c), high: Float64Array.from(close, (c, i) => Math.max(c, i ? close[i - 1]! : c) * (1 + rnd() * 0.006)), low: Float64Array.from(close, (c, i) => Math.min(c, i ? close[i - 1]! : c) * (1 - rnd() * 0.006)),
     close: Float64Array.from(close), volume: Float64Array.from(close, () => 1),
     sources: { '': flow(), [filterKey({ kinds: ['perp'] })]: flow(), [filterKey({ kinds: ['spot'] })]: flow() },
     forming: true,
