@@ -51,8 +51,8 @@ export const SECTIONS: readonly Section[] = [
     id: 'recording', title: 'Why the map fills in as you watch',
     blocks: [
       { t: 'p', text: 'This is the most important thing to know about the heatmap. **An exchange only tells you what its order book looks like right now.** None publishes what it looked like an hour ago, so there is no history to download. The map is built by watching the book and writing it down, locally, in your browser, from the moment you open the page.' },
-      { t: 'p', text: 'So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. To make the map readable from the first second, the part before the stripe is filled in **grey**: today\'s book copied back in time, on the same scale (a darker grey is a bigger wall). Grey is never history. It only shows where the walls are now. Real colour starts at the dashed line, and the grey shrinks as recorded data takes its place.' },
-      { t: 'fig', id: 'recording', caption: 'A first visit, sped up. Grey is the current book copied back; colour is what was recorded while the page was open.' },
+      { t: 'p', text: 'So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. A **dashed line** marks the moment the recording began. Before it the map is left empty: nothing is drawn where nothing was recorded, so every colour on the map is real.' },
+      { t: 'fig', id: 'recording', caption: 'A first visit, sped up. Colour is what was recorded while the page was open; before the dashed line there is nothing to show.' },
       { t: 'list', items: [
         'The page keeps the last **24 hours** it recorded in your browser, so coming back continues the map. Time with the page closed leaves a gap.',
         'Only **one tab records** at a time; another tab shows the live data and the recording so far.',

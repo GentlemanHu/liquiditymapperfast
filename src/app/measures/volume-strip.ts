@@ -43,6 +43,21 @@ export interface StripBar {
 export const candleUsd = (c: CandleRow): number => c[5] > 0 && c[3] > 0 ? c[5] * (c[2] + c[3] + c[4]) / 3 : 0;
 
 /**
+ * Who bought and sold at market in an exchange's own candle, in dollars: its quote volume and the part of it bought at market where it
+ * reports them (`exact`), else `dollars` split by its taker buys' share of its volume; null where it does not say who bought. The volume
+ * strip's candle bars and the scripts' flow where the page recorded none both read it, so the two never disagree.
+ */
+export function candleSides(own: CandleRow | undefined, dollars: number): { buy: number; sell: number; exact: boolean } | null {
+  if (!own) return null;
+  const quote = own[9], quoteBought = own[10];
+  if (quote !== undefined && quoteBought !== undefined && quote >= 0) { const buy = Math.min(quote, Math.max(0, quoteBought)); return { buy, sell: quote - buy, exact: true }; }
+  const share = own[7] !== undefined && own[5] > 0 ? own[7] / own[5] : undefined;
+  if (share === undefined || !Number.isFinite(share)) return null;
+  const buy = dollars * Math.min(1, Math.max(0, share));
+  return { buy, sell: dollars - buy, exact: false };
+}
+
+/**
  * The bars of the candles in [t0, t1]: from the recorded rows (buckets of the timeframe) from where the recording reaches (`since`), a
  * candle it starts inside partial; before it, or with nothing recorded, the candle itself, read with `exchange` (the exchange's own candle
  * of that start, Binance's: undefined where the exchange does not say who bought). Its quote volume and the part of it bought at market,
@@ -64,15 +79,12 @@ export function stripBars(candles: readonly CandleRow[], tf: number, rows: TimeR
       continue;
     }
     if (replay && e > now) continue;
-    const own = exchange(s), [quote, quoteBought, trades] = [own?.[9], own?.[10], own?.[8]];
-    if (quote !== undefined && quoteBought !== undefined && quote >= 0) {
-      const bought = Math.min(quote, Math.max(0, quoteBought));
-      out.push({ t: s, x, w, source: 'candle', buy: bought, sell: quote - bought, split: true, exact: true, ...(trades !== undefined ? { trades } : {}), i: -1, gap: null });
+    const own = exchange(s), dollars = candleUsd(c), sides = candleSides(own, dollars), trades = own?.[8];
+    if (sides?.exact) {
+      out.push({ t: s, x, w, source: 'candle', buy: sides.buy, sell: sides.sell, split: true, exact: true, ...(trades !== undefined ? { trades } : {}), i: -1, gap: null });
       continue;
     }
-    const share = own && own[7] !== undefined && own[5] > 0 ? own[7] / own[5] : undefined, dollars = candleUsd(c), split = share !== undefined && Number.isFinite(share);
-    const bought = split ? dollars * Math.min(1, Math.max(0, share!)) : dollars;
-    out.push({ t: s, x, w, source: 'candle', buy: bought, sell: split ? dollars - bought : 0, split, i: -1, gap: null });
+    out.push({ t: s, x, w, source: 'candle', buy: sides ? sides.buy : dollars, sell: sides ? sides.sell : 0, split: sides !== null, i: -1, gap: null });
   }
   return out;
 }

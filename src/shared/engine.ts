@@ -540,10 +540,13 @@ export class Engine {
   /** How the coin is listed on the market an instrument belongs to (none: not this coin's market, so nothing is asked of it). */
   #listing(instrumentId: string) { return this.#coin.markets[venueOf(instrumentId) as MarketVenue]; }
 
-  /** Candles from the venue's own history. An unreachable venue answers with nothing, and the page falls back to another one. */
+  /**
+   * Candles from the venue's own history. An unreachable venue answers with nothing, and the page falls back to another one. Each page asks
+   * for the bars the window needs, not the venue's most (Binance's 1,500 for the chart's 500 was three times the bytes and twice the weight).
+   */
   async candles(instrumentId: string, tfMs: number, from: number, to: number): Promise<Candle[]> {
     const listing = this.#listing(instrumentId); if (!listing) return [];
-    try { return await fetchCandles(instrumentId, tfMs, from, to, this.#get, listing); } catch { return []; }
+    try { return await fetchCandles(instrumentId, tfMs, from, to, this.#get, listing, 12, { pageSize: 1500 }); } catch { return []; }
   }
 
   /** Open interest bars: the venue's own history where it has one, and the readings taken while the page was open. */

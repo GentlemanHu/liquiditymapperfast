@@ -24,7 +24,7 @@ test('the guide says what the user asked it to say', () => {
   const text = SECTIONS.map(s => plain(JSON.stringify(s))).join(' ').toLowerCase();
   assert.match(text, /no history to download/);
   assert.match(text, /recorded/);
-  assert.match(text, /grey/);
+  assert.match(text, /dashed line marks the moment the recording began/);
   assert.match(text, /24 hours/);
   assert.match(text, /mirror only shows while you hover/);
   assert.match(text, /unavailable from your location/);

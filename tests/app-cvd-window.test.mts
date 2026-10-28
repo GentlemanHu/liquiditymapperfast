@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MIN_WINDOW_MS, flowWindow } from '../src/app/cvd/window.ts';
-import { priceFlowId } from '../src/app/cvd/ids.ts';
+import { flowFeedSpotId, priceFlowId } from '../src/app/cvd/ids.ts';
 
 const HOUR = 3_600_000, NOW = 1_800_000_000_000;
 
@@ -48,4 +48,10 @@ test('the price comes from the market on screen, or its spot twin under the flow
   assert.equal(priceFlowId(['', 'okx:BTC-USDT-SWAP'], has('okx:BTC-USDT-SWAP')), 'okx:BTC-USDT-SWAP', 'the next candidate when the first is empty');
   assert.equal(priceFlowId(['mexc:BTC_USDT'], has('hyperliquid:BTC-PERP')), null);
   assert.equal(priceFlowId([], has()), null);
+});
+
+test('a spot market on the chart under the flow feeds\' name', () => {
+  assert.equal(flowFeedSpotId('binance:BTCUSDT:spot'), 'binancespot:BTCUSDT');
+  assert.equal(flowFeedSpotId('binance:BTCUSDT'), null, 'a perpetual is named alike in both');
+  assert.equal(flowFeedSpotId('binancespot:BTCUSDT'), null);
 });

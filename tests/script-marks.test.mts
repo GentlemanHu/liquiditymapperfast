@@ -194,7 +194,10 @@ test('a mark under the pointer, its popup, and how it reads in a readout', () =>
   assert.equal(textOn('#ffffff'), '#111'); assert.equal(textOn('#202020'), '#fff');
 });
 
-test('scripts written before version 2 that use oichg or alert as their own names keep them', () => {
+test('scripts written before version 2 that use oichg, alert or theme as their own names keep them', () => {
+  assert.deepEqual([...run('theme = 1\nline(theme)').plots[0]!.fields.value!], [1, 1, 1, 1, 1, 1], 'its own theme, kept from candle to candle');
+  assert.deepEqual(analyze('theme = 1\nline(theme.anything ? 1 : 0)').warnings.filter(w => w.code === 'unsupported-member'), [], 'its own theme is not the page\'s');
+  assert.deepEqual(analyze('line(theme.anything ? 1 : 0)').warnings.filter(w => w.code === 'unsupported-member').length, 1, 'the page\'s theme still warns of a member it does not have');
   assert.deepEqual([...run('oichg = 1\nline(oichg)').plots[0]!.fields.value!], [1, 1, 1, 1, 1, 1]);
   assert.ok(!analyze('oichg = 1\nline(oichg)').inputs.has('oichg'), 'its own name asks for no open interest');
   assert.deepEqual([...run('alert = option(default=true, type=checkbox)\nline(alert ? 1 : 0)').plots[0]!.fields.value!], [1, 1, 1, 1, 1, 1]);

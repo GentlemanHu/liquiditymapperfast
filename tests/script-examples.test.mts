@@ -4,7 +4,10 @@ import { analyze, createRunner, runScript } from '../src/app/script/lang/engine.
 import { STEPS_PER_CANDLE } from '../src/app/script/lang/analysis.ts';
 import { examples, exampleHeight } from '../src/app/script/examples.ts';
 import { HEATMAP_SOURCE } from '../src/app/script/starter.ts';
-import { filterKey, type BarInputs, type SourceInputs } from '../src/app/script/inputs.ts';
+import { filterKey, type BarInputs, type ScriptTheme, type SourceInputs } from '../src/app/script/inputs.ts';
+import { AlertNews } from '../src/app/script/alert-news.ts';
+import { interpolateColors, safeColor } from '../src/app/script/lang/colors.ts';
+import { MARK_TIP, type ScriptResult } from '../src/app/script/protocol.ts';
 
 const N = 300, HOUR = 3_600_000;
 /** Candles of a wandering price with flow and liquidations on every market set the examples read. */
@@ -61,4 +64,237 @@ test('the heat map: sixteen rows of colour on 0..100, its average over them, its
   const colored = runScript('heat', HEATMAP_SOURCE, { colorCandles: true }, inputs());
   assert.ok(colored.ok && colored.candleColors?.some(c => !!c), 'candle colours when switched on');
   assert.ok(!r.candleColors?.some(c => !!c), 'and none by default');
+});
+
+// ---- Bar patterns, on candles worked out by hand: each rule is read off the numbers, not off what the script answers.
+
+const BARS = examples().find(e => e.name === 'Bar patterns')!.source;
+const UP_ARROW = '↑', DOWN_ARROW = '↓';
+/** 2026-10-26 00:00 UTC, a Monday: the day and the week begin here (the month does not). */
+const MONDAY = Date.UTC(2026, 9, 26);
+type Row = [open: number, high: number, low: number, close: number];
+/**
+ * Candles [open, high, low, close] a pattern at a time. 0 the first; 1 inside 0; 2 above 1's high and closed above it; 3 inside 2; 4 below 3's low and
+ * closed below it; 5 above 4's high, closed above it, right after a break below an inside candle; 6 past both ends of 5 but closed at 5's high, not beyond
+ * it, with a lower wick of most of its length; 7 past both ends of 6 and closed above its high; 8 inside 7; 9 above 8's high but closed back below it with
+ * an upper wick of most of its length; 10 inside 9; 11 below 10's low but closed back above it with a lower wick of most of its length; 12 inside 11;
+ * 13 above 12's high but closed back below it with a short wick; 14 below 13's low and closed below it, right after a break above an inside candle;
+ * 15 below 14's low and closed back above it with a short wick.
+ */
+const SERIES: Row[] = [
+  [100, 110, 90, 105], [105, 108, 95, 100], [100, 112, 98, 111], [111, 111, 99, 100], [100, 100.5, 96, 97], [97, 103, 96.5, 102.5], [102.5, 104, 90, 103], [103, 120, 80, 119],
+  [119, 119.5, 100, 118.5], [118.5, 130, 118, 119], [122, 126, 119, 124], [124, 125, 110, 123], [123, 124.5, 112, 120], [120.5, 125, 113, 123], [123, 123.5, 110, 111], [111, 112, 109.5, 110.8],
+];
+const WORDS = ['', 'in', `Breakout ${UP_ARROW}`, 'in', `Breakout ${DOWN_ARROW}`, `Failed break ${UP_ARROW}`, `Rejection ${UP_ARROW}`, `Outside ${UP_ARROW}`, 'in', `Rejection ${DOWN_ARROW}`, 'in', `Rejection ${UP_ARROW}`, 'in', '', `Failed break ${DOWN_ARROW}`, ''];
+
+interface BarOptions { start?: number; hours?: readonly number[]; tf?: number; forming?: boolean; theme?: ScriptTheme; big?: boolean }
+/** The candles an hour apart from `start` (or at `hours` from it, to leave some out), the same flow in each and a change in open interest of $5M (`big`: of billions). */
+function barInputs(rows: readonly Row[], o: BarOptions = {}): BarInputs {
+  const n = rows.length, tf = o.tf ?? HOUR, col = (k: number): Float64Array => Float64Array.from(rows, r => r[k]!), fill = (v: number): Float64Array => new Float64Array(n).fill(v);
+  return {
+    tf, time: Float64Array.from(rows, (_, i) => (o.start ?? MONDAY) + (o.hours ? o.hours[i]! : i) * tf),
+    open: col(0), high: col(1), low: col(2), close: col(3), volume: fill(1),
+    sources: { '': o.big ? { vbuy: fill(987e9), vsell: fill(123e9), lbuy: fill(9.99e9), lsell: fill(9.99e9), markets: 1 } : { vbuy: fill(60), vsell: fill(40), lbuy: fill(0), lsell: fill(0), markets: 1 } },
+    oichg: fill(o.big ? -99.9e9 : 5e6), forming: o.forming ?? false, ...(o.theme ? { theme: o.theme } : {}),
+  };
+}
+type Run = Extract<ScriptResult, { ok: true }>;
+function barRun(rows: readonly Row[], o: BarOptions = {}, options: Record<string, boolean> = {}): Run {
+  const r = runScript('bars', BARS, options, barInputs(rows, o));
+  assert.ok(r.ok, r.ok ? '' : JSON.stringify(r.error));
+  assert.deepEqual(r.warnings, []);
+  return r;
+}
+/** The mark at candle `i`, whichever plot drew it. */
+function barMark(r: Run, i: number): { title: string; text: string; tip: string; color: string; value: number } | null {
+  for (const p of r.plots) if (p.kind === 'mark' && Number.isFinite(p.fields.value![i]!)) return { title: p.title, text: p.texts?.[i] ?? '', tip: p.tips?.[i] ?? '', color: p.colors?.[i] ?? '', value: p.fields.value![i]! };
+  return null;
+}
+const barWords = (r: Run, n: number): string[] => Array.from({ length: n }, (_, i) => barMark(r, i)?.text ?? '');
+const barLine = (r: Run, title: string): (number | null)[] => Array.from(r.plots.find(p => p.title === title)!.fields.value!, v => Number.isNaN(v) ? null : v);
+const nulls = (n: number): null[] => Array.from({ length: n }, () => null);
+/** The sentences of a hover about the opens: those after the line on open interest. */
+const opensOf = (r: Run, i: number): string[] => { const lines = barMark(r, i)!.tip.split('\n'); return lines.slice(lines.findIndex(l => l.startsWith('Open interest')) + 1); };
+
+test('Bar patterns: each candle\'s word, each pattern and its levels, on candles worked out by hand', () => {
+  const a = analyze(BARS);
+  assert.deepEqual([...a.read], [], 'every option it reads is declared');
+  assert.ok(a.inputs.has('oichg'), 'the page is asked for the change in open interest its hovers give');
+  const r = barRun(SERIES);
+  assert.deepEqual(barWords(r, SERIES.length), WORDS);
+  // A pattern up stands under its candle's low and one down over its high; a candle with none has its word under it.
+  assert.deepEqual([2, 5, 6, 7, 11].map(i => barMark(r, i)!.title), Array(5).fill('Pattern up'));
+  assert.deepEqual([4, 9, 14].map(i => barMark(r, i)!.title), Array(3).fill('Pattern down'));
+  assert.deepEqual([1, 3, 8, 10, 12].map(i => barMark(r, i)!.title), Array(5).fill('Candle'));
+  assert.deepEqual([barMark(r, 7)!.value, barMark(r, 9)!.value], [80, 130]);
+  assert.deepEqual(['Pattern up', 'Pattern down'].map(t => r.plots.find(p => p.title === t)!.style.offset), [2, 2], 'both stand as close to their candle');
+  // A breakout's levels: the inside candle's end it went through and the end two candles back; a failed break's: the end of the candle before it went back through and
+  // the end two candles back. Nothing for a rejection or an outside candle.
+  assert.deepEqual(barLine(r, 'Break level'), [null, null, 108, null, 99, 100.5, ...nulls(8), 113, null]);
+  assert.deepEqual(barLine(r, 'Next level'), [null, null, 110, null, 98, 111, ...nulls(8), 112, null]);
+  assert.equal(barMark(r, 2)!.tip, [
+    'The candle before stayed inside the one before it. This one broke above the inside candle\'s high and closed above it.',
+    'Break level 108.0; next level 110.0 (the high two candles back), reached',
+    'Buyers led by $20 (bought at market $60, sold $40)', 'No liquidations recorded', 'Open interest rose by $5.0M (positions opened)',
+    'Break level above the day and week opens.', 'The month open is not on the chart.',
+  ].join('\n'));
+  assert.equal(barMark(r, 5)!.tip.split('\n').slice(0, 2).join('\n'), [
+    'The candle before broke below an inside candle (a pause). This one went back above the high of the candle before and closed above it: the break failed.',
+    'Break level 100.5; next level 111.0 (the high two candles back), not reached: the furthest 103.0',
+  ].join('\n'));
+  assert.equal(barMark(r, 9)!.tip, [
+    'It went above the high (119.5) of the candle before and closed back inside, with an upper wick 92% of the candle: the prices above were refused.',
+    'Buyers led by $20 (bought at market $60, sold $40)', 'No liquidations recorded', 'Open interest rose by $5.0M (positions opened)',
+    'Close above the day and week opens.', 'The month open is not on the chart.',
+  ].join('\n'));
+  assert.equal(barMark(r, 7)!.tip.split('\n')[0], 'It went past both ends of the candle before and closed above its high (104.0).');
+  // Where this page did not record the flow, it is the chart market's own candle (bar.recorded 0): the hover says so.
+  const own = barInputs(SERIES);
+  own.sources['']!.recorded = new Float64Array(SERIES.length);
+  const fromCandle = runScript('bars', BARS, {}, own);
+  assert.ok(fromCandle.ok);
+  assert.equal(barMark(fromCandle as Run, 2)!.tip.split('\n')[2], 'On the chart\'s market alone, buyers led by $20 (bought at market $60, sold $40)');
+});
+
+test('Bar patterns: a break counts where the candle closes, so a poke past the inside candle that closed back is a word and a long wick is a rejection either way round', () => {
+  const r = barRun(SERIES, {}, { showAll: true });
+  // 13 went above the inside candle's high and closed back below it with a short wick: only its word says so. 15 is the same below the low.
+  assert.deepEqual(barWords(r, SERIES.length), WORDS.map((w, i) => i === 13 ? 'up' : i === 15 ? 'down' : w));
+  assert.equal(barMark(r, 13)!.tip, 'Up: it went above the high of the candle before (124.5) and held its low, and did not close above it.');
+  assert.equal(barMark(r, 15)!.tip, 'Down: it went below the low of the candle before (110.0) and held its high, and did not close below it.');
+  // 9 went above an inside candle and 11 below one, and each closed back inside with a long wick: rejections, not breakouts, the one up as the other down.
+  assert.deepEqual([9, 11].map(i => barMark(r, i)!.text), [`Rejection ${DOWN_ARROW}`, `Rejection ${UP_ARROW}`]);
+  // An outside candle that closed beyond an end is the pattern, so the word is left to those that closed between the ends; with patterns off it says which.
+  const words = barRun(SERIES, {}, { showPatterns: false });
+  assert.deepEqual([6, 7].map(i => barMark(words, i)!.text), ['out', 'out']);
+  assert.equal(barMark(words, 6)!.tip, 'Outside: it went past both the high (103.0) and the low (96.50) of the candle before, and closed between them.');
+  assert.equal(barMark(words, 7)!.tip, 'Outside: it went past both the high (104.0) and the low (90.00) of the candle before, and closed above that high.');
+  // A wick of exactly twice the rest of the candle counts, a little less does not.
+  const wick = (high: number) => barWords(barRun([[100, 110, 90, 105], [91, high, 89, 91]]), 2)[1];
+  assert.equal(wick(92), `Rejection ${UP_ARROW}`);
+  assert.equal(wick(92.1), '');
+});
+
+test('Bar patterns: an end only touched is not gone past, and a candle with no prices or none just before it in time has nothing to be compared with', () => {
+  assert.deepEqual(barWords(barRun([[100, 110, 90, 105], [105, 110, 95, 100], [100, 108, 95, 100], [100, 108, 95, 99]]), 4), ['', 'in', 'in', 'in'], 'the same high, the same low, both: inside');
+  const rows: Row[] = [[100, 110, 90, 105], [105, 108, 95, 100], [100, 112, 98, 111], [108, 110, 100, 105]];
+  assert.deepEqual(barWords(barRun(rows), 4), ['', 'in', `Breakout ${UP_ARROW}`, 'in']);
+  assert.deepEqual(barWords(barRun(rows, { hours: [0, 1, 2, 4] }), 4), ['', 'in', `Breakout ${UP_ARROW}`, ''], 'a candle missing before the last');
+  assert.deepEqual(barWords(barRun(rows.slice(0, 3), { hours: [0, 2, 3] }), 3), ['', '', ''], 'a candle missing before the inside one: it is not known to be inside, so what follows is no breakout');
+  // An inside candle with the high of the one before leaves its breakout above with no next level: it would be the break level itself.
+  const same = barRun([[100, 110, 90, 105], [105, 110, 95, 100], [100, 112, 98, 111]]);
+  assert.equal(barMark(same, 2)!.tip.split('\n')[1], 'Break level 110.0');
+  assert.deepEqual([barLine(same, 'Break level')[2], barLine(same, 'Next level')[2]], [110, null]);
+  assert.deepEqual(barWords(barRun([rows[0]!, rows[1]!, [NaN, NaN, NaN, NaN], [105, 108, 96, 100]]), 4), ['', 'in', '', ''], 'no prices: no mark, and nothing for the next candle to be compared with');
+});
+
+test('Bar patterns: the failed break after a plain candle shows only when asked for', () => {
+  // 1 above 0's high, 2 below 1's low, 3 above 2's high and closed above it: the candle before it broke below a candle that had itself gone up.
+  const rows: Row[] = [[100, 110, 90, 105], [105, 112, 98, 110], [110, 111, 94, 96], [96, 113, 95, 112]];
+  assert.deepEqual(barWords(barRun(rows), 4), ['', '', '', '']);
+  const all = barRun(rows, {}, { showEveryFail: true });
+  assert.deepEqual(barWords(all, 4), ['', '', `Failed break ${DOWN_ARROW}`, `Failed break ${UP_ARROW}`]);
+  assert.ok(barMark(all, 3)!.tip.startsWith('The candle before broke below the one before it. This one went back above the high of the candle before'));
+});
+
+test('Bar patterns: the candle under way is marked as it stands, and waits at the inside candle\'s ends while it has not gone past them', () => {
+  const inside: Row[] = [[100, 110, 90, 105], [105, 108, 95, 100]];
+  const state = (last: Row, forming = true): Run => barRun([...inside, last], { forming });
+  // Still within the inside candle: both of its ends as lines across the candle, and a "waiting" over the upper one that says what would make a breakout.
+  const waiting = state([100, 106, 97, 103]), m = barMark(waiting, 2)!;
+  assert.deepEqual([barLine(waiting, 'Breakout up at')[2], barLine(waiting, 'Breakout down at')[2]], [108, 95]);
+  assert.deepEqual([m.text, m.value], ['waiting', 108]);
+  assert.ok(m.tip.startsWith('The candle before stayed inside the one before it, and this one is still within it. A breakout needs a close above 108.0 or below 95.00, without going past the other end.\nBuyers led by'));
+  // Closed, it is an inside candle and nothing waits.
+  const closed = state([100, 106, 97, 103], false);
+  assert.equal(barMark(closed, 2)!.text, 'in');
+  assert.deepEqual([barLine(closed, 'Breakout up at')[2], barLine(closed, 'Breakout down at')[2]], [null, null]);
+  // Above the inside candle's high and closed above it so far: a breakout, said to be able to change, whose next level was reached so far; nothing waits.
+  const broke = state([100, 110, 99, 109.5]);
+  assert.equal(barMark(broke, 2)!.text, `Breakout ${UP_ARROW}`);
+  assert.equal(barMark(broke, 2)!.tip.split('\n').slice(1, 3).join('\n'), 'Still under way: this can change.\nBreak level 108.0; next level 110.0 (the high two candles back), reached so far');
+  assert.equal(barLine(broke, 'Breakout up at')[2], null);
+  // Went above it and is back below at the moment: no breakout, and nothing is waiting for one.
+  assert.equal(barMark(state([100, 109, 99, 107]), 2), null);
+});
+
+test('Bar patterns: an alert waits for the close and says what closed; only a breakout or a failed break has one, and only when asked for', () => {
+  const alerts = (n: number, on = true): unknown[][] => (barRun(SERIES.slice(0, n), {}, on ? { sound: true } : {}).alerts ?? []).map(a => [a.text, a.sound, a.when, a.forming]);
+  assert.deepEqual(alerts(3), [[`Breakout ${UP_ARROW} closed above 108.0`, 'rise', 'close', false]]);
+  assert.deepEqual(alerts(5), [[`Breakout ${DOWN_ARROW} closed below 99.00`, 'fall', 'close', false]]);
+  assert.deepEqual(alerts(6), [[`Failed break ${UP_ARROW} closed above 100.5`, 'rise', 'close', false]]);
+  assert.deepEqual([alerts(7), alerts(8), alerts(9)], [[], [], []], 'a rejection, an outside candle and a word have no level to alert at');
+  assert.deepEqual(alerts(3, false), []);
+  // As the page keeps them: nothing sounds while the candle is under way, and it sounds once when it has closed.
+  const news = new AlertNews(), runner = createRunner('bars', BARS, { sound: true }), at = (i: number): number => MONDAY + i * HOUR;
+  const sounded = (n: number, forming: boolean, now: number): number => {
+    const inp = barInputs(SERIES.slice(0, n), { forming }), r = runner.run(inp);
+    assert.ok(r.ok);
+    return news.take(r, 'chart', HOUR, inp.time[forming ? n - 2 : n - 1]!, now).length;
+  };
+  assert.equal(sounded(2, true, at(1) + 60_000), 0, 'the first answer for a chart only takes note');
+  assert.equal(sounded(3, true, at(2) + 60_000), 0, 'the breakout is there, but its candle is under way');
+  assert.equal(sounded(4, true, at(3) + 2_000), 1, 'its candle closed and another began');
+  assert.ok(runner.startedAt > 0, 'a run of the candles from the one that closed on, as the page runs it');
+  assert.equal(sounded(4, true, at(3) + 3_000), 0, 'and once');
+});
+
+test('Bar patterns: where a break stands against the opens of the day, week (from Monday) and month, and of the hour on charts shorter than one, from the chart\'s own candles', () => {
+  const three = SERIES.slice(0, 3);
+  assert.deepEqual(opensOf(barRun(three), 2), ['Break level above the day and week opens.', 'The month open is not on the chart.'], 'the chart starts on a Monday midnight; at one hour a candle the hour open is its own');
+  assert.deepEqual(opensOf(barRun(three, { tf: 900_000 }), 2), ['Break level above the hour, day and week opens.', 'The month open is not on the chart.'], 'the first hour\'s candle at 15 minutes');
+  // Starting at 01:00 the candles of the day, the week and the month are missing their first: no open is known.
+  assert.deepEqual(opensOf(barRun(three, { start: MONDAY + HOUR }), 2), ['The day, week and month opens are not on the chart.']);
+  // From the Sunday before, the week begins at Monday's first candle (which is the day's too), not at the first candle on the chart.
+  const sunday: Row[] = [[99, 100, 98, 100], ...three];
+  assert.deepEqual(opensOf(barRun(sunday, { start: MONDAY - HOUR }), 3), ['Break level above the day and week opens.', 'The month open is not on the chart.']);
+  // From the first of a month (a Sunday) the month's open is known and the week's, which began the Monday before, is not.
+  assert.deepEqual(opensOf(barRun(three, { start: Date.UTC(2026, 10, 1) }), 2), ['Break level above the day and month opens.', 'The week open is not on the chart.']);
+  // A level exactly at an open is at it, not above or below it.
+  const level: Row[] = [[100, 110, 90, 105], [95, 100, 92, 96], [96, 102, 95, 101]];
+  assert.deepEqual(opensOf(barRun(level), 2), ['Break level at the day and week opens.', 'The month open is not on the chart.']);
+});
+
+test('Bar patterns: its colours follow the page\'s theme, the up and down of its candles and its text colour dimmed for inside', () => {
+  const theme: ScriptTheme = { dark: true, background: '#12151c', text: '#e8ecf4', up: '#56b4e9', down: '#e69f00' };
+  const r = barRun(SERIES, { theme });
+  assert.deepEqual([2, 5, 4, 9].map(i => barMark(r, i)!.color), ['rgb(86, 180, 233)', 'rgb(86, 180, 233)', 'rgb(230, 159, 0)', 'rgb(230, 159, 0)']);
+  assert.equal(barMark(r, 1)!.color, safeColor(interpolateColors(0.7, [theme.background, theme.text]), ''), 'inside: between the background and the text');
+  for (const title of ['Break level', 'Next level']) assert.ok(r.plots.find(p => p.title === title)!.colors!.filter(Boolean).every(c => c === 'rgb(86, 180, 233)' || c === 'rgb(230, 159, 0)'), title);
+  // Another theme is other colours, and with none given the page's default dark theme's.
+  assert.equal(barMark(barRun(SERIES, { theme: { ...theme, up: '#00ff00' } }), 2)!.color, 'rgb(0, 255, 0)');
+  assert.equal(barMark(barRun(SERIES), 2)!.color, 'rgb(0, 217, 184)');
+});
+
+test('Bar patterns: at most one pattern a candle, and every hover has room to spare in what a mark may say, whatever the prices and the flow', () => {
+  let seed = 11;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const names = new Set<string>();
+  let longest = 0;
+  for (const scale of [80_000, 150, 0.0123]) {
+    // A wandering price whose candles reach past the one before as real ones do: wicks of their own length, openings near the last close.
+    const rows: Row[] = []; let p = scale;
+    for (let i = 0; i < 600; i++) { const o = p, c = p * (1 + (rnd() - 0.5) * 0.02); rows.push([o, Math.max(o, c) * (1 + rnd() * 0.01), Math.min(o, c) * (1 - rnd() * 0.01), c]); p = c; }
+    const r = barRun(rows, { big: true }, { showEveryFail: true });
+    const up = r.plots.find(q => q.title === 'Pattern up')!, down = r.plots.find(q => q.title === 'Pattern down')!;
+    for (let i = 0; i < rows.length; i++) {
+      assert.ok(!(Number.isFinite(up.fields.value![i]!) && Number.isFinite(down.fields.value![i]!)), `candle ${i} at ${scale}: a pattern up and a pattern down`);
+      for (const q of [up, down]) if (Number.isFinite(q.fields.value![i]!)) { names.add(q.texts![i]!); longest = Math.max(longest, q.tips![i]!.length); }
+    }
+  }
+  assert.equal(names.size, 8, `every pattern both ways was met: ${[...names].join(', ')}`);
+  // The longest hover there is, a failed break under way with an inside candle before it, reaching its next level, billions in every line and three opens, even so.
+  const forming = barRun(SERIES.slice(0, 6), { big: true, forming: true });
+  assert.ok(longest < 540 && barMark(forming, 5)!.tip.length < 560 && barMark(forming, 5)!.tip.length < MARK_TIP, `${longest} and ${barMark(forming, 5)!.tip.length} characters of ${MARK_TIP}`);
+});
+
+test('Bar patterns: every option on at once runs clean, colours the inside and outside candles and stays within its steps', () => {
+  const on = { showRange: true, showAll: true, showPatterns: true, showEveryFail: true, showLevels: true, showWaiting: true, paint: true, sound: true };
+  const r = runScript('bars', BARS, on, barInputs(SERIES, { forming: true }));
+  assert.ok(r.ok && r.warnings.length === 0, r.ok ? '' : JSON.stringify(r.error));
+  assert.deepEqual(r.candleColors!.flatMap((c, i) => c ? [i] : []), [1, 3, 6, 7, 8, 10, 12], 'the inside candles and the outside ones');
+  assert.ok(r.steps / SERIES.length < STEPS_PER_CANDLE / 4);
+  // Every option off: nothing marked, nothing drawn.
+  const off = runScript('bars', BARS, { showRange: false, showAll: false, showPatterns: false, showLevels: false, showWaiting: false }, barInputs(SERIES, { forming: true }));
+  assert.ok(off.ok && off.plots.every(p => p.fields.value!.every(v => Number.isNaN(v))));
 });

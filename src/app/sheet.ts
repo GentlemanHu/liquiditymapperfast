@@ -47,6 +47,8 @@ export function openSheet(title: string, build: (body: HTMLElement) => void, onC
     if (event.key !== 'Escape') return;
     // A panel or menu opened from inside the sheet handles its own Escape first.
     if (document.querySelector('.panel, .menu, dialog[open]')) return;
+    // Used here: what listens later (the drawing tools' Esc) leaves it alone.
+    event.preventDefault();
     sheet.close();
   };
   const stopMode = onLayoutMode(() => { if (!compactBar()) sheet.close(); });

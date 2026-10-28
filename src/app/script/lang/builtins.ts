@@ -155,8 +155,11 @@ export const BUILTINS: Readonly<Record<string, Builtin>> = {
     inst.pending = () => { inst.state.total = close; };
     return ohlcOf(open, Math.max(open, close), Math.min(open, close), close);
   },
-  /** The colour at `ratio` (0..1) along the colours given. */
-  interpolate(_inst, [ratio, ...colors]) { return interpolateColors(num(ratio), colors.flatMap(c => Array.isArray(c) ? c : [c])); },
+  /** The colour at `ratio` (0..1) along the colours given (a list among them stands for its colours). */
+  interpolate(_inst, args) {
+    const colors = args.slice(1);
+    return interpolateColors(num(args[0]), colors.some(c => Array.isArray(c)) ? colors.flatMap(c => Array.isArray(c) ? c : [c]) : colors);
+  },
 };
 
 function smooth(inst: Instance, v: number, alpha: number): number {

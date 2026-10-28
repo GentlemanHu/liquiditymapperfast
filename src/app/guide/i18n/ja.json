@@ -21,8 +21,6 @@
  "A wall is an intention, not a fact. Orders can be cancelled at any moment, and some are placed to be seen. The map shows what is resting, never what will trade.": "壁は意図であって、事実ではありません。注文はいつでもキャンセルでき、見せるために置かれるものもあります。マップが示すのは待機しているものであり、約定するものではありません。",
  "Why the map fills in as you watch": "見ているうちにマップが埋まっていく理由",
  "This is the most important thing to know about the heatmap. **An exchange only tells you what its order book looks like right now.** None publishes what it looked like an hour ago, so there is no history to download. The map is built by watching the book and writing it down, locally, in your browser, from the moment you open the page.": "これはヒートマップについて最も重要な点です。**取引所が教えてくれるのは、今のオーダーブックの姿だけです。**1時間前の姿を公開している取引所はなく、ダウンロードできる履歴はありません。マップは、ページを開いた瞬間から、ブックを観察してブラウザ内のローカルに書き留めることで作られます。",
- "So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. To make the map readable from the first second, the part before the stripe is filled in **grey**: today's book copied back in time, on the same scale (a darker grey is a bigger wall). Grey is never history. It only shows where the walls are now. Real colour starts at the dashed line, and the grey shrinks as recorded data takes its place.": "そのため初回訪問では、色付きの部分は右端の細い帯で、分が経つにつれて伸びていきます。最初の1秒から読めるように、帯より前の部分は**グレー**で埋められます。今日のブックを同じ尺度で過去にコピーしたもの（濃いグレーほど大きな壁）です。グレーは履歴ではありません。壁が今どこにあるかを示すだけです。本当の色は破線から始まり、記録されたデータに置き換わるにつれてグレーは縮みます。",
- "A first visit, sped up. Grey is the current book copied back; colour is what was recorded while the page was open.": "初回訪問を早送りしたものです。グレーは過去にコピーされた現在のブック、色はページを開いている間に記録されたものです。",
  "The page keeps the last **24 hours** it recorded in your browser, so coming back continues the map. Time with the page closed leaves a gap.": "ページは、記録した直近の **24時間**をブラウザに保存するので、戻ってくればマップは続きます。ページを閉じていた時間は空白になります。",
  "Only **one tab records** at a time; another tab shows the live data and the recording so far.": "同時に記録するのは**1つのタブだけ**です。別のタブはライブデータと、それまでの記録を表示します。",
  "**Candles and open interest are different**: they come from each exchange's own history, so they are there at once.": "**ローソク足と建玉は別です**。各取引所自身の履歴から取得するため、すぐに表示されます。",
@@ -140,7 +138,6 @@
  "Contrast": "コントラスト",
  "Page open for": "ページを開いてから",
  "{n} min": "{n} 分",
- "Grey: the current book, copied back": "グレー：現在のブックを過去にコピー",
  "Colour: recorded while the page was open": "色：ページを開いている間に記録",
  "depth recorded from here": "ここからデプスを記録",
  "now": "現在",
@@ -186,5 +183,8 @@
  "**Traded volume by period** draws days, weeks, months or sessions on the chart over their own time, as lines or bar profiles. Point at a row of a profile for its figures.": "**期間ごとの約定出来高**は、日・週・月・セッションをそれぞれの期間に合わせて、線またはバー・プロファイルでチャート上に描きます。プロファイルの行を指すと数値が表示されます。",
  "**Months** come from 5-minute candles of the most traded market (Binance's perpetual, with its spot market where the coin has one), split by their taker buys: an estimate, so they are outlined in the profile colour and labelled ≈ with their source. Days, weeks and sessions come from the recorded trades unless set to candles.": "**月**は最も取引の多い市場(Binanceの無期限先物、現物市場があればその合計)の5分足をテイカー買いで分割して作る推定値なので、プロファイル色の枠線と出所を示す≈ラベルが付きます。日・週・セッションは、ローソク足を選ばない限り記録済みの約定から作られます。",
  "**Cues**, in the book's header, light an exchange's cell when the size it shows at a price changes: outward for added depth, back inward for removed. Point at a cell for what changed and what traded meanwhile; it says what was *shown*, never an order.": "板のヘッダーにある**Cues**は、取引所がある価格で示すサイズが変わると、そのセルを光らせます。板が増えたときは外向きに、減ったときは内向きに戻ります。セルにポインターを合わせると、何が変わり、その間に何が約定したかが分かります。分かるのは*表示された*ことであり、注文ではありません。",
- "On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "**スマートフォンやタブレット**では、下のバーが表示を選びます。**歩み値**、**フロー**、そして縦持ちのときの板は画面全体を使い、そのほかはマップの下に表示されます（横向きの場合は横に表示）。**マップ**はチャートに画面全体を与え、そのほかはすべて**⋯**ボタンの奥にあります。同じ操作を指で行います："
+ "On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "**スマートフォンやタブレット**では、下のバーが表示を選びます。**歩み値**、**フロー**、そして縦持ちのときの板は画面全体を使い、そのほかはマップの下に表示されます（横向きの場合は横に表示）。**マップ**はチャートに画面全体を与え、そのほかはすべて**⋯**ボタンの奥にあります。同じ操作を指で行います：",
+ "So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. A **dashed line** marks the moment the recording began. Before it the map is left empty: nothing is drawn where nothing was recorded, so every colour on the map is real.": "そのため初回訪問では、色付きの部分は右端の細い帯で、分が経つにつれて伸びていきます。**破線**が記録の始まった瞬間を示します。それより前のマップは空のままです。記録されていない所には何も描かないので、マップ上の色はすべて本物です。",
+ "A first visit, sped up. Colour is what was recorded while the page was open; before the dashed line there is nothing to show.": "初回訪問を早送りしたものです。色はページを開いている間に記録されたもので、破線より前には表示するものがありません。",
+ "Not recorded": "記録なし"
 }

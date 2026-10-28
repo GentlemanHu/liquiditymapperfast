@@ -47,9 +47,11 @@ export interface Analysis {
 
 /** What `renderer` answers when a script runs (the engine's `rendererObject`); any other member reads nothing and is warned of. */
 export const RENDERER_MEMBERS = new Set(['length', 'timestamp', 'localTimestamp', 'timeframe', 'type', 'lastTradeTimestamp', 'forming']);
+/** What `theme` answers (the engine's `themeObject`). */
+export const THEME_MEMBERS = new Set(['dark', 'background', 'text', 'up', 'down']);
 export const KNOWN_INPUTS = new Set(['time', 'vbuy', 'vsell', 'cbuy', 'csell', 'lbuy', 'lsell', 'bar', '$price', 'options', 'renderer', 'fns', 'Math', 'Number', 'String', 'Boolean', 'Date', 'Array', 'Object', 'JSON', 'Infinity', 'NaN', 'undefined', 'isFinite', 'isNaN', 'parseFloat', 'parseInt', 'rgb', 'rgba', 'option', 'source', 'nz', 'na']);
 /**
- * Names version 2 added (`oichg`, `alert`) are not in `KNOWN_INPUTS`: a script written before them that uses one as its own name keeps it,
+ * Names version 2 added (`oichg`, `alert`, `theme`) are not in `KNOWN_INPUTS`: a script written before them that uses one as its own name keeps it,
  * since a script's own names are looked up before the page's.
  */
 
@@ -180,8 +182,10 @@ function analyzeOnce(text: string): Analysis {
       if (n.k === 'call' && n.callee.k === 'id' && n.callee.name === 'source') sourceCalls.push(n);
       if (n.k === 'id' && (n.name === 'vbuy' || n.name === 'vsell' || n.name === 'lbuy' || n.name === 'lsell' || n.name === 'cbuy' || n.name === 'csell')) inputs.add(n.name);
       if (n.k === 'id' && n.name === 'oichg' && !persistent.has('oichg') && !declared.has('oichg')) inputs.add('oichg');
+      // The flow read through `bar`: the page then fills the candles it did not record from the chart market's own.
+      if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'bar' && (n.name === 'vbuy' || n.name === 'vsell' || n.name === 'recorded')) inputs.add(n.name);
       // `bar` read any way but as `bar.name` with another name (bar["oichg"], kept under another name, handed to a function) may read the
-      // change in open interest: the page then works it out.
+      // change in open interest or the flow: the page then works them out.
       if (n.k === 'id' && n.name === 'bar') bars++;
       if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'bar' && n.name !== 'oichg') plainBars++;
       if (n.k === 'assign' && n.target.k === 'id' && n.value.k === 'call' && n.value.callee.k === 'id' && n.value.callee.name === 'option') {
@@ -190,6 +194,7 @@ function analyzeOnce(text: string): Analysis {
       }
       if (n.k === 'decl') for (const d of n.items) if (d.init?.k === 'call' && d.init.callee.k === 'id' && d.init.callee.name === 'option' && !optionNames.has(d.name)) { optionNames.add(d.name); options.push(optionDecl(d.name, d.init)); }
       if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'renderer' && !RENDERER_MEMBERS.has(n.name)) warnings.push({ code: 'unsupported-member', detail: `renderer.${n.name}` });
+      if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'theme' && !persistent.has('theme') && !declared.has('theme') && !THEME_MEMBERS.has(n.name)) warnings.push({ code: 'unsupported-member', detail: `theme.${n.name}` });
       if (n.k === 'id' && n.name.startsWith('$') && n.name !== '$price') warnings.push({ code: 'unknown-reference', detail: n.name });
       if (n.k === 'id' && (n.name === 'cbuy' || n.name === 'csell') && !warnings.some(w => w.code === 'no-counts')) warnings.push({ code: 'no-counts' });
     }
@@ -197,7 +202,7 @@ function analyzeOnce(text: string): Analysis {
   };
   let bars = 0, plainBars = 0;
   visit(program, true);
-  if (bars > plainBars && !declared.has('bar') && !persistent.has('bar')) inputs.add('oichg');
+  if (bars > plainBars && !declared.has('bar') && !persistent.has('bar')) { inputs.add('oichg'); inputs.add('vbuy'); }
   // What only a full browser engine has (the chart library's series objects, the raw function library): refused with where it is used.
   const refuse = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;

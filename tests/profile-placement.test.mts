@@ -34,8 +34,10 @@ test('an older save becomes places: each of its columns right of the map, its pr
   assert.deepEqual(old.instances.map(p => [p.id, p.enabled, p.order]), [['volume:right', true, 0], ['absorption:right', true, 2], ['oi:top', false, 1]]);
   assert.deepEqual(old.instances[0], { id: 'volume:right', enabled: true, metric: 'volume', placement: 'right', order: 0, window: { kind: 'chart' }, sizePx: null, overrides: {} });
   assert.deepEqual(ids(placedOn(readTraded({ metric: 'liquidations' }).placements, 'right')), ['liquidations:right'], 'one measure, one column');
-  assert.deepEqual(readTraded({}).placements, defaultSet(), 'a first visit: traded volume right of the map and along the top');
-  assert.deepEqual(ids(placedOn(defaultSet(), 'right')), ['volume:right']); assert.deepEqual(ids(placedOn(defaultSet(), 'top')), ['volume:top']);
+  assert.deepEqual(readTraded({}).placements, defaultSet(), 'a first visit: traded volume right of the map, the band along the top kept switched off');
+  assert.deepEqual(readTraded(undefined).placements, defaultSet());
+  assert.deepEqual(ids(placedOn(defaultSet(), 'right')), ['volume:right']); assert.deepEqual(ids(placedOn(defaultSet(), 'top')), []);
+  assert.deepEqual(defaultSet().instances.filter(p => p.placement === 'top').map(p => [p.id, p.enabled]), [['volume:top', false]], 'its Top cell finds it');
   // A save of the measure strip, as a page or a layout carries it.
   const strip = readSettings({ show: { profile: true, traded: false }, measureStrip: { on: true, kind: 'oi' } } as never);
   assert.deepEqual([ids(placedOn(strip.traded.placements, 'top')), strip.show.traded], [['oi:top'], true]);

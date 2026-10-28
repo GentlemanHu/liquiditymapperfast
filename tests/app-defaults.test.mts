@@ -34,18 +34,22 @@ test('a save written under the old defaults (Depth and Open interest both on, no
   saved({ defaultsRev: DEFAULTS_REV, show: { ...DEFAULT_SHOW, depth: true, oi: true } }, () => assert.deepEqual([initialState().show.depth, initialState().show.oi], [true, true]));
 });
 
-test('a save from before revision 2 shows what was new: days on the chart with their profiles, and the strip, now the profile along the top', () => {
+test('a save from before revision 2 shows what was new: days on the chart (their profiles off since 10-28), and the strip, now the profile along the top', () => {
   // A save of the day before: the volume profile off, no period on the chart and no profile (the choice came that day), the strip off.
   const before = { defaultsRev: 1, show: { ...DEFAULT_SHOW, traded: false }, traded: { lines: [], profiles: null, metrics: ['volume', 'oi'] }, measureStrip: { on: false, kind: 'oi' } };
   saved(before, () => {
     const s = initialState();
-    assert.deepEqual([s.traded.lines, s.traded.profiles, topOf(s.traded), s.show.traded, s.defaultsRev], [['day'], 'day', { on: true, metric: 'oi' }, true, DEFAULTS_REV]);
+    assert.deepEqual([s.traded.lines, s.traded.profiles, topOf(s.traded), s.show.traded, s.defaultsRev], [['day'], null, { on: true, metric: 'oi' }, true, DEFAULTS_REV]);
     assert.deepEqual(s.traded.placements.instances.filter(p => p.placement === 'right' && p.enabled).map(p => p.metric), ['volume', 'oi'], 'the columns chosen stay, right of the map');
   });
   // Periods chosen before are kept as they were.
   saved({ ...before, traded: { lines: ['week'], profiles: null } }, () => assert.deepEqual([initialState().traded.lines, initialState().traded.profiles], [['week'], null]));
-  // A first visit: the profile along the top on (a desktop), and with it the Volume profile and its days.
-  saved(null, () => { const s = initialState(); assert.deepEqual([topOf(s.traded), s.show.traded, s.traded.lines, s.traded.profiles], [{ on: true, metric: 'volume' }, true, ['day'], 'day']); });
+  // A first visit (a desktop): the Volume profile with its column and its days' lines, without their profiles and without the profile along
+  // the top (off by default since 10-28), which a save of the days before keeps as it saved it.
+  saved(null, () => { const s = initialState(); assert.deepEqual([topOf(s.traded), s.show.traded, s.traded.lines, s.traded.profiles], [{ on: false, metric: 'volume' }, true, ['day'], null]); });
+  saved({ defaultsRev: DEFAULTS_REV, traded: { placements: { version: 1, instances: [{ id: 'volume:top', enabled: true, metric: 'volume', placement: 'top' }] } } }, () => assert.deepEqual(topOf(initialState().traded), { on: true, metric: 'volume' }));
+  // A save holding the days' profiles keeps them: every save from 10-20 to 10-28 wrote them down, and a choice reads the same.
+  saved({ defaultsRev: DEFAULTS_REV, traded: { lines: ['day'], profiles: 'day' } }, () => assert.equal(initialState().traded.profiles, 'day'));
 });
 
 test('revision 3: a save of revision 2 carries its measure strip into the profile along the top, and the Volume profile where it showed', () => {
@@ -122,4 +126,12 @@ test('the top bar starts unfolded; a fold is kept in this browser, never in a la
   saved({ barCollapsed: true }, () => assert.equal(initialState().barCollapsed, true));
   saved({ barCollapsed: 'yes' }, () => assert.equal(initialState().barCollapsed, false));
   assert.equal((LAYOUT_KEYS as readonly string[]).includes('barCollapsed'), false);
+});
+
+test('Scripts is on for a first visit and for a save from before it existed; a save that holds it off keeps it off (it may have been chosen)', () => {
+  assert.equal(DEFAULT_SHOW.script, true);
+  saved(null, () => assert.equal(initialState().show.script, true));
+  const { script: _, ...older } = DEFAULT_SHOW;
+  saved({ defaultsRev: 4, show: older }, () => assert.equal(initialState().show.script, true));
+  saved({ defaultsRev: 4, show: { ...DEFAULT_SHOW, script: false } }, () => assert.equal(initialState().show.script, false));
 });

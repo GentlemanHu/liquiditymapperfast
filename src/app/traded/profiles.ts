@@ -82,8 +82,11 @@ export function setFromLegacy(metrics: readonly ProfileMetric[], top: { on: bool
   return { version: 1, instances: [...metrics.map(m => newInstance(m, 'right')), newInstance(top.metric, 'top', top.on)] };
 }
 
-/** The first visit's: traded volume right of the map and along the top. */
-export const defaultSet = (): ProfileSet => setFromLegacy(['volume'], { on: true, metric: 'volume' });
+/**
+ * The first visit's: traded volume right of the map, and along the top switched off (Karl, 2026-10-28: the band repeats the volume bars
+ * along the bottom and covers the top of the map; the instance is kept, so its Top cell finds it as it was).
+ */
+export const defaultSet = (): ProfileSet => setFromLegacy(['volume'], { on: false, metric: 'volume' });
 
 const ID = /^[\w:.-]{1,40}$/;
 /**

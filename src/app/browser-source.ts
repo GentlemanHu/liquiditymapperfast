@@ -89,6 +89,8 @@ export class BrowserSource implements DataSource, VenueControl {
   #levels: LevelsFrame | null = null;
   #tick: TickMessage | null = null;
   #waited = false;
+  /** The minute a quick start (`bootstrap`) said the recording begins, for every market that has not said so of its own yet. */
+  #since = 0;
   /** Set once the worker has said it is ready: an error before that means it never started, one after it only means something threw. */
   #started = false;
   /** Why the worker cannot be used (it never started): every request fails with this, at once. */
@@ -185,17 +187,29 @@ export class BrowserSource implements DataSource, VenueControl {
     }));
   }
 
-  async bootstrap(): Promise<BootstrapState> {
+  async bootstrap(options?: { prefer?: string }): Promise<BootstrapState> {
     await this.#ready;
     let boot = await this.#call({ method: 'bootstrap' });
     // Only the first call waits (later ones come from the series loader and must not stall). A venue is live before it has a price, and a
-    // blocked or slow one never does, so the page waits for the first one that has a price and opens on that market.
+    // blocked or slow one never does, so the page waits for the first one that has a price and opens on that market; a page that expects
+    // a market that is listed does not wait (every market is listed from the start, live or not).
     if (!this.#waited) {
       this.#waited = true;
-      const deadline = Date.now() + FIRST_PRICE_MS;
-      while (!boot.markInstrumentId && Date.now() < deadline) { await new Promise<void>(resolve => setTimeout(resolve, 250)); boot = await this.#call({ method: 'bootstrap' }); }
+      // No venue may be live yet, so none is said to record yet: every market without a recording starts it this minute (here and in the
+      // calls that follow, until it says so of its own), as the engine says of a live venue about to be sampled; the map frames from it.
+      const prefer = options?.prefer;
+      if (prefer && boot.markets.some(m => m.instrumentId === prefer)) this.#since = Math.floor(Date.now() / boot.columnMs) * boot.columnMs;
+      else {
+        const deadline = Date.now() + FIRST_PRICE_MS;
+        while (!boot.markInstrumentId && Date.now() < deadline) { await new Promise<void>(resolve => setTimeout(resolve, 250)); boot = await this.#call({ method: 'bootstrap' }); }
+      }
     }
-    return { ...boot, dataMode: 'browser', layers: {} };
+    let recorded = boot.recorded;
+    if (this.#since > 0 && boot.markets.some(m => m.instrumentId && !recorded[m.instrumentId])) {
+      recorded = { ...recorded };
+      for (const m of boot.markets) if (m.instrumentId && !recorded[m.instrumentId]) recorded[m.instrumentId] = { first: this.#since, last: this.#since };
+    }
+    return { ...boot, recorded, dataMode: 'browser', layers: {} };
   }
 
   connect(handlers: LiveHandlers): { close(): void; tape(on: boolean): void } {

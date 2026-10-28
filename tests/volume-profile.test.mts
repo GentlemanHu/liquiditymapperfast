@@ -242,7 +242,7 @@ test('a profile over whole hours, read from the hours added together, is the sam
   assert.ok(whole.counts!.some(c => c[0] + c[1] > 0), 'the orders were counted');
 });
 
-test('the volume profile is off unless chosen: a save from before it had settings reads as off, a later choice stays; a first visit on a desktop has it, for the profile along the top', () => {
+test('the volume profile is off unless chosen: a save from before it had settings reads as off, a later choice stays; a first visit on a desktop has it, for its column (the profile along the top is off by default since 10-28)', () => {
   const g = globalThis as { window?: unknown }, had = g.window;
   const saved = (value: unknown): void => { g.window = { innerWidth: 1920, localStorage: { getItem: () => JSON.stringify(value) } }; };
   try {
@@ -262,7 +262,7 @@ test('from the recording only what it still holds is offered: as many days or se
   assert.equal(readTraded({}).source, 'recorded', 'a save from before the choice');
   assert.equal(readTraded({ source: 'candles' }).source, 'candles'); assert.equal(readTraded({ source: 'tea leaves' }).source, 'recorded');
   // Profiles on the chart: one kind or none; a save from when they followed the columns' period keeps them for that period.
-  assert.equal(readTraded({}).profiles, 'day', 'the days\', until chosen otherwise');
+  assert.equal(readTraded({}).profiles, null, 'none until chosen (the days\' lines are on, their profiles not)');
   assert.equal(readTraded({ profiles: 'week' }).profiles, 'week'); assert.equal(readTraded({ profiles: 'year' }).profiles, null);
   assert.deepEqual([readTraded({ period: 'day', pastProfiles: true }).lines, readTraded({ period: 'day', pastProfiles: true }).profiles], [['day'], 'day']);
   assert.equal(readTraded({ period: 'view', pastProfiles: true }).profiles, null, 'what is on the chart had no profiles of its own');

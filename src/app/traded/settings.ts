@@ -134,8 +134,9 @@ const preset = (i: number, id: string): SessionDef => ({ ...SESSION_PRESETS[i]!,
 
 export const TRADED_DEFAULTS: Readonly<TradedSettings> = {
   placements: defaultSet(), bars: 'split', emphasis: true, valueArea: true, share: 70, rows: 1, poc: true, va: true, labels: true, tags: true,
-  // Each day on the chart, its lines and its profile, from the first visit (Karl, 2026-10-20: what is new must show without hunting for it).
-  lines: ['day'], windowLines: true, profiles: 'day', source: 'recorded', zone: 'page', count: 5, naked: true, carry: true,
+  // Each day's lines on the chart from the first visit (Karl, 2026-10-20: what is new must show without hunting for it); its profiles no
+  // longer (Karl, 2026-10-28: the daily profile off by default, the profiles at the side kept): one click in the panel's Profiles row.
+  lines: ['day'], windowLines: true, profiles: null, source: 'recorded', zone: 'page', count: 5, naked: true, carry: true,
   sessions: [preset(0, 's1'), preset(1, 's2'), preset(2, 's3')],
 };
 
@@ -181,9 +182,11 @@ export function readTraded(saved: unknown, strip: LegacyTop | null = null): Trad
   // profiles there when they were drawn (`pastProfiles`).
   const kind = (v: unknown): LineKind | null => LINE_KINDS.includes(v as LineKind) ? v as LineKind : null;
   const old = kind(s.period), wanted = Array.isArray(s.lines) ? s.lines as unknown[] : old ? [] : [...d.lines];
+  // A save from before the places says what its columns and its profile along the top were; one that says nothing gets the first visit's.
+  const legacy = s.metrics !== undefined || s.metric !== undefined || s.top !== undefined || strip !== null;
   return {
     // A save from when the column showed one measure (`metric`) reads as that one column.
-    placements: readProfileSet(s.placements) ?? setFromLegacy(readMetrics(Array.isArray(s.metrics) ? s.metrics : [s.metric]) ?? ['volume'], readTop(s.top) ?? strip ?? LEGACY_TOP),
+    placements: readProfileSet(s.placements) ?? (legacy ? setFromLegacy(readMetrics(Array.isArray(s.metrics) ? s.metrics : [s.metric]) ?? ['volume'], readTop(s.top) ?? strip ?? LEGACY_TOP) : defaultSet()),
     bars: oneOf(['split', 'delta'] as const, s.bars, d.bars), emphasis: flag(s.emphasis, d.emphasis),
     valueArea: flag(s.valueArea, d.valueArea), share: oneOf(SHARES, s.share, d.share), rows: oneOf(ROW_MULTIPLES, s.rows, d.rows),
     poc: flag(s.poc, d.poc), va: flag(s.va, d.va), labels: flag(s.labels, d.labels), tags: flag(s.tags, d.tags),

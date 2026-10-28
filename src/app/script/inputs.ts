@@ -41,8 +41,20 @@ export function marketInfo(markets: readonly Market[], id: string): MarketInfo {
   return { id, venue, kind: m?.marketType === 'spot' ? 'spot' : 'perp', quote: (m?.quote ?? '').toUpperCase() };
 }
 
-/** One set of markets, candle by candle (USD; NaN where not recorded). */
-export interface SourceInputs { vbuy: Float64Array; vsell: Float64Array; lbuy: Float64Array; lsell: Float64Array; markets: number }
+/**
+ * One set of markets, candle by candle (USD; NaN where not known). `recorded` says where `vbuy` and `vsell` come from: 1 recorded on the page
+ * over the set's markets, 0 the chart market's own candle (one market, where the page recorded none and the set holds it), NaN neither.
+ * Absent (a test's inputs): reads NaN.
+ */
+export interface SourceInputs { vbuy: Float64Array; vsell: Float64Array; lbuy: Float64Array; lsell: Float64Array; recorded?: Float64Array; markets: number }
+
+/**
+ * The page's colours as a script reads them (`theme`): whether the chart's background is dark, the background and text colours, and the
+ * up and down colours of its candles, as colour texts. A script coloured from them follows the theme the person picked.
+ */
+export interface ScriptTheme { dark: boolean; background: string; text: string; up: string; down: string }
+/** What a run given no theme reads (a test's inputs): the page's default dark theme. */
+export const DEFAULT_SCRIPT_THEME: ScriptTheme = { dark: true, background: '#121215', text: '#fffcf0', up: '#00d9b8', down: '#ff4d4d' };
 
 export interface BarInputs {
   /** The chart's timeframe (ms). */
@@ -61,6 +73,8 @@ export interface BarInputs {
   oichg?: Float64Array;
   /** Whether the newest candle is still under way. */
   forming: boolean;
+  /** The page's colours (`theme`; `DEFAULT_SCRIPT_THEME` when absent). Another theme is other inputs: a run under it starts from the first candle. */
+  theme?: ScriptTheme;
 }
 
 /**
@@ -92,6 +106,11 @@ export interface SourceReader {
   flows(ids: readonly string[]): readonly (CandleFlow | null)[];
   /** Forced buys and sells by candle start over `ids`; a candle missing from the maps was not answered (NaN), one present with 0 had none. */
   liquidations(ids: readonly string[]): { buy: ReadonlyMap<number, number>; sell: ReadonlyMap<number, number> } | undefined;
+  /**
+   * For a set that holds the chart's market, read after `flows` (null for another set, or a market whose candles do not say who bought):
+   * where the recording of the set's flow begins (ms; null for none), and the market's own candle's buys and sells at a start.
+   */
+  candle?(ids: readonly string[]): { from: number | null; sides(start: number): readonly [number, number] | null } | null;
 }
 
 /**
@@ -100,22 +119,31 @@ export interface SourceReader {
  */
 export function sourceInputs(time: Float64Array, ids: readonly string[], read: SourceReader): SourceInputs {
   const n = time.length;
-  if (!ids.length) return { vbuy: new Float64Array(n), vsell: new Float64Array(n), lbuy: new Float64Array(n), lsell: new Float64Array(n), markets: 0 };
+  if (!ids.length) return { vbuy: new Float64Array(n), vsell: new Float64Array(n), lbuy: new Float64Array(n), lsell: new Float64Array(n), recorded: new Float64Array(n).fill(NaN), markets: 0 };
   const vbuy = new Float64Array(n).fill(NaN), vsell = new Float64Array(n).fill(NaN), lbuy = new Float64Array(n).fill(NaN), lsell = new Float64Array(n).fill(NaN);
+  const recorded = new Float64Array(n).fill(NaN);
   {
-    const flows = read.flows(ids);
-    for (let i = 0; i < n; i++) { const [b, s] = buysAndSells(flows[i] ?? null); vbuy[i] = b; vsell[i] = s; }
+    const flows = read.flows(ids), candle = read.candle?.(ids) ?? null;
+    for (let i = 0; i < n; i++) {
+      const t = time[i]!;
+      // The candle the recording began inside holds only its end: the market's own candle says the whole of it.
+      const [b, s] = candle && candle.from !== null && t < candle.from ? [NaN, NaN] : buysAndSells(flows[i] ?? null);
+      if (Number.isFinite(b)) { vbuy[i] = b; vsell[i] = s; recorded[i] = 1; continue; }
+      // Not recorded (before the page opened, a gap): the chart market's own candle, where it says who bought.
+      const own = candle?.sides(t);
+      if (own) { vbuy[i] = own[0]; vsell[i] = own[1]; recorded[i] = 0; }
+    }
     const liq = read.liquidations(ids);
     if (liq) for (let i = 0; i < n; i++) { const t = time[i]!, b = liq.buy.get(t), s = liq.sell.get(t); if (b !== undefined) lbuy[i] = b; if (s !== undefined) lsell[i] = s; }
   }
-  return { vbuy, vsell, lbuy, lsell, markets: ids.length };
+  return { vbuy, vsell, lbuy, lsell, recorded, markets: ids.length };
 }
 
 /** Every array of the inputs, each once (a buffer named twice cannot be handed over), for handing them to the worker without a copy. */
 export function transferables(inputs: BarInputs): ArrayBuffer[] {
   const out = new Set<ArrayBuffer>();
   for (const a of [inputs.time, inputs.open, inputs.high, inputs.low, inputs.close, inputs.volume]) out.add(a.buffer as ArrayBuffer);
-  for (const s of Object.values(inputs.sources)) for (const a of [s.vbuy, s.vsell, s.lbuy, s.lsell]) out.add(a.buffer as ArrayBuffer);
+  for (const s of Object.values(inputs.sources)) for (const a of [s.vbuy, s.vsell, s.lbuy, s.lsell, s.recorded]) if (a) out.add(a.buffer as ArrayBuffer);
   if (inputs.oichg) out.add(inputs.oichg.buffer as ArrayBuffer);
   return [...out];
 }

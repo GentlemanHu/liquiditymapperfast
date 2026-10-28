@@ -5,6 +5,8 @@
   --mark-eye: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linejoin='round'%3E%3Cpath d='M1.8 12C4.4 7.3 7.9 5 12 5s7.6 2.3 10.2 7c-2.6 4.7-6.1 7-10.2 7S4.4 16.7 1.8 12z'/%3E%3Ccircle cx='12' cy='12' r='3.4' fill='black' stroke='none'/%3E%3C/svg%3E");
   --mark-eye-off: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.8 12C4.4 7.3 7.9 5 12 5s7.6 2.3 10.2 7c-2.6 4.7-6.1 7-10.2 7S4.4 16.7 1.8 12z' opacity='.55'/%3E%3Cpath d='M3.5 3.5l17 17'/%3E%3C/svg%3E");
   --mark-settings: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M3.5 6.5h17M3.5 12h17M3.5 17.5h17'/%3E%3Ccircle cx='9' cy='6.5' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='15.5' cy='12' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='7.5' cy='17.5' r='2.7' fill='black' stroke='none'/%3E%3C/svg%3E");
+  /* The question mark of every "?" (chrome.css button.help, and a script's row button): drawn, so it sits in the middle of its box whatever the font. */
+  --mark-help: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.2 8.6a3.9 3.9 0 1 1 5.9 3.3c-1.3.8-2.1 1.5-2.1 3'/%3E%3Cpath d='M12 19.6h.01'/%3E%3C/svg%3E");
   --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12.5l5 5L20 6.5'/%3E%3C/svg%3E");
   --ui: #2f6bff; --bid: #0fa44a; --bid-soft: #cdeed8; --ask: #e0066f; --ask-soft: #ffd0e6; --gutter: 192px;
   font: 12px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -208,7 +210,7 @@ main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(
 .pane.heat canvas.dust { pointer-events: none; }
 /* Select and Recenter act on the map, so they sit in the map's top-right corner, left of the profile column. */
 .pane.heat .map-tools { position: absolute; z-index: 3; top: 8px; right: calc(var(--gutter, 192px) + 8px); display: flex; gap: 6px; }
-.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 7px; border-radius: var(--radius);
+.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto, .pane.heat .map-draw { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 7px; border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 86%, transparent); font-size: 11px; color: var(--text); box-shadow: 3px 3px 0 var(--shadow); }
 /* Select wears the Range lamp on its left, then a dashed box: the selection it makes. */
 .pane.heat .map-select { padding-left: 21px; }
@@ -219,11 +221,11 @@ main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(
 .pane.heat .map-recenter::before { content: ""; width: 14px; height: 14px; background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat; }
-.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover { background: var(--panel); }
+.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover, .pane.heat .map-draw:hover { background: var(--panel); }
 /* On a window this narrow the three buttons over the top right of the map would hide the title and the figures beside it: they shrink to their drawings. */
 @media (max-width: 1560px) {
-  html[data-layout="desktop"] .pane.heat .map-tools :is(.map-goto, .map-select, .map-recenter) { font-size: 0; gap: 0; padding: 0 7px; }
-  html[data-layout="desktop"] .pane.heat .map-tools .map-select { padding-left: 21px; }
+  html[data-layout="desktop"] .pane.heat .map-tools :is(.map-goto, .map-select, .map-recenter, .map-draw) { font-size: 0; gap: 0; padding: 0 7px; }
+  html[data-layout="desktop"] .pane.heat .map-tools .map-select, html[data-layout="desktop"] .pane.heat .map-tools .map-draw { padding-left: 21px; }
 }
 .pane.ladder { flex: 1 1 auto; }
 .pane.cvd { flex: 1 1 auto; }
@@ -301,6 +303,17 @@ pre.fatal { position: fixed; inset: 20px; color: var(--ask); white-space: pre-wr
   box-shadow: 3px 3px 0 var(--shadow); font-size: 12px; }
 .panel-head { display: flex; align-items: center; gap: 8px; padding: 9px 10px 8px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; cursor: grab; user-select: none; touch-action: none; }
 .panel-head button { cursor: pointer; }
+/* A panel sized by its lower corners (ui.ts): its body takes the height, and a field marked to fill (a script's text) the room left in it. */
+.panel.sized .panel-body { flex: 1 1 auto; }
+.panel.sized .panel-body:has(> [data-fill]) { display: flex; flex-direction: column; }
+.panel.sized .panel-body:has(> [data-fill]) > * { flex: 0 0 auto; }
+.panel.sized .panel-body > [data-fill] { flex: 1 0 220px; resize: none; }
+.panel-grip { position: absolute; bottom: 0; z-index: 1; width: 18px; height: 18px; touch-action: none; opacity: .75; }
+.panel-grip.right { right: 0; cursor: nwse-resize; background: linear-gradient(135deg, transparent 0 58%, var(--muted) 58% 63%, transparent 63% 74%, var(--muted) 74% 79%, transparent 79%); }
+.panel-grip.left { left: 0; cursor: nesw-resize; background: linear-gradient(225deg, transparent 0 58%, var(--muted) 58% 63%, transparent 63% 74%, var(--muted) 74% 79%, transparent 79%); }
+.panel-grip:hover, .being-sized .panel-grip { opacity: 1; }
+.being-sized, .being-sized * { user-select: none; }
+html:is([data-layout^="phone"], [data-bar="compact"]) .panel-grip { display: none; }
 /* A window that is being dragged (panels, the venue picker, the guide): the hand stays closed wherever the pointer is, and nothing is selected on the way. */
 .being-moved, .being-moved * { cursor: grabbing !important; user-select: none; }
 dialog.venues h3 { cursor: grab; touch-action: none; user-select: none; }
@@ -704,7 +717,12 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .script-row > .script-on { display: inline-flex; flex: none; }
 .script-row > button:nth-child(2) { flex: 1; min-width: 0; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .script-row .layout-date.error { color: var(--ask); }
-.script-example > .script-example-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.script-example > .script-example-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A script's "?" in the list and among the examples, right after its name as a pane's is after its title, and its description in a box
+   under the row (script/panel.ts aboutToggle). */
+.layout-row > button.help { margin: 0; }
+.script-example > .layout-date { margin-left: auto; }
+.panel-body .script-about { margin: 2px 0 8px; border: 1px solid var(--line); border-radius: var(--radius); }
 /* The Scripts pane's row buttons (script-pane.ts #placeRowTools): open the script, switch it off; after the row's name, over the canvas. */
 .script-row-tool { position: absolute; z-index: 2; display: inline-flex; gap: 2px; }
 .script-row-tool > button { position: relative; width: 18px; height: 16px; min-height: 0; padding: 0; font-size: 13px; line-height: 14px; opacity: .6; }
@@ -714,6 +732,9 @@ html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; 
 .script-row-hide::before { content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: var(--mark-eye) center / contain no-repeat; mask: var(--mark-eye) center / contain no-repeat; }
 .script-row-hide[data-hidden="true"]::before { -webkit-mask-image: var(--mark-eye-off); mask-image: var(--mark-eye-off); }
 .script-row-tool > .script-row-hide[data-hidden="true"] { opacity: .9; }
+/* What a script of the page's own is (script/about.ts): its "?" opens the description in a panel of its own, and shows it is open as every "?" does. */
+.script-row-about::before { content: ""; position: absolute; left: 50%; top: 50%; width: 11px; height: 11px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: var(--mark-help) center / contain no-repeat; mask: var(--mark-help) center / contain no-repeat; }
+.script-row-tool > .script-row-about.open { opacity: 1; color: var(--bg); background: var(--text); border-color: var(--text); }
 html[data-layout^="phone"] .script-row-tool > button { width: 26px; height: 22px; }
 /* The map legend's script lines keep their buttons over the map, under its corner tools' level (script-pane.ts placeLegendTools). */
 .pane.heat .script-legend-tools .script-row-tool { z-index: 3; }
@@ -737,3 +758,62 @@ html[data-layout^="phone"] .script-row-tool > button { width: 26px; height: 22px
 .replay-bar .replay-play.paused::before { -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 4l13 8-13 8z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 4l13 8-13 8z'/%3E%3C/svg%3E") center / contain no-repeat; }
 /* The sessions, edited under the choice that asked for them: set in by a rule so they read as part of it. */
 .session-editor { margin: 2px 0 6px 2px; padding-left: 10px; border-left: 2px solid var(--accent); }
+
+/* The drawing tools (draw/): the editing canvas over the map lets every pointer event through to it; the Draw button in the map's corner
+   wears the Select button's look (its lamp on the left while the tools are out); the rail runs down the map's left edge under the legend,
+   the selected drawing's bar floats beside it, and the next step is said at the map's foot. All of them are placed by draw/bar.ts each frame. */
+.pane.heat canvas.draw-edit { z-index: 2; pointer-events: none; }
+.pane.heat .map-draw { padding-left: 21px; }
+.pane.heat .map-draw::before { left: 7px; }
+.draw-glyph, .chart-type-glyph { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+.pane.heat .map-draw .draw-glyph { width: 14px; height: 14px; }
+.pane.heat .map-draw-phone { display: none; }
+.draw-rail, .draw-editor, .draw-say { position: absolute; z-index: 3; background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 3px 3px 0 var(--shadow); font-size: 11px; }
+.draw-rail[hidden], .draw-editor[hidden], .draw-say[hidden] { display: none; }
+.draw-rail { display: flex; flex-direction: column; gap: 2px; padding: 3px; overflow-y: auto; scrollbar-width: none; }
+.draw-rail .draw-icon, .draw-editor .draw-icon { display: inline-flex; align-items: center; justify-content: center; gap: 3px; width: 28px; height: 28px; padding: 0; border-color: transparent; background: transparent; }
+.draw-rail .draw-icon:hover, .draw-editor .draw-icon:hover { border-color: var(--line); }
+.draw-rail .draw-icon.on, .draw-editor .draw-icon.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.draw-icon:disabled, .draw-rail .draw-tool.idle { opacity: 0.35; cursor: default; }
+.draw-sep { flex: 0 0 1px; align-self: stretch; margin: 2px; background: var(--line); }
+.draw-rail .draw-magnet { flex-direction: column; height: 38px; gap: 0; width: auto; min-width: 28px; padding: 0 3px; }
+.draw-rail .draw-magnet.on { background: transparent; color: var(--text); border-color: var(--line); }
+.draw-rail .draw-magnet:not(.on) { color: var(--muted); }
+.draw-magnet-mode { font-size: 9px; line-height: 1; }
+.draw-rail .draw-list-btn { flex-direction: column; height: 36px; gap: 0; }
+.draw-count { font-size: 9px; line-height: 1; }
+.draw-editor { display: flex; flex-direction: column; gap: 3px; padding: 4px; max-width: min(560px, calc(100% - 24px)); }
+.draw-controls { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.draw-figures { padding: 0 3px 1px; color: var(--muted); white-space: normal; }
+.draw-figures[hidden] { display: none; }
+.draw-swatches { display: inline-flex; gap: 2px; margin-right: 2px; }
+.draw-editor .draw-swatch { width: 18px; height: 18px; min-width: 0; padding: 0; border-radius: 50%; background: var(--swatch); border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--line); }
+.draw-editor .draw-swatch.on { box-shadow: 0 0 0 2px var(--text); }
+.draw-editor .draw-widths button { min-width: 22px; height: 24px; padding: 0 4px; font-size: 11px; }
+.draw-text { width: 120px; height: 26px; box-sizing: border-box; font: inherit; font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 2px 6px; }
+.draw-editor .draw-icon.danger, .draw-files button.danger, .draw-action.danger { color: var(--ask, #d20f39); }
+.draw-say { display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; transform: translateX(-50%); color: var(--text); white-space: nowrap; }
+.draw-say.warn { box-shadow: inset 4px 0 0 #e6a700, 3px 3px 0 var(--shadow); border-color: #e6a700; }
+.draw-cancel { padding: 2px 8px; font-size: 11px; }
+.draw-cancel[hidden] { display: none; }
+.draw-list { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 8px; }
+.draw-list-row { display: flex; align-items: center; gap: 4px; }
+.draw-list-row.hidden-one .draw-list-name { opacity: 0.55; }
+.draw-list-swatch { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.draw-list-name { flex: 1 1 auto; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draw-list-row .draw-action { padding: 2px 6px; font-size: 11px; }
+.draw-files { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.toolbar .deck-time .seg .chart-type { display: inline-flex; align-items: center; justify-content: center; }
+/* A phone: the Draw key over the map's top right; the rail a strip along the foot of the map and its columns (the whole width, so it
+   takes as few rows as it can), the selected drawing's bar and the next step over it. */
+html:is([data-layout^="phone"], [data-bar="compact"]) .pane.heat .map-draw-phone { display: inline-flex; position: absolute; z-index: 3; top: 8px; right: calc(var(--gutter, 0px) + 8px); width: 42px; height: 36px; padding: 0 0 0 14px;
+  align-items: center; justify-content: center; border-radius: var(--radius); background: color-mix(in srgb, var(--panel) 90%, transparent); box-shadow: 3px 3px 0 var(--shadow); }
+html:is([data-layout^="phone"], [data-bar="compact"]) .pane.heat .map-draw-phone::before { left: 7px; }
+.draw-rail.phone { flex-direction: row; flex-wrap: wrap; left: 6px; right: 6px; bottom: 28px; top: auto; max-height: none; overflow: visible; }
+.draw-rail.phone .draw-icon { flex: 0 0 auto; width: 38px; height: 38px; }
+.draw-rail.phone .draw-magnet, .draw-rail.phone .draw-list-btn { height: 38px; }
+.draw-editor.phone { left: 6px; right: 6px; top: auto; max-width: none; }
+.draw-editor.phone .draw-icon { width: 36px; height: 36px; }
+.draw-editor.phone .draw-swatch { width: 26px; height: 26px; }
+.draw-say.phone { left: 50%; top: auto; white-space: normal; max-width: calc(100% - 24px); }

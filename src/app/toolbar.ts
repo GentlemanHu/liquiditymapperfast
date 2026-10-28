@@ -38,6 +38,7 @@ import type { Alerts } from './sound/alerts.ts';
 import type { Panel } from './ui.ts';
 import { HEAT_STYLES, legendBackground, type HeatStyleId } from './heatmap/lut.ts';
 import { CONTRAST } from './heatmap/window.ts';
+import { CHART_TYPES, chartTypeGlyph, chartTypeName, chartTypeTip, type ChartType } from './chart-type.ts';
 import { compactBar, isPhone, onLayoutMode } from './device.ts';
 import { openSheet, type Sheet } from './sheet.ts';
 import { wakeLockSupported } from './wake.ts';
@@ -265,6 +266,13 @@ export class Toolbar {
   onRecenter: () => void = () => {};
   /** Preview a theme without keeping it (`null` puts the saved one back). */
   onPreviewTheme: (id: string | null) => void = () => {};
+  /** Hovering a chart type in its menu draws the map with it without keeping it; leaving the menu puts the kept one back (null). */
+  onPreviewChartType: (id: ChartType | null) => void = () => {};
+  /** How the map draws its price (chart-type.ts): a cell of the Time deck, beside the timeframes, as a chart's type usually sits. */
+  #chartType = el('button', { type: 'button', class: 'chart-type', ariaLabel: t('Chart type') });
+  /** The drawing tools' button (draw/bar.ts, set by the page), in the map's corner beside Select. */
+  #drawCorner: HTMLElement | null = null;
+  setDrawButton(button: HTMLElement): void { this.#drawCorner = button; this.#arrange(); }
   onSelectMarket: (id: string) => void = () => {};
   /** The person applied a venue selection (a server brings the new feeds up some seconds later). */
   onVenuesApplied: () => void = () => {};
@@ -286,7 +294,12 @@ export class Toolbar {
       this.#coinNotice.hidden = false;
     }
     this.#market.onchange = () => this.onSelectMarket(this.#market.value);
+    this.#chartType.onclick = () => {
+      const items = CHART_TYPES.map(id => ({ id, label: chartTypeName(id) }));
+      openMenu(this.#chartType, items, this.store.state.chartType, { onPreview: id => this.onPreviewChartType(id as ChartType | null), onSelect: id => { this.onPreviewChartType(null); this.store.set({ chartType: id as ChartType }); } }, 'left', { title: t('Chart type') });
+    };
     for (const tf of Object.keys(TIMEFRAMES)) this.#timeframes.append(el('button', { textContent: tf, tip: t('{timeframe} candles. The footprint, the bar stats and the open-interest bars follow this too.', { timeframe: TIMEFRAME_NAMES[tf] ?? tf }), onclick: () => this.store.set({ timeframe: tf }) }));
+    this.#timeframes.append(this.#chartType);
     for (const [id, label] of LAYERS) {
       const available = AVAILABLE_LAYERS.includes(id), option = new Option(available ? label : `${label} · ${UPCOMING}`, id);
       option.disabled = !available;
@@ -516,7 +529,7 @@ export class Toolbar {
       this.#sheet?.close();
       this.#fillHeatControls();
       const inCorner = this.#mapHost !== null;
-      if (inCorner) { this.#mapTools.replaceChildren(this.#goto, this.#rangeCorner, this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
+      if (inCorner) { this.#mapTools.replaceChildren(this.#goto, this.#rangeCorner, ...(this.#drawCorner ? [this.#drawCorner] : []), this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
       const host = this.#statusHost;
       // With a status bar the connection state, the language and theme buttons and Waves' lamp live there.
       host?.replaceChildren(this.#layouts, this.#keys, this.#zone, this.#language, this.#theme, this.#glass);
@@ -669,7 +682,12 @@ export class Toolbar {
       this.#market.dataset.key = marketKey;
     }
     setValue(this.#market, state.marketId);
-    [...this.#timeframes.children].forEach(b => b.classList.toggle('on', b.textContent === state.timeframe));
+    [...this.#timeframes.children].forEach(b => { if (b !== this.#chartType) b.classList.toggle('on', b.textContent === state.timeframe); });
+    if (this.#chartType.dataset.type !== state.chartType) {
+      this.#chartType.dataset.type = state.chartType;
+      this.#chartType.replaceChildren(chartTypeGlyph(state.chartType));
+      setTip(this.#chartType, `${chartTypeTip(state.chartType)} ${t('Click for the other ways to draw the price.')}`);
+    }
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
     lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#scripts, state.show.script); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);

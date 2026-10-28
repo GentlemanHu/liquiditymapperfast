@@ -1,5 +1,5 @@
 import type { Expr, Pos, Stmt } from './parser.ts';
-import { numberSites } from './walk.ts';
+import { declaredNames, numberSites } from './walk.ts';
 import { DateValue, NativeFunction, ScriptFunction, ScriptRuntimeError, own, add, compare, getMember, isCallable, keyOf, looseEquals, num, plain, setMember, text, truthy, typeOf, MAX_ARRAY, MAX_TEXT, type Value } from './values.ts';
 
 /**
@@ -20,6 +20,8 @@ export interface Host {
   history?(name: string, back: number): { value: Value } | null;
   /** Wraps the whole of a call, its arguments included (`source(expr)` reads `expr` over its own markets). */
   aroundCall?(node: Extract<Expr, { k: 'call' }>, run: () => Value): Value;
+  /** Whether `aroundCall` wraps this call (asked once per call in the text); without it, every call is wrapped. */
+  wrapsCall?(node: Extract<Expr, { k: 'call' }>): boolean;
   /** `new Date(...)`, `new Array(n)`. */
   construct?(name: string, args: Value[]): Value;
   /** Whether a call to the language's function `fn` at `site` needs its named arguments read (a plot reads them once, `source` never). */
@@ -60,15 +62,36 @@ function madeText(b: Budget, s: string): string {
 const METHOD_STRING = new Set(['slice', 'substring', 'substr', 'toUpperCase', 'toLowerCase', 'indexOf', 'lastIndexOf', 'includes', 'startsWith', 'endsWith', 'trim', 'trimStart', 'trimEnd', 'charAt', 'charCodeAt', 'split', 'concat', 'padStart', 'padEnd', 'toString', 'replace', 'replaceAll', 'at']);
 const METHOD_NUMBER = new Set(['toFixed', 'toPrecision', 'toString', 'toLocaleString']);
 
+/** What a call in the text needs on every run, worked out once: its place, and whether the host wraps it. */
+interface CallInfo { site: number; wrap: boolean }
+
+/** What a body declares before its first line (`#hoist`), in its order: a `var`'s name, or a function. */
+type Hoisted = { name: string; fn: null } | { name: string; fn: Extract<Stmt, { k: 'func' }> };
+
 export class Interpreter {
   readonly sites: Map<Expr, number>;
   readonly globalScope = new Scope(null);
   #fnScope: Scope;
   #depth = 0;
+  /**
+   * Every name the script can ever put in a scope (its `var`, `let`, `const`, functions and parameters). Any other name is never found in
+   * one, so it goes to the host at once instead of looking through every scope first: a script reads its kept names, options and inputs on
+   * every candle.
+   */
+  readonly #declared: ReadonlySet<string>;
+  readonly #calls = new Map<Expr, CallInfo>();
+  readonly #hoisted = new WeakMap<readonly Stmt[], readonly Hoisted[]>();
 
   constructor(readonly program: readonly Stmt[], readonly host: Host, readonly budget: Budget) {
     this.sites = numberSites(program);
     this.#fnScope = this.globalScope;
+    this.#declared = declaredNames(program);
+    for (const [node, site] of this.sites) if (node.k === 'call') this.#calls.set(node, { site, wrap: !!host.aroundCall && (!host.wrapsCall || host.wrapsCall(node)) });
+  }
+
+  /** The binding of `name` in `scope` or around it, if the script declares that name at all. */
+  #find(name: string, scope: Scope): { v: Value; konst: boolean } | undefined {
+    return this.#declared.has(name) ? scope.find(name) : undefined;
   }
 
   /** Spend steps; stop the script when none are left or its time is up. */
@@ -87,11 +110,23 @@ export class Interpreter {
     catch (e) { if (e instanceof Jump) { if (e.kind !== 'return') throw new ScriptRuntimeError('bad-jump'); return; } throw e; }
   }
 
-  /** Functions declared in `body` exist before its first line, and every `var` of it (in its blocks too, not in its functions) is undefined until set. */
+  /**
+   * Functions declared in `body` exist before its first line, and every `var` of it (in its blocks too, not in its functions) is undefined until
+   * set. What a body declares is read from its text once (`#hoistedOf`): the whole script is hoisted again on every candle.
+   */
   #hoist(body: readonly Stmt[], scope: Scope): void {
+    for (const h of this.#hoistedOf(body)) {
+      if (h.fn) scope.vars.set(h.name, { v: this.#makeFn(h.name, h.fn.params, h.fn.body, scope, h.fn.p), konst: false });
+      else if (!scope.vars.has(h.name)) scope.vars.set(h.name, { v: undefined, konst: false });
+    }
+  }
+  #hoistedOf(body: readonly Stmt[]): readonly Hoisted[] {
+    const had = this.#hoisted.get(body);
+    if (had) return had;
+    const list: Hoisted[] = [];
     const vars = (s: Stmt): void => {
       switch (s.k) {
-        case 'decl': if (s.kind === 'var') for (const d of s.items) if (!scope.vars.has(d.name)) scope.vars.set(d.name, { v: undefined, konst: false }); return;
+        case 'decl': if (s.kind === 'var') for (const d of s.items) list.push({ name: d.name, fn: null }); return;
         case 'if': vars(s.yes); if (s.no) vars(s.no); return;
         case 'for': if (s.init) vars(s.init); vars(s.body); return;
         case 'while': case 'dowhile': vars(s.body); return;
@@ -99,10 +134,9 @@ export class Interpreter {
         default: return;
       }
     };
-    for (const s of body) {
-      if (s.k === 'func') scope.vars.set(s.name, { v: this.#makeFn(s.name, s.params, s.body, scope, s.p), konst: false });
-      else vars(s);
-    }
+    for (const s of body) { if (s.k === 'func') list.push({ name: s.name, fn: s }); else vars(s); }
+    this.#hoisted.set(body, list);
+    return list;
   }
 
   #makeFn(name: string, params: readonly string[], body: readonly Stmt[], closure: Scope, p: Pos): ScriptFunction {
@@ -110,10 +144,18 @@ export class Interpreter {
       this.#spend(p);
       if (++this.#depth > 200) { this.#depth = 0; throw new ScriptRuntimeError('too-deep', p.line, p.col); }
       const scope = new Scope(closure);
-      params.forEach((n, i) => scope.vars.set(n, { v: args[i], konst: false }));
+      for (let i = 0; i < params.length; i++) scope.vars.set(params[i]!, { v: args[i], konst: false });
       const before = this.#fnScope; this.#fnScope = scope;
       this.#hoist(body, scope);
-      try { for (const s of body) this.exec(s, scope); return undefined; }
+      try {
+        for (const s of body) {
+          // A `return` that ends the body itself answers at once, for the step `exec` would spend on it; one in a block or a loop is thrown
+          // to here. A thrown return cost more than the rest of a small function (a heat map's colour, 17 calls a candle).
+          if (s.k === 'return') { this.#spend(s.p); return s.e ? this.eval(s.e, scope) : undefined; }
+          this.exec(s, scope);
+        }
+        return undefined;
+      }
       catch (e) { if (e instanceof Jump && e.kind === 'return') return e.value; if (e instanceof Jump) throw new ScriptRuntimeError('bad-jump', p.line, p.col); throw e; }
       finally { this.#fnScope = before; this.#depth--; }
     });
@@ -132,7 +174,8 @@ export class Interpreter {
           else { if (scope.vars.has(d.name) && s.kind !== 'let') throw new ScriptRuntimeError('redeclared', d.p.line, d.p.col, d.name); scope.vars.set(d.name, { v, konst: s.kind === 'const' }); }
         }
         return;
-      case 'if': if (truthy(this.eval(s.test, scope))) this.exec(s.yes, new Scope(scope)); else if (s.no) this.exec(s.no, new Scope(scope)); return;
+      // A branch that is an expression declares nothing, so it needs no scope of its own.
+      case 'if': { const next = truthy(this.eval(s.test, scope)) ? s.yes : s.no; if (next) this.exec(next, next.k === 'expr' ? scope : new Scope(scope)); return; }
       case 'block': { const inner = new Scope(scope); this.#hoistFunctions(s.body, inner); for (const x of s.body) this.exec(x, inner); return; }
       case 'while':
         while (truthy(this.eval(s.test, scope))) {
@@ -186,7 +229,7 @@ export class Interpreter {
   }
 
   #read(name: string, scope: Scope, p: Pos): Value {
-    const b = scope.find(name);
+    const b = this.#find(name, scope);
     if (b) return b.v;
     const kept = this.host.persistent?.(name);
     if (kept) return kept.get();
@@ -196,7 +239,7 @@ export class Interpreter {
   }
 
   #write(name: string, v: Value, scope: Scope, p: Pos): void {
-    const b = scope.find(name);
+    const b = this.#find(name, scope);
     if (b) { if (b.konst) throw new ScriptRuntimeError('const', p.line, p.col, name); b.v = v; return; }
     const kept = this.host.persistent?.(name);
     if (kept) { kept.set(v); return; }
@@ -219,7 +262,7 @@ export class Interpreter {
       }
       case 'obj': { const o = plain(); for (const p of e.props) { if (p.key === '__proto__') continue; o[p.key] = this.eval(p.value, scope); } return o; }
       case 'un': {
-        if (e.op === 'typeof') { if (e.arg.k === 'id' && !scope.find(e.arg.name) && !this.host.persistent?.(e.arg.name) && !this.host.global(e.arg.name).known) return 'undefined'; return typeOf(this.eval(e.arg, scope)); }
+        if (e.op === 'typeof') { if (e.arg.k === 'id' && !this.#find(e.arg.name, scope) && !this.host.persistent?.(e.arg.name) && !this.host.global(e.arg.name).known) return 'undefined'; return typeOf(this.eval(e.arg, scope)); }
         const v = this.eval(e.arg, scope);
         return e.op === '!' ? !truthy(v) : e.op === '-' ? -num(v) : e.op === '+' ? num(v) : ~num(v);
       }
@@ -254,7 +297,7 @@ export class Interpreter {
         return this.#member(obj, e.name, e.p);
       }
       case 'index': {
-        if (e.obj.k === 'id' && !scope.find(e.obj.name) && this.host.history) {
+        if (e.obj.k === 'id' && !this.#find(e.obj.name, scope) && this.host.history) {
           const back = this.eval(e.index, scope);
           const h = typeof back === 'number' ? this.host.history(e.obj.name, back) : null;
           if (h) return h.value;
@@ -263,7 +306,10 @@ export class Interpreter {
         if (e.optional && (obj === null || obj === undefined)) return undefined;
         return this.#member(obj, keyOf(this.eval(e.index, scope)), e.p);
       }
-      case 'call': return this.host.aroundCall ? this.host.aroundCall(e, () => this.#call(e, scope)) : this.#call(e, scope);
+      case 'call': {
+        const info = this.#calls.get(e) ?? { site: -1, wrap: !!this.host.aroundCall };
+        return info.wrap ? this.host.aroundCall!(e, () => this.#call(e, scope, info.site)) : this.#call(e, scope, info.site);
+      }
       case 'fn': return this.#makeFn('', e.params, e.body, scope, e.p);
       case 'new': {
         const args = e.args.map(x => this.eval(x, scope));
@@ -331,7 +377,7 @@ export class Interpreter {
   /** The language's function a call names, per call: looked up once, since nothing the script does changes what such a name is. */
   readonly #natives = new Map<Expr, NativeFunction>();
 
-  #call(e: Extract<Expr, { k: 'call' }>, scope: Scope): Value {
+  #call(e: Extract<Expr, { k: 'call' }>, scope: Scope, site: number): Value {
     let fn: Value;
     if (e.callee.k === 'member') {
       const obj = this.eval(e.callee.obj, scope);
@@ -339,15 +385,15 @@ export class Interpreter {
       fn = this.#member(obj, e.callee.name, e.p);
     } else if (e.callee.k === 'id') {
       const name = e.callee.name, cached = this.#natives.get(e);
-      if (cached && !scope.find(name)) fn = cached;
+      if (cached && !this.#find(name, scope)) fn = cached;
       else {
         fn = this.eval(e.callee, scope);
-        if (fn instanceof NativeFunction && !scope.find(name) && !this.host.persistent?.(name)) this.#natives.set(e, fn);
+        if (fn instanceof NativeFunction && !this.#find(name, scope) && !this.host.persistent?.(name)) this.#natives.set(e, fn);
       }
     } else fn = this.eval(e.callee, scope);
     if (!isCallable(fn)) throw new ScriptRuntimeError('not-callable', e.p.line, e.p.col, e.callee.k === 'id' ? e.callee.name : e.callee.k === 'member' ? e.callee.name : undefined);
-    const args = e.args.map(a => this.eval(a, scope));
-    const site = this.sites.get(e) ?? -1;
+    const args: Value[] = new Array<Value>(e.args.length);
+    for (let k = 0; k < args.length; k++) args[k] = this.eval(e.args[k]!, scope);
     let named: Record<string, Value> | null = null;
     if (e.named.length && (!(fn instanceof NativeFunction) || !this.host.wantsNamed || this.host.wantsNamed(fn, site))) {
       named = Object.create(null) as Record<string, Value>;
@@ -363,7 +409,7 @@ export class Interpreter {
   }
 
   #knows(name: string, scope: Scope): boolean {
-    return name === 'true' || name === 'false' || name === 'null' || !!scope.find(name) || !!this.host.persistent?.(name) || this.host.global(name).known;
+    return name === 'true' || name === 'false' || name === 'null' || !!this.#find(name, scope) || !!this.host.persistent?.(name) || this.host.global(name).known;
   }
 
   /** The methods of texts, numbers, arrays and dates a script may call. */

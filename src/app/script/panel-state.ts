@@ -24,12 +24,16 @@ export interface ScriptsHost {
   ranOn(id: string): { market: string; timeframe: string; candles: number } | null;
 }
 
-/** What the panel keeps while it is open: the script being written (a new one has the id `new`), its text so far, a message, and which Delete waits for its second press. */
+/**
+ * What the panel keeps while it is open: the script being written (a new one has the id `new`), its text so far, a message, which Delete waits
+ * for its second press, and which description is open under its row (`list:` and a script's id, or `add:` and an example's key).
+ */
 export interface ScriptsPanelState {
   editing: string | null;
   draft: { name: string; source: string; options: Record<string, OptionValue>; place: ScriptRecord['place'] } | null;
   message: { text: string; error: boolean } | null;
   armed: string | null;
+  about?: string | null;
 }
 
 /** What a script's row says: where it draws, then off, waiting for its first run, an error, its warnings or its plots. */
@@ -59,10 +63,10 @@ export const sameOptions = (a: Readonly<Record<string, unknown>>, b: Readonly<Re
 
 /**
  * The panel closed: it opens on the list again next time, unless a script was being written and has changes not saved; that one opens again
- * where it was, saying so. Messages and a Delete waiting for its second press are let go.
+ * where it was, saying so. Messages, a Delete waiting for its second press and an open description are let go.
  */
 export function panelClosed(host: ScriptsHost, ui: ScriptsPanelState): void {
-  ui.armed = null;
+  ui.armed = null; ui.about = null;
   if (ui.editing && unsaved(host, ui)) { ui.message = { text: t('Not saved'), error: false }; return; }
   ui.editing = null; ui.draft = null; ui.message = null;
 }

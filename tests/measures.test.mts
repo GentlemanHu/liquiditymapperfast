@@ -381,9 +381,9 @@ test('the band sits under the legend and the corner buttons, the column\'s width
   assert.equal(bands.misplaced(42), false); assert.equal(bands.misplaced(56), true);
 });
 
-test('settings: the profile along the top is part of the Volume profile, on with traded volume by default, read field by field', () => {
-  assert.deepEqual(topOf(TRADED_DEFAULTS), { on: true, metric: 'volume' });
-  assert.deepEqual(topOf(readTraded({})), { on: true, metric: 'volume' });
+test('settings: the profile along the top is part of the Volume profile, off by default with traded volume ready, read field by field', () => {
+  assert.deepEqual(topOf(TRADED_DEFAULTS), { on: false, metric: 'volume' }, 'off since 2026-10-28');
+  assert.deepEqual(topOf(readTraded({})), { on: false, metric: 'volume' });
   assert.deepEqual(topOf(readTraded({ top: { on: false, metric: 'absorption' } })), { on: false, metric: 'absorption' });
   assert.deepEqual(topOf(readTraded({ top: { on: 'yes', metric: 'whales' } })), { on: true, metric: 'volume' }, 'junk: the defaults');
   assert.ok(!(LAYOUT_KEYS as readonly string[]).includes('measureStrip'), 'the strip has no key of its own any more: layouts carry it in traded');

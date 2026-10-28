@@ -3,7 +3,7 @@ import { TIMEFRAMES } from '../hub.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import type { Store } from '../store.ts';
 import type { View } from '../view.ts';
-import { helpButton } from '../help.ts';
+import { helpButton, toggleExplanation } from '../help.ts';
 import { setTip } from '../tip.ts';
 import { t, tn } from '../i18n.ts';
 import { clock, price as fmtPrice } from '../format.ts';
@@ -18,16 +18,18 @@ import { ScriptData } from '../script/data.ts';
 import { UNREAD_VENUE, analyze, sourcesWith, type Analysis } from '../script/lang/analysis.ts';
 import { ScriptSyntaxError, type ScriptError } from '../script/lang/lexer.ts';
 import { SCRIPT_API, loadScripts, storeScripts, type OptionValue, type ScriptRecord } from '../script/records.ts';
-import { starterScripts } from '../script/starter.ts';
+import { starterScripts, updateStarters } from '../script/starter.ts';
 import { PLOT_FIELDS, type PlotOut, type ScriptResult, type Warning } from '../script/protocol.ts';
 import { MARK_SLOP, MARK_SLOP_TOUCH, markAt, markLines, markText, type DrawnMark } from '../script/marks.ts';
 import { AlertNews, fingerprint, type ScriptAlert } from '../script/alert-news.ts';
 import { paintPlot, plotColorAt, scaleIdOf, scalesOf, shortNumber, visibleRange, yOf, type Frame } from '../script/paint.ts';
 import { errorText } from '../script/messages.ts';
 import { safeColor } from '../script/lang/colors.ts';
-import type { SourceFilter } from '../script/inputs.ts';
+import type { BarInputs, SourceFilter } from '../script/inputs.ts';
+import { PALETTES } from '../theme.ts';
 import { NEW_SCRIPT, unsaved, type ScriptsPanelState } from '../script/panel-state.ts';
-import { lazy } from '../lazy.ts';
+import { buildScriptsPanel, panelClosed, refreshStatuses } from '../script/panel.ts';
+import { aboutScript, builtinOf } from '../script/about.ts';
 
 /**
  * A script's last answer, the candles it was worked out over (their starts, timeframe and market) and the moment it was worked out at: the
@@ -40,6 +42,8 @@ const spawnScriptWorker = (): WorkerLike => new Worker(new URL('../script/script
 
 /** The replay candle the page is at (a run's inputs stop at the candles closed by then), or -1 live. */
 const replayKey = (tf: number): number => replaying() ? Math.floor(pageNow() / tf) : -1;
+/** Whether a script reads the taker flow (`vbuy`, `vsell`, `bar.recorded`): its run then asks for the chart market's own candles where the page recorded none. */
+const readsFlow = (a: Analysis): boolean => a.inputs.has('vbuy') || a.inputs.has('vsell') || a.inputs.has('recorded');
 
 /**
  * How many of an answer's candles may be shown: all of them live; in a replay only those closed by its moment, whatever moment the answer
@@ -79,7 +83,7 @@ const MIN_INTERVAL = 1_000, REFRESH = 15_000;
  * script cannot keep a core busy. The Scripts… button opens the panel that lists, writes, imports and exports them (script/panel.ts).
  */
 export class ScriptPane extends TimePane {
-  #records: ScriptRecord[] = loadScripts(undefined, starterScripts);
+  #records: ScriptRecord[] = updateStarters(loadScripts(undefined, starterScripts));
   #version = 0;
   #host = new ScriptHost({ spawn: spawnScriptWorker });
   #data: ScriptData;
@@ -88,7 +92,7 @@ export class ScriptPane extends TimePane {
   #held = new Map<string, Held>();
   #warnings = new Map<string, Warning[]>();
   #lastRun = 0; #runMs = 0; #timer = 0; #running = false; #runToken = 0; #starting = false;
-  #seen: { candles: unknown; loads: number; data: number; version: number; tf: string; markets: unknown; venues: unknown; scope: string } | null = null;
+  #seen: { candles: unknown; loads: number; data: number; version: number; tf: string; markets: unknown; venues: unknown; scope: string; theme: string } | null = null;
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #panel: Panel | null = null;
@@ -139,7 +143,7 @@ export class ScriptPane extends TimePane {
 
   /** Whether a script that is on draws in a row of this pane: the pane is shown only then (and only while Scripts is on). */
   get hasRows(): boolean { return this.#records.some(r => r.on && r.place === 'pane'); }
-  /** The buttons beside each row's name (open the script, switch it off), a layer over the canvas; placed again only when a row moves. */
+  /** The buttons beside each row's name (what it is, hide it, open it, switch it off), a layer over the canvas; placed again only when a row moves. */
   #rowTools = el('div', { class: 'script-row-tools' });
   #rowToolsKey = '';
 
@@ -167,7 +171,7 @@ export class ScriptPane extends TimePane {
   /** Put each row's buttons beside its name (`places` in the plot's coordinates); nothing changes while no row moved. */
   #placeRowTools(places: readonly { id: string; x: number; y: number }[]): void {
     const dx = this.canvas.offsetLeft + leftGutter(this.store.state), dy = this.canvas.offsetTop;
-    const key = `${dx},${dy}|${places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}`).join('|')}`;
+    const key = `${dx},${dy}|${places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}:${this.#toolsOf(p.id)}`).join('|')}`;
     if (key === this.#rowToolsKey) return;
     this.#rowToolsKey = key;
     this.#syncTools(this.#rowTools, this.#rowButtons, places, dx, dy);
@@ -178,7 +182,7 @@ export class ScriptPane extends TimePane {
   readonly legendTools = el('div', { class: 'script-row-tools script-legend-tools' });
   #legendToolsKey = '';
   placeLegendTools(places: readonly { id: string; x: number; y: number }[]): void {
-    const key = places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}`).join('|');
+    const key = places.map(p => `${p.id}:${Math.round(p.x)},${Math.round(p.y)}:${this.#hiddenOf(p.id)}:${this.#toolsOf(p.id)}`).join('|');
     if (key === this.#legendToolsKey) return;
     this.#legendToolsKey = key;
     this.#syncTools(this.legendTools, this.#legendButtons, places, 0, 0);
@@ -186,11 +190,14 @@ export class ScriptPane extends TimePane {
   #legendButtons = new Map<string, HTMLElement>();
 
   #hiddenOf(id: string): boolean { return this.#records.find(r => r.id === id)?.hidden === true; }
+  /** How many buttons a script has beside its name: a "?" first for one of the page's own (`builtinOf`), then the three every script has. */
+  #toolsOf(id: string): number { const r = this.#records.find(x => x.id === id); return r && builtinOf(r) ? 4 : 3; }
 
   /**
-   * Each script's three buttons, hide or show, open and switch off, at its place (offset by `dx`, `dy`) in `layer`: a script's buttons are made
-   * once and moved after, so a panel opened from one keeps its anchor and a focused one keeps the focus; a script no longer listed loses its
-   * buttons. The first says whether the script is hidden.
+   * Each script's buttons, what it is (one of the page's own scripts only), hide or show, open and switch off, at its place (offset by `dx`, `dy`)
+   * in `layer`: a script's buttons are made once and moved after, so a panel opened from one keeps its anchor and a focused one keeps the
+   * focus; a script no longer listed loses its buttons. The eye says whether the script is hidden. The "?" opens the script's description in a
+   * panel of its own, as every "?" outside a panel does; it is added or taken away only when a script's text makes it the page's or not.
    */
   #syncTools(layer: HTMLElement, made: Map<string, HTMLElement>, places: readonly { id: string; x: number; y: number }[], dx: number, dy: number): void {
     const wanted = new Set(places.map(p => p.id));
@@ -207,6 +214,13 @@ export class ScriptPane extends TimePane {
         box = el('span', { class: 'script-row-tool' }, hide, open, off);
         made.set(place.id, box); layer.append(box);
       }
+      const record = this.#records.find(r => r.id === place.id), about = record ? aboutScript(record) : null;
+      const asked = box.querySelector<HTMLButtonElement>('.script-row-about');
+      if (about && !asked) {
+        const ask = el('button', { type: 'button', class: 'script-row-about', ariaLabel: t('Explain: {topic}', { topic: about.title }), tip: t('What is this? {topic}', { topic: about.title }) });
+        ask.onclick = () => { const r = this.#records.find(x => x.id === place.id), now = r ? aboutScript(r) : null; if (now) toggleExplanation(ask, now); };
+        box.prepend(ask);
+      } else if (!about && asked) asked.remove();
       const hide = box.querySelector<HTMLButtonElement>('.script-row-hide')!, hidden = this.#hiddenOf(place.id);
       if (hide.dataset.hidden !== String(hidden)) {
         hide.dataset.hidden = String(hidden);
@@ -228,12 +242,13 @@ export class ScriptPane extends TimePane {
     for (const r of this.#records) {
       if (!r.on || r.place !== 'map') continue;
       // A hidden script is listed, muted and with no values, so its eye can show it again.
-      if (r.hidden) { out.push({ id: r.id, name: r.name, color: '', text: '', tone: 'muted' }); continue; }
+      const tools = this.#toolsOf(r.id);
+      if (r.hidden) { out.push({ id: r.id, name: r.name, color: '', text: '', tone: 'muted', tools }); continue; }
       // Only the first `valued` lines show values (the legend lists a few, and none on a phone): the others are named, not worked out.
       const withValues = out.length < valued;
       const kept = this.#held.get(r.id), held = kept && this.#fresh(kept) ? kept : undefined;
-      if (!held) { out.push({ id: r.id, name: r.name, color: '', text: t('running…'), tone: 'muted' }); continue; }
-      if (!held.result.ok) { out.push({ id: r.id, name: r.name, color: '', text: errorText(held.result.error), tone: 'error' }); continue; }
+      if (!held) { out.push({ id: r.id, name: r.name, color: '', text: t('running…'), tone: 'muted', tools }); continue; }
+      if (!held.result.ok) { out.push({ id: r.id, name: r.name, color: '', text: errorText(held.result.error), tone: 'error', tools }); continue; }
       const res = held.result, time = held.time, shown = shownCount(time, tf);
       const i = at === null ? shown - 1 : indexAt(time, tf, at, shown);
       const band = (plot: PlotOut): boolean => (plot.kind === 'brokenarea' || plot.kind === 'cloudarea') && plot.colors !== null;
@@ -253,7 +268,7 @@ export class ScriptPane extends TimePane {
         });
         text = texts.join(' · ') + (from.length > 3 ? ' …' : '');
       }
-      out.push({ id: r.id, name: r.name, color, text, tone: 'text' });
+      out.push({ id: r.id, name: r.name, color, text, tone: 'text', tools });
     }
     return out;
   }
@@ -296,15 +311,17 @@ export class ScriptPane extends TimePane {
     this.#refreshPanel(); this.#reportStatus(); this.#maybeRun();
   }
 
-  /** The panel's code, loaded the first time the panel opens (a page that never opens it does not carry it). */
-  #panelCode: typeof import('../script/panel.ts') | null = null;
-  readonly #build = (_tools: HTMLElement, body: HTMLElement): void => { this.#panelCode?.buildScriptsPanel(this, body, () => this.#panel?.render(this.#build), this.#ui); };
+  /**
+   * The panel's code is part of the page, never fetched at the first open: on a page whose own requests hold every connection to its server,
+   * a fetched panel waited behind them (23 s, and 38 s on a development page, 2026-10-27), and each click made meanwhile opened or closed it
+   * once more when it came, so an even number of clicks left it shut. Opened at once, a second click closes it as every settings key does.
+   */
+  readonly #build = (_tools: HTMLElement, body: HTMLElement): void => { buildScriptsPanel(this, body, () => this.#panel?.render(this.#build), this.#ui); };
   openPanel(anchor: HTMLElement = this.#button): void {
-    if (!this.#panelCode) { void lazy(() => import('../script/panel.ts')).then(m => { if (m) { this.#panelCode = m; this.openPanel(anchor); } }); return; }
-    this.#panel = togglePanel(anchor, { title: t('Scripts'), width: 520, align: 'right', onClose: () => { this.#panel = null; this.#panelCode?.panelClosed(this, this.#ui); }, stays: true }, this.#build);
+    this.#panel = togglePanel(anchor, { title: t('Scripts'), width: 520, align: 'right', onClose: () => { this.#panel = null; panelClosed(this, this.#ui); }, stays: true, resizable: 'scripts' }, this.#build);
   }
   /** Write the list's statuses again with the latest results, in place (a menu or a switch under the pointer stays); not while a script is being written. */
-  #refreshPanel(): void { if (this.#panel && !this.#ui.editing) this.#panelCode?.refreshStatuses(this, this.#panel.body); }
+  #refreshPanel(): void { if (this.#panel && !this.#ui.editing) refreshStatuses(this, this.#panel.body); }
 
   #analyze(source: string): Analysis | ScriptError {
     let a = this.#analysis.get(source);
@@ -325,13 +342,14 @@ export class ScriptPane extends TimePane {
     // A run under way is waited for; one still waiting for its worker to load is replaced by a newer request; one being asked for is not asked twice.
     if (this.#starting || (this.#running && !this.#host.loading)) return;
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf), oi: state.oi, oiParts: state.oiParts };
+    const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf), oi: state.oi, oiParts: state.oiParts, theme: this.#theme, taker: this.hub.candleTaker(tf).version };
     const was = this.#seen, now = Date.now();
     const changed = !was || Object.keys(seen).some(k => (seen as Record<string, unknown>)[k] !== (was as Record<string, unknown>)[k]);
     // Nothing changed: run again at the refresh anyway (the candle under way fills in from the flow), on a timer, so a quiet page still refreshes.
     if (!changed && now - this.#lastRun < REFRESH) { this.#wake(this.#lastRun + REFRESH - now); return; }
+    // Another theme (picked, or previewed from the menu) runs at once: until it has run, the pane shows the colours of the theme before.
     const interval = Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
-    if (wait > 0) { this.#wake(wait); return; }
+    if (wait > 0 && was?.theme === seen.theme) { this.#wake(wait); return; }
     this.#seen = seen;
     this.#starting = true;
     try { this.#run(on); } finally { this.#starting = false; }
@@ -345,6 +363,16 @@ export class ScriptPane extends TimePane {
     if (this.#timer) window.clearTimeout(this.#timer);
     this.#wakeAt = at;
     this.#timer = window.setTimeout(() => { this.#timer = 0; this.#wakeAt = 0; this.refresh(); }, at - Date.now());
+  }
+
+  /** The theme this pane draws in (the one picked, or one previewed from the menu): its scripts read its colours (`theme`). */
+  #theme = 'light';
+  override setPalette(name: string): void { this.#theme = name; super.setPalette(name); }
+  /** Inputs with the colours of the theme the pane draws in. */
+  #withTheme(inputs: BarInputs | null): BarInputs | null {
+    if (!inputs) return null;
+    const p = PALETTES[this.#theme] ?? PALETTES.light!;
+    return { ...inputs, theme: { dark: p.dark, background: p.bg, text: p.text, up: p.candleUp, down: p.candleDown } };
   }
 
   /** What a script reads that the page cannot give it: an option it reads but does not declare that is not set, a set of markets with none. */
@@ -375,7 +403,7 @@ export class ScriptPane extends TimePane {
     if (!('program' in a)) return { result: { id: 'trial', ok: false, error: a }, warnings: [], candles: 0 };
     if (this.#trialBusy) return 'busy';
     const state = this.store.state, filters = new Map<string, SourceFilter>([['', {}], ...sourcesWith(a, options)]);
-    const inputs = this.#data.inputs(state, filters, a.inputs.has('oichg'));
+    const inputs = this.#withTheme(this.#data.inputs(state, filters, a.inputs.has('oichg'), readsFlow(a)));
     if (!inputs) return null;
     const warnings = this.#pageWarnings(a, options, this.#data.markets(state, filters));
     // Counted now: the run hands the inputs' arrays over to the worker, which leaves them empty here.
@@ -429,14 +457,15 @@ export class ScriptPane extends TimePane {
     // A look that runs nothing is paced like a run, or a map drawn again for its errors would look again at once, frame after frame.
     if (!runnable.length) { this.#host.dropUnsent(); this.#lastRun = Date.now(); return; }
     // The change in open interest is worked out only for a run in which a script reads it.
-    const inputs = this.#data.inputs(state, filters, runnable.some(r => (this.#analyze(r.source) as Analysis).inputs.has('oichg')));
+    const read = runnable.map(r => this.#analyze(r.source) as Analysis);
+    const inputs = this.#withTheme(this.#data.inputs(state, filters, read.some(a => a.inputs.has('oichg')), read.some(readsFlow)));
     if (!inputs) { this.#host.dropUnsent(); return; }
     const markets = this.#data.markets(state, filters);
     for (const r of runnable) this.#warnings.set(r.id, this.#pageWarnings(this.#analyze(r.source) as Analysis, r.options, markets));
     const time = inputs.time.slice(), tf = inputs.tf, inst = state.seriesInstrument, at = replaying() ? pageNow() : Infinity, started = Date.now();
     const token = ++this.#runToken;
     this.#running = true; this.#lastRun = started;
-    const version = this.#version;
+    const version = this.#version, theme = this.#theme;
     void this.#host.run(runnable.map(r => ({ id: r.id, source: r.source, options: r.options, api: r.api })), inputs).then(({ results, ms }) => {
       // A newer request replaced this one before its worker took it: the newer one's answer is the one that counts.
       if (token !== this.#runToken) return;
@@ -445,17 +474,20 @@ export class ScriptPane extends TimePane {
       if (!results.length) { this.refresh(); return; }
       // Scripts changed while it ran (edited, switched off, deleted): its answer is stale, and the next run is due at once.
       if (version !== this.#version) { this.refresh(); return; }
+      // The oldest candle a run alerts at: the last one closed, or the newest when none is under way.
+      const since = time.length ? time[Math.max(0, time.length - (inputs.forming ? 2 : 1))]! : 0;
+      // Alerts only from a live answer for the chart as it is now, with Scripts on: one that comes after Scripts was switched off, the chart
+      // changed or a replay began says nothing. Taken before the theme is checked: an alert says what the chart did, not in which colours,
+      // and the run that replaces one thrown away for its colours may no longer meet it.
+      const cur = this.store.state, live = at === Infinity && !replaying() && cur.show.script && cur.seriesInstrument === inst && (TIMEFRAMES[cur.timeframe] ?? 3_600_000) === tf;
+      if (live) for (const res of results) { const r = runnable.find(x => x.id === res.id); if (r && res.ok) this.#takeAlerts(r, res, inst, tf, since); }
+      // The theme changed while it ran (picked, or previewed from the menu): its colours are the other theme's, and the next run is due.
+      if (theme !== this.#theme) { this.refresh(); return; }
       // The run's own time (a worker that waited to load, or never did, is not a slow script): a slow script runs less often, spaced
       // from when it started in its worker.
       this.#runMs = ms; this.#lastRun = Date.now() - ms;
       for (const res of results) this.#held.set(res.id, { result: res, time, tf, inst, at });
       this.#held = new Map(this.#held); this.#heldGen++;
-      // The oldest candle a run alerts at: the last one closed, or the newest when none is under way.
-      const since = time.length ? time[Math.max(0, time.length - (inputs.forming ? 2 : 1))]! : 0;
-      // Alerts only from a live answer for the chart as it is now, with Scripts on: one that comes after Scripts was switched off, the chart
-      // changed or a replay began says nothing.
-      const cur = this.store.state, live = at === Infinity && !replaying() && cur.show.script && cur.seriesInstrument === inst && (TIMEFRAMES[cur.timeframe] ?? 3_600_000) === tf;
-      if (live) for (const res of results) { const r = runnable.find(x => x.id === res.id); if (r && res.ok) this.#takeAlerts(r, res, inst, tf, since); }
       this.invalidate();
       this.onMapChanged();
       this.#refreshPanel();

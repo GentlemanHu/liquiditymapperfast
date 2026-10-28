@@ -20,7 +20,7 @@ import { replaying } from '../replay/clock.ts';
 import { DepthWatch, depthMinutes } from './depth-watch.ts';
 import type { ColumnsFrame } from '../wire.ts';
 
-export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi' | 'script';
+export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi' | 'script' | 'drawing';
 /** What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted. */
 export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean }
 
@@ -31,6 +31,8 @@ export interface Player { play(notes: readonly Note[], force?: boolean): boolean
 const FLOW_COOLDOWN_MS = 90_000, WALL_COOLDOWN_MS = 30_000, IMBALANCE_COOLDOWN_MS = 300_000, BOOK_EVERY_MS = 2_000;
 /** One call of a script's `alert` sounds at most this often (a script that alerts on every candle of a one-minute chart still can). */
 const SCRIPT_COOLDOWN_MS = 20_000;
+/** A drawn level sounds at most this often (a price hovering at it crosses it again and again). */
+const LEVEL_COOLDOWN_MS = 60_000;
 /** A reading older than this is history (a tab catching up after being asleep): it does not sound. */
 const FRESH_MS = 4_000;
 /** A candle that closed longer ago than this is not news: it was loaded, or the tab slept through it. (A new candle shows when its first tick arrives, a few seconds after the close.) */
@@ -273,6 +275,12 @@ export class Alerts {
   script(now: number, text: string, sound: Parameters<typeof scriptNotes>[0], key: string): void {
     if (replaying()) return;
     this.#fire(now, 'script', 'script', null, text, `script:${key}`, SCRIPT_COOLDOWN_MS, scriptNotes(sound, this.#s.sounds.volume));
+  }
+
+  /** A level drawn on the map with its alert on was reached (draw/controller.ts): the chime, under the same Sounds switch, cap and list. */
+  drawing(now: number, text: string, key: string): void {
+    if (replaying()) return;
+    this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
   }
 
   test(kind: AlertKind, side: 'buy' | 'sell' | null = 'buy'): void {

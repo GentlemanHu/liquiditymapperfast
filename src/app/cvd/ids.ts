@@ -69,16 +69,22 @@ export function pinChoices(state: Pick<AppState, 'markets'>, withFlow: readonly 
   return [...keys].sort((a, b) => venueLabel(a).localeCompare(venueLabel(b)));
 }
 
+/** A spot market under the flow feeds' name (`binance:BTCUSDT:spot` is `binancespot:BTCUSDT` there); null for any other id. */
+export function flowFeedSpotId(id: string): string | null {
+  const m = /^([^:]+):(.+):spot$/.exec(id);
+  return m ? `${m[1]}spot:${m[2]}` : null;
+}
+
 /**
  * The instrument whose recorded seconds give the price strip its price: the market on screen when it has flow, else its spot twin under
- * the flow feeds' name (`binance:BTCUSDT:spot` is `binancespot:BTCUSDT` there), else none, and the strip falls back to candle closes.
+ * the flow feeds' name (`flowFeedSpotId`), else none, and the strip falls back to candle closes.
  */
 export function priceFlowId(candidates: readonly string[], has: (id: string) => boolean): string | null {
   for (const id of candidates) {
     if (!id) continue;
     if (has(id)) return id;
-    const m = /^([^:]+):(.+):spot$/.exec(id);
-    if (m && has(`${m[1]}spot:${m[2]}`)) return `${m[1]}spot:${m[2]}`;
+    const spot = flowFeedSpotId(id);
+    if (spot && has(spot)) return spot;
   }
   return null;
 }

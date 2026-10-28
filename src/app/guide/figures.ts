@@ -45,7 +45,6 @@ export function readTheme(): Theme {
     lut: dark ? (lutDark ??= buildLut(true)) : (lutLight ??= buildLut(false)) };
 }
 const ramp = (th: Theme, s: number, alpha = 1): string => { const i = Math.round(clamp(s) * 255) * 4; return `rgba(${th.lut[i]}, ${th.lut[i + 1]}, ${th.lut[i + 2]}, ${alpha})`; };
-const grey = (th: Theme, s: number): string => { const m = /^#?([0-9a-f]{6})$/i.exec(th.muted.replace('#', '')); const c = m ? parseInt(m[1]!, 16) : 0x808080; return `rgba(${c >> 16 & 255}, ${c >> 8 & 255}, ${c & 255}, ${(0.16 + 0.74 * clamp(s)).toFixed(3)})`; };
 
 // ---- a small made-up market ---------------------------------------------------------------------------------------------------------
 
@@ -74,7 +73,7 @@ function niceStep(span: number, target: number): number {
   return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * mag;
 }
 
-interface ChartOptions { heat?: 'colour' | 'grey' | 'none'; candles?: boolean; mark?: boolean; axis?: boolean; timeGrid?: boolean; tFrom?: number; window?: [number, number]; candleSlots?: number }
+interface ChartOptions { heat?: 'colour' | 'none'; candles?: boolean; mark?: boolean; axis?: boolean; timeGrid?: boolean; tFrom?: number; window?: [number, number]; candleSlots?: number }
 
 /** The chart: grid, the map as streaks, candles and the mark line, clipped to `b`. `window` shifts which sizes get a colour (the contrast slider). */
 function chart(g: Ctx, b: Box, d: Dom, th: Theme, o: ChartOptions = {}): void {
@@ -92,7 +91,7 @@ function chart(g: Ctx, b: Box, d: Dom, th: Theme, o: ChartOptions = {}): void {
     for (const w of [...NOISE, ...WALLS]) {
       const s = (w.s - lo) / span; if (s <= 0.02) continue;
       const a = Math.max(w.a, o.tFrom ?? 0), x0 = xOf(b, d, a), x1 = xOf(b, d, w.b); if (x1 <= x0) continue;
-      g.fillStyle = o.heat === 'grey' ? grey(th, s) : ramp(th, clamp(s), clamp(s * 3));
+      g.fillStyle = ramp(th, clamp(s), clamp(s * 3));
       g.fillRect(x0, yOf(b, d, w.p) - band / 2, x1 - x0, band);
     }
   }
@@ -230,8 +229,6 @@ const recording: Scene = {
     g.fillStyle = th.panel; g.fillRect(b.x, b.y, b.w, b.h);
     g.save(); g.beginPath(); g.rect(b.x, b.y, b.w, b.h); g.clip();
     const band = Math.max(3, 34 / (d.p1 - d.p0) * b.h), sx = b.x + since * b.w;
-    // grey: the current book copied back to the left edge, on the same scale
-    for (const wall of WALLS) g.fillStyle = grey(th, wall.s), g.fillRect(b.x, yOf(b, d, wall.p) - band / 2, since * b.w, band);
     // colour: what was recorded, from the moment the page was opened (walls that came later start later)
     for (const wall of [...NOISE, ...WALLS]) {
       const x0 = sx + (b.x + b.w - sx) * Math.min(0.6, wall.a * 0.4); if (x0 >= b.x + b.w) continue;
@@ -242,7 +239,7 @@ const recording: Scene = {
     const my = yOf(b, d, MARK); g.strokeStyle = th.ask; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(b.x, my + 0.5); g.lineTo(b.x + b.w, my + 0.5); g.stroke();
     g.strokeStyle = th.text; g.setLineDash([2, 4]); g.beginPath(); g.moveTo(sx + 0.5, b.y); g.lineTo(sx + 0.5, b.y + b.h); g.stroke(); g.setLineDash([]);
     note(g, tg('Page open for'), 10, 12, th, 'left', th.muted, 11); note(g, tg('{n} min', { n: Math.round(e) }), 88, 12, th, 'left', th.text, 12, 700);
-    if (since > 0.3) note(g, tg('Grey: the current book, copied back'), b.x + since * b.w * 0.5, b.y + 14, th, 'center', th.text, 11, 600);
+    if (since > 0.3) note(g, tg('Not recorded'), b.x + since * b.w * 0.5, b.y + b.h / 2, th, 'center', th.muted, 11, 600);
     if (since < 0.7) note(g, tg('Colour: recorded while the page was open'), Math.max(b.x + 150, sx + (b.x + b.w - sx) / 2), b.y + b.h - 12, th, 'center', th.text, 11, 600);
     if (e < 6) note(g, tg('depth recorded from here'), Math.min(sx + 8, b.x + b.w - 130), b.y - 8, th, 'left', th.text, 10);
     note(g, tg('now'), b.x + b.w, b.y + b.h + 12, th, 'right'); note(g, tg('{n} min ago', { n: 75 }), b.x, b.y + b.h + 12, th, 'left');

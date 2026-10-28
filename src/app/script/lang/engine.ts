@@ -4,10 +4,10 @@ import { Interpreter, charge, type Budget, type Host } from './interpreter.ts';
 import { declaredNames, numberSites } from './walk.ts';
 import { MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTable, sourceFilter, type Analysis } from './analysis.ts';
 import { DateValue, HostObject, NativeFunction, ScriptRuntimeError, isPlain, num, own, plain, text, toData, truthy, type Value } from './values.ts';
-import { BUILTINS, makeInstance, type Instance } from './builtins.ts';
+import { BUILTINS, makeInstance, type Candle, type Instance } from './builtins.ts';
 import { COLOR_NAMES, interpolateColors, rgb, safeColor } from './colors.ts';
 import { ALERT_SOUNDS, ALERT_TEXT, MARK_TEXT, MARK_TIP, MAX_ALERTS, PLOT_FIELDS, type AlertOut, type AlertSound, type PlotKind, type PlotOut, type ScriptResult } from '../protocol.ts';
-import { filterKey, type BarInputs, type SourceInputs } from '../inputs.ts';
+import { DEFAULT_SCRIPT_THEME, filterKey, type BarInputs, type SourceInputs } from '../inputs.ts';
 import type { OptionValue } from '../records.ts';
 
 /**
@@ -80,12 +80,18 @@ const NO_INPUTS: BarInputs = { tf: 60_000, time: new Float64Array(0), open: new 
 /** Whether candles [0, m) of two inputs are the same (NaN where both are NaN): the only candles a run may take over from the one before. */
 export function sameCandles(a: BarInputs, b: BarInputs, m: number): boolean {
   if (a.tf !== b.tf || m > a.time.length || m > b.time.length) return false;
+  const ta = a.theme ?? DEFAULT_SCRIPT_THEME, tb = b.theme ?? DEFAULT_SCRIPT_THEME;
+  if (ta.dark !== tb.dark || ta.background !== tb.background || ta.text !== tb.text || ta.up !== tb.up || ta.down !== tb.down) return false;
   const ka = Object.keys(a.sources), kb = Object.keys(b.sources);
   if (ka.length !== kb.length || ka.some(k => !(k in b.sources))) return false;
   const eq = (x: Float64Array, y: Float64Array): boolean => { for (let k = 0; k < m; k++) { const u = x[k]!, v = y[k]!; if (u !== v && !(u !== u && v !== v)) return false; } return true; };
   if (!eq(a.time, b.time) || !eq(a.open, b.open) || !eq(a.high, b.high) || !eq(a.low, b.low) || !eq(a.close, b.close) || !eq(a.volume, b.volume)) return false;
   if (!a.oichg !== !b.oichg || (a.oichg && b.oichg && !eq(a.oichg, b.oichg))) return false;
-  for (const k of ka) { const x = a.sources[k]!, y = b.sources[k]!; if (!eq(x.vbuy, y.vbuy) || !eq(x.vsell, y.vsell) || !eq(x.lbuy, y.lbuy) || !eq(x.lsell, y.lsell)) return false; }
+  for (const k of ka) {
+    const x = a.sources[k]!, y = b.sources[k]!;
+    if (!eq(x.vbuy, y.vbuy) || !eq(x.vsell, y.vsell) || !eq(x.lbuy, y.lbuy) || !eq(x.lsell, y.lsell)) return false;
+    if (!x.recorded !== !y.recorded || (x.recorded && y.recorded && !eq(x.recorded, y.recorded))) return false;
+  }
   return true;
 }
 
@@ -137,6 +143,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   const src = (): SourceInputs | undefined => inputs.sources[sourceStack[sourceStack.length - 1]!] ?? inputs.sources[''];
   const at = (arr: Float64Array | undefined): number => arr ? arr[i]! : NaN;
   const price = { color: '' as string, borderColor: '', wickColor: '' };
+  // The chart's candle as the functions of a bar read it (`avg_ohlc(bar)`): one object, set at each candle, since no function keeps it.
+  const candle: Candle = { open: NaN, high: NaN, low: NaN, close: NaN };
   let candleColors: string[] = [];
   let colored = false;
   const priceObject = new HostObject('$price', k => {
@@ -154,12 +162,15 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       case 'timestamp': return inputs.time[i]! / 1000;
       case 'vbuy': return at(s?.vbuy); case 'vsell': return at(s?.vsell); case 'lbuy': return at(s?.lbuy); case 'lsell': return at(s?.lsell);
       case 'cbuy': case 'csell': return NaN;
+      case 'recorded': return at(s?.recorded);
       case 'oichg': return inputs.oichg ? inputs.oichg[i] : NaN;
       case 'open': return inputs.open[i]; case 'high': return inputs.high[i]; case 'low': return inputs.low[i]; case 'close': return inputs.close[i];
       case 'volume': return inputs.volume[i];
       default: return undefined;
     }
   });
+  // The page's colours, read-only: whether its background is dark, and its background, text, up and down colours.
+  const themeObject = new HostObject('theme', k => { const th = inputs.theme ?? DEFAULT_SCRIPT_THEME; return k === 'dark' ? th.dark : k === 'background' || k === 'text' || k === 'up' || k === 'down' ? th[k] : undefined; });
   const rendererObject = new HostObject('renderer', k => {
     switch (k) {
       case 'length': return i + 1;
@@ -219,6 +230,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
         case '$price': return { known: true, value: priceObject };
         case 'options': return { known: true, value: optionsObject };
         case 'renderer': return { known: true, value: rendererObject };
+        case 'theme': return { known: true, value: themeObject };
         case 'fns': return { known: true, value: fnsObject };
       }
       if (Object.prototype.hasOwnProperty.call(globals, name)) return { known: true, value: globals[name] };
@@ -248,7 +260,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       if (builtin) {
         const inst = instanceAt(site);
         if (!inst.touched) { inst.touched = true; touched.push(inst); }
-        return builtin(inst, args, named, { open: inputs.open[i]!, high: inputs.high[i]!, low: inputs.low[i]!, close: inputs.close[i]! });
+        return builtin(inst, args, named, candle);
       }
       return fn.call(args, named);
     },
@@ -308,7 +320,6 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     // A call with no value (only named arguments) makes its plot and draws nothing.
     if (!args.length) return;
     const point = args[0];
-    const setColor = (c: Value): void => { if (typeof c !== 'string' || !c) return; const color = c.length <= 64 ? safeColor(c, '') : ''; if (!color) return; if (!p!.colors) p!.colors = new Array<string>(n).fill(''); p!.colors[i] = color; };
     if (kind === 'mark') {
       // A mark's value, text and tip: mark(value, text, tip) or mark({value, text, tip, color}); a value that is not a number draws none.
       const o = isPlain(point) ? point : null, v = o ? o.value : point;
@@ -320,18 +331,26 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       charge(budget, 1 + ((label.length + tip.length) >> 4));
       if (label) (p.texts ??= new Array<string>(n).fill(''))[i] = label;
       if (tip) (p.tips ??= new Array<string>(n).fill(''))[i] = tip;
-      setColor(o ? o.color : args[3]);
+      setColor(p, o ? o.color : args[3]);
       return;
     }
     if (isPlain(point)) {
       for (const f of PLOT_FIELDS[kind]) { const v = point[f]; p.fields[f]![i] = typeof v === 'number' ? v : v === undefined || v === null ? NaN : num(v); }
       if (kind === 'line' || kind === 'area' || kind === 'histogram' || kind === 'baseline') { if (point.value === undefined && typeof point.close === 'number') p.fields.value![i] = point.close; }
-      setColor(point.color);
+      setColor(p, point.color);
       return;
     }
     const fields = PLOT_FIELDS[kind];
     for (let f = 0; f < fields.length; f++) { const v = args[f]; p.fields[fields[f]!]![i] = typeof v === 'number' ? v : v === undefined || v === null ? NaN : num(v); }
-    if (named && typeof named.color === 'string' && kind === 'histogram') setColor(named.color);
+    if (named && typeof named.color === 'string' && kind === 'histogram') setColor(p, named.color);
+  }
+  /** A point's own colour, when it reads as one. */
+  function setColor(p: PlotBuild, c: Value): void {
+    if (typeof c !== 'string' || !c) return;
+    const color = c.length <= 64 ? safeColor(c, '') : '';
+    if (!color) return;
+    if (!p.colors) p.colors = new Array<string>(n).fill('');
+    p.colors[i] = color;
   }
   /**
    * The alerts of a run, from its newest candles only: the one under way and the last one closed (`alertsFrom`). Older candles are history
@@ -362,6 +381,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     sourceStack.push(key);
     try { return run(); } finally { sourceStack.pop(); }
   };
+  // Only those calls: wrapping every call cost each one a function made for it.
+  host.wrapsCall = node => sourceSites.has(node);
   // A plot's named arguments are its style, read on its first call; `source`, `option` and the stateful functions take theirs from the text.
   host.wantsNamed = (fn, site) => own(PLOTS, fn.name) !== undefined ? !styled.has(site) : !(fn.name === 'source' || fn.name === 'option' || own(BUILTINS, fn.name));
   host.construct = (name, args) => {
@@ -452,6 +473,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       try {
         for (i = start; i < n; i++) {
           price.color = ''; price.borderColor = ''; price.wickColor = '';
+          candle.open = inputs.open[i]!; candle.high = inputs.high[i]!; candle.low = inputs.low[i]!; candle.close = inputs.close[i]!;
           interp.runOnce();
           for (const inst of touched) { inst.commit(); inst.touched = false; }
           touched.length = 0;

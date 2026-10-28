@@ -1,6 +1,7 @@
 import { el } from '../dom.ts';
 import { t, tn } from '../i18n.ts';
 import { button, heading, note } from '../ui.ts';
+import { explain, questionButton } from '../help.ts';
 import type { Analysis } from './lang/analysis.ts';
 import type { ScriptError } from './lang/lexer.ts';
 import type { ScriptResult, Warning } from './protocol.ts';
@@ -10,6 +11,7 @@ import { exampleHeight, examples } from './examples.ts';
 import { NEW_SCRIPT, sameOptions, statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
 import { aiBundle, type BundleInput } from './lang/reference.ts';
 import { newestOf } from './protocol.ts';
+import { aboutExample, aboutScript, exampleId, type ScriptAbout } from './about.ts';
 
 export { panelClosed, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
 
@@ -26,6 +28,24 @@ export function refreshStatuses(host: ScriptsHost, body: HTMLElement): void {
     if (cell.textContent !== st.text) cell.textContent = st.text;
     cell.classList.toggle('error', st.error);
   }
+}
+
+/**
+ * The "?" of a script of the page's own (`about.ts`) and, while it is open, its description in a box under the row, where the eye already is:
+ * at the top of the panel, as a pane's "?" opens there, the examples' would open out of sight. `ui.about` holds the one open (`key`), so the
+ * panel drawn again keeps it; opening another closes it.
+ */
+function aboutToggle(ui: ScriptsPanelState, redraw: () => void, key: string, about: ScriptAbout): { button: HTMLButtonElement; box: HTMLElement | null } {
+  const open = ui.about === key, ask = questionButton(about.title);
+  ask.classList.toggle('open', open);
+  ask.setAttribute('aria-expanded', String(open));
+  ask.dataset.focus = `about-${key}`;
+  // Opened, its box is brought into view: on a phone a row low in the list would open it below the fold.
+  ask.onclick = () => { ui.about = open ? null : key; redraw(); if (!open) document.querySelector('.panel .script-about')?.scrollIntoView({ block: 'nearest' }); };
+  if (!open) return { button: ask, box: null };
+  const box = el('div', { class: 'help-inline script-about' });
+  explain(box, about);
+  return { button: ask, box };
 }
 
 /** The options a script shows in its panel: those it declares, then those it reads without declaring them. */
@@ -73,23 +93,29 @@ export function buildScriptsPanel(host: ScriptsHost, body: HTMLElement, redraw: 
     up.disabled = list.indexOf(r) === 0;
     const status = el('span', { class: `layout-date${st.error ? ' error' : ''}`, textContent: st.text });
     status.dataset.scriptStatus = r.id;
+    // One of the page's own scripts says what it is beside its name; a person's own has nothing to say there.
+    const about = aboutScript(r), ask = about ? aboutToggle(ui, redraw, `list:${r.id}`, about) : null;
     body.append(el('div', { class: 'layout-row script-row' },
       el('label', { class: 'script-on' }, box),
       button(r.name, () => { ui.editing = r.id; ui.draft = { name: r.name, source: r.source, options: { ...r.options }, place: r.place }; ui.message = null; redraw(); }, t('Open this script to change it')),
-      status, up, remove));
+      ...(ask ? [ask.button] : []), status, up, remove));
+    if (ask?.box) body.append(ask.box);
   }
 
-  // The examples, each a row with its own Add (no menu to pick from first), and a script of one's own.
+  // The examples, each a row with its own Add (no menu to pick from first) and its "?" (the name's tooltip is its first sentence), and a
+  // script of one's own. A script added from an example carries the example's key in its id, so it keeps its description however it is changed.
   body.append(heading(t('Add')));
   const full = list.length >= MAX_SCRIPTS;
   for (const ex of examples()) {
     const place = ex.place ?? 'pane';
     const add = button(t('Add'), () => {
       host.showScripts();
-      keep([...list, { id: newId(ex.name), name: ex.name, source: ex.source, options: {}, on: true, api: SCRIPT_API, height: exampleHeight(ex.source) ?? ROW_DEFAULT, place }], t('Added “{name}”.', { name: ex.name }));
+      keep([...list, { id: exampleId(ex.key), name: ex.name, source: ex.source, options: {}, on: true, api: SCRIPT_API, height: exampleHeight(ex.source) ?? ROW_DEFAULT, place }], t('Added “{name}”.', { name: ex.name }));
     }, t('Add a ready-made script to start from'));
     add.disabled = full;
-    body.append(el('div', { class: 'layout-row script-example' }, el('span', { class: 'script-example-name', textContent: ex.name }), el('span', { class: 'layout-date', textContent: place === 'map' ? t('On the map') : t('In its own row') }), add));
+    const about = aboutExample(ex.key), ask = aboutToggle(ui, redraw, `add:${ex.key}`, about);
+    body.append(el('div', { class: 'layout-row script-example' }, el('span', { class: 'script-example-name', textContent: ex.name, tip: about.tip }), ask.button, el('span', { class: 'layout-date', textContent: place === 'map' ? t('On the map') : t('In its own row') }), add));
+    if (ask.box) body.append(ask.box);
   }
   const create = button(t('New script'), () => { ui.editing = NEW_SCRIPT; ui.draft = { name: '', source: '', options: {}, place: 'pane' }; ui.message = null; redraw(); }, t('Write a script, or paste one (an indicator file or a workspace works too)'));
   create.disabled = full;
@@ -140,6 +166,8 @@ function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, u
   const source = el('textarea', { class: 'script-source', spellcheck: false, rows: 16, ariaLabel: t('Script'), placeholder: t('line(cum(vbuy - vsell), title=CVD)'), value: draft.source });
   source.maxLength = MAX_SOURCE_CHARS;
   source.wrap = 'off';
+  // In a window sized by its corners the text takes the room left (`.panel.sized`).
+  source.dataset.fill = '';
   source.oninput = () => { draft.source = source.value; };
   // A tab key writes two spaces rather than leaving the box.
   source.onkeydown = e => {

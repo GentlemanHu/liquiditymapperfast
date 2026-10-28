@@ -1,3 +1,4 @@
+import { PREVIOUS_HEATMAP_SOURCES, PREVIOUS_VWAP_SOURCES } from './starter-previous.ts';
 import { t } from '../i18n.ts';
 import { ROW_DEFAULT, SCRIPT_API, type ScriptRecord } from './records.ts';
 
@@ -15,15 +16,16 @@ mult = option(type=number, default=1.8, min=0.2, step=0.1, label="Band width (de
 midColor = option(type=color, default="rgba(255,64,255,0.95)", label="VWAP")
 bandColor = option(type=color, default="rgba(255,64,255,0.6)", label="Bands")
 
-// A var is worked out again on every candle. vbuy and vsell are the dollars bought and sold at market in the candle.
+// A var is worked out again on every candle. $price.volume is what the candle traded, in coins, as its exchange reports it:
+// every candle has it, whether or not this page recorded it, as for the VWAP the chart draws.
 var typical = ($price.high + $price.low + $price.close) / 3
-var vol = vbuy + vsell
+var vol = $price.volume
 var num = sma(typical * vol, len)
 var den = sma(vol, len)
 var num2 = sma(typical * typical * vol, len)
 
 // A name set without var keeps its value from candle to candle: mid[1] would be the VWAP one candle back.
-// Where the flow was not recorded, vbuy reads NaN: with no volume to weigh by, the lines leave a gap there.
+// A candle with no volume reported leaves a gap, and the candles after it go on from the others.
 mid = den > 0 ? num / den : NaN
 var sd = Math.sqrt(Math.max(0, num2 / den - mid * mid))
 upper = mid + mult * sd
@@ -41,20 +43,30 @@ line(lower, title="-SD", color=bandColor)
  */
 export const HEATMAP_SOURCE = `// Stochastic heat map: the stochastic of the close (where it stands between the lowest low and the highest high of the
 // last candles, 0 to 100) over sixteen windows, from 4 candles in the bottom row to 210 in the top one. Each row is a colour:
-// warm near the top of its range, cool near the bottom. Rows that agree make a band of one colour; the line is their average.
+// red-orange where the close is near the bottom of its range, blue near the top, grey at the middle (50). Rows that agree make
+// a band of one colour; the line is their average.
 
 scale = option(type=number, default=1, min=0.25, step=0.25, label="Window scale")
 smooth = option(type=number, default=3, min=1, step=1, label="Smoothing (candles)")
-lowColor = option(type=color, default="rgb(41,121,255)", label="Low")
-midColor = option(type=color, default="rgba(128,128,128,0.12)", label="Middle")
-highColor = option(type=color, default="rgb(255,152,0)", label="High")
-lineColor = option(type=color, default="rgb(213,0,249)", label="Average")
+steps = option(type=checkbox, default=false, label="Twelve steps instead of a smooth scale")
 showAverage = option(type=checkbox, default=true, label="Average line")
 colorCandles = option(type=checkbox, default=false, label="Colour the candles")
 
-// A function of your own: the colour of a reading from 0 to 100, from Low through Middle to High.
+// The colours from 0 to 100, every 10. They follow the page's theme: light ends on a dark chart, dark ends on a light one. Equal
+// changes of the reading look equal on both sides (worked out in Oklab, a colour space made for that), and the two sides stay
+// apart for colour-blind eyes. The middle is a neutral grey a little off the chart's background, so a neutral reading is not
+// mistaken for none.
+var ramp = theme.dark
+  ? ["#f49884", "#c98272", "#a06c60", "#78574f", "#52423e", "#2e2e2e", "#3d4752", "#4c6279", "#5b7ea3", "#6a9bce", "#79b9fb"]
+  : ["#a44937", "#b46959", "#c3897c", "#d1a89f", "#ddc8c3", "#e8e8e8", "#c2cfdd", "#9cb6d3", "#789dc7", "#5284bb", "#2a6bae"]
+
+// A function of your own: the colour of a reading from 0 to 100. With steps on, a reading takes the colour of the middle of its
+// step: below 5, 5 to 10, then every 10, 90 to 94, and 94 and over.
 function shade(k) {
-  return interpolate(k / 100, lowColor, midColor, highColor)
+  // A window without a reading (a candle that was not recorded) draws nothing, rather than the colour of 0.
+  if (!isFinite(k)) return "transparent"
+  if (steps) k = k < 5 ? 2.5 : k < 10 ? 7.5 : k >= 94 ? 97 : k >= 90 ? 92 : Math.floor(k / 10) * 10 + 5
+  return interpolate(k / 100, ramp)
 }
 
 // One smoothed stochastic per window. Each call of stoch or ema keeps its own history, which is why there are sixteen lines
@@ -97,8 +109,9 @@ brokenarea({ time: time, lowerValue: 81.25, higherValue: 87.5, color: shade(k14)
 brokenarea({ time: time, lowerValue: 87.5, higherValue: 93.75, color: shade(k15) })
 brokenarea({ time: time, lowerValue: 93.75, higherValue: 100, color: shade(k16) })
 
+// The average in off-white on a dark chart and near-black on a light one: it stands apart from both sides of the scale.
 var average = (k1 + k2 + k3 + k4 + k5 + k6 + k7 + k8 + k9 + k10 + k11 + k12 + k13 + k14 + k15 + k16) / 16
-if (showAverage) line(average, title="Average", color=lineColor, lineWidth=2)
+if (showAverage) line(average, title="Average", color=theme.dark ? "#f2f2f2" : "#1c1c1c", lineWidth=2)
 
 // $price.color colours the map's candle: here by the average, when switched on.
 if (colorCandles) $price.color = shade(average)
@@ -108,13 +121,38 @@ if (colorCandles) $price.color = shade(average)
 export const STARTER_ID = 'vwap-with-bands', HEATMAP_ID = 'stochastic-heat-map';
 
 /**
- * The scripts a page starts with before it has kept any: the rolling VWAP on the map and the stochastic heat map in a row under it, both on,
- * so the Scripts panel opens on two to read, change and learn from. Deleting one keeps the list as it is left; its example brings it back.
- * A browser that already kept a list keeps it as it is.
+ * The scripts a page starts with before it has kept any: the rolling VWAP with its bands on the map, on (Karl, 2026-10-28: shown to every
+ * visitor), and the stochastic heat map in a row under the map, off until switched on (it was on from 2026-10-27; a row under the map takes
+ * height from it), so the Scripts panel opens on two to read, change and learn from.
+ * Deleting one keeps the list as it is left; its example brings it back. A browser that already kept a list keeps it as it is, but for an
+ * untouched heat map of an earlier version (`updateStarters`).
  */
 export function starterScripts(): ScriptRecord[] {
   return [
     { id: STARTER_ID, name: t('VWAP with bands'), source: VWAP_SOURCE, options: {}, on: true, api: SCRIPT_API, height: ROW_DEFAULT, place: 'map' },
-    { id: HEATMAP_ID, name: t('Stochastic heat map'), source: HEATMAP_SOURCE, options: {}, on: true, api: SCRIPT_API, height: 160, place: 'pane' },
+    { id: HEATMAP_ID, name: t('Stochastic heat map'), source: HEATMAP_SOURCE, options: {}, on: false, api: SCRIPT_API, height: 160, place: 'pane' },
   ];
+}
+
+/**
+ * The options the heat map had before 2026-10-27 that it no longer has, with their values then: its colours, now the theme's. A save in
+ * the editor wrote these defaults down even when nobody touched them.
+ */
+const OLD_HEATMAP_OPTIONS: Readonly<Record<string, string>> = { lowColor: 'rgb(41,121,255)', midColor: 'rgba(128,128,128,0.12)', highColor: 'rgb(255,152,0)', lineColor: 'rgb(213,0,249)' };
+
+/**
+ * A kept list with the heat map as an earlier version of the page wrote it (its text the same, its old colours as they were) gets the
+ * current one, so a change to the starter reaches the browsers that kept it; its other options stay and the old colours go. One the person
+ * edited, or coloured, stays as it is.
+ */
+export function updateStarters(list: ScriptRecord[]): ScriptRecord[] {
+  return list.map(r => {
+    // An untouched VWAP with bands, the starter or a copy added from the examples: the current text, its settings as they were.
+    if (PREVIOUS_VWAP_SOURCES.includes(r.source.replace(/\r\n?/g, '\n'))) return { ...r, source: VWAP_SOURCE, api: Math.max(r.api, SCRIPT_API) };
+    if (r.id !== HEATMAP_ID || !PREVIOUS_HEATMAP_SOURCES.includes(r.source.replace(/\r\n?/g, '\n'))) return r;
+    const old = Object.keys(r.options).filter(k => Object.prototype.hasOwnProperty.call(OLD_HEATMAP_OPTIONS, k));
+    if (old.some(k => r.options[k] !== OLD_HEATMAP_OPTIONS[k])) return r;
+    // Its new text reads `theme`, which version 2 brought: a page older than that says so rather than run it.
+    return { ...r, source: HEATMAP_SOURCE, api: Math.max(r.api, SCRIPT_API), options: Object.fromEntries(Object.entries(r.options).filter(([k]) => !old.includes(k))) };
+  });
 }

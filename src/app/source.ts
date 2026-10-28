@@ -91,7 +91,11 @@ export type SavingState = 'server' | 'here' | 'other' | 'memory' | 'failed' | 's
  */
 export interface DataSource {
   readonly kind: 'server' | 'browser';
-  bootstrap(): Promise<BootstrapState>;
+  /**
+   * `prefer`: the market the page expects to open on. A source that would wait for a first live price to choose one (the browser) answers
+   * at once when that market is listed; its reference market and mark price may then be missing, and come with a later call.
+   */
+  bootstrap(options?: { prefer?: string }): Promise<BootstrapState>;
   /** `tape`: whether the page draws the trade dust (a server sends its batches only to a page that asked; the browser engine always does). */
   connect(handlers: LiveHandlers): { close(): void; tape(on: boolean): void };
   candles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]>;

@@ -25,6 +25,8 @@ export interface Draggable {
   clamp(): void;
   /** Forget the move and the styles it left (the window is a sheet now, or is being placed afresh). */
   reset(): void;
+  /** The window is given a place of its own by other means (its size changed by a corner): it keeps it from here, as a moved one does. */
+  hold(): void;
 }
 
 /** How far the pointer must travel before a press on the title bar is a drag and not a click. */
@@ -94,6 +96,12 @@ export function makeDraggable(root: HTMLElement, options: DragOptions): Draggabl
       // What was last written may have been changed under it (a panel measures itself with no height limit), so everything is written again.
       written.left = written.top = written.maxHeight = NaN;
       place(options.size());
+    },
+    hold() {
+      if (moved) return;
+      const r = root.getBoundingClientRect();
+      moved = true; root.style.margin = '0'; root.style.inset = 'auto'; root.style.left = `${r.left}px`; root.style.top = `${r.top}px`;
+      written.left = r.left; written.top = r.top; written.maxHeight = NaN;
     },
     reset() {
       moved = false;

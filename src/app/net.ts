@@ -29,8 +29,10 @@ export async function getFootprint(inst: string, tf: string, from: number, to: n
   return (await request(`/api/v2/footprint?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rowStep}${cutsParam(cuts)}${budget ? `&budget=${Math.round(budget)}` : ''}${venues ? '&venues=1' : ''}`)).json() as Promise<FootprintResponse>;
 }
 export const getBootstrap = async (): Promise<BootstrapState> => (await request('/api/v2/state')).json();
+/** A read of candles that has had no answer in this long is given up (a busy server answers in seconds; one that never does would hold a connection). */
+const CANDLES_TIMEOUT_MS = 30_000;
 export async function getCandles(inst: string, tf: string, from: number, to: number): Promise<CandleRow[]> {
-  const body = await (await request(`/api/v2/candles?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${from}&to=${to}`)).json() as { candles: CandleRow[] };
+  const body = await (await request(`/api/v2/candles?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${from}&to=${to}`, AbortSignal.timeout(CANDLES_TIMEOUT_MS))).json() as { candles: CandleRow[] };
   return body.candles;
 }
 export async function getPriceHistory(inst: string, tf: string, from: number, to: number, signal?: AbortSignal): Promise<PriceHistoryAnswer> {

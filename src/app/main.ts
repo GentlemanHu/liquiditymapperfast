@@ -2,6 +2,7 @@ import { Hub } from './hub.ts';
 import { ServerSource } from './server-source.ts';
 import { BrowserSource } from './browser-source.ts';
 import { chooseCoin, currentCoin, forCoin, keepCoinRecordings, scaledUsd, type CoinChoice } from './coin.ts';
+import { instrumentIdFor } from '../shared/coins.ts';
 import { withAnchor } from './vwap/settings.ts';
 import type { DataSource } from './source.ts';
 import { loadKernels } from './kernels.ts';
@@ -27,7 +28,12 @@ import { ScriptPane } from './panes/script-pane.ts';
 import { CandlePane } from './panes/candle-pane.ts';
 import { matchShortcut, togglePatch } from './shortcuts.ts';
 import { ReplayBar } from './replay/bar.ts';
-import { replaying } from './replay/clock.ts';
+import { pageNow, replaying } from './replay/clock.ts';
+import { DrawController } from './draw/controller.ts';
+import { DrawBar } from './draw/bar.ts';
+import { browserStore } from './draw/storage.ts';
+import { PALETTES } from './theme.ts';
+import { openedSheet } from './sheet.ts';
 import { topShown } from './measures/strip.ts';
 import { tableHeight } from './panes/bar-stats.ts';
 import { Layout } from './layout.ts';
@@ -177,6 +183,29 @@ async function main(): Promise<void> {
   // A script's alerts sound through the same Sounds switch, cap and list as the panels'.
   script.onAlert = a => alerts.script(Date.now(), a.text, a.sound, a.key);
   alerts.onChange = () => cvd.invalidate(); cvd.events = alerts.bursts;
+  // The drawing tools (draw/): levels, zones, lines and notes on the map, each coin's kept in this browser. The map hands them the pointer
+  // first and paints them; their bar sits under the map's corner buttons (along its foot on a phone).
+  const draw = new DrawController({
+    view: heat.view, plotW: () => heat.plotW, plotH: () => heat.plotH,
+    candleAt: x => heat.candleAt(x), closesOnly: () => store.state.chartType === 'line', wallsAt: x => heat.wallsAt(x), restingAt: price => heat.restingAt(price),
+    mark: () => store.state.mark.price, coin: () => currentCoin().coin, now: pageNow, replaying, settings: () => store.state.draw,
+    reveal: () => store.set({ draw: { ...store.state.draw, shown: true } }),
+    holdStill: () => { if (store.state.followLive) store.set({ followLive: false }); },
+    disarmOthers: () => { if (store.state.rangeTool) range.stop(); if (store.state.vwapAnchoring) store.set({ vwapAnchoring: false }); },
+    focus: box => heat.focusOn(box),
+    inspect: box => { range.begin({ t: box.t0, p: box.p0 }); range.end({ t: box.t1, p: box.p1 }, false); },
+    alert: (text, key) => alerts.drawing(Date.now(), text, key),
+    redraw: () => heat.invalidate(),
+  }, browserStore());
+  heat.draw = draw;
+  const drawBar = new DrawBar(draw, {
+    settings: () => store.state.draw, setSettings: patch => store.set({ draw: { ...store.state.draw, ...patch } }),
+    palette: () => PALETTES[store.state.theme] ?? PALETTES.light!, mark: () => store.state.mark.price, restingAt: price => heat.restingAt(price), replaying, redraw: () => heat.invalidate(),
+  });
+  heat.root.append(drawBar.rail, drawBar.editor, drawBar.say, drawBar.phoneButton);
+  heat.onDrawFrame = f => drawBar.place(f);
+  toolbar.setDrawButton(drawBar.button);
+  toolbar.onPreviewChartType = id => { heat.previewChartType = id; heat.invalidate(); };
   hub.onPrints = fresh => { if (replaying()) return; sounds.feed(fresh); cvd.flash(fresh); };
   hub.onPrintsChanged = () => { heat.invalidate(); range.refreshHeld(); };
   // The trade dust: asked for while the bubbles and their Live trades switch are both on; arrivals redraw the dust alone.
@@ -204,6 +233,8 @@ async function main(): Promise<void> {
   // Trades recovered from a venue's history (the browser engine): no flow burst is sounded over them.
   hub.onRecovered = (id, _from, to) => { alerts.recovered.set(id, Math.max(alerts.recovered.get(id) ?? 0, to)); };
   hub.onLiquidationsChanged = () => { heat.invalidate(); range.refreshHeld(); };
+  // Candles that came after the first frame (an exchange blocked here, the reference market read once known) are framed, unless the map was moved.
+  hub.onSeriesRefilled = () => { if (store.state.followLive) heat.fit(); lower(); };
   toolbar.keyHistory = hub.keyHistory;
   toolbar.profileHistory = barMs => hub.profileHistory(barMs);
   toolbar.whaleInfo = () => ({ since: hub.whale?.since ?? null, state: hub.whaleState, browser: source.kind === 'browser' });
@@ -225,6 +256,9 @@ async function main(): Promise<void> {
 
   // The keyboard shortcuts (shortcuts.ts: the table, and when a key is left alone).
   window.addEventListener('keydown', e => {
+    // The drawing tools' keys first (Esc, Delete, Undo and Redo), when no field or window has them.
+    const inPanel = document.activeElement instanceof HTMLElement && document.activeElement.closest('.panel') !== null;
+    if (draw.key(e, document.querySelector('dialog[open]') !== null || openedSheet() !== null || inPanel)) { e.preventDefault(); return; }
     const hit = matchShortcut(e, document.querySelector('dialog[open]') !== null);
     if (!hit) return;
     e.preventDefault();
@@ -234,13 +268,14 @@ async function main(): Promise<void> {
     else if (a.kind === 'zoom') heat.zoomStep(a.dir);
     else if (a.kind === 'toggle') { store.set(togglePatch(store.state, a.feature)); toolbar.refreshOpenPanel(); }
     else if (a.kind === 'range') range.toggle();
+    else if (a.kind === 'draw') drawBar.toggle();
     else if (a.kind === 'goto') toolbar.openGoTo();
     else if (a.kind === 'screenshot') void lazy(() => import('./screenshot/editor.ts')).then(m => m?.startScreenshot());
     else toolbar.openShortcuts();
   });
 
   // The profile column and axis are narrower on a phone; everything that aligns to them has to redraw when that changes.
-  onLayoutMode(() => { layout(); heat.invalidate(); lower(); toolbar.sync(store.state, heat.window); candle.setShown(candleShown()); coverPanes(); hub.setTape(tapeWanted()); });
+  onLayoutMode(() => { layout(); heat.invalidate(); lower(); drawBar.sync(); toolbar.sync(store.state, heat.window); candle.setShown(candleShown()); coverPanes(); hub.setTape(tapeWanted()); });
   // The columns beside the map: what the corner buttons and the replay bar keep clear of (the map's own pane sets them each frame too).
   const gutters = () => {
     const s = store.state;
@@ -271,7 +306,11 @@ async function main(): Promise<void> {
     if (changed.has('cvd')) cvd.settingsChanged();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
     if (changed.has('show')) layout(); else if (changed.has('traded')) gutters();
-    if (changed.has('marketId') || changed.has('timeframe')) void hub.loadSeries(true).then(() => { heat.fit(); lower(); });
+    if (changed.has('marketId') || changed.has('timeframe')) {
+      // A series kept from before is framed the moment it is shown; one read afresh when it comes (framing it again then would undo a pan made meanwhile).
+      let framed = false;
+      void hub.loadSeries(true, () => { framed = true; heat.fit(); lower(); }).then(() => { if (!framed) heat.fit(); lower(); });
+    }
     if (changed.has('disabledVenues') || changed.has('heatmapSource') || changed.has('scope')) { heat.dataChanged(); depth.refresh(); lt.refresh(); cvd.refresh(); }
     if (changed.has('markets')) cvd.invalidate();
     // Open interest added up over the venues switched on: another choice of them is another series.
@@ -279,8 +318,15 @@ async function main(): Promise<void> {
     else if (changed.has('levels') || changed.has('markets') || changed.has('bookGone')) hub.refreshOiMarkets();
     if (changed.has('highlight')) { heat.invalidate(); oi.invalidate(); depth.invalidate(); }
     if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('keyLevels') || changed.has('traded') || changed.has('vwap') || changed.has('vwapAnchoring') || changed.has('footprint') || changed.has('customMarkets') || changed.has('barStatOptions')) heat.invalidate();
-    // Placing a VWAP anchor and selecting a Range both take the next press on the map: arming one ends the other.
+    // Placing a VWAP anchor, selecting a Range and placing a drawing all take the next press on the map: arming one ends the others.
     if (changed.has('rangeTool') && state.rangeTool && state.vwapAnchoring) store.set({ vwapAnchoring: false });
+    if ((changed.has('rangeTool') && state.rangeTool) || (changed.has('vwapAnchoring') && state.vwapAnchoring)) draw.disarm();
+    if (changed.has('draw')) draw.settingsChanged();
+    if (changed.has('draw') || changed.has('theme') || changed.has('replay')) { heat.invalidate(); drawBar.sync(); }
+    // A drawing half placed belongs to the chart it was begun on; a level with an alert is watched as the price moves.
+    if (changed.has('timeframe') || changed.has('marketId') || changed.has('chartType') || changed.has('replay')) draw.contextChanged();
+    if (changed.has('mark')) draw.markMoved(state.mark.price);
+    if (changed.has('chartType')) heat.invalidate();
     if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show')) range.refreshHeld();
     if (changed.has('tradeBubbles') || changed.has('show')) hub.setTape(tapeWanted());
     if (changed.has('sounds')) heat.invalidate();
@@ -314,14 +360,15 @@ async function main(): Promise<void> {
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();
     if (['show', 'candles', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'traded', 'timeZone', 'range', 'oi', 'oiInstrument', 'oiParts'].some(k => changed.has(k as never))) delta.invalidate();
-    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'footprint'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
+    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'chartType'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
   });
 
   for (const p of [heat, ladder, depth, oi, delta, ls, lt, bars, script, cvd, candle]) p.setPalette(store.state.theme);
   layout(); ladder.syncControls(); lt.refresh();
   arrange.setPaneHeight('bars', tableHeight(store.state.barStats, store.state.barStatOptions));
   toolbar.sync(store.state, heat.window);
-  await hub.start();
+  // The page opens on the coin's Binance perpetual wherever it is read (`defaultMarket`): its series is asked for as the page starts.
+  await hub.start(instrumentIdFor('binance', choice.coin) ?? '');
   await hub.loadSeries(true);
   heat.fit(); lower();
   // A tab saved from the last visit is already showing: what it covers draws nothing from the start, not from the first tap (the dock only tells of a change).

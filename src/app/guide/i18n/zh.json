@@ -21,8 +21,6 @@
  "A wall is an intention, not a fact. Orders can be cancelled at any moment, and some are placed to be seen. The map shows what is resting, never what will trade.": "挂单墙是一种意图，而不是事实。订单随时可能被撤销，有些订单就是为了被人看见而挂的。地图显示的是正在挂着的东西，永远不是将要成交的东西。",
  "Why the map fills in as you watch": "为什么地图在你观看时逐渐填满",
  "This is the most important thing to know about the heatmap. **An exchange only tells you what its order book looks like right now.** None publishes what it looked like an hour ago, so there is no history to download. The map is built by watching the book and writing it down, locally, in your browser, from the moment you open the page.": "这是关于热力图最重要的一点。**交易所只告诉你它的订单簿此刻是什么样子。**没有哪家会公布一小时前的样子，所以没有历史可下载。地图是通过观察订单簿并在本地、在你的浏览器里记录下来而建成的，从你打开页面的那一刻开始。",
- "So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. To make the map readable from the first second, the part before the stripe is filled in **grey**: today's book copied back in time, on the same scale (a darker grey is a bigger wall). Grey is never history. It only shows where the walls are now. Real colour starts at the dashed line, and the grey shrinks as recorded data takes its place.": "因此首次访问时，彩色部分是右边缘的一条细带，随着分钟数增长。为了让地图从第一秒起就可读，细带之前的部分用**灰色**填充：把今天的订单簿按相同刻度向过去复制（灰色越深，挂单墙越大）。灰色从来不是历史，它只显示挂单墙现在在哪里。真正的颜色从虚线开始，随着录得的数据取而代之，灰色会逐渐缩小。",
- "A first visit, sped up. Grey is the current book copied back; colour is what was recorded while the page was open.": "首次访问，加速播放。灰色是向过去复制的当前订单簿；彩色是页面打开期间录下的内容。",
  "The page keeps the last **24 hours** it recorded in your browser, so coming back continues the map. Time with the page closed leaves a gap.": "页面在你的浏览器中保存它记录的最近 **24 小时**，所以你回来时地图会接续。页面关闭期间会留下空白。",
  "Only **one tab records** at a time; another tab shows the live data and the recording so far.": "同一时间只有**一个标签页在记录**；另一个标签页显示实时数据和迄今的记录。",
  "**Candles and open interest are different**: they come from each exchange's own history, so they are there at once.": "**K 线和持仓量不同**：它们来自各个交易所自己的历史，所以立刻就有。",
@@ -140,7 +138,6 @@
  "Contrast": "对比度",
  "Page open for": "页面已打开",
  "{n} min": "{n} 分钟",
- "Grey: the current book, copied back": "灰色：当前订单簿，向过去复制",
  "Colour: recorded while the page was open": "彩色：页面打开期间录下的",
  "depth recorded from here": "深度从这里开始记录",
  "now": "现在",
@@ -186,5 +183,8 @@
  "**Traded volume by period** draws days, weeks, months or sessions on the chart over their own time, as lines or bar profiles. Point at a row of a profile for its figures.": "**按周期的成交量**会在图表上按各自的时间,以线或柱状分布画出日、周、月或时段。指向分布的某一行即可查看其数据。",
  "**Months** come from 5-minute candles of the most traded market (Binance's perpetual, with its spot market where the coin has one), split by their taker buys: an estimate, so they are outlined in the profile colour and labelled ≈ with their source. Days, weeks and sessions come from the recorded trades unless set to candles.": "**月份**来自成交最多的市场(币安永续合约,若该币有现货市场则一并合并)的 5 分钟 K 线,按主动买入拆分:这是估算,因此带有分布颜色的轮廓和标明来源的 ≈ 标签。除非选择 K 线,日、周和时段来自已记录的成交。",
  "**Cues**, in the book's header, light an exchange's cell when the size it shows at a price changes: outward for added depth, back inward for removed. Point at a cell for what changed and what traded meanwhile; it says what was *shown*, never an order.": "订单簿标题栏里的 **Cues** 会在某个交易所在某个价格显示的数量变化时点亮它的单元格:增加挂单时向外扩散,减少时向内收回。指向一个单元格,可以看到什么变了,以及这期间成交了什么;它说的是*显示*过的内容,绝不是某个订单。",
- "On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "在**手机或平板**上，底部的栏选择视图。**逐笔**、**资金流**和竖持时的订单簿占满整个屏幕；其余的位于地图下方（手机横置时在其旁边）。**地图**让图表占满整个屏幕，其余一切都在 **⋯** 按钮后面。同样的操作用手指完成："
+ "On a **phone or tablet** the bottom bar picks the view. The **Tape**, the **Flow** and the order book held upright fill the screen; the rest sit under the map (beside it when the phone is on its side). **Map** gives the chart the whole screen, and everything else is behind the **⋯** button. The same moves are made with fingers:": "在**手机或平板**上，底部的栏选择视图。**逐笔**、**资金流**和竖持时的订单簿占满整个屏幕；其余的位于地图下方（手机横置时在其旁边）。**地图**让图表占满整个屏幕，其余一切都在 **⋯** 按钮后面。同样的操作用手指完成：",
+ "So on a first visit the coloured part is a thin stripe at the right edge that grows with the minutes. A **dashed line** marks the moment the recording began. Before it the map is left empty: nothing is drawn where nothing was recorded, so every colour on the map is real.": "因此首次访问时，彩色部分是右边缘的一条细带，随着分钟数增长。**虚线**标出录制开始的时刻。虚线之前的地图留空：没有录到的地方什么也不画，所以地图上的每一种颜色都是真实的。",
+ "A first visit, sped up. Colour is what was recorded while the page was open; before the dashed line there is nothing to show.": "首次访问，加速播放。彩色是页面打开期间录下的内容；虚线之前没有可显示的内容。",
+ "Not recorded": "未录制"
 }

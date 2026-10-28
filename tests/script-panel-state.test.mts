@@ -20,7 +20,7 @@ test('a script opened and left unchanged opens on the list next time; one with c
   const same = editing(vwap.id);
   assert.equal(unsaved(h, same), false, 'opening the VWAP and closing the panel changed nothing');
   panelClosed(h, same);
-  assert.deepEqual(same, { editing: null, draft: null, message: null, armed: null });
+  assert.deepEqual(same, { editing: null, draft: null, message: null, armed: null, about: null });
 
   for (const change of [{ source: 'line(2)' }, { name: 'My VWAP' }, { place: 'pane' as const }, { options: { len: 20 } }]) {
     const ui = editing(vwap.id, change);

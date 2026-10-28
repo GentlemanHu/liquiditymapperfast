@@ -20,16 +20,53 @@ const clamp = (v: number, lo: number, hi: number): number => Number.isFinite(v) 
 
 /** `rgb(...)`/`rgba(...)` from numbers: each channel held to 0..255, alpha to 0..1. */
 export function rgb(c: readonly number[]): string {
-  const [r, g, b] = [0, 1, 2].map(k => Math.round(clamp(c[k] ?? 0, 0, 255)));
-  return c.length >= 4 ? `rgba(${r}, ${g}, ${b}, ${+clamp(c[3]!, 0, 1).toFixed(3)})` : `rgb(${r}, ${g}, ${b})`;
+  const r = Math.round(clamp(c[0] ?? 0, 0, 255)), g = Math.round(clamp(c[1] ?? 0, 0, 255)), b = Math.round(clamp(c[2] ?? 0, 0, 255));
+  if (c.length < 4) return lastSafe = `rgb(${r}, ${g}, ${b})`;
+  const a = +clamp(c[3]!, 0, 1).toFixed(3), out = `rgba(${r}, ${g}, ${b}, ${a})`;
+  // Whole channels and an alpha of three decimals under 1 are written as `safeColor` writes them; an alpha of 1 is not (it writes rgb).
+  if (a < 1) lastSafe = out;
+  return out;
 }
 
+/**
+ * The last colour `rgb` made that `safeColor` would write the same: a script blends a colour (`interpolate`) and paints a point with it at
+ * once, and that colour is then taken as it is rather than read again.
+ */
+let lastSafe = '';
+
+/** A colour's channels (0..255, alpha 0..1). */
+export type Channels = readonly [number, number, number, number];
+
+/**
+ * What reading a text as a colour gave, kept by the text: a script hands the same few colours over on every candle (a heat map's three, its
+ * rows' blends) and the page reads them again on every frame, and reading one with patterns was the larger part of running such a script
+ * (2026-10-27). Bounded: a full table starts again, and only short texts are kept (a colour is; a script's text may be 100,000 characters,
+ * and is read as before without being kept). The channels are frozen, since every reader of the same text shares them.
+ */
+const CACHED = 4096, KEPT_CHARS = 64;
+const parsed = new Map<string, Channels | null>();
+const safe = new Map<string, string | null>();
+const remember = <T>(table: Map<string, T>, key: string, value: T): T => {
+  if (key.length > KEPT_CHARS) return value;
+  if (table.size >= CACHED) table.clear();
+  table.set(key, value);
+  return value;
+};
+
 /** A colour's channels (0..255, alpha 0..1), or null when it is not one this page reads. */
-export function parseColor(raw: unknown): [number, number, number, number] | null {
+export function parseColor(raw: unknown): Channels | null {
   if (typeof raw !== 'string') return null;
+  const had = parsed.get(raw);
+  return had !== undefined ? had : remember(parsed, raw, readColor(raw));
+}
+function readColor(raw: string): Channels | null {
+  const c = channelsOf(raw);
+  return c ? Object.freeze(c) : null;
+}
+function channelsOf(raw: string): [number, number, number, number] | null {
   const s = raw.trim().toLowerCase();
   const named = Object.prototype.hasOwnProperty.call(COLOR_NAMES, s) ? COLOR_NAMES[s] : undefined;
-  if (named) return parseColor(named);
+  if (named) return channelsOf(named);
   let m = /^#([0-9a-f]{3,4})$/.exec(s);
   if (m) { const h = m[1]!; const ch = (k: number): number => parseInt(h[k]! + h[k]!, 16); return [ch(0), ch(1), ch(2), h.length === 4 ? ch(3) / 255 : 1]; }
   m = /^#([0-9a-f]{6})([0-9a-f]{2})?$/.exec(s);
@@ -41,8 +78,14 @@ export function parseColor(raw: unknown): [number, number, number, number] | nul
 
 /** A colour the page may paint with: the script's own when it reads as one, else `fallback`. */
 export function safeColor(raw: unknown, fallback: string): string {
-  const c = parseColor(raw);
-  return c ? (c[3] >= 1 ? `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})` : `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${+c[3].toFixed(3)})`) : fallback;
+  if (typeof raw !== 'string') return fallback;
+  if (raw === lastSafe && raw !== '') return raw;
+  let out = safe.get(raw);
+  if (out === undefined) {
+    const c = parseColor(raw);
+    out = remember(safe, raw, c ? (c[3] >= 1 ? `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})` : `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${+c[3].toFixed(3)})`) : null);
+  }
+  return out ?? fallback;
 }
 
 /** A colour with its alpha multiplied by `alpha`. */
@@ -57,11 +100,28 @@ export function withAlpha(color: string, alpha: number): string {
  * around it. With one colour it is that colour; with none, or a ratio that is not a number, the first colour.
  */
 export function interpolateColors(ratio: number, colors: readonly unknown[]): string {
-  const parsed = colors.map(parseColor).filter((c): c is [number, number, number, number] => c !== null);
-  if (!parsed.length) return typeof colors[0] === 'string' ? colors[0] : 'rgba(0, 0, 0, 0)';
-  if (parsed.length === 1 || !Number.isFinite(ratio)) return rgb(parsed[0]!);
-  const x = clamp(ratio, 0, 1) * (parsed.length - 1), k = Math.min(parsed.length - 2, Math.floor(x)), f = x - k;
-  const a = parsed[k]!, b = parsed[k + 1]!;
-  const mixed = [0, 1, 2, 3].map(j => a[j]! + (b[j]! - a[j]!) * f);
-  return rgb(mixed[3]! >= 1 ? mixed.slice(0, 3) : mixed);
+  const read = readList(colors);
+  if (!read.length) return typeof colors[0] === 'string' ? colors[0] : 'rgba(0, 0, 0, 0)';
+  if (read.length === 1 || !Number.isFinite(ratio)) return rgb(read[0]!);
+  const x = clamp(ratio, 0, 1) * (read.length - 1), k = Math.min(read.length - 2, Math.floor(x)), f = x - k;
+  const a = read[k]!, b = read[k + 1]!;
+  const mixed: number[] = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+  const alpha = a[3] + (b[3] - a[3]) * f;
+  if (!(alpha >= 1)) mixed.push(alpha);
+  return rgb(mixed);
+}
+
+/**
+ * The last list of colours read, and the ones of it that read as colours: a script blends between the same few on every call. Only a short
+ * list of short texts is kept: anything else a script passes (a function, a long text) is read without being held after the call.
+ */
+let lastList: readonly string[] = [], lastRead: readonly Channels[] = [];
+function readList(colors: readonly unknown[]): readonly Channels[] {
+  let same = colors.length === lastList.length;
+  for (let k = 0; same && k < colors.length; k++) same = colors[k] === lastList[k];
+  if (same) return lastRead;
+  const out: Channels[] = [];
+  for (const c of colors) { const ch = parseColor(c); if (ch) out.push(ch); }
+  if (colors.length <= 16 && colors.every(c => typeof c === 'string' && c.length <= KEPT_CHARS)) { lastList = colors.slice() as string[]; lastRead = out; }
+  return out;
 }

@@ -87,3 +87,21 @@ test('the worker is told whether the page is shown, at the start and on every ch
     assert.deepEqual(shown(), [false, true]);
   } finally { delete (globalThis as { document?: unknown }).document; }
 });
+
+test('a start that expects a listed market does not wait for a price, says every market records from this minute, and the bootstraps after it go on saying so until a market says it itself', async () => {
+  const { worker, source } = make();
+  say(worker, { type: 'ready', persisted: false });
+  const answer = async (recorded: Record<string, { first: number; last: number }>): Promise<void> => {
+    await turn();
+    const rpc = worker.posted.filter(m => m.type === 'rpc').at(-1)!;
+    say(worker, { type: 'rpc', id: rpc.id, result: { asOf: 0, now: 0, markPrice: 0, markInstrumentId: '', markets: [{ instrumentId: 'a:BTC' }, { instrumentId: 'b:BTC' }], steps: {}, recorded, columnMs: 60_000, timeframes: [], oiReferences: [] } });
+  };
+  const first = source.bootstrap({ prefer: 'a:BTC' }); await answer({});
+  const one = await first, start = one.recorded['a:BTC']!.first;
+  assert.ok(Math.abs(start - Date.now()) <= 120_000 && start % 60_000 === 0, 'this minute');
+  assert.equal(one.recorded['b:BTC']!.first, start);
+  const second = source.bootstrap(); await answer({ 'a:BTC': { first: start + 60_000, last: start + 60_000 } });
+  const two = await second;
+  assert.equal(two.recorded['b:BTC']!.first, start, 'no venue of it live yet: still from the start');
+  assert.equal(two.recorded['a:BTC']!.first, start + 60_000, 'its own, once it says it');
+});

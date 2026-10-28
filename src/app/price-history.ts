@@ -1,5 +1,5 @@
 import { TIMEFRAMES } from '../shared/series.ts';
-import { parsePriceHistory, type PriceHistoryAnswer, type PriceTarget } from '../shared/price-history.ts';
+import { PRICE_QUERY_BARS, parsePriceHistory, type PriceHistoryAnswer, type PriceTarget } from '../shared/price-history.ts';
 import type { CandleRow } from './store.ts';
 
 export interface PriceWindow { tf: string; tfMs: number; from: number; to: number }
@@ -32,10 +32,19 @@ export function candlePriceRange(candles: readonly CandleRow[], tfMs: number, t0
   return hi > lo ? { lo, hi } : null;
 }
 
-/** At most a few hundred native bars: daily for month-scale context, never finer than the selected candles; retain a resolution near its changeover. */
+/**
+ * The chart's own candles wherever one read holds the window (Karl, 2026-10-28: history is drawn as candles, as the recorded ones are);
+ * past that at most a few hundred native bars, drawn as a line: daily for month-scale context, never finer than the selected candles,
+ * retaining a resolution near its changeover.
+ */
 export function priceWindow(view: Window, width: number, now: number, previousMs = 0, chartMs = 0): PriceWindow | null {
   const span = view.t1 - view.t0;
   if (!(span > 0 && width > 0 && Number.isFinite(span) && view.t0 < now)) return null;
+  const own = Object.entries(TIMEFRAMES).find(([, ms]) => ms === chartMs);
+  if (own) {
+    const from = Math.max(0, Math.floor((view.t0 - span * 0.15) / chartMs) * chartMs - chartMs), to = Math.ceil(Math.min(view.t1 + span * 0.15, now + 1) / chartMs) * chartMs;
+    if (to > from && to - from <= PRICE_QUERY_BARS * chartMs) return { tf: own[0], tfMs: chartMs, from, to };
+  }
   const budget = Math.max(100, Math.min(400, Math.floor(width / 4)));
   const minimum = Math.max(chartMs, span >= 30 * DAY ? DAY : 0);
   const intervals = Object.entries(TIMEFRAMES), previous = intervals.find(([, ms]) => ms === previousMs && ms >= minimum);

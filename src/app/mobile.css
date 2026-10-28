@@ -156,6 +156,8 @@ html[data-bar="compact"] .panel-body { overscroll-behavior: contain; padding-bot
 html[data-bar="compact"] .panel :is(button, select, input[type=number]) { min-height: 40px; }
 /* The ? among a panel's tools is the round button of the sheet's section heads, not a 40 px strip one help-button wide. */
 html[data-bar="compact"] .panel-tools button.help { width: 26px; height: 26px; min-height: 0; padding: 0; margin: 0; font-size: 13px; line-height: 24px; }
+/* So is a script's ? in the Scripts panel's rows (its invisible ring gives it a finger's reach). */
+html[data-bar="compact"] .panel-body .layout-row > button.help { width: 26px; height: 26px; min-height: 0; padding: 0; margin: 0; font-size: 13px; line-height: 24px; }
 html[data-bar="compact"] .panel .opt, html[data-bar="compact"] .panel .field { padding-top: 9px; padding-bottom: 9px; }
 html[data-bar="compact"] .panel .field > select, html[data-bar="compact"] .panel .field > input[type=number] { width: 140px; }
 html[data-bar="compact"] .panel .field.pin-field > select { width: 100%; }
