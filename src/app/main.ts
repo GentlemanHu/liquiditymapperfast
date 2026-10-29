@@ -374,7 +374,8 @@ async function main(): Promise<void> {
   heat.fit(); lower();
   // A tab saved from the last visit is already showing: what it covers draws nothing from the start, not from the first tap (the dock only tells of a change).
   candle.setShown(candleShown()); coverPanes();
-  window.setInterval(() => { void hub.loadSeries(true); }, 60_000);
+  // A reload that fails is said (the series on screen stays); the next minute asks again.
+  window.setInterval(() => { hub.loadSeries(true).catch((error: unknown) => console.warn('The candles could not be read again:', error)); }, 60_000);
   // Each new open-interest reading is pushed as it lands (Hub.#oiPush); this load is the reconciliation: history, the markets added
   // together, a reading a push missed.
   window.setInterval(() => { void hub.loadOi(); }, 20_000);

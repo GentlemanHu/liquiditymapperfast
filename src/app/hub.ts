@@ -589,8 +589,8 @@ export class Hub {
   /**
    * Read the series on screen. Another market or timeframe whose series is kept (`#seriesKept`) shows it at once and says so through `shown`
    * (the map frames it then); the read brings it up to date as a reload of what is on screen does. An unforced call for the series already
-   * asked for answers with that load, under way or done: the page's own first load waits for the one the store's new market started,
-   * rather than reading the same candles again (a busy server spent seconds on that second read).
+   * asked for answers with that load, under way or done (its `shown` is not called: the load it joins has its own): the page's own first
+   * load waits for the one the store's new market started, rather than reading the same candles again (a busy server spent seconds on it).
    */
   loadSeries(force = false, shown?: () => void): Promise<void> {
     const { marketId, timeframe } = this.store.state;
@@ -608,7 +608,7 @@ export class Hub {
     void this.source.bootstrap().then(boot => { this.#noteRecorded(boot.recorded); this.#noteBoot(boot); }, () => {});
     const { marketId, timeframe } = this.store.state;
     const key = `${marketId}|${timeframe}`;
-    if (!marketId || (!force && key === this.#series)) return;
+    if (!marketId) return;
     this.#series = key;
     const generation = ++this.#seriesGen;
     // Open interest that is still on its way for the context just left must not land in this one.
@@ -631,8 +631,8 @@ export class Hub {
     this.#reading = reading;
     try {
       // A read already out for this series is taken (the one the page started with, or one read ahead); where it failed, it is asked again.
-      // The page's first read is taken by every load of its context until one of them has its answer: the page starts two (one when the
-      // store is given its market, one of its own), and a second read behind the first would hold a server that answers one at a time.
+      // The page's first read is taken by every load of its context until one of them has its answer (a timeframe switched while the page
+      // starts can make two), as a second read behind the first would hold a server that answers one at a time.
       if (this.#warm && this.#warm.key !== key) this.#warm = null;
       const warm = this.#warm?.read ?? null, shared = warm ?? this.#prefetchReads.get(key);
       try { ({ candles, instrument: seriesInstrument } = await (shared ?? this.#readSeries(marketId, timeframe))); }
