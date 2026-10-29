@@ -249,3 +249,18 @@ test('a switch away from the read the page started with drops it: switching back
   store.set({ timeframe: '1h' }); void hub.loadSeries(true); await turn();
   assert.equal(source.asked.length, 3, 'the hour asked again, not the early read taken twice');
 });
+
+test('an unforced load of the series already asked for answers with that load: the page waits for the one its market started, and reads nothing again', async () => {
+  const { hub, store, source } = await rig({ marketId: 'ref:BTC', timeframe: '1h', seriesInstrument: 'ref:BTC', candles: [] });
+  void hub.loadSeries(true); await turn();                                                                  // the store given its market
+  let waited = false;
+  const page = hub.loadSeries().then(() => { waited = true; }); await turn();                               // the page's own
+  assert.deepEqual([source.asked.length, waited], [1, false], 'one read, and the page waits for it');
+  const T = Math.floor(Date.now() / HOUR) * HOUR;
+  source.asked[0]!.resolve([[T, 1, 1, 1, 4, 1, 1]]); await page;
+  assert.deepEqual([waited, store.state.candles.at(-1)?.[4]], [true, 4], 'done once the candles are shown');
+  await hub.loadSeries();
+  assert.equal(source.asked.length, 1, 'once loaded, an unforced call asks nothing');
+  void hub.loadSeries(true); await turn();
+  assert.equal(source.asked.length, 2, 'a forced reload reads afresh');
+});
