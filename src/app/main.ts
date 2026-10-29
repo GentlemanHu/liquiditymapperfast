@@ -367,9 +367,10 @@ async function main(): Promise<void> {
   layout(); ladder.syncControls(); lt.refresh();
   arrange.setPaneHeight('bars', tableHeight(store.state.barStats, store.state.barStatOptions));
   toolbar.sync(store.state, heat.window);
-  // The page opens on the coin's Binance perpetual wherever it is read (`defaultMarket`): its series is asked for as the page starts.
+  // The page opens on the coin's Binance perpetual wherever it is read (`defaultMarket`): its series is asked for as the page starts. Giving
+  // the store its market started the load of it (the subscription above): this waits for that one rather than reading the candles again.
   await hub.start(instrumentIdFor('binance', choice.coin) ?? '');
-  await hub.loadSeries(true);
+  await hub.loadSeries();
   heat.fit(); lower();
   // A tab saved from the last visit is already showing: what it covers draws nothing from the start, not from the first tap (the dock only tells of a change).
   candle.setShown(candleShown()); coverPanes();

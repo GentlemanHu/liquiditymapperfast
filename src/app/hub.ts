@@ -588,9 +588,23 @@ export class Hub {
 
   /**
    * Read the series on screen. Another market or timeframe whose series is kept (`#seriesKept`) shows it at once and says so through `shown`
-   * (the map frames it then); the read brings it up to date as a reload of what is on screen does.
+   * (the map frames it then); the read brings it up to date as a reload of what is on screen does. An unforced call for the series already
+   * asked for answers with that load, under way or done: the page's own first load waits for the one the store's new market started,
+   * rather than reading the same candles again (a busy server spent seconds on that second read).
    */
-  async loadSeries(force = false, shown?: () => void): Promise<void> {
+  loadSeries(force = false, shown?: () => void): Promise<void> {
+    const { marketId, timeframe } = this.store.state;
+    if (!force && marketId && `${marketId}|${timeframe}` === this.#series) return this.#seriesLoad ?? Promise.resolve();
+    const load = this.#loadSeries(force, shown);
+    this.#seriesLoad = load;
+    const done = (): void => { if (this.#seriesLoad === load) this.#seriesLoad = null; };
+    load.then(done, done);
+    return load;
+  }
+  /** The newest series load, while it is under way (`loadSeries`). */
+  #seriesLoad: Promise<void> | null = null;
+
+  async #loadSeries(force: boolean, shown?: () => void): Promise<void> {
     void this.source.bootstrap().then(boot => { this.#noteRecorded(boot.recorded); this.#noteBoot(boot); }, () => {});
     const { marketId, timeframe } = this.store.state;
     const key = `${marketId}|${timeframe}`;
