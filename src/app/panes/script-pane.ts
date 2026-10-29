@@ -420,11 +420,14 @@ export class ScriptPane extends TimePane {
     // Counted now: the run hands the inputs' arrays over to the worker, which leaves them empty here.
     const candles = shownCount(inputs.time, inputs.tf);
     const host = this.#trialHost ??= new ScriptHost({ spawn: spawnScriptWorker });
+    const depth = a.inputs.has('depth') ? this.#data.depth.sync(state, inputs.time, inputs.tf) : null;
+    if (depth) this.#data.depth.deliver(host);
     this.#trialBusy = true;
     const drop = (): void => host.dropUnsent();
     signal?.addEventListener('abort', drop, { once: true });
     try {
-      const { results } = await host.run([{ id: 'trial', source, options, api: SCRIPT_API }], inputs);
+      const { results, depthBehind } = await host.run([{ id: 'trial', source, options, api: SCRIPT_API }], inputs, depth ?? undefined);
+      if (depthBehind) this.#data.depth.forget(host);
       const result: ScriptResult = results[0] ?? { id: 'trial', ok: false, error: { code: 'no-answer', line: 0, col: 0 } };
       return { result, warnings, candles };
     } finally { this.#trialBusy = false; signal?.removeEventListener('abort', drop); }
@@ -471,16 +474,21 @@ export class ScriptPane extends TimePane {
     const read = runnable.map(r => this.#analyze(r.source) as Analysis);
     const inputs = this.#withTheme(this.#data.inputs(state, filters, read.some(a => a.inputs.has('oichg')), read.some(readsFlow)));
     if (!inputs) { this.#host.dropUnsent(); return; }
+    // The order book, for a run in which a script reads it: kept up to date, and what the worker lacks of it posted before the run.
+    const depth = read.some(a => a.inputs.has('depth')) ? this.#data.depth.sync(state, inputs.time, inputs.tf) : null;
+    if (depth) this.#data.depth.deliver(this.#host);
     const markets = this.#data.markets(state, filters);
     for (const r of runnable) this.#warnings.set(r.id, this.#pageWarnings(this.#analyze(r.source) as Analysis, r.options, markets));
     const time = inputs.time.slice(), tf = inputs.tf, inst = state.seriesInstrument, at = replaying() ? pageNow() : Infinity, started = Date.now();
     const token = ++this.#runToken;
     this.#running = true; this.#lastRun = started;
     const version = this.#version, theme = this.#theme;
-    void this.#host.run(runnable.map(r => ({ id: r.id, source: r.source, options: r.options, api: r.api })), inputs).then(({ results, ms }) => {
+    void this.#host.run(runnable.map(r => ({ id: r.id, source: r.source, options: r.options, api: r.api })), inputs, depth ?? undefined).then(({ results, ms, depthBehind }) => {
       // A newer request replaced this one before its worker took it: the newer one's answer is the one that counts.
       if (token !== this.#runToken) return;
       this.#running = false;
+      // A worker that did not hold the order book it was told of (one started since): it is sent everything, and the run is due again.
+      if (depthBehind) { this.#data.depth.forget(this.#host); this.#seen = null; }
       // Dropped before its worker took it (the scripts changed, or were switched off): look again now, or nothing may ask while the map is covered.
       if (!results.length) { this.refresh(); return; }
       // Scripts changed while it ran (edited, switched off, deleted): its answer is stale, and the next run is due at once.

@@ -2,12 +2,12 @@ import type { Expr, Stmt } from './parser.ts';
 import { ScriptSyntaxError, type ScriptError } from './lexer.ts';
 import { Interpreter, charge, type Budget, type Host } from './interpreter.ts';
 import { declaredNames, numberSites } from './walk.ts';
-import { MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTable, sourceFilter, type Analysis } from './analysis.ts';
+import { DEPTH_FUNCTIONS, MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTable, sourceFilter, type Analysis } from './analysis.ts';
 import { DateValue, HostObject, NativeFunction, ScriptRuntimeError, isPlain, num, own, plain, text, toData, truthy, type Value } from './values.ts';
 import { BUILTINS, makeInstance, type Candle, type Instance } from './builtins.ts';
 import { COLOR_NAMES, interpolateColors, rgb, safeColor } from './colors.ts';
 import { ALERT_SOUNDS, ALERT_TEXT, MARK_TEXT, MARK_TIP, MAX_ALERTS, PLOT_FIELDS, type AlertOut, type AlertSound, type PlotKind, type PlotOut, type ScriptResult } from '../protocol.ts';
-import { DEFAULT_SCRIPT_THEME, filterKey, type BarInputs, type SourceInputs } from '../inputs.ts';
+import { DEFAULT_SCRIPT_THEME, filterKey, type BarInputs, type SourceFilter, type SourceInputs } from '../inputs.ts';
 import type { OptionValue } from '../records.ts';
 
 /**
@@ -92,6 +92,15 @@ export function sameCandles(a: BarInputs, b: BarInputs, m: number): boolean {
     if (!eq(x.vbuy, y.vbuy) || !eq(x.vsell, y.vsell) || !eq(x.lbuy, y.lbuy) || !eq(x.lsell, y.lsell)) return false;
     if (!x.recorded !== !y.recorded || (x.recorded && y.recorded && !eq(x.recorded, y.recorded))) return false;
   }
+  return true;
+}
+
+/** Whether the first `m` candles' order book is the same in both (each candle's depth revision; neither holding any is the same). */
+export function sameDepth(a: BarInputs, b: BarInputs, m: number): boolean {
+  const x = a.depthEpochs, y = b.depthEpochs;
+  if (!x || !y) return !x && !y;
+  if (m > x.length || m > y.length) return false;
+  for (let k = 0; k < m; k++) if (x[k] !== y[k]) return false;
   return true;
 }
 
@@ -213,6 +222,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     source: new NativeFunction('source', () => undefined),
     alert: new NativeFunction('alert', () => undefined),
   });
+  for (const name of DEPTH_FUNCTIONS) globals[name] = new NativeFunction(name, () => undefined);
   for (const name of Object.keys(BUILTINS)) globals[name] = new NativeFunction(name, () => undefined);
   for (const name of Object.keys(PLOTS)) if (!Object.prototype.hasOwnProperty.call(globals, name)) globals[name] = new NativeFunction(name, () => undefined);
 
@@ -254,6 +264,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       if (name === 'option') { const target = optionTarget(node); return target !== null ? opt[target] : args[0] ?? named?.default; }
       if (name === 'source') return args[0];
       if (name === 'alert') { alertAt(site, args, named); return undefined; }
+      if (DEPTH_FUNCTIONS.has(name)) return depthAt(name, args);
       const plotKind = own(PLOTS, name);
       if (plotKind) { plot(site, plotKind, args, named); return undefined; }
       const builtin = own(BUILTINS, name);
@@ -273,7 +284,25 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   // interpreter is told which set to read while it does: the call is found by its place, before its arguments are read.
   const sourceSites = new Map<Expr, string>();
   const sites = numberSites(a.program);
-  for (const node of sites.keys()) if (node.k === 'call' && node.callee.k === 'id' && node.callee.name === 'source') sourceSites.set(node, filterKey(sourceFilter(node.named, opt)));
+  // Each set's filter by its key, for the order book (the flow is handed over per set; the book is filtered in the worker).
+  const filters = new Map<string, SourceFilter>([['', {}]]);
+  for (const node of sites.keys()) if (node.k === 'call' && node.callee.k === 'id' && node.callee.name === 'source') { const f = sourceFilter(node.named, opt), k = filterKey(f); sourceSites.set(node, k); filters.set(k, f); }
+  /**
+   * `askdepth(usd)` / `biddepth(usd)`: the price at which the asks above the candle's close (the bids below it) add up to `usd` dollars;
+   * `depthbooks()`: how many of the books read have depth at this candle. Over the books of the set being read (`source(...)`), NaN where
+   * nothing is known. The work the book took is paid from the step budget.
+   */
+  const depthAt = (name: string, args: Value[]): number => {
+    charge(budget, 8);
+    const reader = inputs.depth;
+    if (!reader) return NaN;
+    const key = sourceStack[sourceStack.length - 1]!, filter = filters.get(key) ?? {};
+    const value = name === 'depthbooks' ? reader.books(inputs.time[i]!, filter, key) : reader.reach(name === 'askdepth' ? 'ask' : 'bid', inputs.time[i]!, inputs.close[i]!, args.length ? num(args[0]) : NaN, filter, key);
+    const spent = reader.spent();
+    if (spent > 0) charge(budget, Math.ceil(spent / 4));
+    return value;
+  };
+  const readsDepth = a.inputs.has('depth');
   const optionTargets = new Map<Expr, string>();
   const noteTargets = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
@@ -449,7 +478,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       const started = now();
       inputs = next; n = next.time.length;
       // From the candle after the last one that had closed at the run before, when every candle before it is the same.
-      const start = snap && snap.at === snap.inputs.time.length - 2 && snap.at + 1 <= n && sameCandles(snap.inputs, next, snap.at + 1) ? snap.at + 1 : 0;
+      // A closed candle whose order book changed since (a window settled, a book added) is run again with every candle after it.
+      const start = snap && snap.at === snap.inputs.time.length - 2 && snap.at + 1 <= n && sameCandles(snap.inputs, next, snap.at + 1) && (!readsDepth || sameDepth(snap.inputs, next, snap.at + 1)) ? snap.at + 1 : 0;
       const from = start > 0 ? snap : null;
       if (from) restore(from); else { fresh(); snap = null; }
       runner.startedAt = start;
