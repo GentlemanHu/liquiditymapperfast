@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DepthCache, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
+import { DepthFeed } from '../src/app/script/depth-feed.ts';
 import { createRunner } from '../src/app/script/lang/engine.ts';
 import type { BarInputs } from '../src/app/script/inputs.ts';
 
@@ -95,4 +96,70 @@ test('a script reads the book with askdepth, biddepth and depthbooks, over the b
   assert.ok(own.ok && own.plots[0]!.fields.value![1] === 7);
   const none = createRunner('n', 'line(askdepth(10))\n', {}).run({ ...inputs, depth: undefined, depthEpochs: undefined });
   assert.ok(none.ok && Number.isNaN(none.plots[0]!.fields.value![1]!));
+});
+
+test('the page reads every candle\'s windows newest first, keeps them for a return, reads again what can change, and reads candles further back', async () => {
+  const T = 5 * M, now = 1_000 * T + 2 * M, asks: { from: number; to: number; ids: string[]; step: number }[] = [];
+  let hang = false;
+  const source = {
+    kind: 'server',
+    columns: async (ids: string[], from: number, to: number, step: number) => {
+      asks.push({ from, to, ids, step });
+      if (hang) await new Promise<void>(() => {});
+      const times: number[] = [];
+      for (let t = from; t < to; t += step) times.push(t);
+      return { from, to, stepMs: step, instruments: ids.map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length), ask: new Float32Array(times.length).fill(10) })) };
+    },
+  };
+  let changes = 0;
+  const feed = new DepthFeed({ source } as never, () => { changes++; });
+  const state = (timeframe: string) => ({ timeframe, markets: [], levels: { books: [{ id: 'a:BTC' }, { id: 'b:BTC' }] } }) as never;
+  const starts = Float64Array.from({ length: 500 }, (_, i) => (501 + i) * T);
+  const flush = async () => { for (let k = 0; k < 20; k++) await new Promise(r => setTimeout(r, 0)); };
+  const cache = new DepthCache(), port = { generation: 1, post: (m: DepthMessage) => cache.apply(m) };
+  const heldAt = (times: ArrayLike<number>) => Array.from(times).filter(t => cache.reader.books(t, {}, '') === 2).length;
+  feed.sync(state('5m'), starts, T, now);
+  await flush();
+  // Every book in one question; the newest windows first, a few, then more each time, back to the first candle.
+  assert.ok(asks.every(x => x.ids.length === 2));
+  assert.equal(asks[0]!.to, 1_001 * T);
+  assert.ok(asks[0]!.to - asks[0]!.from < asks[1]!.to - asks[1]!.from, 'a few at first');
+  assert.equal(Math.min(...asks.map(x => x.from)), starts[0]);
+  let tag = feed.sync(state('5m'), starts, T, now)!;
+  feed.deliver(port);
+  assert.ok(cache.holds(tag));
+  assert.equal(heldAt(starts), starts.length, 'every candle has both books');
+  near(cache.reader.reach('ask', starts[100]!, 1000, 10, {}, ''), 1005);
+  assert.ok(changes > 0);
+  // Another timeframe, whose read hangs; back to the first: its depth is there at once, without a read and without waiting for the one that hangs.
+  hang = true; asks.length = 0;
+  feed.sync(state('1h'), starts, 60 * M, now);
+  await flush();
+  assert.equal(asks.length, 1);
+  hang = false;
+  tag = feed.sync(state('5m'), starts, T, now)!;
+  feed.deliver(port);
+  assert.ok(cache.holds(tag) && cache.key === '5m');
+  assert.equal(heldAt(starts), starts.length);
+  assert.equal(asks.length, 1, 'nothing read again');
+  // 30 s on: the windows that had not settled are read again (the source settles a window two minutes after it ends).
+  feed.sync(state('5m'), starts, T, now + 31_000);
+  await flush();
+  assert.deepEqual(asks.slice(1).map(x => [x.from, x.to]), [[1_000 * T, 1_001 * T]]);
+  // A page asleep for ten minutes: the windows read again start where the last read's settled ones ended, not two minutes ago.
+  asks.length = 0;
+  feed.sync(state('5m'), starts, T, now + 2 * T);
+  await flush();
+  assert.deepEqual(asks.map(x => [x.from, x.to]), [[1_000 * T, 1_003 * T]]);
+  // Candles loaded further back are read back from where the books were read to.
+  asks.length = 0;
+  const longer = Float64Array.from({ length: 600 }, (_, i) => (401 + i) * T);
+  tag = feed.sync(state('5m'), longer, T, now + 2 * T)!;
+  await flush();
+  assert.equal(Math.min(...asks.map(x => x.from)), longer[0]);
+  assert.equal(Math.max(...asks.map(x => x.to)), starts[0]);
+  tag = feed.sync(state('5m'), longer, T, now + 2 * T)!;
+  feed.deliver(port);
+  assert.ok(cache.holds(tag));
+  assert.equal(heldAt(longer), longer.length);
 });
