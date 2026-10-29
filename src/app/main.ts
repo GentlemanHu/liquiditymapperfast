@@ -379,7 +379,7 @@ async function main(): Promise<void> {
   // Each new open-interest reading is pushed as it lands (Hub.#oiPush); this load is the reconciliation: history, the markets added
   // together, a reading a push missed.
   window.setInterval(() => { void hub.loadOi(); }, 20_000);
-  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass };
+  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script };
 }
 
 main().catch(error => {

@@ -75,6 +75,12 @@ const CARD_PLOTS = 6;
 
 /** How often a script runs at most (ms), and how often it runs again anyway while nothing it reads changes (the candle under way fills in). */
 const MIN_INTERVAL = 1_000, REFRESH = 15_000;
+/**
+ * For this long after the chart's context changes (its timeframe, market, the candles' own timeframe, the venues) a change runs at once,
+ * one run at a time: the first answer, and the data that lands after it (the candles, the flow, the exchange's candles, liquidations), are not
+ * held behind the second between runs.
+ */
+const CONTEXT_FAST_MS = 10_000;
 
 /**
  * The Scripts pane: a row for each of the person's scripts that is switched on, each with its own scales, drawn over the map's time axis.
@@ -93,6 +99,8 @@ export class ScriptPane extends TimePane {
   #warnings = new Map<string, Warning[]>();
   #lastRun = 0; #runMs = 0; #timer = 0; #running = false; #runToken = 0; #starting = false;
   #seen: { candles: unknown; loads: number; data: number; version: number; tf: string; markets: unknown; venues: unknown; scope: string; theme: string } | null = null;
+  /** The chart's context the scripts last read, and when it began (`CONTEXT_FAST_MS`). */
+  #context = ''; #contextAt = 0;
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #panel: Panel | null = null;
@@ -345,11 +353,14 @@ export class ScriptPane extends TimePane {
     const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf), oi: state.oi, oiParts: state.oiParts, theme: this.#theme, taker: this.hub.candleTaker(tf).version };
     const was = this.#seen, now = Date.now();
     const changed = !was || Object.keys(seen).some(k => (seen as Record<string, unknown>)[k] !== (was as Record<string, unknown>)[k]);
+    const context = `${state.timeframe}|${state.candlesTimeframe ?? ''}|${state.marketId}|${state.seriesInstrument}|${state.scope}|${state.disabledVenues.join(',')}`;
+    if (context !== this.#context) { this.#context = context; this.#contextAt = now; }
+    const settling = now - this.#contextAt < CONTEXT_FAST_MS;
     // Nothing changed: run again at the refresh anyway (the candle under way fills in from the flow), on a timer, so a quiet page still refreshes.
     if (!changed && now - this.#lastRun < REFRESH) { this.#wake(this.#lastRun + REFRESH - now); return; }
     // Another theme (picked, or previewed from the menu) runs at once: until it has run, the pane shows the colours of the theme before.
     const interval = Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
-    if (wait > 0 && was?.theme === seen.theme) { this.#wake(wait); return; }
+    if (wait > 0 && was?.theme === seen.theme && !settling) { this.#wake(wait); return; }
     this.#seen = seen;
     this.#starting = true;
     try { this.#run(on); } finally { this.#starting = false; }
