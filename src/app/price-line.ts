@@ -23,7 +23,7 @@ export const LINE_POINT_PX = 3;
 
 /**
  * The line's points with one a column `px` wide (the last close in it), the breaks kept: a point left out that the line broke before passes
- * its break on to the next one kept. The first and last points are always kept.
+ * its break on to the next one kept. The last point is always kept, and the last before every break.
  */
 export function thinLine<P extends LinePoint>(points: readonly P[], px = 1): P[] {
   const out: P[] = [], column = (x: number): number => Math.floor(x / px);

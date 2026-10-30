@@ -1549,8 +1549,9 @@ export class HeatPane {
         if (body >= 3) { ctx.globalAlpha = outline; ctx.strokeStyle = edge; ctx.strokeRect(x - body / 2 + 0.5, top + 0.5, body - 1, Math.max(0.5, height - 1)); }
       }
       // Hollow, filled or a bar, a candle of unusual volume keeps its ring (Highlights), while it is wide enough to be told from its
-      // neighbours: narrower, the ring (a blur each) covers the candles beside it, and the volume strip marks the candle as well.
-      if (ci >= 0 && hot(ci) && body >= 3) { // unusually large volume: a glowing ring in the candle's own colour
+      // neighbours: narrower, the ring (a blur each) covers the candles beside it, and the volume strip marks the candle as well. Its width
+      // apart from the footprint's (`normal`): beside the footprint's rows a body is thin by design, its neighbours far apart.
+      if (ci >= 0 && hot(ci) && normal >= 3) { // unusually large volume: a glowing ring in the candle's own colour
         ctx.save(); ctx.globalAlpha = 1; ctx.shadowColor = color; ctx.shadowBlur = 12; ctx.strokeStyle = color; ctx.lineWidth = 2.4;
         ctx.strokeRect(x - body / 2 - 2.5, top - 2.5, body + 5, height + 5); ctx.restore();
       }
