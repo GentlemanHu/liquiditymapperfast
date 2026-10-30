@@ -4,7 +4,7 @@ import type { ColumnSet } from '../../shared/columns.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { settledBefore } from '../column-holds.ts';
 import { marketInfo, type MarketInfo } from './inputs.ts';
-import { SMALL_ANSWER, type DepthBook, type DepthMessage, type DepthTag } from './depth.ts';
+import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag, type Window } from './depth.ts';
 
 /**
  * The page's side of the scripts' order book (`depth.ts`): the recorded windows at the chart's timeframe of every book the heat map adds up
@@ -49,7 +49,6 @@ export const MAX_WINDOWS = 1_000;
  */
 const KEPT_ERAS = 3, KEPT_BINS = 4_000_000, KEPT_BINS_BROWSER = 1_000_000;
 
-interface Window { bins: Int32Array; bid: Float32Array; ask: Float32Array }
 /** One book: its windows, its grid (0 while it has answered nothing), and how far back it has been read (windows from there on are held). */
 interface Held { info: MarketInfo; step: number; windows: Map<number, Window>; readFrom: number }
 /** What is held for one timeframe. */
@@ -65,7 +64,8 @@ interface Era {
   revision: number; log: DepthMessage[];
 }
 const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, revision, log: [] });
-const binsOf = (era: Era): number => { let n = 0; for (const h of era.books.values()) for (const w of h.windows.values()) n += w.bins.length; return n; };
+/** The bins an era keeps alive (its windows' copies, each once: `binsKept`). */
+const binsOf = (era: Era): number => { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const h of era.books.values()) n += binsKept(h.windows.values(), seen); return n; };
 const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
 /** What a host's worker was last sent: which worker, and the revision of each timeframe it holds. */
 interface Sent { generation: number; revisions: Map<string, number> }
@@ -208,9 +208,9 @@ export class DepthFeed {
    * replaces exactly the windows it was asked for; a book asked for is held from then on, answered or not (one with nothing recorded is not
    * asked for again on every run), unless it was dropped meanwhile. A read `back` (books not read as far back as the candles) moves each
    * book's `readFrom` back with every answer that joins the windows it holds (no further than those kept), so one that stops (another
-   * timeframe, a failure, windows let go meanwhile) goes on from there the next time. Each book's answer is copied once, for the page's
-   * windows and the message alike, so no answer's buffer of other books outlives what is kept of it; a small one (a read of the last few
-   * windows) is copied a window at a time, so a window read again does not keep its neighbours' copy alive. Whether every answer came.
+   * timeframe, a failure, windows let go meanwhile) goes on from there the next time. The page keeps each book's windows as `keptWindows`
+   * copies them and the message a copy of the book's answer, so no answer's buffer, which holds every book asked for, outlives what is kept
+   * of it. Whether every answer came.
    */
   async #read(key: string, era: Era, state: AppState, ids: string[], from: number, to: number, tf: number, back: boolean, now: number): Promise<boolean> {
     if (!(to > from)) return true;
@@ -246,13 +246,10 @@ export class DepthFeed {
           if (anew) regridded.add(set.id);
           const [a, b] = regrid ? [-Infinity, Infinity] : [start, end];
           for (const t of [...held.windows.keys()]) if (t >= a && t < b) held.windows.delete(t);
-          const own = { bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() }, small = set.times.length <= SMALL_ANSWER;
-          for (let c = 0, at = 0; c < set.times.length; at += set.counts[c]!, c++) {
-            const n = set.counts[c]!, t = set.times[c]!, cut = small ? 'slice' : 'subarray';
-            if (t >= start && t < end && t >= era.keepFrom) held.windows.set(t, { bins: own.bins[cut](at, at + n), bid: own.bid[cut](at, at + n), ask: own.ask[cut](at, at + n) });
-          }
-          bins += own.bins.length;
-          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, ...own });
+          for (const [t, w] of keptWindows(set.times, set.counts, set.bins, set.bid, set.ask, t => t >= start && t < end && t >= era.keepFrom)) held.windows.set(t, w);
+          bins += set.bins.length;
+          // The message holds a copy of the book's answer of its own (the answer's buffer holds every book asked for).
+          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() });
         }
         for (const id of ids) {
           if (era.dropped.has(id)) continue;

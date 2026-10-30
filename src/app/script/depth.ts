@@ -40,11 +40,40 @@ export interface SideWindow { step: number; bins: Int32Array; usd: Float32Array;
 /** The most work one walk may do, bins passed and empty bins skipped, all books together (a size past the whole book stops there). */
 const MAX_COST = 2_000_000;
 /**
- * A book's answer of at most this many windows (a read of the last few) is kept a copy a window, so that a window read again does not keep
- * its neighbours' buffer alive; a larger one is kept as views of one copy (what it costs: windows read again or let go stay in that copy
- * until all of its windows have gone, at most about as much again as is held).
+ * How a book's windows of an answer are kept, page and worker alike: an answer of at most `SMALL_ANSWER` windows (a read of the last few) a
+ * copy a window, so that a window read again does not keep its neighbours alive; a larger one in slabs of `SLAB` windows, each one copy that
+ * its windows are views of (far fewer copies to make). What that costs: a slab stays while any of its windows does, so beyond the windows
+ * held a book keeps at most the rest of the slab at each end of what it holds and of each stretch read again since (a window read again as it
+ * was takes the new slab: `DepthCache.apply`).
  */
-export const SMALL_ANSWER = 16;
+export const SMALL_ANSWER = 16, SLAB = 16;
+
+/** One window: its bins (ascending) and the dollars in each, bid and ask. */
+export interface Window { bins: Int32Array; bid: Float32Array; ask: Float32Array }
+
+/** A book's windows of an answer (`times`, `counts` and the flat arrays), those `keep` takes, kept as `SMALL_ANSWER` says. */
+export function keptWindows(times: readonly number[], counts: readonly number[], bins: Int32Array, bid: Float32Array, ask: Float32Array, keep: (t: number) => boolean): Map<number, Window> {
+  const out = new Map<number, Window>(), small = times.length <= SMALL_ANSWER, starts = new Array<number>(times.length);
+  for (let c = 0, at = 0; c < times.length; at += counts[c]!, c++) starts[c] = at;
+  for (let c = 0; c < times.length;) {
+    if (!keep(times[c]!)) { c++; continue; }
+    // A run of windows kept, at most a slab (one window when the answer is small), copied once.
+    let last = c + 1;
+    while (last < times.length && last - c < (small ? 1 : SLAB) && keep(times[last]!)) last++;
+    const from = starts[c]!, to = last < times.length ? starts[last]! : bins.length;
+    const slab = { bins: bins.slice(from, to), bid: bid.slice(from, to), ask: ask.slice(from, to) };
+    for (let k = c; k < last; k++) { const a = starts[k]! - from, z = a + counts[k]!; out.set(times[k]!, { bins: slab.bins.subarray(a, z), bid: slab.bid.subarray(a, z), ask: slab.ask.subarray(a, z) }); }
+    c = last;
+  }
+  return out;
+}
+
+/** The bins a set of windows keeps alive, counting each copy once (a slab with all of its windows, held or not). */
+export function binsKept(windows: Iterable<Window>, seen = new Set<ArrayBufferLike>()): number {
+  let n = 0;
+  for (const w of windows) { const buffer = w.bins.buffer; if (!seen.has(buffer)) { seen.add(buffer); n += buffer.byteLength / 4; } }
+  return n;
+}
 
 /** The first index of `a` (ascending) whose value is at least `x`. */
 function lowerBound(a: ArrayLike<number>, x: number): number {
@@ -116,7 +145,6 @@ export interface DepthReader {
   spent(): number;
 }
 
-interface Window { bins: Int32Array; bid: Float32Array; ask: Float32Array }
 interface Book { info: MarketInfo; step: number; windows: Map<number, Window> }
 
 /**
@@ -197,19 +225,13 @@ export class DepthCache {
       // A book recorded on another grid (a source started again and chose another step): its bins mean other prices, so it starts again.
       if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); era.books.delete(b.id); book = undefined; }
       if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; era.books.set(b.id, book); }
-      const incoming = new Map<number, Window>();
-      for (let c = 0, at = 0; c < b.times.length; at += b.counts[c]!, c++) {
-        const n = b.counts[c]!, t = b.times[c]!;
-        if (t >= b.from && t < b.to && t >= keepFrom) incoming.set(t, { bins: b.bins.subarray(at, at + n), bid: b.bid.subarray(at, at + n), ask: b.ask.subarray(at, at + n) });
-      }
+      const incoming = keptWindows(b.times, b.counts, b.bins, b.bid, b.ask, t => t >= b.from && t < b.to && t >= keepFrom);
       for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to && !incoming.has(t)) { book.windows.delete(t); mark(t); }
-      // The message's arrays are the worker's own (a copy made in passing): a large answer's windows are kept as views of them, a small one's
-      // as copies of their own (`SMALL_ANSWER`); a window read again as it was keeps the one held.
-      const small = b.times.length <= SMALL_ANSWER;
+      // A window read again as it was takes the new copy (the old one's slab can go) and keeps its revision: its candle need not run again.
       for (const [t, w] of incoming) {
         const old = book.windows.get(t);
-        if (old && sameWindow(old, w)) continue;
-        book.windows.set(t, small ? { bins: w.bins.slice(), bid: w.bid.slice(), ask: w.ask.slice() } : w); mark(t);
+        book.windows.set(t, w);
+        if (!old || !sameWindow(old, w)) mark(t);
       }
     }
     era.revision = revision;
@@ -222,6 +244,9 @@ export class DepthCache {
     if (era !== this.#era) { this.#era = era; this.#last = null; this.#filters.clear(); }
     return true;
   }
+
+  /** The bins the worker's depth keeps alive, every timeframe's together (each copy once), for diagnostics and tests. */
+  get binsKept(): number { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const era of this.#eras.values()) for (const book of era.books.values()) n += binsKept(book.windows.values(), seen); return n; }
 
   /** Each candle's depth revision (-1 where none is held), for a run to tell whether a closed candle's depth changed. */
   epochs(time: Float64Array): Float64Array { const changed = this.#era.changed; return Float64Array.from(time, t => changed.get(t) ?? -1); }

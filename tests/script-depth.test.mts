@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DepthCache, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
+import { DepthCache, SLAB, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
 import { DepthFeed } from '../src/app/script/depth-feed.ts';
 import { analyze, createRunner } from '../src/app/script/lang/engine.ts';
 import type { BarInputs } from '../src/app/script/inputs.ts';
@@ -358,4 +358,27 @@ test('a switch back to a timeframe the worker holds sends nothing; one it does n
   const fresh = new DepthCache(), again = { generation: 2, post: (m: DepthMessage) => { posted.push(m); fresh.apply(m); } };
   feed.deliver(again);
   assert.ok(posted.length === 1 && posted[0]!.reset && fresh.holds(tag));
+});
+
+test('what the worker keeps alive stays near what it holds: windows let go or read again free their copies', () => {
+  const W = 1_000, BINS = 1_000, times = Array.from({ length: W }, (_, i) => i * M);
+  const big = (revision: number, prev: number, reset: boolean, from: number, to: number, value: number): DepthMessage => ({
+    t: 'depth', key: '1m', revision, prev, reset, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 10, from, to, times,
+      counts: times.map(() => BINS), bins: Int32Array.from({ length: W * BINS }, (_, i) => 1_000 + (i % BINS)), bid: new Float32Array(W * BINS).fill(value), ask: new Float32Array(W * BINS).fill(value) }] });
+  const cache = new DepthCache();
+  cache.apply(big(1, -1, true, -Infinity, Infinity, 1));
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
+  assert.equal(cache.binsKept, W * BINS);
+  // The series moves on to its last two candles: what stays alive is at most a slab, not the whole answer.
+  cache.apply({ t: 'depth', key: '1m', revision: 2, prev: 1, reset: false, books: [], drop: [], keepFrom: (W - 2) * M });
+  assert.ok(cache.binsKept <= SLAB * BINS, `${cache.binsKept} kept for ${2 * BINS} held`);
+  // Everything read again, as it was: the new copies are kept, the old ones go, and no candle's revision changes.
+  const again = new DepthCache();
+  again.apply(big(1, -1, true, -Infinity, Infinity, 1));
+  assert.ok(again.holds({ key: '1m', revision: 1 }));
+  const before = again.epochs(Float64Array.from(times));
+  again.apply(big(2, 1, false, -Infinity, Infinity, 1));
+  assert.ok(again.holds({ key: '1m', revision: 2 }));
+  assert.equal(again.binsKept, W * BINS);
+  assert.deepEqual([...again.epochs(Float64Array.from(times))], [...before]);
 });
