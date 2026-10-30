@@ -131,6 +131,16 @@ test("the minute's reload of the same series keeps the refresh to the last bars;
   whole.resolve([]); await done;
 });
 
+test('an inverse market read before there were candles (its coins at no one price) is read whole again, never only its tail', async () => {
+  const r = await rig('deribit:BTC-PERPETUAL');
+  await load(r, history(1_000_000));
+  assert.equal(r.store.state.oiPrice, 0, 'no candles: no one price');
+  const done = r.hub.loadOi(); await turn();
+  const again = r.source.asked.shift()!;
+  assert.ok(again.from < now0 - 400 * MIN, 'whole');
+  again.resolve([]); await done;
+});
+
 test('a market whose bars stopped long ago is asked for its last few bars only', async () => {
   const r = await rig('binance:BTCUSDT');
   await load(r, history(100).slice(0, 10));

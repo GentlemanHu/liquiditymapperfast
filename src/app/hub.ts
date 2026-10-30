@@ -836,11 +836,14 @@ export class Hub {
   /** The markets last read whole and when (`#loadOi`): what the 20-second refresh reads only the last bars of. */
   #oiHeld: { key: string; at: number } | null = null;
 
-  /** The markets on screen as parts (one market's bars are `state.oi`), or null where one has no bars or they are of another timeframe. */
+  /**
+   * The markets on screen as parts (one market's bars are `state.oi`), or null where one has no bars, they are of another timeframe, or an
+   * inverse market's are not at one price yet (read before there were candles to put its USD in coins at: Sol review, 2026-10-30).
+   */
   #oiHeldParts(tf: number): OiPart[] | null {
     const state = this.store.state;
     const held: OiPart[] = state.oiParts.length > 1 ? state.oiParts : state.oiInstrument && state.oi.length ? [{ id: state.oiInstrument, bars: state.oi, ...(state.oiPrice ? { usdAt: state.oiPrice } : {}) }] : [];
-    return held.length && this.#oiTf === tf && held.every(part => part.bars.length) ? held : null;
+    return held.length && this.#oiTf === tf && held.every(part => part.bars.length && (part.usdAt || !inverseOi(part.id))) ? held : null;
   }
 
   /**
