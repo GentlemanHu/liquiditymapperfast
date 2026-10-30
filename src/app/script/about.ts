@@ -23,9 +23,9 @@ const about = (): Readonly<Record<ExampleKey, { tip: string; body: readonly stri
   },
   'depth-bands': {
     tip: t('How far a market order of a given size would move the price: up through the order book above the close, and down through the book below it.'),
-    body: [t('The upper line is where a market buy of that size would have to go, the lower where a sell would, through the order books the map shows on every exchange, added up as one. A wide band is a thin book: the same money moves the price further.'),
-      t('The size is a number of dollars, or a share of what an average candle traded at market, so that the band means the same on a quiet day and a busy one. Unlike Bollinger bands, which measure how far prices have moved, it measures how much stands in the way.'),
-      t('It reads the books the page recorded, each candle\'s as it stood on average over the candle, so candles from before the recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it is a guide, not a quote.')],
+    body: [t('The upper line is how far up that many dollars of the order books reach, on every exchange the map shows added up as one, the lower how far down. Each candle\'s book is its average over the candle, so every dollar at a price counts, whichever side it stood on: a price the candle went through held bids part of the time and asks the rest.'),
+      t('The size is a number of dollars, or a share of what an average candle traded at market. A wide band is a thin book. Unlike Bollinger bands, which measure how far prices moved, it measures how much stands in the way.'),
+      t('Candles from before the page\'s recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it shows the liquidity typically recorded there, not what such an order would pay.')],
   },
   'bar-patterns': {
     tip: t('Labels what each candle did to the range of the one before it, and marks the patterns that follow from that.'),

@@ -39,4 +39,8 @@ test('candles from a server carry no taker figures: the exchange is read from th
   const before = fakeHub([]);
   new TakerRows().get(before.hub, { ...state, candles: [taker(T, 4)], candlesTimeframe: '5m' }, H, T, () => {});
   assert.deepEqual(before.asked, [T]);
+  // Rows asked for at another timeframe than the chart's candles: those candles are not taken for them.
+  const other = fakeHub([]);
+  new TakerRows().get(other.hub, { ...state, candles: [taker(T, 4)] }, 5 * 60_000, T, () => {});
+  assert.deepEqual(other.asked, [T]);
 });

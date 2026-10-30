@@ -186,3 +186,18 @@ test('disposing ends the worker and answers what waited with nothing and no time
   assert.deepEqual(await p, { results: [], ms: 0 });
   assert.equal(workers[0]!.ended, true);
 });
+
+test('a host with no worker has no generation: the depth posted next goes to a fresh worker, so it is sent whole', async () => {
+  const { host, workers, timers } = rig();
+  const p = host.run([job('a')], inputs());
+  await tick();
+  const first = host.generation;
+  assert.ok(first > 0);
+  timers.find(t => t.ms === 1_000 && !t.cleared)!.fn();
+  await p;
+  assert.equal(workers[0]!.ended, true);
+  assert.equal(host.generation, -1, 'its worker ended, none started yet');
+  host.post({ t: 'depth', key: '1m', revision: 1, reset: true, books: [], drop: [] });
+  assert.equal(workers.length, 2);
+  assert.ok(host.generation > first);
+});

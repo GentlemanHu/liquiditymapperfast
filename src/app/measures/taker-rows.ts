@@ -2,6 +2,7 @@ import type { Hub } from '../hub.ts';
 import type { AppState, CandleRow } from '../store.ts';
 import { currentCoin } from '../coin.ts';
 import { historyTarget } from '../keylevels/history.ts';
+import { TIMEFRAMES } from '../../shared/series.ts';
 
 /** Whether a candle says who bought (its taker buys at index 7): a candle with nothing traded is one too (its trades and quote volume 0). */
 const says = (b: CandleRow): boolean => (b as readonly (number | undefined)[])[7] !== undefined && b[5] >= 0;
@@ -22,8 +23,10 @@ export class TakerRows {
   get(hub: Hub, state: AppState, tf: number, from: number, onLoad: () => void): Map<number, CandleRow> | null {
     const series = state.seriesInstrument || state.marketId, target = historyTarget(series, currentCoin()), venue = target?.id.slice(0, target.id.indexOf(':')) ?? '';
     if (!target || !target.own || (venue !== 'binance' && venue !== 'binancespot')) return null;
-    // The chart's candles are of this series and timeframe only once loaded for them (right after a switch they are the last one's).
-    const candles = state.candlesTimeframe === undefined || state.candlesTimeframe === state.timeframe ? state.candles : [];
+    // The chart's candles are of this series and timeframe only once loaded for them (right after a switch they are the last one's), and are
+    // the rows asked for only when that timeframe is `tf`.
+    const shown = state.candlesTimeframe ?? state.timeframe;
+    const candles = shown === state.timeframe && TIMEFRAMES[shown] === tf ? state.candles : [];
     let missing = !candles.length || candles[0]![0] > from ? from : Infinity;
     if (missing === Infinity) for (const c of candles) if (c[0] >= from && !says(c)) { missing = c[0]; break; }
     const h = hub.candleTaker(tf);

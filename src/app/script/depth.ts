@@ -37,8 +37,8 @@ export interface DepthTag { key: string; revision: number }
 /** One book's window as a walk reads it: its bins (ascending), their step, and the dollars per bin it counts (one side's, or with `also` both). */
 export interface SideWindow { step: number; bins: Int32Array; usd: Float32Array; also?: Float32Array }
 
-/** The most bins one walk may pass, all books together (a size past the whole book stops there). */
-const MAX_WALK = 1_000_000;
+/** The most work one walk may do, bins passed and empty bins skipped, all books together (a size past the whole book stops there). */
+const MAX_COST = 2_000_000;
 
 /** The first index of `a` (ascending) whose value is at least `x`. */
 function lowerBound(a: ArrayLike<number>, x: number): number {
@@ -66,14 +66,14 @@ export function reachOf(windows: readonly SideWindow[], side: 'ask' | 'bid', clo
     cost += 8;
   }
   let x = close, passed = 0;
-  for (let walked = 0; walked < MAX_WALK; walked++) {
+  while (cost < MAX_COST) {
     // The nearest edge ahead of any book's, and the dollars per unit of price of every bin the walk is inside of.
     let edge = up ? Infinity : -Infinity, density = 0;
     for (let b = 0; b < count; b++) {
       const w = windows[b]!, step = w.step, bins = w.bins, usdOf = w.usd, also = w.also;
       let k = at[b]!;
       // A bin with nothing in it is no bin.
-      while (k >= 0 && k < bins.length && !(usdOf[k]! + (also ? also[k]! : 0) > 0)) k += up ? 1 : -1;
+      while (k >= 0 && k < bins.length && !(usdOf[k]! + (also ? also[k]! : 0) > 0)) { k += up ? 1 : -1; cost++; }
       at[b] = k;
       if (k < 0 || k >= bins.length) continue;
       const lo = bins[k]! * step, hi = lo + step, usd = usdOf[k]! + (also ? also[k]! : 0);
@@ -112,67 +112,99 @@ export interface DepthReader {
 interface Window { bins: Int32Array; bid: Float32Array; ask: Float32Array }
 interface Book { info: MarketInfo; step: number; windows: Map<number, Window> }
 
-/** Whether a message's book is shaped as one (lengths that agree, finite numbers): one that is not is left out, never read past its end. */
+/**
+ * Whether a message's book is shaped as one: lengths that agree, a market's description, dollars that are finite and not below 0, and each
+ * window's bins rising. One that is not is left out, never read past its end.
+ */
 function wellFormed(b: DepthBook): boolean {
   if (!b || typeof b.id !== 'string' || !b.info || !(b.step > 0) || !Number.isFinite(b.step) || !Array.isArray(b.times) || !Array.isArray(b.counts) || b.times.length !== b.counts.length) return false;
+  const info = b.info;
+  if (typeof info.id !== 'string' || typeof info.venue !== 'string' || typeof info.kind !== 'string' || typeof info.quote !== 'string') return false;
   if (typeof b.from !== 'number' || typeof b.to !== 'number' || Number.isNaN(b.from) || Number.isNaN(b.to) || !(b.to > b.from)) return false;
   if (!(b.bins instanceof Int32Array) || !(b.bid instanceof Float32Array) || !(b.ask instanceof Float32Array) || b.bid.length !== b.bins.length || b.ask.length !== b.bins.length) return false;
   let total = 0;
   for (let c = 0; c < b.counts.length; c++) { const n = b.counts[c]!, t = b.times[c]!; if (!Number.isInteger(n) || n < 0 || !Number.isFinite(t)) return false; total += n; }
-  return total === b.bins.length;
+  if (total !== b.bins.length) return false;
+  for (let i = 0; i < total; i++) { const x = b.bid[i]!, y = b.ask[i]!; if (!(x >= 0 && x < Infinity) || !(y >= 0 && y < Infinity)) return false; }
+  for (let c = 0, at = 0; c < b.counts.length; at += b.counts[c]!, c++) for (let i = at + 1; i < at + b.counts[c]!; i++) if (!(b.bins[i]! > b.bins[i - 1]!)) return false;
+  return true;
+}
+
+/** Whether two windows hold the same bins and dollars. */
+function sameWindow(a: Window, b: Window): boolean {
+  const n = a.bins.length;
+  if (b.bins.length !== n) return false;
+  for (let i = 0; i < n; i++) if (a.bins[i] !== b.bins[i] || a.bid[i] !== b.bid[i] || a.ask[i] !== b.ask[i]) return false;
+  return true;
 }
 
 /**
- * The script worker's depth: the windows of the books of one timeframe, as the page's messages left them. A message for another timeframe,
- * or a reset, starts again; each candle remembers the revision its depth last changed at, so a run can tell that a closed candle's depth
- * changed (`epochs`) and run that candle again.
+ * The script worker's depth: the windows of the books of one timeframe, as the page's messages left them. A start (`reset`) replaces it all;
+ * a change is taken only on top of the revision before it, of the same timeframe: a worker that missed one (started since the page last sent
+ * it everything, or sent one out of turn) holds nothing a run may read until the page sends everything again. Each candle remembers the
+ * revision its depth last changed at, so a run can tell that a closed candle's depth changed (`epochs`) and run that candle again; a window
+ * read again as it was keeps its revision.
  */
 export class DepthCache {
   key = '';
   revision = -1;
+  /** Whether what is held follows from a start with every change since. */
+  #sound = false;
   readonly #books = new Map<string, Book>();
-  /** The revision each candle's depth last changed at (a window replaced or let go), by candle start; books added or dropped: `#booksAt`. */
+  /** The revision each candle's depth last changed at (a window that came, changed or went), by candle start: none (-1) where none is held. */
   readonly #changed = new Map<number, number>();
-  #booksAt = 0;
   readonly #filters = new Map<string, string[]>();
   /** The windows a candle's walks read, for the calls of one candle (a script often asks both sides, or several sizes). */
   #last: { key: string; ask: SideWindow[]; bid: SideWindow[]; above: SideWindow[]; below: SideWindow[] } | null = null;
   #spent = 0;
 
   apply(msg: DepthMessage): void {
-    if (!msg || typeof msg.key !== 'string' || !Number.isFinite(msg.revision) || !Array.isArray(msg.books) || !Array.isArray(msg.drop)) return;
-    if (msg.reset || msg.key !== this.key) { this.#books.clear(); this.#changed.clear(); this.#filters.clear(); this.key = msg.key; }
+    if (!msg || typeof msg.key !== 'string' || !Number.isFinite(msg.revision) || !Array.isArray(msg.books) || !Array.isArray(msg.drop)) { this.#sound = false; return; }
+    if (msg.reset) { this.#books.clear(); this.#changed.clear(); this.#filters.clear(); this.key = msg.key; this.#sound = true; }
+    else if (!this.#sound || msg.key !== this.key || msg.revision !== this.revision + 1) { this.#sound = false; return; }
     this.#last = null;
-    let books = msg.reset;
-    for (const id of msg.drop) if (this.#books.delete(id)) books = true;
-    if (msg.keepFrom !== undefined && Number.isFinite(msg.keepFrom)) {
-      for (const book of this.#books.values()) for (const t of [...book.windows.keys()]) if (t < msg.keepFrom) book.windows.delete(t);
-      for (const t of [...this.#changed.keys()]) if (t < msg.keepFrom) this.#changed.delete(t);
+    const revision = msg.revision, mark = (t: number): void => { this.#changed.set(t, revision); };
+    let listed = msg.reset;
+    for (const id of msg.drop) {
+      const book = this.#books.get(id);
+      if (!book) continue;
+      for (const t of book.windows.keys()) mark(t);
+      this.#books.delete(id); listed = true;
+    }
+    const keepFrom = msg.keepFrom !== undefined && Number.isFinite(msg.keepFrom) ? msg.keepFrom : -Infinity;
+    if (keepFrom > -Infinity) {
+      // A window let go reads NaN from then on; its candle's revision goes with it, which differs from any it had.
+      for (const book of this.#books.values()) for (const t of [...book.windows.keys()]) if (t < keepFrom) book.windows.delete(t);
+      for (const t of [...this.#changed.keys()]) if (t < keepFrom) this.#changed.delete(t);
     }
     for (const b of msg.books) {
       if (!wellFormed(b)) continue;
       let book = this.#books.get(b.id);
       // A book recorded on another grid (a source started again and chose another step): its bins mean other prices, so it starts again.
-      if (book && book.step !== b.step) { for (const t of book.windows.keys()) this.#changed.set(t, msg.revision); this.#books.delete(b.id); book = undefined; }
-      if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; this.#books.set(b.id, book); books = true; }
-      for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to) { book.windows.delete(t); this.#changed.set(t, msg.revision); }
-      let at = 0;
-      for (let c = 0; c < b.times.length; c++) {
+      if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); this.#books.delete(b.id); book = undefined; }
+      if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; this.#books.set(b.id, book); listed = true; }
+      const incoming = new Map<number, Window>();
+      for (let c = 0, at = 0; c < b.times.length; at += b.counts[c]!, c++) {
         const n = b.counts[c]!, t = b.times[c]!;
-        if (t >= b.from && t < b.to && (msg.keepFrom === undefined || t >= msg.keepFrom)) book.windows.set(t, { bins: b.bins.subarray(at, at + n), bid: b.bid.subarray(at, at + n), ask: b.ask.subarray(at, at + n) });
-        this.#changed.set(t, msg.revision);
-        at += n;
+        if (t >= b.from && t < b.to && t >= keepFrom) incoming.set(t, { bins: b.bins.subarray(at, at + n), bid: b.bid.subarray(at, at + n), ask: b.ask.subarray(at, at + n) });
+      }
+      for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to && !incoming.has(t)) { book.windows.delete(t); mark(t); }
+      // Each window kept is a copy of its own, so the message's buffer goes once it is read (a window read again as it was keeps the one held).
+      for (const [t, w] of incoming) {
+        const old = book.windows.get(t);
+        if (old && sameWindow(old, w)) continue;
+        book.windows.set(t, { bins: w.bins.slice(), bid: w.bid.slice(), ask: w.ask.slice() }); mark(t);
       }
     }
-    if (books) { this.#booksAt = msg.revision; this.#filters.clear(); }
-    this.revision = msg.revision;
+    if (listed) this.#filters.clear();
+    this.revision = revision;
   }
 
   /** Whether the cache holds what a run was told it would read. */
-  holds(tag: DepthTag): boolean { return !!tag && tag.key === this.key && tag.revision === this.revision; }
+  holds(tag: DepthTag): boolean { return !!tag && this.#sound && tag.key === this.key && tag.revision === this.revision; }
 
-  /** Each candle's depth revision (the books' when they changed later), for a run to tell whether a closed candle's depth changed. */
-  epochs(time: Float64Array): Float64Array { return Float64Array.from(time, t => Math.max(this.#changed.get(t) ?? -1, this.#booksAt)); }
+  /** Each candle's depth revision (-1 where none is held), for a run to tell whether a closed candle's depth changed. */
+  epochs(time: Float64Array): Float64Array { return Float64Array.from(time, t => this.#changed.get(t) ?? -1); }
 
   #ids(filter: SourceFilter, key: string): string[] {
     let ids = this.#filters.get(key);

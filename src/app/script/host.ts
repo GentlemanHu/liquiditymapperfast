@@ -57,8 +57,11 @@ export class ScriptHost {
     this.#o = { deadlineMs: 4_000, perScriptMs: 2_600, loadMs: 120_000, setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: id => clearTimeout(id as ReturnType<typeof setTimeout>), now: () => Date.now(), ...o };
   }
 
-  /** Which worker is the current one (each started counts one): a page that sent depth to an earlier one sends it again. */
-  get generation(): number { return this.#generation; }
+  /**
+   * Which worker is the current one (each started counts one): a page that sent depth to an earlier one sends it again. None (-1) while there
+   * is none: the next post starts one, which holds nothing yet, so what is posted then must be everything.
+   */
+  get generation(): number { return this.#worker ? this.#generation : -1; }
 
   /**
    * Post the depth's change to the worker now, starting one if there is none: messages to one worker arrive in order, so a run asked for after

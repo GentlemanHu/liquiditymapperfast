@@ -359,8 +359,9 @@ export class ScriptPane extends TimePane {
     // Nothing changed: run again at the refresh anyway (the candle under way fills in from the flow), on a timer, so a quiet page still refreshes.
     if (!changed && now - this.#lastRun < REFRESH) { this.#wake(this.#lastRun + REFRESH - now); return; }
     // Another theme (picked, or previewed from the menu) runs at once: until it has run, the pane shows the colours of the theme before.
-    const interval = Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
-    if (wait > 0 && was?.theme === seen.theme && !settling) { this.#wake(wait); return; }
+    // Right after a switch, as soon as what it needs lands, but never closer than twice the time a run takes (a heavy script still leaves room).
+    const interval = settling ? this.#runMs * 2 : Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
+    if (wait > 0 && was?.theme === seen.theme) { this.#wake(wait); return; }
     this.#seen = seen;
     this.#starting = true;
     try { this.#run(on); } finally { this.#starting = false; }

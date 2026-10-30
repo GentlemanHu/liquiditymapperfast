@@ -21,10 +21,14 @@ import type { DepthBook, DepthMessage, DepthTag } from './depth.ts';
 
 /** How often the windows that can still change are read again, and how long a book may be gone before it is dropped (venues reconnect). */
 const REFRESH_MS = 30_000, DROP_AFTER_MS = 5_000;
-/** How long a failed read waits before it is tried again (a server that errors is not asked on every run). */
-const RETRY_MS = 5_000;
-/** How many messages are kept for a host a few behind. */
-const LOG = 32;
+/**
+ * How long a failed read waits before it is tried again (a server that errors is not asked on every run), and how long an answer is waited
+ * for before the read counts as failed (a request that never ends would otherwise hold every later read of the timeframe; a busy server took
+ * 100 s for one on 2026-10-29).
+ */
+const RETRY_MS = 5_000, READ_TIMEOUT_MS = 150_000;
+/** How many messages are kept for a host a few behind, and how many bins they may hold together (about 24 MB); one further behind gets everything. */
+const LOG = 32, LOG_BINS = 2_000_000;
 /**
  * Windows a read asks for at once, the newest first so the bands start at the chart's right edge and fill in back in time: a few at first,
  * so the first answer comes at once, then four times as many each time (a quiet server merges a hundred windows of a dozen books in about
@@ -71,7 +75,7 @@ export class DepthFeed {
   #reading: { key: string } | null = null;
   #retryAt = 0;
 
-  constructor(private hub: Hub, private changed: () => void) {}
+  constructor(private hub: Hub, private changed: () => void, private readTimeoutMs = READ_TIMEOUT_MS) {}
 
   /** The revision a run reads, for the timeframe it is for; null while nothing has been asked. */
   get tag(): DepthTag | null { return this.#key ? { key: this.#key, revision: this.#revision } : null; }
@@ -111,11 +115,11 @@ export class DepthFeed {
     if (top > -Infinity) {
       const group = ids.filter(id => (era.books.get(id)?.readFrom ?? Infinity) === top);
       if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; }
-      void this.#read(key, era, state, group, from, Math.min(top, forming + tf), tf, true);
+      void this.#read(key, era, state, group, from, Math.min(top, forming + tf), tf, true, now);
     } else if (era.books.size && (now - era.tailAt >= REFRESH_MS || forming !== era.forming)) {
       const since = Math.max(from, era.settledTo);
       era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming;
-      void this.#read(key, era, state, [...era.books.keys()], since, forming + tf, tf, false).then(ok => { if (!ok) era.settledTo = Math.min(era.settledTo, since); });
+      void this.#read(key, era, state, [...era.books.keys()], since, forming + tf, tf, false, now).then(ok => { if (!ok) era.settledTo = Math.min(era.settledTo, since); });
     }
     return this.tag;
   }
@@ -153,7 +157,9 @@ export class DepthFeed {
 
   #push(msg: DepthMessage): void {
     this.#log.push(msg);
-    if (this.#log.length > LOG) this.#log.splice(0, this.#log.length - LOG);
+    let bins = 0;
+    for (const m of this.#log) for (const b of m.books) bins += b.bins.length;
+    while (this.#log.length > 1 && (this.#log.length > LOG || bins > LOG_BINS)) for (const b of this.#log.shift()!.books) bins -= b.bins.length;
   }
 
   /** Everything held, as one message that starts the worker's depth again. */
@@ -175,21 +181,29 @@ export class DepthFeed {
    * `MAX_CHUNK`, every book in one question (a source splits it into requests of a dozen and asks them at once). Each answer is a message of
    * its own, which replaces exactly the windows it was asked for; a book asked for is held from then on, answered or not (one with nothing
    * recorded is not asked for again on every run). A read `back` (books not read as far back as the candles) moves each book's `readFrom`
-   * back with every answer, so one that stops (another timeframe, a failure) goes on from there the next time. Whether every answer came.
+   * back with every answer (no further than the windows kept), so one that stops (another timeframe, a failure) goes on from there the next
+   * time. The page keeps a copy of each window of its own and the message a copy of each book's, so that no answer's buffer outlives what is
+   * kept of it. Whether every answer came.
    */
-  async #read(key: string, era: Era, state: AppState, ids: string[], from: number, to: number, tf: number, back: boolean): Promise<boolean> {
+  async #read(key: string, era: Era, state: AppState, ids: string[], from: number, to: number, tf: number, back: boolean, now: number): Promise<boolean> {
     if (!(to > from)) return true;
     const mine = { key }, asked = new Set(ids);
+    // Books found on another grid during this read: read again whole by the next one, so no later answer of this one counts them as read.
+    const regridded = new Set<string>();
     this.#reading = mine;
     let ok = false;
     try {
       for (let end = to, chunk = FIRST_CHUNK; end > from; end -= chunk * tf, chunk = Math.min(MAX_CHUNK, chunk * 4)) {
         const start = Math.max(from, end - chunk * tf);
-        let sets: ColumnSet[];
-        try { sets = (await this.hub.source.columns(ids, start, end, tf)).instruments; } catch { this.#retryAt = Date.now() + RETRY_MS; return false; }
+        let sets: ColumnSet[], timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), this.readTimeoutMs); });
+          sets = (await Promise.race([this.hub.source.columns(ids, start, end, tf), late])).instruments;
+        } catch { if (this.#reading === mine) this.#retryAt = now + RETRY_MS; return false; }
+        finally { clearTimeout(timer); }
         // A read started since (for another timeframe, or this one again after it), or another timeframe on screen: this one stops here.
         if (this.#reading !== mine || key !== this.#key) return false;
-        const books: DepthBook[] = [], answered = new Set<string>(), regridded = new Set<string>();
+        const books: DepthBook[] = [], answered = new Set<string>();
         for (const set of sets) {
           if (!asked.has(set.id) || !(set.step > 0) || answered.has(set.id)) continue;
           answered.add(set.id);
@@ -204,15 +218,15 @@ export class DepthFeed {
           let at = 0;
           for (let c = 0; c < set.times.length; c++) {
             const n = set.counts[c]!, t = set.times[c]!;
-            if (t >= start && t < end && t >= era.keepFrom) held.windows.set(t, { bins: set.bins.subarray(at, at + n), bid: set.bid.subarray(at, at + n), ask: set.ask.subarray(at, at + n) });
+            if (t >= start && t < end && t >= era.keepFrom) held.windows.set(t, { bins: set.bins.slice(at, at + n), bid: set.bid.slice(at, at + n), ask: set.ask.slice(at, at + n) });
             at += n;
           }
-          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins, bid: set.bid, ask: set.ask });
+          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() });
         }
         for (const id of ids) {
           let held = era.books.get(id);
           if (!held) { held = { info: marketInfo(state.markets, id), step: 0, windows: new Map(), readFrom: Infinity }; era.books.set(id, held); }
-          if (back && !regridded.has(id)) held.readFrom = Math.min(held.readFrom, start);
+          if (back && !regridded.has(id)) held.readFrom = Math.min(held.readFrom, Math.max(start, era.keepFrom));
           // A book held and asked for that answered nothing has no windows over [start, end) any more.
           if (answered.has(id) || !held.windows.size) continue;
           for (const t of [...held.windows.keys()]) if (t >= start && t < end) held.windows.delete(t);
