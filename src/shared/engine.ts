@@ -543,10 +543,12 @@ export class Engine {
   /**
    * Candles from the venue's own history. An unreachable venue answers with nothing, and the page falls back to another one. Each page asks
    * for the bars the window needs, not the venue's most (Binance's 1,500 for the chart's 500 was three times the bytes and twice the weight).
+   * A venue that says who bought (Binance) keeps it on each candle (`buy`): the Volume bars, the Bar stats and the scripts read it from the
+   * chart's own candles instead of asking the venue for the same candles again (`measures/taker-rows.ts`).
    */
   async candles(instrumentId: string, tfMs: number, from: number, to: number): Promise<Candle[]> {
     const listing = this.#listing(instrumentId); if (!listing) return [];
-    try { return await fetchCandles(instrumentId, tfMs, from, to, this.#get, listing, 12, { pageSize: 1500 }); } catch { return []; }
+    try { return await fetchCandles(instrumentId, tfMs, from, to, this.#get, listing, 12, { pageSize: 1500, buy: true }); } catch { return []; }
   }
 
   /** Open interest bars: the venue's own history where it has one, and the readings taken while the page was open. */

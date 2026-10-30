@@ -45,6 +45,9 @@ export interface Analysis {
   warnings: Warning[];
 }
 
+/** The functions that read the order book (`depth.ts`); like the names version 2 added, not in `KNOWN_INPUTS`: a script's own name of one stays its own. */
+export const DEPTH_FUNCTIONS = new Set(['askdepth', 'biddepth', 'depthabove', 'depthbelow', 'depthbooks']);
+
 /** What `renderer` answers when a script runs (the engine's `rendererObject`); any other member reads nothing and is warned of. */
 export const RENDERER_MEMBERS = new Set(['length', 'timestamp', 'localTimestamp', 'timeframe', 'type', 'lastTradeTimestamp', 'forming']);
 /** What `theme` answers (the engine's `themeObject`). */
@@ -182,6 +185,10 @@ function analyzeOnce(text: string): Analysis {
       if (n.k === 'call' && n.callee.k === 'id' && n.callee.name === 'source') sourceCalls.push(n);
       if (n.k === 'id' && (n.name === 'vbuy' || n.name === 'vsell' || n.name === 'lbuy' || n.name === 'lsell' || n.name === 'cbuy' || n.name === 'csell')) inputs.add(n.name);
       if (n.k === 'id' && n.name === 'oichg' && !persistent.has('oichg') && !declared.has('oichg')) inputs.add('oichg');
+      // The order book (version 3 names), called or only named (kept under another name, handed to a function): the page then loads it. A
+      // name declared somewhere (a parameter, a function of the script's own) may still mean the page's elsewhere, so only one the script
+      // keeps from candle to candle (one name everywhere) is taken for its own.
+      if (n.k === 'id' && DEPTH_FUNCTIONS.has(n.name) && !persistent.has(n.name)) inputs.add('depth');
       // The flow read through `bar`: the page then fills the candles it did not record from the chart market's own.
       if (n.k === 'member' && n.obj.k === 'id' && n.obj.name === 'bar' && (n.name === 'vbuy' || n.name === 'vsell' || n.name === 'recorded')) inputs.add(n.name);
       // `bar` read any way but as `bar.name` with another name (bar["oichg"], kept under another name, handed to a function) may read the

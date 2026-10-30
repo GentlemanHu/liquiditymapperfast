@@ -12,6 +12,7 @@ import { oiPartsUntil, oiUsdChangeByTime } from '../oi-change.ts';
 import { candleArrays, filterKey, marketInfo, marketsMatching, sourceInputs, type BarInputs, type SourceFilter } from './inputs.ts';
 import { TakerRows } from '../measures/taker-rows.ts';
 import { candleSides, candleUsd } from '../measures/volume-strip.ts';
+import { DepthFeed } from './depth-feed.ts';
 
 /**
  * Gathers what the scripts read from what the page holds: the chart's candles, the taker flow of the flow column's ALL VENUES markets (the
@@ -28,7 +29,10 @@ export class ScriptData {
   /** Whether a day of liquidations the last inputs read held more than the source answers (the smallest are missing). */
   liquidationsCut = false;
 
-  constructor(private hub: Hub, private changed: () => void) {}
+  /** The order book the scripts read (`askdepth`, `biddepth`, `depthbooks`), loaded only while a script reads it. */
+  readonly depth: DepthFeed;
+
+  constructor(private hub: Hub, private changed: () => void) { this.depth = new DepthFeed(hub, () => { this.version++; this.changed(); }); }
 
   /** The markets each filter holds, out of the flow column's ALL VENUES markets. */
   markets(state: AppState, filters: ReadonlyMap<string, SourceFilter>): Map<string, string[]> {

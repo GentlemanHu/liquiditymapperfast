@@ -1,4 +1,5 @@
 import type { CandleRow, Market } from '../store.ts';
+import type { DepthReader } from './depth.ts';
 import type { CandleFlow } from '../delta/candles.ts';
 import { familyKey } from '../cvd/families.ts';
 
@@ -75,6 +76,12 @@ export interface BarInputs {
   forming: boolean;
   /** The page's colours (`theme`; `DEFAULT_SCRIPT_THEME` when absent). Another theme is other inputs: a run under it starts from the first candle. */
   theme?: ScriptTheme;
+  /**
+   * The order book of each candle (`askdepth`, `biddepth`, `depthbooks`), set by the script worker from what it holds (`depth.ts DepthCache`),
+   * never sent by the page; absent: they read NaN. `depthEpochs`: each candle's depth revision, so a run can tell a closed candle's depth changed.
+   */
+  depth?: DepthReader;
+  depthEpochs?: Float64Array;
 }
 
 /**

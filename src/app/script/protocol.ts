@@ -1,14 +1,21 @@
 import type { BarInputs } from './inputs.ts';
 import type { ScriptError } from './lang/lexer.ts';
 import type { OptionValue } from './records.ts';
+import type { DepthMessage, DepthTag } from './depth.ts';
 
 /** The messages between the page and the script worker, and what a run answers for each script. */
 
 /** One script to run: its text, the values set for its options, and the version of the language it was written for. */
 export interface ScriptJob { id: string; source: string; options: Record<string, OptionValue>; api: number }
-export interface RunRequest { t: 'run'; seq: number; jobs: ScriptJob[]; inputs: BarInputs }
-/** A run's answer, or the worker saying it has loaded and can take runs (sent once, first). */
-export type RunResponse = { t: 'result'; seq: number; results: ScriptResult[] } | { t: 'ready' };
+/** `depth`: the depth the run reads, as the page sent it before (`DepthMessage`); absent for a run in which no script reads depth. */
+export interface RunRequest { t: 'run'; seq: number; jobs: ScriptJob[]; inputs: BarInputs; depth?: DepthTag }
+/** What the page posts to the script worker: a run, or what changed of the depth (posted in order, before the runs that read it). */
+export type WorkerMessage = RunRequest | DepthMessage;
+/**
+ * A run's answer, or the worker saying it has loaded and can take runs (sent once, first). `depthBehind`: the run was told of depth the
+ * worker does not hold (a fresh worker), so depth read NaN in it; the page sends what it holds and runs again.
+ */
+export type RunResponse = { t: 'result'; seq: number; results: ScriptResult[]; depthBehind?: boolean } | { t: 'ready' };
 
 /**
  * What a plot draws: a line, an area under a line, bars, a line with a baseline, candles or bars of four prices, a band between two lines, or

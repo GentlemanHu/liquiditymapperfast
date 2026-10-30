@@ -1,6 +1,7 @@
 import type { BarInputs } from './inputs.ts';
 import { transferables } from './inputs.ts';
-import type { RunRequest, RunResponse, ScriptJob, ScriptResult } from './protocol.ts';
+import type { RunResponse, ScriptJob, ScriptResult, WorkerMessage } from './protocol.ts';
+import type { DepthMessage, DepthTag } from './depth.ts';
 
 /**
  * The page's side of the script worker: one run at a time, the newest request waiting behind it (an older waiting one is dropped, its answer
@@ -13,7 +14,7 @@ import type { RunRequest, RunResponse, ScriptJob, ScriptResult } from './protoco
 
 /** What the host needs of a worker (a real `Worker`, or a test's stand-in). */
 export interface WorkerLike {
-  postMessage(message: RunRequest, transfer: Transferable[]): void;
+  postMessage(message: WorkerMessage, transfer: Transferable[]): void;
   terminate(): void;
   onmessage: ((e: { data: RunResponse }) => void) | null;
   onerror: ((e: unknown) => void) | null;
@@ -31,18 +32,23 @@ export interface HostOptions {
   now?: () => number;
 }
 
-/** A run's answer: one result per script, and how long it ran in its worker (ms), from when the worker took it to its answer or its deadline (0 for one that never started). */
-export interface RunOutcome { results: ScriptResult[]; ms: number }
+/**
+ * A run's answer: one result per script, and how long it ran in its worker (ms), from when the worker took it to its answer or its deadline
+ * (0 for one that never started). `depthBehind`: the worker did not hold the depth the run was told of (`RunResponse`).
+ */
+export interface RunOutcome { results: ScriptResult[]; ms: number; depthBehind?: boolean }
 const NOTHING: RunOutcome = { results: [], ms: 0 };
 
-interface Run { seq: number; jobs: ScriptJob[]; inputs: BarInputs; timer: unknown; resolve: (r: RunOutcome) => void; sent: boolean; sentAt: number }
+interface Run { seq: number; jobs: ScriptJob[]; inputs: BarInputs; depth: DepthTag | undefined; timer: unknown; resolve: (r: RunOutcome) => void; sent: boolean; sentAt: number }
 
 export class ScriptHost {
   #worker: WorkerLike | null = null;
   #ready = false;
   #seq = 0;
   #running: Run | null = null;
-  #waiting: { jobs: ScriptJob[]; inputs: BarInputs; resolve: (r: RunOutcome) => void } | null = null;
+  #waiting: { jobs: ScriptJob[]; inputs: BarInputs; depth: DepthTag | undefined; resolve: (r: RunOutcome) => void } | null = null;
+  /** Counts the workers started: one started since the page last sent the depth holds none of it (`post`). */
+  #generation = 0;
   readonly #o: Required<HostOptions>;
   /** How many workers were ended for running over their deadline (or for not loading). */
   restarts = 0;
@@ -50,6 +56,18 @@ export class ScriptHost {
   constructor(o: HostOptions) {
     this.#o = { deadlineMs: 4_000, perScriptMs: 2_600, loadMs: 120_000, setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: id => clearTimeout(id as ReturnType<typeof setTimeout>), now: () => Date.now(), ...o };
   }
+
+  /**
+   * Which worker is the current one (each started counts one): a page that sent depth to an earlier one sends it again. None (-1) while there
+   * is none: the next post starts one, which holds nothing yet, so what is posted then must be everything.
+   */
+  get generation(): number { return this.#worker ? this.#generation : -1; }
+
+  /**
+   * Post the depth's change to the worker now, starting one if there is none: messages to one worker arrive in order, so a run asked for after
+   * this reads it. Not a run: it is never dropped for a newer one. `transfer`: buffers only this message holds, handed over, not copied.
+   */
+  post(message: DepthMessage, transfer: ArrayBuffer[] = []): void { try { this.#ensure().postMessage(message, transfer); } catch { /* the next run reports a worker that fails */ } }
 
   /** Whether a run is under way (asked for, its worker loading or running it). */
   get busy(): boolean { return this.#running !== null; }
@@ -61,12 +79,12 @@ export class ScriptHost {
    * overtaken by a newer one before its worker took it resolves with none. A run waiting for its worker to load is replaced the same way: the
    * worker then runs only the newest scripts, not ones changed or switched off meanwhile.
    */
-  run(jobs: ScriptJob[], inputs: BarInputs): Promise<RunOutcome> {
+  run(jobs: ScriptJob[], inputs: BarInputs, depth?: DepthTag): Promise<RunOutcome> {
     return new Promise(resolve => {
       const run = this.#running;
-      if (run && !run.sent) { const was = run.resolve; run.jobs = jobs; run.inputs = inputs; run.resolve = resolve; was(NOTHING); return; }
-      if (run) { this.#waiting?.resolve(NOTHING); this.#waiting = { jobs, inputs, resolve }; return; }
-      this.#start(jobs, inputs, resolve);
+      if (run && !run.sent) { const was = run.resolve; run.jobs = jobs; run.inputs = inputs; run.depth = depth; run.resolve = resolve; was(NOTHING); return; }
+      if (run) { this.#waiting?.resolve(NOTHING); this.#waiting = { jobs, inputs, depth, resolve }; return; }
+      this.#start(jobs, inputs, depth, resolve);
     });
   }
 
@@ -88,7 +106,7 @@ export class ScriptHost {
   #ensure(): WorkerLike {
     if (this.#worker) return this.#worker;
     const w = this.#o.spawn();
-    this.#ready = false;
+    this.#ready = false; this.#generation++;
     w.onmessage = e => { if (this.#worker !== w) return; if (e.data.t === 'ready') { this.#ready = true; this.#send(); } else this.#answer(e.data); };
     // A worker that fails to load or throws outside a run answers nothing: the run is ended as one over its deadline would be. One that
     // fails with nothing under way (its run was dropped while it loaded) is let go too, so the next run gets a fresh one and does not wait.
@@ -100,8 +118,8 @@ export class ScriptHost {
     return this.#worker = w;
   }
 
-  #start(jobs: ScriptJob[], inputs: BarInputs, resolve: (r: RunOutcome) => void): void {
-    const run: Run = { seq: ++this.#seq, jobs, inputs, timer: null, resolve, sent: false, sentAt: 0 };
+  #start(jobs: ScriptJob[], inputs: BarInputs, depth: DepthTag | undefined, resolve: (r: RunOutcome) => void): void {
+    const run: Run = { seq: ++this.#seq, jobs, inputs, depth, timer: null, resolve, sent: false, sentAt: 0 };
     this.#running = run;
     try { this.#ensure(); } catch { this.#stop('worker-failed'); return; }
     if (this.#ready) this.#send();
@@ -115,7 +133,7 @@ export class ScriptHost {
     if (run.timer !== null) this.#o.clearTimer(run.timer);
     run.sent = true; run.sentAt = this.#o.now();
     run.timer = this.#o.setTimer(() => this.#stop('timeout'), this.#o.deadlineMs + Math.max(0, run.jobs.length - 1) * this.#o.perScriptMs);
-    try { this.#worker.postMessage({ t: 'run', seq: run.seq, jobs: run.jobs, inputs: run.inputs }, transferables(run.inputs)); }
+    try { this.#worker.postMessage({ t: 'run', seq: run.seq, jobs: run.jobs, inputs: run.inputs, ...(run.depth ? { depth: run.depth } : {}) }, transferables(run.inputs)); }
     catch { this.#stop('worker-failed'); }
   }
 
@@ -125,7 +143,7 @@ export class ScriptHost {
     this.#o.clearTimer(run.timer);
     this.#running = null;
     const byId = new Map(msg.results.map(r => [r.id, r]));
-    run.resolve({ results: run.jobs.map(j => byId.get(j.id) ?? { id: j.id, ok: false, error: { code: 'no-answer', line: 0, col: 0 } }), ms: this.#o.now() - run.sentAt });
+    run.resolve({ results: run.jobs.map(j => byId.get(j.id) ?? { id: j.id, ok: false, error: { code: 'no-answer', line: 0, col: 0 } }), ms: this.#o.now() - run.sentAt, ...(msg.depthBehind ? { depthBehind: true } : {}) });
     this.#next();
   }
 
@@ -142,7 +160,7 @@ export class ScriptHost {
   #next(): void {
     const w = this.#waiting; if (!w) return;
     this.#waiting = null;
-    this.#start(w.jobs, w.inputs, w.resolve);
+    this.#start(w.jobs, w.inputs, w.depth, w.resolve);
   }
 
   /** End the worker and drop what waits (the page is closing the feature). */

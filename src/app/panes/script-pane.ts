@@ -75,6 +75,12 @@ const CARD_PLOTS = 6;
 
 /** How often a script runs at most (ms), and how often it runs again anyway while nothing it reads changes (the candle under way fills in). */
 const MIN_INTERVAL = 1_000, REFRESH = 15_000;
+/**
+ * For this long after the chart's context changes (its timeframe, market, the candles' own timeframe, the venues) a change runs at once,
+ * one run at a time: the first answer, and the data that lands after it (the candles, the flow, the exchange's candles, liquidations), are not
+ * held behind the second between runs.
+ */
+const CONTEXT_FAST_MS = 10_000;
 
 /**
  * The Scripts pane: a row for each of the person's scripts that is switched on, each with its own scales, drawn over the map's time axis.
@@ -93,6 +99,8 @@ export class ScriptPane extends TimePane {
   #warnings = new Map<string, Warning[]>();
   #lastRun = 0; #runMs = 0; #timer = 0; #running = false; #runToken = 0; #starting = false;
   #seen: { candles: unknown; loads: number; data: number; version: number; tf: string; markets: unknown; venues: unknown; scope: string; theme: string } | null = null;
+  /** The chart's context the scripts last read, and when it began (`CONTEXT_FAST_MS`). */
+  #context = ''; #contextAt = 0;
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #panel: Panel | null = null;
@@ -345,10 +353,14 @@ export class ScriptPane extends TimePane {
     const seen = { candles: state.candles, loads: this.hub.flow.loads, data: this.#data.version, version: this.#version, tf: state.timeframe, markets: state.markets, venues: state.disabledVenues, scope: state.scope, inst: state.seriesInstrument, replay: replayKey(tf), oi: state.oi, oiParts: state.oiParts, theme: this.#theme, taker: this.hub.candleTaker(tf).version };
     const was = this.#seen, now = Date.now();
     const changed = !was || Object.keys(seen).some(k => (seen as Record<string, unknown>)[k] !== (was as Record<string, unknown>)[k]);
+    const context = `${state.timeframe}|${state.candlesTimeframe ?? ''}|${state.marketId}|${state.seriesInstrument}|${state.scope}|${state.disabledVenues.join(',')}`;
+    if (context !== this.#context) { this.#context = context; this.#contextAt = now; }
+    const settling = now - this.#contextAt < CONTEXT_FAST_MS;
     // Nothing changed: run again at the refresh anyway (the candle under way fills in from the flow), on a timer, so a quiet page still refreshes.
     if (!changed && now - this.#lastRun < REFRESH) { this.#wake(this.#lastRun + REFRESH - now); return; }
     // Another theme (picked, or previewed from the menu) runs at once: until it has run, the pane shows the colours of the theme before.
-    const interval = Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
+    // Right after a switch, as soon as what it needs lands, but never closer than twice the time a run takes (a heavy script still leaves room).
+    const interval = settling ? this.#runMs * 2 : Math.max(MIN_INTERVAL, this.#runMs * 4), wait = this.#lastRun + interval - now;
     if (wait > 0 && was?.theme === seen.theme) { this.#wake(wait); return; }
     this.#seen = seen;
     this.#starting = true;
@@ -409,11 +421,14 @@ export class ScriptPane extends TimePane {
     // Counted now: the run hands the inputs' arrays over to the worker, which leaves them empty here.
     const candles = shownCount(inputs.time, inputs.tf);
     const host = this.#trialHost ??= new ScriptHost({ spawn: spawnScriptWorker });
+    const depth = a.inputs.has('depth') ? this.#data.depth.sync(state, inputs.time, inputs.tf) : null;
+    if (depth) this.#data.depth.deliver(host);
     this.#trialBusy = true;
     const drop = (): void => host.dropUnsent();
     signal?.addEventListener('abort', drop, { once: true });
     try {
-      const { results } = await host.run([{ id: 'trial', source, options, api: SCRIPT_API }], inputs);
+      const { results, depthBehind } = await host.run([{ id: 'trial', source, options, api: SCRIPT_API }], inputs, depth ?? undefined);
+      if (depthBehind) this.#data.depth.forget(host);
       const result: ScriptResult = results[0] ?? { id: 'trial', ok: false, error: { code: 'no-answer', line: 0, col: 0 } };
       return { result, warnings, candles };
     } finally { this.#trialBusy = false; signal?.removeEventListener('abort', drop); }
@@ -460,16 +475,21 @@ export class ScriptPane extends TimePane {
     const read = runnable.map(r => this.#analyze(r.source) as Analysis);
     const inputs = this.#withTheme(this.#data.inputs(state, filters, read.some(a => a.inputs.has('oichg')), read.some(readsFlow)));
     if (!inputs) { this.#host.dropUnsent(); return; }
+    // The order book, for a run in which a script reads it: kept up to date, and what the worker lacks of it posted before the run.
+    const depth = read.some(a => a.inputs.has('depth')) ? this.#data.depth.sync(state, inputs.time, inputs.tf) : null;
+    if (depth) this.#data.depth.deliver(this.#host);
     const markets = this.#data.markets(state, filters);
     for (const r of runnable) this.#warnings.set(r.id, this.#pageWarnings(this.#analyze(r.source) as Analysis, r.options, markets));
     const time = inputs.time.slice(), tf = inputs.tf, inst = state.seriesInstrument, at = replaying() ? pageNow() : Infinity, started = Date.now();
     const token = ++this.#runToken;
     this.#running = true; this.#lastRun = started;
     const version = this.#version, theme = this.#theme;
-    void this.#host.run(runnable.map(r => ({ id: r.id, source: r.source, options: r.options, api: r.api })), inputs).then(({ results, ms }) => {
+    void this.#host.run(runnable.map(r => ({ id: r.id, source: r.source, options: r.options, api: r.api })), inputs, depth ?? undefined).then(({ results, ms, depthBehind }) => {
       // A newer request replaced this one before its worker took it: the newer one's answer is the one that counts.
       if (token !== this.#runToken) return;
       this.#running = false;
+      // A worker that did not hold the order book it was told of (one started since): it is sent everything, and the run is due again.
+      if (depthBehind) { this.#data.depth.forget(this.#host); this.#seen = null; }
       // Dropped before its worker took it (the scripts changed, or were switched off): look again now, or nothing may ask while the map is covered.
       if (!results.length) { this.refresh(); return; }
       // Scripts changed while it ran (edited, switched off, deleted): its answer is stale, and the next run is due at once.
