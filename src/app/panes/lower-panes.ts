@@ -418,9 +418,11 @@ export class OiPane extends TimePane {
   #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongSeam | null } | null = null;
   #scaled: { held: OiLongHeld; t: number; k: number; bars: OiBar[] } | null = null;
   /**
-   * The long view, for venues added together that count Bybit's perpetual and a view that starts before the seam: the seam, Bybit's readings
-   * before it put at its scale, and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows what was
-   * known at its moment.
+   * The long view, for venues added together that count Bybit's perpetual and a view that starts before the readings held: the seam, Bybit's
+   * readings before it put at its scale, and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows
+   * what was known at its moment. Not for a view inside the readings held: where only Bybit's go back (a coin with no Binance perpetual, or
+   * Binance's history not read), the seam is near the newest bar, and the estimate took the place of the readings in every view (review,
+   * 2026-10-30).
    */
   #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongSeam; period: number; bars: readonly OiBar[] } | null {
     const listing = currentCoin().markets.bybit;
@@ -428,7 +430,7 @@ export class OiPane extends TimePane {
     const id = `bybit:${listing.symbol}`;
     if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== id) this.#seam = { parts, oi, id, seam: oiLongSeam(parts, id, oi) };
     const seam = this.#seam.seam, v = this.view;
-    if (!seam || v.t0 >= seam.t) return null;
+    if (!seam || v.t0 >= oi[0]![0]) return null;
     const held = this.#long.rows(id, oiLongPeriod(tf, v.t1 - v.t0, this.plotW), v, seam.t);
     if (!held) return { seam, period: tf, bars: [] };
     if (this.#scaled?.held !== held || this.#scaled.t !== seam.t || this.#scaled.k !== seam.k) this.#scaled = { held, t: seam.t, k: seam.k, bars: oiLongBars(held.bars, held.period, seam) };
@@ -455,6 +457,8 @@ export class OiPane extends TimePane {
     const visible: number[] = [], shownEarly: number[] = [];
     for (let i = seamI; i < oi.length; i++) if (oi[i]![0] + tf >= v.t0 && oi[i]![0] <= v.t1) visible.push(i);
     for (let j = 0; j < early.length; j++) if (early[j]![0] + ep >= v.t0 && early[j]![0] <= v.t1) shownEarly.push(j);
+    // A view starting between the last reading's period and the seam: the last reading's level is what the line holds there.
+    if (!shownEarly.length && early.length && early[early.length - 1]![0] < v.t0 && v.t0 < oi[seamI]![0]) shownEarly.push(early.length - 1);
     if (!visible.length && !shownEarly.length) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
     // Geometry: the level on top, the change below (when the pane is tall enough to hold both).
     const split = ph >= 84, lineBottom = split ? Math.round(ph * 0.6) : ph - 6, bandTop = lineBottom + 12, bandBottom = ph - 5, mid = (bandTop + bandBottom) / 2, half = (bandBottom - bandTop) / 2;
@@ -535,7 +539,7 @@ export class OiPane extends TimePane {
     // A coin counted in billions (PEPE) would not fit the axis written out in full.
     const amount = (v: number): string => Math.abs(v) >= 1e6 ? usd(v) : fmtPrice(v, 1);
     ctx.fillText(amount(max), this.w - AXIS_W + 6, 10); ctx.fillText(amount(min), this.w - AXIS_W + 6, lineBottom - 4);
-    if (split) { ctx.fillText(`±${amount(maxDelta)}`, this.w - AXIS_W + 6, mid); }
+    if (split && visible.length) { ctx.fillText(`±${amount(maxDelta)}`, this.w - AXIS_W + 6, mid); }
     // Readout: the hovered sample, else the newest, with where the data comes from and how old it is.
     const hover = state.hover;
     // Over Bybit's history: its reading there, marked as the estimate it is.

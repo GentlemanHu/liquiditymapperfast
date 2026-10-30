@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { OI_LONG_DEADLINE_MS, OI_LONG_RETRY_MS, OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, oiLongWindow, type OiLongHeld } from '../src/app/panes/oi-long.ts';
+import { OI_LONG_DEADLINE_MS, OI_LONG_MAX_ROWS, OI_LONG_RETRY_MS, OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, oiLongWindow, type OiLongHeld } from '../src/app/panes/oi-long.ts';
 import { chainedOi, oiSumOf, type OiPart } from '../src/app/oi-change.ts';
 import type { OiBar } from '../src/app/store.ts';
 
@@ -57,6 +57,23 @@ test('the window is a view before the view up to a day past the seam, never past
   assert.notEqual(oiLongWindow(held, { t0: NOW - 500 * DAY, t1: NOW }, DAY, seamT, NOW), null, 'further back than held');
   assert.notEqual(oiLongWindow(held, view, 4 * HOUR, seamT, NOW), null, 'another period');
   assert.notEqual(oiLongWindow(held, view, DAY, seamT + 2 * DAY, NOW), null, 'the seam past what is held');
+});
+
+test('a view far back is asked around itself, not up to the seam, and a window never holds more than the reader keeps', () => {
+  // Ten days 150 days back in hourly readings: asked up to the seam, 3,400 readings, of which Bybit's reader kept the newest 2,400, none in view.
+  const seamT = NOW - 21 * DAY, back = { t0: NOW - 160 * DAY, t1: NOW - 150 * DAY };
+  const ask = oiLongWindow(null, back, HOUR, seamT, NOW)!;
+  assert.ok(ask.from <= back.t0 - HOUR && ask.to >= back.t1 + HOUR, 'the view and a reading either side');
+  assert.ok(ask.to < seamT, 'not up to the seam');
+  assert.ok((ask.to - ask.from) / HOUR <= OI_LONG_MAX_ROWS);
+  const held: OiLongHeld = { ident: 'bybit:BTCUSDT', period: HOUR, ...ask, bars: [] };
+  assert.equal(oiLongWindow(held, back, HOUR, seamT, NOW), null);
+  assert.notEqual(oiLongWindow(held, { t0: NOW - 140 * DAY, t1: NOW - 125 * DAY }, HOUR, seamT, NOW), null, 'panned on past what is held');
+  // A view longer than one window can hold keeps the readings at the seam, and is not asked again for those it cannot hold.
+  const wide = { t0: NOW - 400 * DAY, t1: NOW }, cut = oiLongWindow(null, wide, HOUR, seamT, NOW)!;
+  assert.equal((cut.to - cut.from) / HOUR, OI_LONG_MAX_ROWS);
+  assert.ok(cut.to >= seamT);
+  assert.equal(oiLongWindow({ ident: 'bybit:BTCUSDT', period: HOUR, ...cut, bars: [] }, wide, HOUR, seamT, NOW), null, 'no question every frame');
 });
 
 const settle = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
