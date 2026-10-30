@@ -9,6 +9,7 @@ import { emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
 import { bucketAt, bucketSpan, gapText, timeText, type TimeGap, type TimeRows } from './model.ts';
 import { timeWords } from './registry.ts';
 import { orderLines, type StripOrders } from './strip-orders.ts';
+import { TIMEFRAMES } from '../../shared/series.ts';
 
 /**
  * The volume strip along the bottom of the map as a profile by time (Karl, 2026-10-20: "I want the bottom to be a profile as well for
@@ -69,6 +70,66 @@ export const STRIP_HISTORY_BARS = 8_000;
 export function stripHistoryFrom(first: number, start: number, tf: number, cap = STRIP_HISTORY_BARS): number {
   const from = Math.floor(start / tf) * tf;
   return from < first ? Math.max(from, first - cap * tf) : Infinity;
+}
+
+/**
+ * The narrowest a bar is drawn: zoomed out further, the strip's bars are of a longer timeframe (`stripTimeframe`). A year of hourly bars
+ * was 8,500 of them in 1,500 pixels, each a few drawing calls, all drawn again on every pointer move: 3.6 frames a second at a 400-day
+ * view, 30 with the strip off (measured 2026-10-30, Karl: "if I zoom out a lot ... it almost seems like the UI freezes").
+ */
+export const STRIP_MIN_PX = 3;
+
+/**
+ * The timeframe of the strip's bars over `span` ms drawn `pw` pixels wide: the chart's own (`tfMs`) while its bars are at least `min`
+ * pixels wide, else the shortest longer one that is (a whole number of the chart's, so a bar holds whole candles), and a day at the most.
+ */
+export function stripTimeframe(tfMs: number, span: number, pw: number, min = STRIP_MIN_PX): { ms: number; name: string } {
+  const own = Object.entries(TIMEFRAMES).find(([, ms]) => ms === tfMs);
+  const wide = (ms: number): boolean => !(span > 0 && pw > 0) || pw * ms / span >= min;
+  if (!own || wide(tfMs)) return { ms: tfMs, name: own?.[0] ?? '' };
+  const longer = Object.entries(TIMEFRAMES).filter(([, ms]) => ms > tfMs && ms % tfMs === 0).sort((a, b) => a[1] - b[1]);
+  const [name, ms] = longer.find(([, ms]) => wide(ms)) ?? longer[longer.length - 1] ?? own;
+  return { ms, name };
+}
+
+/** Whether a candle says who bought (its taker buys at index 7). */
+const saysWho = (c: CandleRow): boolean => c[7] !== undefined && c[5] >= 0;
+
+/**
+ * The strip's candles of a longer timeframe (`stripMs`) than the chart's (`tfMs`): the exchange's own of that timeframe (`exchange`, by
+ * start: Binance's, read for the strip) where it has one, else the chart's candles (`drawn`) added up into it. A bucket the chart's candles
+ * begin inside is left out (it would hold part of its time only, and read as a quiet one), unless the exchange has it. An added-up bucket
+ * says who bought only where every candle in it does; its trades and quote volumes likewise. `own`: the rows that say who bought, by start,
+ * for the bars' sides.
+ */
+export function coarseCandles(drawn: readonly CandleRow[], tfMs: number, stripMs: number, exchange: ReadonlyMap<number, CandleRow> | null): { rows: CandleRow[]; own: Map<number, CandleRow> } {
+  const added = new Map<number, { row: CandleRow; first: number; last: number; says: boolean; detail: boolean }>();
+  for (const c of drawn) {
+    const start = Math.floor(c[0] / stripMs) * stripMs, held = added.get(start), says = saysWho(c), detail = c[8] !== undefined && c[9] !== undefined && c[10] !== undefined;
+    if (!held) { added.set(start, { row: [start, c[1], c[2], c[3], c[4], c[5], undefined, c[7], c[8], c[9], c[10]], first: c[0], last: c[0], says, detail }); continue; }
+    const r = held.row;
+    if (c[0] < held.first) { r[1] = c[1]; held.first = c[0]; }
+    if (c[0] >= held.last) { r[4] = c[4]; held.last = c[0]; }
+    r[2] = Math.max(r[2], c[2]); r[3] = Math.min(r[3], c[3]); r[5] += c[5];
+    held.says &&= says; held.detail &&= detail;
+    if (held.says) r[7] = r[7]! + c[7]!;
+    if (held.detail) { r[8] = r[8]! + c[8]!; r[9] = r[9]! + c[9]!; r[10] = r[10]! + c[10]!; }
+  }
+  const firstDrawn = drawn[0]?.[0] ?? Infinity, rows: CandleRow[] = [], own = new Map<number, CandleRow>();
+  const starts = new Set<number>([...added.keys(), ...(exchange?.keys() ?? [])]);
+  for (const start of [...starts].sort((a, b) => a - b)) {
+    let row = exchange?.get(start);
+    if (!row) {
+      const held = added.get(start)!;
+      if (start < firstDrawn) continue; // the chart's first candle starts inside it: part of its time only
+      row = held.row;
+      if (!held.says) row = row.slice(0, 6) as CandleRow;
+      else if (!held.detail) row = row.slice(0, 8) as CandleRow;
+    }
+    rows.push(row);
+    if (saysWho(row)) own.set(start, row);
+  }
+  return { rows, own };
 }
 
 /** The exchange's candles before `first` held in `own` (by start), in time order, then the chart's own (`drawn`, oldest first). */

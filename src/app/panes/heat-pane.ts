@@ -5,7 +5,7 @@ import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
-import { StripHighlightMemo, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../measures/volume-strip.ts';
+import { StripHighlightMemo, coarseCandles, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, stripTimeframe, withEarlier, type StripBar } from '../measures/volume-strip.ts';
 import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
@@ -68,7 +68,7 @@ import type { RangePoint, RangeTool } from '../range/tool.ts';
 import { paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { TopBands, topMarks, type TopProfile } from '../measures/strip.ts';
 import { BAND_GAP, flowRows, volumeBand, type TimeRows } from '../measures/model.ts';
-import { countdown, lineSide } from '../price-line.ts';
+import { CANDLE_LINE_PX, LINE_POINT_PX, countdown, lineSide, thinLine, type LinePoint } from '../price-line.ts';
 import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../replay/clock.ts';
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
 import { TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../tape/trace.ts';
@@ -321,6 +321,10 @@ export class HeatPane {
   /** The strip's Highlights, worked out again only when its bars' figures or the options change. */
   readonly #stripHighlights = new StripHighlightMemo();
   readonly #takerRows = new TakerRows();
+  /** The exchange's candles of the strip's longer timeframe (`stripTimeframe`): its own reader, so the Bar stats' at the chart's are not read again each frame. */
+  readonly #coarseTaker = new TakerRows();
+  /** The strip's candles of its longer timeframe (`coarseCandles`), kept while what they come from is the same. */
+  #coarseCandles: { drawn: readonly CandleRow[]; exchange: ReadonlyMap<number, CandleRow> | null; tf: number; rows: readonly CandleRow[]; own: ReadonlyMap<number, CandleRow> } | null = null;
   #strip: StripState | null = null;
   /** The market orders of the strip's candles pointed at (the footprint's statistics of the strip's markets, read on hover). */
   #orders = new StripOrderCache();
@@ -1326,7 +1330,12 @@ export class HeatPane {
   #paintVolume(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, narrowing: number): void {
     this.#strip = null;
     if (!state.show.volume || !this.candlesDrawn(state).length) return;
-    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, v = this.view, p = this.#palette;
+    const chartTf = TIMEFRAMES[state.timeframe] ?? 3_600_000, v = this.view, p = this.#palette;
+    // Zoomed out until the chart's bars would be narrower than STRIP_MIN_PX, the strip's are of a longer timeframe: what the venues traded
+    // in it where the recording reaches, the exchange's own candles of it before (Karl, 2026-10-30: thousands of hourly bars froze the page).
+    // Beside the footprint's rows the bars are the chart's candles, so they narrow with it only then.
+    const { ms: tf, name: tfName } = stripTimeframe(chartTf, v.t1 - v.t0, pw), coarse = tf !== chartTf;
+    if (coarse) narrowing = 0;
     const slot = Math.max(1, pw * tf / (v.t1 - v.t0)), layout = footprintLayout(slot);
     const normal = candleBody(slot), body = Math.max(1, (normal + (Math.max(1, layout.body) - normal) * narrowing));
     // A profile by time where the recording reaches, the market's own candles before it (measures/volume-strip.ts, Karl, 2026-10-20): the
@@ -1351,13 +1360,25 @@ export class HeatPane {
     const binance = !!target && target.own && (venue === 'binance' || venue === 'binancespot'), market = venueLabel(target?.own ? target.id : series);
     // Where the view begins before the chart's first candle, the exchange's own candles of the timeframe stand in back to its start
     // (`stripHistoryFrom`): those read before for a wider view are drawn too, wherever they fall in it.
-    const drawn = this.candlesDrawn(state), firstDrawn = drawn[0]![0], reach = binance ? stripHistoryFrom(firstDrawn, v.t0 - margin, tf) : Infinity;
-    const earliest = Math.min(reach, drawn.find(c => c[0] + tf >= v.t0 - margin)?.[0] ?? v.t0);
-    let own: Map<number, CandleRow> | null = null, candles = drawn;
-    if (binance && (since === null || earliest < since)) own = this.takerRows(state, tf, earliest);
-    if (own && reach < firstDrawn) {
-      if (this.#stripCandles?.drawn !== drawn || this.#stripCandles.own !== own) this.#stripCandles = { drawn, own, rows: withEarlier(drawn, own, firstDrawn) };
-      candles = this.#stripCandles.rows;
+    const drawn = this.candlesDrawn(state);
+    let own: ReadonlyMap<number, CandleRow> | null = null, candles = drawn;
+    if (coarse) {
+      // The exchange's candles of the strip's timeframe from the view's start (with the Highlights' run before it), and the chart's added up
+      // into it where those are not (yet) there, or for a market whose exchange does not say who bought.
+      const earliest = Math.floor((v.t0 - margin) / tf) * tf;
+      const exchange = binance && (since === null || earliest < since) ? this.#coarseTaker.get(this.hub, state, tf, earliest, () => this.invalidate()) : null;
+      const held = this.#coarseCandles;
+      if (held?.drawn !== drawn || held.exchange !== exchange || held.tf !== tf) this.#coarseCandles = { drawn, exchange, tf, ...coarseCandles(drawn, chartTf, tf, exchange) };
+      candles = this.#coarseCandles!.rows; own = this.#coarseCandles!.own;
+    } else {
+      const firstDrawn = drawn[0]![0], reach = binance ? stripHistoryFrom(firstDrawn, v.t0 - margin, tf) : Infinity;
+      const earliest = Math.min(reach, drawn.find(c => c[0] + tf >= v.t0 - margin)?.[0] ?? v.t0);
+      let taker: Map<number, CandleRow> | null = null;
+      if (binance && (since === null || earliest < since)) own = taker = this.takerRows(state, tf, earliest);
+      if (taker && reach < firstDrawn) {
+        if (this.#stripCandles?.drawn !== drawn || this.#stripCandles.own !== taker) this.#stripCandles = { drawn, own: taker, rows: withEarlier(drawn, taker, firstDrawn) };
+        candles = this.#stripCandles.rows;
+      }
     }
     const place = (start: number): { x: number; w: number } => { const xc = v.xOf(start + tf / 2, pw); return { x: xc + (v.xOf(start, pw) + layout.candleCenter - xc) * narrowing, w: body }; };
     const all = stripBars(candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying());
@@ -1370,8 +1391,8 @@ export class HeatPane {
     // The candles' part named ≈ while any of its bars is an estimate (its volume at its typical price), plainly where all are as reported.
     const estimated = bars.some(b => b.source === 'candle' && !b.exact);
     paintVolumeStrip(ctx, bars, { pw, ph, height, palette: p, bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
-      recorded: `${t('Volume')} · ${state.timeframe}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: state.timeframe }) : t('{market} {tf} candles', { market, tf: state.timeframe }), hovered });
-    this.#strip = { bars, rows, ids, tf, top, market, tfName: state.timeframe, reports: binance, total };
+      recorded: `${t('Volume')} · ${tfName}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: tfName }) : t('{market} {tf} candles', { market, tf: tfName }), hovered });
+    this.#strip = { bars, rows, ids, tf, top, market, tfName, reports: binance, total };
   }
 
   /**
@@ -1382,7 +1403,8 @@ export class HeatPane {
    */
   #stripOrders(state: AppState, s: StripState, bar: StripBar, whale: number): ReturnType<StripOrderCache['want']> | undefined {
     const to = replaying() ? Math.min(bar.t + s.tf, Math.floor(pageNow() / 60_000) * 60_000) : bar.t + s.tf;
-    if (bar.source === 'candle' || bar.source === 'gap' || !s.ids.length || s.ids.length > MAX_PROFILE_INSTRUMENTS || !(to > bar.t)) { this.#orders.rest(); return undefined; }
+    // A bar of a longer timeframe than the chart's (zoomed out, `stripTimeframe`) is several of the footprint's candles: not asked.
+    if (bar.source === 'candle' || bar.source === 'gap' || !s.ids.length || s.ids.length > MAX_PROFILE_INSTRUMENTS || !(to > bar.t) || s.tf !== (TIMEFRAMES[state.timeframe] ?? 3_600_000)) { this.#orders.rest(); return undefined; }
     // The whale size is part of the question: another size is other whale dollars, even where neither is asked as a line.
     const cuts = linesToAsk([state.barStatOptions.whaleUsd], scaledUsd), index = cuts.findIndex(c => Math.abs(c - whale) <= 1e-6 * whale), inst = s.ids.join(',');
     const key = `${inst}|${state.timeframe}|${bar.t}|${cuts.join(',')}|${whale}`, open = bar.t + s.tf + FOOTPRINT_SETTLE_MS > Date.now();
@@ -1491,6 +1513,9 @@ export class HeatPane {
       const color = this.candleColor(c[0]) || (up ? p.candleUp : p.candleDown);
       const yh = v.yOf(c[2], ph), yl = v.yOf(c[3], ph), yo = v.yOf(c[1], ph), yc = v.yOf(c[4], ph), cx = Math.round(x) + 0.5;
       const top = Math.min(yo, yc), height = Math.max(1.5, Math.abs(yc - yo));
+      // A wick is a rectangle filled, not a line stroked: the same pixels (butt ends), and a canvas strokes even a straight line as a path,
+      // many times slower than a rectangle when hundreds of candles are drawn again on every pointer move (2026-10-30).
+      const wick = (width: number, from: number, to: number): void => { if (to > from) ctx.fillRect(cx - width / 2, from, width, to - from); };
       if (type === 'bars') {
         // A line from the low to the high, the open a tick to the left and the close a tick to the right, over the same halo as a candle.
         const tick = bar < 4 ? 0 : Math.min(8, bar / 2 - 1), path = (): void => { ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); if (tick > 0) { ctx.moveTo(cx - tick, Math.round(yo) + 0.5); ctx.lineTo(cx, Math.round(yo) + 0.5); ctx.moveTo(cx, Math.round(yc) + 0.5); ctx.lineTo(cx + tick, Math.round(yc) + 0.5); } };
@@ -1502,17 +1527,18 @@ export class HeatPane {
         // Outline candles chosen as the chart's type read over bright heat as the filled ones do, on the same halo; under the trade dust the
         // outline stays bare, so the orders inside the body show.
         if (type === 'outline') {
-          ctx.globalAlpha = outline; ctx.strokeStyle = halo; ctx.lineWidth = 3.5;
-          ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, top); ctx.moveTo(cx, top + height); ctx.lineTo(cx, yl); ctx.stroke(); ctx.strokeRect(...rect);
+          ctx.globalAlpha = outline; ctx.strokeStyle = ctx.fillStyle = halo; ctx.lineWidth = 3.5;
+          wick(3.5, yh, top); wick(3.5, top + height, yl); ctx.strokeRect(...rect);
         }
-        ctx.globalAlpha = type === 'outline' ? 1 : 0.9; ctx.lineWidth = type === 'outline' ? 1.4 : 1; ctx.strokeStyle = color;
-        ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, top); ctx.moveTo(cx, top + height); ctx.lineTo(cx, yl); ctx.stroke();
+        const thinWick = type === 'outline' ? 1.4 : 1;
+        ctx.globalAlpha = type === 'outline' ? 1 : 0.9; ctx.strokeStyle = ctx.fillStyle = color;
+        wick(thinWick, yh, top); wick(thinWick, top + height, yl);
         ctx.lineWidth = 1.5; ctx.strokeRect(...rect);
       } else {
         ctx.globalAlpha = outline;
-        ctx.lineWidth = 3.5; ctx.strokeStyle = halo; ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); ctx.stroke();
-        ctx.lineWidth = 1.6; ctx.strokeStyle = edge; ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); ctx.stroke();
-        if (narrowing > 0.01) { ctx.globalAlpha = Math.min(1, narrowing * 1.5); ctx.lineWidth = 1.4; ctx.strokeStyle = color; ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); ctx.stroke(); }
+        ctx.fillStyle = halo; wick(3.5, yh, yl);
+        ctx.fillStyle = edge; wick(1.6, yh, yl);
+        if (narrowing > 0.01) { ctx.globalAlpha = Math.min(1, narrowing * 1.5); ctx.fillStyle = color; wick(1.4, yh, yl); }
         ctx.lineWidth = 1;
         ctx.globalAlpha = outline; ctx.fillStyle = halo; ctx.fillRect(x - body / 2 - 1.5, top - 1.5, body + 3, height + 3);
         ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.fillRect(x - body / 2, top, body, height);
@@ -1531,24 +1557,29 @@ export class HeatPane {
    * The line through the closes: each candle's close at the middle of its body (narrowed beside the footprint's rows as the candles are),
    * broken where a candle is missing, in the text's colour over a halo; a candle of unusual volume is ringed where its close is.
    */
-  #paintCloseLine(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, tf: number, layout: { candleCenter: number }, narrowing: number, hot: (i: number) => boolean): void {
-    const v = this.view, p = this.#palette, points: { x: number; y: number; i: number; t: number }[] = [];
+  #paintCloseLine(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, tf: number, layout: { candleCenter: number }, narrowing: number, hot: (i: number) => boolean, thin = false): void {
+    const v = this.view, p = this.#palette;
+    let points: LinePoint[] = [];
     // Through the exchange's closes before the chart's own and in their holes (`candlesDrawn`); only the chart's own are ringed.
     const all = this.candlesDrawn(state), own = all === state.candles ? null : new Map(state.candles.map((c, i) => [c[0], i]));
+    let last = -Infinity;
     for (let k = 0; k < all.length; k++) {
       const c = all[k]!;
       if (c[0] + tf < v.t0 - tf || c[0] > v.t1 + tf) continue;
       const xClassic = v.xOf(c[0] + tf / 2, pw), x = xClassic + (v.xOf(c[0], pw) + layout.candleCenter - xClassic) * narrowing;
-      points.push({ x, y: v.yOf(c[4], ph), i: own ? own.get(c[0]) ?? -1 : k, t: c[0] });
+      points.push({ x, y: v.yOf(c[4], ph), i: own ? own.get(c[0]) ?? -1 : k, t: c[0], brk: !points.length || c[0] - last > tf * 1.5 });
+      last = c[0];
     }
+    // Candles narrower than CANDLE_LINE_PX: a point every LINE_POINT_PX, and no rings (the volume strip's Highlights still mark the candles).
+    if (thin) points = thinLine(points, LINE_POINT_PX);
     const path = (): void => {
       ctx.beginPath();
-      points.forEach((q, k) => { if (k === 0 || q.t - points[k - 1]!.t > tf * 1.5) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y); });
+      for (const q of points) if (q.brk) ctx.moveTo(q.x, q.y); else ctx.lineTo(q.x, q.y);
     };
     ctx.save(); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.strokeStyle = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.75)'; ctx.lineWidth = 4; path(); ctx.stroke();
     ctx.strokeStyle = p.text; ctx.lineWidth = 1.8; path(); ctx.stroke();
-    for (const q of points) if (q.i >= 0 && hot(q.i)) { const color = this.candleColor(q.t) || p.text; ctx.shadowColor = color; ctx.shadowBlur = 10; ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(q.x, q.y, 5, 0, Math.PI * 2); ctx.stroke(); ctx.shadowBlur = 0; }
+    if (!thin) for (const q of points) if (q.i >= 0 && hot(q.i)) { const color = this.candleColor(q.t) || p.text; ctx.shadowColor = color; ctx.shadowBlur = 10; ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.beginPath(); ctx.arc(q.x, q.y, 5, 0, Math.PI * 2); ctx.stroke(); ctx.shadowBlur = 0; }
     ctx.restore();
   }
 

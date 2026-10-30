@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { clampGoTo, countdown, formatDateTime, lineSide, parseDateTime } from '../src/app/price-line.ts';
+import { clampGoTo, countdown, formatDateTime, lineSide, parseDateTime, thinLine, type LinePoint } from '../src/app/price-line.ts';
 import type { CandleRow } from '../src/app/store.ts';
 
 const MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
@@ -39,4 +39,22 @@ test('go to: the moment, the start of what is held when earlier, the live edge w
   assert.deepEqual(clampGoTo(now - 9 * DAY, earliest, now), { t: earliest, clamped: 'before' });
   assert.deepEqual(clampGoTo(now + HOUR, earliest, now), { t: now, clamped: 'live' });
   assert.deepEqual(clampGoTo(now - 9 * DAY, null, now), { t: now - 9 * DAY, clamped: null }, 'nothing known about the start: as asked');
+});
+
+test('the line through closes, thinned to a point a pixel column: the last close in each, the breaks kept, the ends kept', () => {
+  const at = (x: number, t: number, brk = false): LinePoint => ({ x, y: t, t, i: t, brk });
+  // Three closes in column 0, two in column 1, one in column 2.
+  const points = [at(0.1, 0, true), at(0.5, 1), at(0.9, 2), at(1.2, 3), at(1.8, 4), at(2.4, 5)];
+  assert.deepEqual(thinLine(points).map(q => [q.t, q.brk]), [[2, true], [4, false], [5, false]]);
+  // A break inside a column (a candle missing) passes to the point kept there, and only to it.
+  const broken = [at(0.2, 0, true), at(0.6, 1), at(1.1, 3, true), at(1.7, 4), at(2.3, 5)];
+  assert.deepEqual(thinLine(broken).map(q => [q.t, q.brk]), [[1, true], [4, true], [5, false]]);
+  // A point the line breaks before is never merged into the column before it: the column's last before the break is kept too.
+  const gap = [at(0.2, 0, true), at(0.4, 1), at(0.6, 9, true), at(0.8, 10)];
+  assert.deepEqual(thinLine(gap).map(q => [q.t, q.brk]), [[1, true], [10, true]]);
+  // Wide enough already: every point kept as it is (the same objects).
+  const wide = [at(0, 0, true), at(5, 1), at(10, 2)];
+  assert.deepEqual(thinLine(wide), wide);
+  assert.equal(thinLine(wide)[1], wide[1]);
+  assert.deepEqual(thinLine([]), []);
 });
