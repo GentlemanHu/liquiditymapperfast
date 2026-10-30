@@ -5,6 +5,39 @@ import type { CandleRow } from './store.ts';
  * whole multiples of the timeframe in UTC (a day at 00:00 UTC), as the exchanges do.
  */
 
+/**
+ * The narrowest a candle is drawn as one: narrower, the chart's candles are the line through their closes (heat-pane `#paintCandles`). At
+ * a pixel or two a candle is a few overlapping strokes per pixel, and each is drawn on every pointer move.
+ */
+export const CANDLE_LINE_PX = 2;
+
+/** A point of the line through the closes: where it is drawn, its candle's start, and whether the line breaks before it (a candle missing). */
+export interface LinePoint { x: number; y: number; t: number; i: number; brk: boolean }
+
+/**
+ * How far apart the points of the thinned line are, in pixels: a line 1.8 px wide over its 4 px halo shows nothing finer, and a canvas
+ * strokes a wide line at a cost that grows with its points (a 45-day view of hourly closes, 1,100 points across the map, held the page
+ * at 17 frames a second, 2026-10-30).
+ */
+export const LINE_POINT_PX = 3;
+
+/**
+ * The line's points with one a column `px` wide (the last close in it), the breaks kept: a point left out that the line broke before passes
+ * its break on to the next one kept. The last point is always kept, and the last before every break.
+ */
+export function thinLine<P extends LinePoint>(points: readonly P[], px = 1): P[] {
+  const out: P[] = [], column = (x: number): number => Math.floor(x / px);
+  let carried = false;
+  for (let k = 0; k < points.length; k++) {
+    const q = points[k]!, next = points[k + 1];
+    carried ||= q.brk;
+    if (next && !next.brk && column(next.x) === column(q.x)) continue;
+    out.push(carried === q.brk ? q : { ...q, brk: carried });
+    carried = false;
+  }
+  return out;
+}
+
 /** The time left in the candle under way, as the axis shows it: "mm:ss", or "h:mm:ss" from an hour. */
 export function countdown(now: number, tfMs: number): string {
   const left = Math.max(0, Math.ceil(((Math.floor(now / tfMs) + 1) * tfMs - now) / 1000));

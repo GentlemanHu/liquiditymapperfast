@@ -116,7 +116,8 @@ export interface DataSource {
   liquidations?(from: number, to: number, minUsd?: number): Promise<Liquidation[]>;
   /** Whale VWAP sums of `ids` in [from, to) from the size band at `minUsd` up, in steps of `stepMs` (a server from before them answers 404). */
   printSums?(ids: string[], from: number, to: number, minUsd: number, stepMs: number): Promise<PrintSumsAnswer>;
-  columns(ids: string[], from: number, to: number, stepMs: number): Promise<ColumnsFrame>;
+  /** `close`: each window's book at its close, not its average (the scripts' depth); a source from before answers averages, without `at`. */
+  columns(ids: string[], from: number, to: number, stepMs: number, close?: boolean): Promise<ColumnsFrame>;
   /**
    * The Liquidity Tracker alone (lt-lane.ts): these markets' windows of `stepMs` over [from, to) for one half-life (an index into LT_HALF_LIVES), handed
    * to `onFrame` a part at a time, the newest first, settled when the last has come. Only a server whose live socket answers it has it; it rejects

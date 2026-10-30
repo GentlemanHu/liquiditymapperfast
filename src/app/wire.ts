@@ -65,12 +65,15 @@ export function decodeLt(buffer: ArrayBuffer): LtFrame {
 export function decodeColumns(buffer: ArrayBuffer): ColumnsFrame {
   const { header, part } = open(buffer);
   if (header.type !== 'columns') throw new Error(`Expected a columns frame, got ${header.type}`);
-  const raw = header.instruments as { id: string; step: number; times: number[]; counts: number[]; samples: number[]; lt?: unknown }[];
+  const raw = header.instruments as { id: string; step: number; times: number[]; counts: number[]; samples: number[]; lt?: unknown; at?: unknown }[];
   return { from: Number(header.from), to: Number(header.to), stepMs: Number(header.stepMs), instruments: raw.map((item, i) => {
-    const { lt: ltPart, ...rest } = item;
+    const { lt: ltPart, at, ...rest } = item;
+    // The minute each window's book is of, in an answer for each window's close (`ColumnSet.at`): one that is not a time for every window
+    // fails the answer (it is never read as the averages a server from before sends without it).
+    if (at !== undefined && !(Array.isArray(at) && at.length === item.times.length && at.every(m => Number.isSafeInteger(m)))) throw new Error('Malformed columns frame: at');
     // The tracker kept with the columns, when the server sends it: a part of LT_LENGTH floats per column (an older server sends none).
     const lt = typeof ltPart === 'number' && Number.isInteger(ltPart) ? part(ltPart) : null;
-    return { ...rest, bins: part(i * 3) as Int32Array, bid: part(i * 3 + 1) as Float32Array, ask: part(i * 3 + 2) as Float32Array,
+    return { ...rest, ...(at !== undefined ? { at: at as number[] } : {}), bins: part(i * 3) as Int32Array, bid: part(i * 3 + 1) as Float32Array, ask: part(i * 3 + 2) as Float32Array,
       ...(lt instanceof Float32Array && lt.length === item.times.length * LT_LENGTH ? { lt } : {}) };
   }) };
 }

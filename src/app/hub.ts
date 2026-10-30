@@ -13,7 +13,7 @@ import { LtLane } from './lt-lane.ts';
 import { pickOi, weakOi, type OiCandidate } from './oi-source.ts';
 import { takeOiPushes, withOiPushes, type OiPush } from './oi-push.ts';
 import { replaying } from './replay/clock.ts';
-import { atOnePrice, inverseOi, oiSumOf, type OiPart } from './oi-change.ts';
+import { atOnePrice, inverseOi, oiSumOf, oiTail, type OiPart } from './oi-change.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
@@ -97,6 +97,11 @@ export { oiVenueIds } from './market-choice.ts';
 
 /** At most this many pushed readings are held to be put on a load's answer (a load that takes longer may lose its oldest: the next push puts them right). */
 const OI_DURING_MAX = 512;
+/**
+ * How long the open interest read whole serves the 20-second refresh, which reads only each market's last bars again (from the one before its
+ * last held, at most `OI_TAIL_BARS` back: a market whose bars stopped a day ago asked for that whole day every time); then it is read whole.
+ */
+const OI_WHOLE_MS = 10 * 60_000, OI_TAIL_BARS = 6;
 /** How many series (a market's timeframe) are kept for a switch to show at once: every timeframe of two markets. */
 const SERIES_KEPT = 16;
 /**
@@ -609,10 +614,13 @@ export class Hub {
     const { marketId, timeframe } = this.store.state;
     const key = `${marketId}|${timeframe}`;
     if (!marketId) return;
+    const sameSeries = this.#series === key;
     this.#series = key;
     const generation = ++this.#seriesGen;
-    // Open interest that is still on its way for the context just left must not land in this one.
-    this.#oiGen++; this.#oiKey = '';
+    // Open interest that is still on its way for the context just left must not land in this one. A reload of the same series (the one each
+    // minute) keeps what was read whole of it, so the 20-second refresh goes on reading only the last bars (Sol review, 2026-10-30: it read
+    // every market's whole window again each minute).
+    if (!sameSeries) { this.#oiGen++; this.#oiKey = ''; this.#oiHeld = null; }
     const tf = TIMEFRAMES[timeframe] ?? 3_600_000;
     // What is kept is shown at once only while it ends near enough to now to frame (`fit` frames the latest run of candles without a hole
     // wider than three; a page hidden for a while keeps a series of long ago), and without the live candle set past such a hole.
@@ -784,9 +792,14 @@ export class Hub {
 
   async #loadOi(own: string, key: string, added: string[] | null, venues: string[]): Promise<void> {
     const state = this.store.state, { timeframe } = state;
+    const tf = TIMEFRAMES[timeframe] ?? 3_600_000, now = Date.now(), from = now - 500 * tf, to = now + tf;
+    // The same markets read whole within OI_WHOLE_MS: only their last bars are read again (`#loadOiTail`); a venue that answered nothing, or
+    // a reference market standing in, is looked at again at the next whole read. Decided before anything is awaited, so the generation a
+    // load in flight is held under (`loadOi`) is its own.
+    const held = this.#oiHeld, parts = held?.key === key && this.#oiKey === key && now - held.at < OI_WHOLE_MS ? this.#oiHeldParts(tf) : null;
+    if (parts) return this.#loadOiTail(key, tf, now, from, parts);
     this.#oiKey = key;
     const generation = ++this.#oiGen;
-    const tf = TIMEFRAMES[timeframe] ?? 3_600_000, now = Date.now(), from = now - 500 * tf, to = now + tf;
     // The readings pushed since this load was asked for, put on its answer (it holds what the source had when asked). A server's push that
     // left before the question and reached the page after the answer (it waits behind levels frames on the socket) is not told apart: an
     // answer says nothing of when its newest reading was taken, and the server's clock is not the exchanges'. It shows a reading a few
@@ -802,6 +815,7 @@ export class Hub {
       this.#oiTf = tf;
       if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiInstrument: '', oiParts: parts, oiPrice: 0 });
       else this.store.set({ oi: [...(parts[0]?.bars ?? [])], oiInstrument: parts[0]?.id ?? '', oiParts: [], oiPrice: parts[0]?.usdAt ?? 0 });
+      this.#oiHeld = { key, at: now };
       return;
     }
     const ids = [...new Set([own, this.#reference, ...this.#oiReferences].filter(Boolean))];
@@ -817,6 +831,38 @@ export class Hub {
     const usdAt = prices.get(chosen.inst);
     this.#oiTf = tf;
     this.store.set({ oi: [...withPushed({ id: chosen.inst, bars: chosen.bars, ...(usdAt ? { usdAt } : {}) }, late(), tf).bars], oiInstrument: chosen.inst, oiParts: [], oiPrice: usdAt ?? 0 });
+    this.#oiHeld = { key, at: now };
+  }
+  /** The markets last read whole and when (`#loadOi`): what the 20-second refresh reads only the last bars of. */
+  #oiHeld: { key: string; at: number } | null = null;
+
+  /**
+   * The markets on screen as parts (one market's bars are `state.oi`), or null where one has no bars, they are of another timeframe, or an
+   * inverse market's are not at one price yet (read before there were candles to put its USD in coins at: Sol review, 2026-10-30).
+   */
+  #oiHeldParts(tf: number): OiPart[] | null {
+    const state = this.store.state;
+    const held: OiPart[] = state.oiParts.length > 1 ? state.oiParts : state.oiInstrument && state.oi.length ? [{ id: state.oiInstrument, bars: state.oi, ...(state.oiPrice ? { usdAt: state.oiPrice } : {}) }] : [];
+    return held.length && this.#oiTf === tf && held.every(part => part.bars.length && (part.usdAt || !inverseOi(part.id))) ? held : null;
+  }
+
+  /**
+   * The 20-second refresh of the markets read whole last (`held`, `#oiHeldParts`): each one's bars from the one before its own last on
+   * (`OI_TAIL_BARS` back at most), put on those held (`oiTail`), an inverse market's at the one price its bars are at, with the readings
+   * pushed meanwhile.
+   */
+  async #loadOiTail(key: string, tf: number, now: number, keepFrom: number, held: readonly OiPart[]): Promise<void> {
+    const timeframe = this.store.state.timeframe, generation = ++this.#oiGen;
+    const floor = Math.max(keepFrom, (Math.floor(now / tf) - OI_TAIL_BARS) * tf), froms = held.map(part => Math.max(floor, part.bars[part.bars.length - 1]![0] - tf));
+    const tails = await Promise.all(held.map((part, i) => this.oiSeries(part.id, timeframe, froms[i]!, now + tf, part.usdAt).then(series => series.bars, (): OiBar[] => [])));
+    if (this.#oiKey !== key || generation !== this.#oiGen) return;
+    const pushed = this.#oiDuring.filter(entry => entry.at >= now).map(entry => entry.reading);
+    // On the bars on screen now: pushes may have moved them while the tails were read.
+    const current = this.#oiHeldParts(tf);
+    if (!current || current.length !== held.length || current.some((part, i) => part.id !== held[i]!.id)) return;
+    const parts = current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keepFrom) }, pushed, tf));
+    if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiParts: parts });
+    else this.store.set({ oi: [...parts[0]!.bars] });
   }
 
   /**

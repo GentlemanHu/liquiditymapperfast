@@ -26,6 +26,16 @@ export function oiDeltaByTime(bars: Iterable<OiBar>): Map<number, number> {
 export interface OiPart { id: string; bars: readonly OiBar[]; usdAt?: number }
 
 /**
+ * The bars read again from `from` on (`tail`, the 20-second refresh: Karl, 2026-10-30, every venue's 500 bars read again every 20 s were
+ * half of a timeframe switch's requests) put on those held: the held ones from `keepFrom` until the tail's first, then the tail's. A tail
+ * that brought nothing (a failed read) takes nothing back.
+ */
+export function oiTail(held: readonly OiBar[], tail: readonly OiBar[], from: number, keepFrom: number): OiBar[] {
+  const start = tail.length ? Math.max(from, tail[0]![0]) : Infinity;
+  return [...held.filter(b => b[0] >= keepFrom && b[0] < start), ...tail.filter(b => b[0] >= start)];
+}
+
+/**
  * Up to this long a venue's reading holds until its next one: open interest is a level, and the history some venues keep is hourly (Bybit's
  * and OKX's before their last two days). A longer silence is a gap, not a flat level (a server that was not running).
  */

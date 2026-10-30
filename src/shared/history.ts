@@ -177,6 +177,8 @@ export async function fetchCandles(instrumentId: string, tfMs: number, from: num
  * two at five minutes; its statistics endpoint sends no CORS header, so only the server reads it). Every figure is in coins.
  */
 export const OI_VENUES: readonly string[] = ['binance', 'bybit', 'okx'];
+/** The venues of `OI_VENUES` whose history a page can read: OKX's answers with no CORS header from any of its hosts (checked 2026-10-30). */
+export const OI_PAGE_VENUES: readonly string[] = ['binance', 'bybit'];
 /**
  * Venues whose live open interest can be sampled, in coins: the perpetuals of the largest venues (measured 2026-10-13 on BTC: Binance 94K,
  * Bybit 57K, Hyperliquid 38K, Bitget 32K, OKX 29K, Deribit 10K). Those without a history build theirs up while they are sampled.

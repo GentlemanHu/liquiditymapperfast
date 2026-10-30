@@ -1,7 +1,7 @@
 import type { Hub } from '../hub.ts';
 import type { AppState } from '../store.ts';
 import type { ColumnSet } from '../../shared/columns.ts';
-import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
+import { BROWSER_RETENTION_MS, COLUMN_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { settledBefore } from '../column-holds.ts';
 import { marketInfo, type MarketInfo } from './inputs.ts';
 import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag, type Window } from './depth.ts';
@@ -9,7 +9,8 @@ import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag
 /**
  * The page's side of the scripts' order book (`depth.ts`): the recorded windows at the chart's timeframe of every book the heat map adds up
  * (the live books, `state.levels`), over the candles' span as far back as the source keeps them (at most the newest `MAX_WINDOWS`), read
- * from the source (its columns at a step of the timeframe: one window a candle, averaged over it) and kept up to date: a book that appears
+ * from the source (its columns at a step of the timeframe, each window's book at its close: one window a candle; a source from before that
+ * answers each one averaged over it, `closeMode`) and kept up to date: a book that appears
  * is read whole, one gone for a few seconds is dropped, candles loaded further back are read when they come, and the windows that can still
  * change (from the source's settle mark at the last read on: the candle under way, and the last ones until they settle) are read again every
  * 30 s and as each candle starts. One read at a time for the timeframe on screen; a read for one left behind stops at its next answer, and
@@ -57,10 +58,10 @@ export const MAX_WINDOWS = 1_000;
 const KEPT_ERAS = 3, KEPT_BINS = 4_000_000, KEPT_BINS_BROWSER = 1_000_000;
 
 /**
- * One book: its windows, its grid (0 while it has answered nothing), how far back it has been read (windows from there on are held), and when
- * it was first asked for.
+ * One book: its windows, its grid (0 while it has answered nothing), whether they are its books at the candles' close (else averages: a source
+ * from before), how far back it has been read (windows from there on are held), and when it was first asked for.
  */
-interface Held { info: MarketInfo; step: number; windows: Map<number, Window>; readFrom: number; bornAt: number }
+interface Held { info: MarketInfo; step: number; close: boolean; windows: Map<number, Window>; readFrom: number; bornAt: number }
 /** What is held for one timeframe. */
 interface Era {
   books: Map<string, Held>;
@@ -81,6 +82,21 @@ const binsOf = (era: Era): number => { const seen = new Set<ArrayBufferLike>(); 
 const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
 /** What a host's worker was last sent: which worker, and the revision of each timeframe it holds. */
 interface Sent { generation: number; revisions: Map<string, number> }
+/**
+ * Whether a book's answer is its book at each window's close (`at`, the minute each window is of, a minute inside its window: true), or its
+ * averages (no `at`, a source from before: false); null where `at` says neither, which is no answer.
+ */
+export function closeMode(set: ColumnSet, tf: number): boolean | null {
+  const at = set.at;
+  if (at === undefined) return false;
+  if (!Array.isArray(at) || at.length !== set.times.length) return null;
+  for (let i = 0; i < at.length; i++) {
+    const m = at[i]!, t = set.times[i]!;
+    if (!Number.isSafeInteger(m) || m % COLUMN_MS !== 0 || m < t || m >= t + Math.max(tf, COLUMN_MS)) return null;
+  }
+  return true;
+}
+
 /** What `deliver` posts to: a script host (`host.ts ScriptHost`). `transfer` lists buffers the message alone holds, handed over rather than copied. */
 export interface DepthPort { readonly generation: number; post(message: DepthMessage, transfer?: ArrayBuffer[]): void }
 
@@ -217,7 +233,7 @@ export class DepthFeed {
       const total = counts.reduce((s, n) => s + n, 0), bins = new Int32Array(total), bid = new Float32Array(total), ask = new Float32Array(total);
       let at = 0;
       for (const t of times) { const w = h.windows.get(t)!; bins.set(w.bins, at); bid.set(w.bid, at); ask.set(w.ask, at); at += w.bins.length; }
-      books.push({ id, info: h.info, step: h.step, from: -Infinity, to: Infinity, times, counts, bins, bid, ask });
+      books.push({ id, info: h.info, step: h.step, close: h.close, from: -Infinity, to: Infinity, times, counts, bins, bid, ask });
     }
     return { t: 'depth', key: this.#key, revision: this.#era.revision, prev: -1, reset: true, books, drop: [], keepFrom: this.#era.keepFrom, keys: this.#keys() };
   }
@@ -245,7 +261,9 @@ export class DepthFeed {
         let sets: ColumnSet[], timer: ReturnType<typeof setTimeout> | undefined;
         try {
           const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), this.readTimeoutMs); });
-          sets = (await Promise.race([this.hub.source.columns(ids, start, end, tf), late])).instruments;
+          sets = (await Promise.race([this.hub.source.columns(ids, start, end, tf, true), late])).instruments;
+          // A book whose answer says neither closes nor averages fails the read: never taken as either, its windows kept.
+          if (sets.some(set => asked.has(set.id) && closeMode(set, tf) === null)) throw new Error('malformed answer');
         } catch {
           // Tried again after the wait, counted from when it failed (a timeout fails long after the read began).
           if (this.#reading === mine) this.#retryAt = now + (Date.now() - started) + RETRY_MS;
@@ -259,10 +277,12 @@ export class DepthFeed {
           if (!asked.has(set.id) || era.dropped.has(set.id) || !(set.step > 0) || answered.has(set.id)) continue;
           answered.add(set.id);
           let held = era.books.get(set.id);
+          const close = closeMode(set, tf) === true;
           // A book recorded on another grid than the one held (a source started again): what was held of it is of the old grid, and goes, and
-          // it is read again whole, on the new one. One that had answered nothing has no grid yet: its first answer is not another grid.
-          const regrid = !!held && held.step !== set.step, anew = regrid && held!.step > 0;
-          if (!held || regrid) { held = { info: marketInfo(state.markets, set.id), step: set.step, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity, bornAt: held?.bornAt ?? now }; era.books.set(set.id, held); }
+          // it is read again whole, on the new one; so does one whose windows changed from averages to closes (a server updated under the
+          // page), never held as a mix of the two. One that had answered nothing has no grid yet: its first answer is not another grid.
+          const regrid = !!held && (held.step !== set.step || (held.step > 0 && held.close !== close)), anew = regrid && held!.step > 0;
+          if (!held || regrid) { held = { info: marketInfo(state.markets, set.id), step: set.step, close, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity, bornAt: held?.bornAt ?? now }; era.books.set(set.id, held); }
           // The market's description as the page knows it now (the markets may have been listed after the book's first answer).
           else held.info = marketInfo(state.markets, set.id);
           if (anew) regridded.add(set.id);
@@ -271,19 +291,19 @@ export class DepthFeed {
           for (const [t, w] of keptWindows(set.times, set.counts, set.bins, set.bid, set.ask, t => t >= start && t < end && t >= era.keepFrom)) held.windows.set(t, w);
           bins += set.bins.length;
           // The message holds a copy of the book's answer of its own (the answer's buffer holds every book asked for).
-          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() });
+          books.push({ id: set.id, info: held.info, step: set.step, close, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() });
         }
         for (const id of ids) {
           if (era.dropped.has(id)) continue;
           let held = era.books.get(id);
-          if (!held) { held = { info: marketInfo(state.markets, id), step: 0, windows: new Map(), readFrom: Infinity, bornAt: now }; era.books.set(id, held); }
+          if (!held) { held = { info: marketInfo(state.markets, id), step: 0, close: false, windows: new Map(), readFrom: Infinity, bornAt: now }; era.books.set(id, held); }
           // The windows from `start` on are held only where this answer joins those held before it (a read under way while old windows were
           // let go, or past a gap, leaves the windows below it to the next read).
           if (back && !regridded.has(id) && end >= Math.min(held.readFrom, to)) held.readFrom = Math.min(held.readFrom, Math.max(start, era.keepFrom));
           // A book held and asked for that answered nothing has no windows over [start, end) any more.
           if (answered.has(id) || !held.windows.size) continue;
           for (const t of [...held.windows.keys()]) if (t >= start && t < end) held.windows.delete(t);
-          books.push({ id, info: held.info, step: held.step, from: start, to: end, times: [], counts: [], bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0) });
+          books.push({ id, info: held.info, step: held.step, close: held.close, from: start, to: end, times: [], counts: [], bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0) });
         }
         if (books.length) { this.#change(era, key, { books, drop: [] , keepFrom: era.keepFrom }); this.changed(); }
         // The next chunk: four times as many windows, within what the bins a window of this answer allow.

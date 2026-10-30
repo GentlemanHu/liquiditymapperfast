@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { candleUsd, joinRows, stripBars, stripHighlights, stripLines, type StripBar } from '../src/app/measures/volume-strip.ts';
+import { STRIP_HISTORY_BARS, STRIP_MIN_PX, StripHighlightMemo, candleUsd, coarseCandles, joinRows, stripBars, stripHighlights, stripHistoryFrom, stripLines, stripTimeframe, withEarlier, type StripBar } from '../src/app/measures/volume-strip.ts';
 import { ORDERS_CUT_REFRESH_MS, ORDERS_REST_MS, StripOrderCache, orderLines, stripOrdersOf, type StripOrders } from '../src/app/measures/strip-orders.ts';
 import { aggregateCandles } from '../src/shared/series.ts';
 import { fetchCandles, type Fetcher } from '../src/shared/history.ts';
@@ -202,4 +202,91 @@ test('the strip never borrows another bar: before the rows asked for, a bar is i
   assert.deepEqual([joined.buy.length, joined.total, joined.to, joined.gaps[6]], [8, 2400, T + 8 * H, 'notRecorded'], 'the closed buckets and the one under way, as one');
   const c = { rows: r, tf: H, now: T + 8 * H, market: 'Binance', tfName: '1h', reports: true, total: 2400 };
   assert.ok(stripLines({ t: T, x: 0, w: 1, source: 'candle', buy: 1000, sell: 0, split: false, i: -1, gap: null }, c).some(l => l.text.includes('not loaded yet')), 'Binance: not loaded yet, never does not say');
+});
+
+test("a long view: before the chart's first candle the exchange's own candles of the timeframe stand in, back to the view's start, capped", () => {
+  // The chart draws hours 100 to 107; the view (with the Highlights' run) begins at hour 2.5.
+  const first = T + 100 * H, drawn: CandleRow[] = Array.from({ length: 8 }, (_, i) => [first + i * H, 100, 110, 90, 100, 10, 1]);
+  assert.equal(stripHistoryFrom(first, T + 2.5 * H, H), T + 2 * H, 'from the candle the view begins inside');
+  assert.equal(stripHistoryFrom(first, first + 0.5 * H, H), Infinity, "a view that begins inside the chart's candles asks nothing");
+  assert.equal(stripHistoryFrom(first, first - (STRIP_HISTORY_BARS + 50) * H, H), first - STRIP_HISTORY_BARS * H, 'at most the cap before them');
+  // The exchange's rows by start (Binance's, with taker buys and quote volumes), the chart's own among them; read in no order.
+  const own = new Map<number, CandleRow>();
+  for (const i of [7, 2, 99, 3, 100, 101]) own.set(T + i * H, [T + i * H, 100, 110, 90, 100, 10, 1, 4, 3, 1000, 400]);
+  const all = withEarlier(drawn, own, first);
+  assert.deepEqual(all.map(c => (c[0] - T) / H), [2, 3, 7, 99, 100, 101, 102, 103, 104, 105, 106, 107], "the exchange's before the chart's, in time order, the chart's own kept");
+  assert.equal(all[4], drawn[0], "the chart's candle, not the exchange's copy of it");
+  assert.equal(withEarlier(drawn, new Map(), first), drawn, "nothing before them: the chart's list as it is");
+  // Drawn as the candles' part, as reported (quote volume and the part bought at market).
+  const bars = stripBars(all, H, null, null, T + 200 * H, T, T + 200 * H, place, s => own.get(s), false);
+  assert.deepEqual([bars[0]!.t, bars[0]!.source, bars[0]!.buy, bars[0]!.sell, bars[0]!.exact], [T + 2 * H, 'candle', 400, 600, true]);
+});
+
+test('the strip\'s Highlights are worked out again only when the bars\' figures or the options change', () => {
+  const bars = (values: number[]): StripBar[] => values.map((v, i) => ({ t: T + i * H, x: i, w: 1, source: 'candle', buy: v, sell: 0, split: false, i: -1, gap: null }));
+  const values = Array.from({ length: 40 }, (_, i) => i === 30 ? 1_000 : 10 + (i % 3)), memo = new StripHighlightMemo(), options = { length: 12, mult: 2 };
+  const first = memo.of(bars(values), options);
+  assert.equal(first.flag[30], 1, 'the spike is flagged');
+  assert.equal(memo.of(bars(values), options), first, 'the same figures drawn elsewhere (another frame): kept');
+  const moved = values.slice(); moved[39] = 12.5;
+  assert.notEqual(memo.of(bars(moved), options), first, 'a figure changed: worked out again');
+  assert.notEqual(memo.of(bars(moved), { length: 12, mult: 3 }), first, 'the options changed: worked out again');
+});
+
+test("zoomed out, the strip's bars are of the shortest longer timeframe that keeps them STRIP_MIN_PX wide, a day at the most", () => {
+  const D = 24 * H, M = 60_000;
+  // The chart's own while wide enough: 14 days of hourly bars in 1,500 px are 4.5 px each.
+  assert.deepEqual(stripTimeframe(H, 14 * D, 1500), { ms: H, name: '1h' });
+  // 45 days: hourly bars 1.4 px, four-hour ones 5.6.
+  assert.deepEqual(stripTimeframe(H, 45 * D, 1500), { ms: 4 * H, name: '4h' });
+  // 400 days: days, 3.75 px; past what a day can keep wide, still a day.
+  assert.deepEqual(stripTimeframe(H, 400 * D, 1500), { ms: D, name: '1d' });
+  assert.deepEqual(stripTimeframe(H, 2000 * D, 1500), { ms: D, name: '1d' });
+  // A whole number of the chart's candles: from 15 minutes the next is 30, then the hour.
+  assert.deepEqual(stripTimeframe(15 * M, 14 * D, 1500), { ms: 30 * M, name: '30m' });
+  assert.equal(stripTimeframe(15 * M, 14 * D, 1500, 4).ms, H);
+  // Exactly STRIP_MIN_PX wide is wide enough; the chart's daily candles have nothing longer; no size yet keeps the chart's.
+  assert.equal(stripTimeframe(H, 1500 * H / STRIP_MIN_PX, 1500).ms, H);
+  assert.deepEqual(stripTimeframe(D, 4000 * D, 1500), { ms: D, name: '1d' });
+  assert.deepEqual(stripTimeframe(H, 400 * D, 0), { ms: H, name: '1h' });
+});
+
+test("the strip's longer candles: the exchange's own where it has one, else the chart's added up; a bucket they begin inside is left out", () => {
+  const D = 24 * H, day = Math.floor(T / D) * D;
+  // The chart's hourly candles from 18:00 of one day to 05:00 two days on: the first day is partial and left out, the next whole, the last under way.
+  const start = day + 18 * H, hourly: CandleRow[] = Array.from({ length: 36 }, (_, i) => [start + i * H, 100 + i, 110 + i, 90 + i, 101 + i, 10, 1, 4, 3, 1_000, 400]);
+  const { rows: added, own } = coarseCandles(hourly, H, D, null);
+  assert.deepEqual(added.map(r => r[0]), [day + D, day + 2 * D]);
+  const whole = added[0]!;
+  // Opens at its first hour, closes at its last, high and low the extremes, everything else summed.
+  assert.deepEqual(whole, [day + D, 106, 139, 96, 130, 240, undefined, 96, 72, 24_000, 9_600]);
+  assert.equal(added[1]![5], 60);
+  assert.equal(own.size, 2);
+  // One hour that does not say who bought: the day's volume only (no taker buys, trades or quote volume), and it is not in `own`.
+  const mixed = hourly.map((c, i) => i === 10 ? c.slice(0, 6) as CandleRow : c);
+  const { rows: noSides, own: noOwn } = coarseCandles(mixed, H, D, null);
+  assert.deepEqual(noSides[0], [day + D, 106, 139, 96, 130, 240]);
+  assert.equal(noOwn.has(day + D), false);
+  // Taker buys on every hour but trades on one missing: the sides stay, the trades and quote volumes go.
+  const noTrades = hourly.map((c, i) => i === 10 ? c.slice(0, 8) as CandleRow : c);
+  assert.deepEqual(coarseCandles(noTrades, H, D, null).rows[0], [day + D, 106, 139, 96, 130, 240, undefined, 96]);
+  // The exchange's own daily candles win wherever they are, the partial first day included, and reach back before the chart's.
+  const exchange = new Map<number, CandleRow>([day - D, day, day + D].map(t => [t, [t, 1, 2, 0.5, 1.5, 999, 24, 500, 77, 1e6, 5e5]]));
+  const both = coarseCandles(hourly, H, D, exchange);
+  assert.deepEqual(both.rows.map(r => r[0]), [day - D, day, day + D, day + 2 * D]);
+  assert.equal(both.rows[2]![5], 999);
+  assert.equal(both.rows[3]![5], 60);
+  assert.equal(both.own.get(day), exchange.get(day));
+  // Nothing drawn and nothing held: no candles.
+  assert.deepEqual(coarseCandles([], H, D, null).rows, []);
+});
+
+test("a long view's strip from daily candles: bars a day wide, sides from the exchange's, named by its timeframe in the box", () => {
+  const D = 24 * H, day = Math.floor(T / D) * D;
+  const exchange = new Map<number, CandleRow>([0, 1, 2].map(k => [day + k * D, [day + k * D, 100, 110, 90, 100, 30, 24, 20, 50, 3_000, 2_000]]));
+  const { rows: daily, own } = coarseCandles([], H, D, exchange);
+  const bars = stripBars(daily, D, null, null, day + 3 * D, day, day + 3 * D, s => ({ x: (s - day) / D * 4 + 2, w: 3 }), s => own.get(s), false);
+  assert.deepEqual(bars.map(b => [b.t, b.source, b.buy, b.sell, b.exact]), [0, 1, 2].map(k => [day + k * D, 'candle', 2_000, 1_000, true]));
+  const lines = stripLines(bars[0]!, { rows: null, tf: D, now: day + 3 * D, market: 'Binance', tfName: '1d', reports: true, total: 0 });
+  assert.match(lines.map(l => l.text).join(' | '), /Binance 1d candle/);
 });

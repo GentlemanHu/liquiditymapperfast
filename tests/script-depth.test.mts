@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DepthCache, SLAB, SMALL_ANSWER, keptWindows, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
-import { DepthFeed } from '../src/app/script/depth-feed.ts';
+import { DepthFeed, closeMode } from '../src/app/script/depth-feed.ts';
 import { analyze, createRunner } from '../src/app/script/lang/engine.ts';
 import type { BarInputs } from '../src/app/script/inputs.ts';
 
@@ -57,7 +57,7 @@ test('books on grids of different steps are added up by price, and a gap in the 
 const book = (id: string, venue: string, from: number, to: number, times: number[], perWindow: (t: number) => { bins: number[]; bid: number[]; ask: number[] }): DepthBook => {
   const rows = times.map(perWindow);
   return {
-    id, info: { id, venue, kind: 'perp', quote: 'USDT' }, step: 10, from, to, times, counts: rows.map(r => r.bins.length),
+    id, info: { id, venue, kind: 'perp', quote: 'USDT' }, step: 10, close: true, from, to, times, counts: rows.map(r => r.bins.length),
     bins: Int32Array.from(rows.flatMap(r => r.bins)), bid: Float32Array.from(rows.flatMap(r => r.bid)), ask: Float32Array.from(rows.flatMap(r => r.ask)),
   };
 };
@@ -363,7 +363,7 @@ test('a switch back to a timeframe the worker holds sends nothing; one it does n
 test('what the worker keeps alive stays near what it holds: windows let go or read again free their copies', () => {
   const W = 1_000, BINS = 1_000, times = Array.from({ length: W }, (_, i) => i * M);
   const big = (revision: number, prev: number, reset: boolean, from: number, to: number, value: number): DepthMessage => ({
-    t: 'depth', key: '1m', revision, prev, reset, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 10, from, to, times,
+    t: 'depth', key: '1m', revision, prev, reset, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 10, close: true, from, to, times,
       counts: times.map(() => BINS), bins: Int32Array.from({ length: W * BINS }, (_, i) => 1_000 + (i % BINS)), bid: new Float32Array(W * BINS).fill(value), ask: new Float32Array(W * BINS).fill(value) }] });
   const cache = new DepthCache();
   cache.apply(big(1, -1, true, -Infinity, Infinity, 1));
@@ -499,4 +499,92 @@ test('a book is re-asked at most every 3 s and only in its first two minutes; a 
   late.sync(listed, starts, T, now + 31_000);
   late.deliver({ generation: 1, post: m => sent.push(m) });
   assert.equal(sent[0]!.books.find(b => b.id === 'a:BTC')!.info.kind, 'spot');
+});
+
+test('closeMode: an answer with the minute each window is of is closes, one without is averages, one whose minutes are not its windows\' is neither', () => {
+  const T = 15 * MIN, set = (times: number[], at?: unknown) => ({ id: 'a:BTC', step: 10, times, counts: times.map(() => 0), samples: times.map(() => 1), bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0), ...(at !== undefined ? { at } : {}) }) as never;
+  assert.equal(closeMode(set([0, T]), T), false);
+  assert.equal(closeMode(set([0, T], [T - MIN, 2 * T - MIN]), T), true);
+  assert.equal(closeMode(set([0, T], [3 * MIN, T]), T), true, 'an earlier minute of the window (its last was not recorded)');
+  assert.equal(closeMode(set([], []), T), true, 'an answer with no windows says closes too');
+  assert.equal(closeMode(set([0, T], [T - MIN]), T), null, 'one minute short');
+  assert.equal(closeMode(set([0, T], [T, 2 * T - MIN]), T), null, 'a minute of the next window');
+  assert.equal(closeMode(set([0, T], [T - MIN, 2 * T - 30_000]), T), null, 'not a minute');
+  assert.equal(closeMode(set([0], [0]), MIN), true, 'at 1m the window is its minute');
+});
+
+/** A source whose windows are averages (no `at`) until `closes` says, then each window's last minute; what each question asked for. */
+function modeSource() {
+  const asked: boolean[] = [], state = { closes: false, malformed: false };
+  const source = {
+    kind: 'server',
+    columns: async (ids: string[], from: number, to: number, stepMs: number, close?: boolean) => {
+      asked.push(close === true);
+      const times: number[] = [];
+      for (let t = from; t < to; t += stepMs) times.push(t);
+      const usd = state.closes ? 20 : 10;
+      const at = state.malformed ? { at: times.slice(1) } : state.closes ? { at: times.map(t => t + stepMs - MIN) } : {};
+      return { from, to, stepMs, instruments: ids.map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length).fill(usd), ask: new Float32Array(times.length).fill(usd), ...at })) };
+    },
+  };
+  return { source, asked, state };
+}
+
+test('the feed asks for each candle\'s close; a book whose answers change from averages to closes is read again whole, never held as a mix', async () => {
+  const T = 5 * MIN, now = 1_000 * T + 2 * MIN, starts = candlesFrom(901, 1_000, T), { source, asked, state } = modeSource();
+  const feed = new DepthFeed({ source } as never, () => {});
+  for (let k = 0; k < 4; k++) { feed.sync(twoBooks('5m'), starts, T, now); await settle(); }
+  const read = (at: number) => {
+    const cache = new DepthCache(), tag = feed.sync(twoBooks('5m'), starts, T, at)!;
+    feed.deliver({ generation: 1, post: m => cache.apply(m) });
+    assert.ok(cache.holds(tag));
+    return Array.from(starts, t => [cache.reader.atClose(t, {}, ''), cache.reader.books(t, {}, '')]);
+  };
+  assert.ok(asked.length && asked.every(Boolean), 'every question asks for closes');
+  assert.ok(read(now).every(([c, n]) => c === 0 && n === 2), 'an older server\'s averages, said as such');
+  // The server is updated under the page: the next refresh of the last windows answers closes, and each book is read again whole.
+  state.closes = true;
+  for (let k = 0; k < 6; k++) { feed.sync(twoBooks('5m'), starts, T, now + 31_000); await settle(); }
+  assert.ok(read(now + 31_000).every(([c, n]) => c === 1 && n === 2), 'every candle\'s book its close, none an average kept from before');
+});
+
+test('an answer whose minutes are not its windows\' fails the read: the windows held are kept and the read is tried again', async () => {
+  const T = 5 * MIN, now = 1_000 * T + 2 * MIN, starts = candlesFrom(901, 1_000, T), { source, asked, state } = modeSource();
+  state.closes = true;
+  const feed = new DepthFeed({ source } as never, () => {});
+  for (let k = 0; k < 4; k++) { feed.sync(twoBooks('5m'), starts, T, now); await settle(); }
+  const n = asked.length;
+  state.malformed = true;
+  feed.sync(twoBooks('5m'), starts, T, now + 31_000); await settle();
+  assert.equal(asked.length, n + 1, 'the refresh asked');
+  const cache = new DepthCache(), tag = feed.sync(twoBooks('5m'), starts, T, now + 31_500)!;
+  feed.deliver({ generation: 1, post: m => cache.apply(m) });
+  assert.ok(cache.holds(tag));
+  assert.ok(Array.from(starts).every(t => cache.reader.books(t, {}, '') === 2 && cache.reader.atClose(t, {}, '') === 1), 'nothing taken back, nothing taken as averages');
+  assert.equal(asked.length, n + 1, 'not asked again at once');
+  state.malformed = false;
+  feed.sync(twoBooks('5m'), starts, T, now + 62_000); await settle();
+  assert.ok(asked.length > n + 1, 'tried again at the next refresh');
+});
+
+test('the worker: a book whose windows change from averages to closes starts again (its candles run again), and atClose says which it holds', () => {
+  const cache = new DepthCache(), times = Float64Array.from([0, M]);
+  const msg = (revision: number, close: boolean, reset: boolean): DepthMessage => ({ t: 'depth', key: '1m', revision, prev: revision - 1, reset, drop: [],
+    books: [{ ...book('a:BTC', 'binance', -Infinity, Infinity, [0, M], () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] })), close }] });
+  cache.apply(msg(1, false, true));
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
+  assert.equal(cache.reader.atClose(0, {}, ''), 0);
+  assert.ok(Number.isNaN(cache.reader.atClose(2 * M, {}, '')), 'no book: NaN');
+  const before = cache.epochs(times);
+  // The same bins and dollars (at 1m a window is its minute either way), now said to be closes.
+  cache.apply(msg(2, true, false));
+  assert.ok(cache.holds({ key: '1m', revision: 2 }));
+  const after = cache.epochs(times);
+  assert.ok(after[0] !== before[0] && after[1] !== before[1], 'every candle of the book runs again');
+  assert.equal(cache.reader.atClose(0, {}, ''), 1);
+  // A message without the mode is not a book's: left out.
+  const bare = msg(3, true, false); delete (bare.books[0] as Partial<DepthBook>).close;
+  cache.apply(bare);
+  assert.ok(cache.holds({ key: '1m', revision: 3 }));
+  assert.equal(cache.reader.atClose(0, {}, ''), 1, 'the held book is as it was');
 });

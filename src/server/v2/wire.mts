@@ -35,7 +35,7 @@ export interface ColumnsRequestResult { step: number; instrumentId: string; colu
  * Tracker kept with the columns (`packLt`) follows after every instrument's three, its part's index in the instrument's `lt` field, so a
  * page that does not know it reads the frame as before.
  */
-export function encodeColumns(results: ColumnsRequestResult[], from: number, to: number, stepMs: number): Buffer {
+export function encodeColumns(results: ColumnsRequestResult[], from: number, to: number, stepMs: number, close = false): Buffer {
   const parts: Part[] = [], trackers: Float32Array[] = [];
   const instruments = results.map(({ instrumentId, step, columns }) => {
     const total = columns.reduce((sum, c) => sum + c.bins.length, 0);
@@ -45,7 +45,8 @@ export function encodeColumns(results: ColumnsRequestResult[], from: number, to:
     parts.push({ kind: 'i32', data: bins }, { kind: 'f32', data: bid }, { kind: 'f32', data: ask });
     const lt = packLt(columns), ltPart = lt ? 3 * results.length + trackers.length : undefined;
     if (lt) trackers.push(lt);
-    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), ...(ltPart !== undefined ? { lt: ltPart } : {}) };
+    // An answer for each window's close says the minute each is of (`Column.at`): a page tells it from an older server's averages by it.
+    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), ...(ltPart !== undefined ? { lt: ltPart } : {}), ...(close ? { at: columns.map(c => c.at ?? c.t) } : {}) };
   });
   for (const lt of trackers) parts.push({ kind: 'f32', data: lt });
   return frame({ type: WIRE_COLUMNS, from, to, stepMs, instruments }, parts);

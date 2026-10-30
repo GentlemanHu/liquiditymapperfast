@@ -10,7 +10,7 @@ import { RecordedBefore } from './restart.ts';
 import { AbsorptionRecorder, GROUP_FLOOR_USD, type AbsorptionAnswer, type AbsorptionProfileAnswer, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStore } from './absorption.ts';
 import { FLOW_MEMORY_MS, FLOW_SEC, FlowRecorder, type FlowFrame, type FlowStore, type FlowUpdate } from './flow.ts';
 import { TIMEFRAMES, quoteRows, type Candle, type OiBar, type OiRow } from './series.ts';
-import { OI_SAMPLE_VENUES, fetchCandles, fetchOiHistory, fetchOiReading, oiBars, venueOf, webGet, type Fetcher } from './history.ts';
+import { OI_PAGE_VENUES, OI_SAMPLE_VENUES, fetchCandles, fetchOiHistory, fetchOiReading, oiBars, venueOf, webGet, type Fetcher } from './history.ts';
 import { inverseOiId, oiInstrument, oiProfileOf, type OiProfileAnswer, type OiSeries } from './oi-profile.ts';
 import { browserVenues, type BrowserVenue } from './venues.ts';
 import { BTC, SCALES, type Coin, type MarketVenue } from './coins.ts';
@@ -115,14 +115,14 @@ const defaultPing = async (url: string, init?: { method: string; headers: Record
 };
 
 /** Columns as the page reads them: three flat arrays per instrument, concatenated across its columns. */
-export function packColumns(results: readonly { instrumentId: string; step: number; columns: readonly Column[] }[]): ColumnSet[] {
+export function packColumns(results: readonly { instrumentId: string; step: number; columns: readonly Column[] }[], close = false): ColumnSet[] {
   return results.map(({ instrumentId, step, columns }) => {
     const total = columns.reduce((sum, c) => sum + c.bins.length, 0);
     const bins = new Int32Array(total), bid = new Float32Array(total), ask = new Float32Array(total);
     let at = 0;
     for (const c of columns) { bins.set(c.bins, at); bid.set(c.bid, at); ask.set(c.ask, at); at += c.bins.length; }
     const lt = packLt(columns);
-    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), bins, bid, ask, ...(lt ? { lt } : {}) };
+    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), bins, bid, ask, ...(lt ? { lt } : {}), ...(close ? { at: columns.map(c => c.at ?? c.t) } : {}) };
   });
 }
 
@@ -408,9 +408,10 @@ export class Engine {
     return { asOf: now, now, markPrice: reference?.price ?? 0, markInstrumentId: reference?.instrumentId ?? '', markets, steps: Object.fromEntries(this.recorder.steps), recorded, columnMs: COLUMN_MS, timeframes: Object.keys(TIMEFRAMES), oiReferences };
   }
 
-  columns(ids: readonly string[], from: number, to: number, stepMs: number): ColumnsFrame {
+  /** `close`: each window's book at its close, not its average (`DepthRecorder.query`). */
+  columns(ids: readonly string[], from: number, to: number, stepMs: number, close = false): ColumnsFrame {
     const step = Math.max(COLUMN_MS, Math.round(stepMs / COLUMN_MS) * COLUMN_MS);
-    return { from, to, stepMs: step, instruments: packColumns(ids.map(id => ({ instrumentId: id, step: this.recorder.steps.get(id) ?? 0, columns: this.recorder.query(id, from, to, step) }))) };
+    return { from, to, stepMs: step, instruments: packColumns(ids.map(id => ({ instrumentId: id, step: this.recorder.steps.get(id) ?? 0, columns: this.recorder.query(id, from, to, step, close) })), close) };
   }
 
   /** One instrument's footprint, or several (comma separated) added together, as the server's route answers. */
@@ -551,13 +552,16 @@ export class Engine {
     try { return await fetchCandles(instrumentId, tfMs, from, to, this.#get, listing, 12, { pageSize: 1500, buy: true }); } catch { return []; }
   }
 
-  /** Open interest bars: the venue's own history where it has one, and the readings taken while the page was open. */
+  /**
+   * Open interest bars: the venue's own history where it has one a page can read (`OI_PAGE_VENUES`: OKX's was asked on every refresh and
+   * refused by the browser every time), and the readings taken while the page was open.
+   */
   /** `usd`: an inverse market's own USD in place of its coins (the samples that have one; its history, in coins, is left out). */
   async oi(instrumentId: string, tfMs: number, from: number, to: number, usd = false): Promise<OiBar[]> {
     const venue = venueOf(instrumentId), key = `${instrumentId}|${tfMs}|${from}|${to}`, cached = this.#oiCache.get(key), now = this.#now();
     let stored: Promise<OiRow[]>;
     if (cached && now - cached.at < OI_CACHE_MS) stored = cached.rows;
-    else { const listing = this.#listing(instrumentId); stored = listing ? fetchOiHistory(instrumentId, tfMs, from, to, this.#get, listing).catch(() => []) : Promise.resolve([]); this.#oiCache.set(key, { at: now, rows: stored }); if (this.#oiCache.size > 20) this.#oiCache.delete(this.#oiCache.keys().next().value!); }
+    else { const listing = this.#listing(instrumentId); stored = listing && OI_PAGE_VENUES.includes(venue) ? fetchOiHistory(instrumentId, tfMs, from, to, this.#get, listing).catch(() => []) : Promise.resolve([]); this.#oiCache.set(key, { at: now, rows: stored }); if (this.#oiCache.size > 20) this.#oiCache.delete(this.#oiCache.keys().next().value!); }
     const live = (this.#oiLive.get(venue) ?? []).filter(sample => Number(sample.observationTimestamp) >= from);
     return usd ? oiBars(quoteRows(await stored), quoteRows(live), tfMs) : oiBars(await stored, live, tfMs);
   }

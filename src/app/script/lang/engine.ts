@@ -291,16 +291,18 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   /**
    * `askdepth(usd)` / `biddepth(usd)`: the price at which the asks above the candle's close (the bids below it) add up to `usd` dollars;
    * `depthabove(usd)` / `depthbelow(usd)` the same over every dollar recorded at each price, bids and asks alike (`depth.ts` says why);
-   * `depthbooks()`: how many of the books read have depth at this candle. Over the books of the set being read (`source(...)`), NaN where
-   * nothing is known. The work the book took is paid from the step budget.
+   * `depthbooks()`: how many of the books read have depth at this candle. `depthatclose()`: whether every book read at this candle is its book
+   * at the close (false where any is an average over it, from a source from before; NaN where none is held). Over the books of the set being
+   * read (`source(...)`), NaN where nothing is known. The work the book took is paid from the step budget.
    */
-  const depthAt = (name: string, args: Value[]): number => {
+  const depthAt = (name: string, args: Value[]): Value => {
     charge(budget, 8);
     const reader = inputs.depth;
     if (!reader) return NaN;
     const key = sourceStack[sourceStack.length - 1]!, filter = filters.get(key) ?? {};
     const walk = name === 'askdepth' ? 'ask' : name === 'biddepth' ? 'bid' : name === 'depthabove' ? 'above' : 'below';
-    const value = name === 'depthbooks' ? reader.books(inputs.time[i]!, filter, key) : reader.reach(walk, inputs.time[i]!, inputs.close[i]!, args.length ? num(args[0]) : NaN, filter, key);
+    const at = name === 'depthatclose' ? reader.atClose(inputs.time[i]!, filter, key) : 0;
+    const value = name === 'depthbooks' ? reader.books(inputs.time[i]!, filter, key) : name === 'depthatclose' ? Number.isNaN(at) ? NaN : at === 1 : reader.reach(walk, inputs.time[i]!, inputs.close[i]!, args.length ? num(args[0]) : NaN, filter, key);
     const spent = reader.spent();
     if (spent > 0) charge(budget, Math.ceil(spent / 4));
     return value;
