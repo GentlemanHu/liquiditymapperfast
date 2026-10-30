@@ -25,14 +25,20 @@ import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag
 /** How often the windows that can still change are read again, and how long a book may be gone before it is dropped (venues reconnect). */
 const REFRESH_MS = 30_000, DROP_AFTER_MS = 5_000;
 /**
+ * In the first minutes of a timeframe's depth, books that answered nothing yet are asked again this often: a page that has just started
+ * recording (the browser's source) has nothing for them at first, and waiting the full refresh left the bands empty for half a minute.
+ */
+const UNANSWERED_REFRESH_MS = 3_000, UNANSWERED_FOR_MS = 120_000;
+/**
  * How long a failed read waits before it is tried again (a server that errors is not asked on every run), and how long an answer is waited
  * for before the read counts as failed (a request that never ends would otherwise hold every later read of the timeframe; a busy server took
  * 100 s for one on 2026-10-29).
  */
 const RETRY_MS = 5_000, READ_TIMEOUT_MS = 150_000;
 /**
- * How many messages are kept for a host a few behind, and how many bins they may hold together (about 24 MB): one further behind gets
- * everything, and a message larger than that alone is not kept (a read's chunks are sized to stay well under it).
+ * How many messages are kept for a host a few behind, and how many bins they may hold together (about 24 MB, on top of the windows held:
+ * a message carries a copy of its own, and it goes once 32 more changes came or the timeframe changed): one further behind gets everything,
+ * and a message larger than that alone is not kept (a read's chunks are sized to stay well under it).
  */
 const LOG = 32, LOG_BINS = 2_000_000;
 /**
@@ -60,10 +66,12 @@ interface Era {
   keepFrom: number;
   /** The windows from here on may still have changed (they had not settled when last read); when they were last read, and the candle then. */
   settledTo: number; tailAt: number; forming: number;
+  /** When its first read began. */
+  startedAt: number;
   /** Its revision, and the changes a host a few behind may lack (none while the timeframe is not on screen: it does not change then). */
   revision: number; log: DepthMessage[];
 }
-const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, revision, log: [] });
+const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, startedAt: 0, revision, log: [] });
 /** The bins an era keeps alive (its windows' copies, each once: `binsKept`). */
 const binsOf = (era: Era): number => { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const h of era.books.values()) n += binsKept(h.windows.values(), seen); return n; };
 const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
@@ -90,6 +98,9 @@ export class DepthFeed {
 
   /** The revision a run reads, for the timeframe it is for; null while nothing has been asked. */
   get tag(): DepthTag | null { return this.#key ? { key: this.#key, revision: this.#era.revision } : null; }
+
+  /** The bins the page's depth keeps alive in its windows, every timeframe's together (each copy once), for diagnostics and tests. */
+  get binsKept(): number { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const era of [this.#era, ...this.#kept.values()]) for (const h of era.books.values()) n += binsKept(h.windows.values(), seen); return n; }
 
   /**
    * Keep the order book of the candles starting at `starts` (oldest first) for the timeframe on screen, starting what is due to be read; the
@@ -126,14 +137,21 @@ export class DepthFeed {
     for (const id of ids) { const r = era.books.get(id)?.readFrom ?? Infinity; if (r > from && r > top) top = r; }
     if (top > -Infinity) {
       const group = ids.filter(id => (era.books.get(id)?.readFrom ?? Infinity) === top);
-      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; }
+      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; era.startedAt = now; }
       void this.#read(key, era, state, group, from, Math.min(top, forming + tf), tf, true, now);
-    } else if (era.books.size && (now - era.tailAt >= REFRESH_MS || forming !== era.forming)) {
+    } else if (era.books.size && (now - era.tailAt >= this.#refresh(era, ids, now) || forming !== era.forming)) {
       const since = Math.max(from, era.settledTo);
       era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming;
       void this.#read(key, era, state, [...era.books.keys()], since, forming + tf, tf, false, now).then(ok => { if (!ok) era.settledTo = Math.min(era.settledTo, since); });
     }
     return this.tag;
+  }
+
+  /** How long after the last read of the windows that can change the next is due (`UNANSWERED_REFRESH_MS` while books answered nothing yet). */
+  #refresh(era: Era, ids: readonly string[], now: number): number {
+    if (now - era.startedAt >= UNANSWERED_FOR_MS) return REFRESH_MS;
+    for (const id of ids) if (era.books.get(id)?.step === 0) return UNANSWERED_REFRESH_MS;
+    return REFRESH_MS;
   }
 
   /** Post `port` what its worker lacks of the timeframe on screen: the changes since the revision it has, or everything. */
@@ -242,7 +260,9 @@ export class DepthFeed {
           // A book recorded on another grid than the one held (a source started again): what was held of it is of the old grid, and goes, and
           // it is read again whole, on the new one. One that had answered nothing has no grid yet: its first answer is not another grid.
           const regrid = !!held && held.step !== set.step, anew = regrid && held!.step > 0;
-          if (!held || regrid) { held = { info: held?.info ?? marketInfo(state.markets, set.id), step: set.step, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity }; era.books.set(set.id, held); }
+          if (!held || regrid) { held = { info: marketInfo(state.markets, set.id), step: set.step, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity }; era.books.set(set.id, held); }
+          // The market's description as the page knows it now (the markets may have been listed after the book's first answer).
+          else held.info = marketInfo(state.markets, set.id);
           if (anew) regridded.add(set.id);
           const [a, b] = regrid ? [-Infinity, Infinity] : [start, end];
           for (const t of [...held.windows.keys()]) if (t >= a && t < b) held.windows.delete(t);

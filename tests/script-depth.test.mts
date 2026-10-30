@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DepthCache, SLAB, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
+import { DepthCache, SLAB, SMALL_ANSWER, keptWindows, reachOf, type DepthBook, type DepthMessage, type SideWindow } from '../src/app/script/depth.ts';
 import { DepthFeed } from '../src/app/script/depth-feed.ts';
 import { analyze, createRunner } from '../src/app/script/lang/engine.ts';
 import type { BarInputs } from '../src/app/script/inputs.ts';
@@ -381,4 +381,61 @@ test('what the worker keeps alive stays near what it holds: windows let go or re
   assert.ok(again.holds({ key: '1m', revision: 2 }));
   assert.equal(again.binsKept, W * BINS);
   assert.deepEqual([...again.epochs(Float64Array.from(times))], [...before]);
+});
+
+test('an answer is kept in slabs of at most 16 windows, a few windows each a copy of its own, never as views of what was sent', () => {
+  const answer = (n: number, zero: (c: number) => boolean = () => false) => {
+    const times = Array.from({ length: n }, (_, c) => c * M), counts = times.map((_, c): number => zero(c) ? 0 : 3), total = counts.reduce((s, k) => s + k, 0);
+    return { times, counts, bins: Int32Array.from({ length: total }, (_, i) => i), bid: Float32Array.from({ length: total }, (_, i) => i + 0.5), ask: Float32Array.from({ length: total }, (_, i) => i + 0.25) };
+  };
+  for (const n of [0, 1, 15, 16, 17, 33, 100]) {
+    for (const hole of [false, true]) {
+      const a = answer(n, c => c % 7 === 3), keep = (t: number) => !(hole && t >= 10 * M && t < 12 * M);
+      const kept = keptWindows(a.times, a.counts, a.bins, a.bid, a.ask, keep);
+      const slabs = new Map<ArrayBufferLike, number>();
+      for (let c = 0, at = 0; c < n; at += a.counts[c]!, c++) {
+        const t = a.times[c]!, w = kept.get(t);
+        if (!keep(t)) { assert.equal(w, undefined); continue; }
+        assert.ok(w, `window ${c} of ${n}`);
+        assert.deepEqual([...w.bins], [...a.bins.subarray(at, at + a.counts[c]!)]);
+        assert.deepEqual([...w.bid], [...a.bid.subarray(at, at + a.counts[c]!)]);
+        assert.ok(w.bins.buffer !== a.bins.buffer && w.ask.buffer !== a.ask.buffer, 'a copy, not a view of the answer');
+        slabs.set(w.bins.buffer, (slabs.get(w.bins.buffer) ?? 0) + 1);
+      }
+      for (const windows of slabs.values()) assert.ok(n <= SMALL_ANSWER ? windows === 1 : windows <= SLAB, `${windows} windows in a slab of an answer of ${n}`);
+    }
+  }
+});
+
+test('the page keeps alive about what it holds: the series moving on lets the copies go', async () => {
+  const T = MIN, now = 1_000 * T + 5_000, all = candlesFrom(1, 1_000, T);
+  const { source } = columnsSource();
+  const feed = new DepthFeed({ source } as never, () => {});
+  feed.sync(twoBooks('1m'), all, T, now);
+  await settle();
+  assert.equal(feed.binsKept, 2 * all.length);
+  // The series moves on to its last ten candles: at most a slab a book stays beyond them.
+  feed.sync(twoBooks('1m'), candlesFrom(991, 1_000, T), T, now);
+  assert.ok(feed.binsKept <= 2 * (11 + SLAB), `${feed.binsKept}`);
+});
+
+test('books that answered nothing at first are asked again within seconds, for the first minutes only', async () => {
+  const T = MIN, now = 1_000 * T + 5_000, starts = candlesFrom(901, 1_000, T);
+  let recording = false;
+  const asks: number[] = [];
+  const source = { kind: 'browser', columns: async (ids: string[], from: number, to: number, stepMs: number) => {
+    asks.push(from);
+    const times: number[] = [];
+    if (recording) for (let t = Math.max(from, 999 * T); t < to; t += stepMs) times.push(t);
+    return { from, to, stepMs, instruments: recording ? ids.map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length).fill(10), ask: new Float32Array(times.length).fill(10) })) : [] };
+  } };
+  const feed = new DepthFeed({ source } as never, () => {});
+  feed.sync(twoBooks('1m'), starts, T, now); await settle();
+  const first = asks.length;
+  recording = true;
+  feed.sync(twoBooks('1m'), starts, T, now + 1_000); await settle();
+  assert.equal(asks.length, first, 'not on every run');
+  feed.sync(twoBooks('1m'), starts, T, now + 3_500); await settle();
+  assert.ok(asks.length > first, 'again after 3 s');
+  assert.equal(held(feed, twoBooks('1m'), candlesFrom(999, 1_000, T), T, now + 3_500), 2);
 });

@@ -42,9 +42,10 @@ const MAX_COST = 2_000_000;
 /**
  * How a book's windows of an answer are kept, page and worker alike: an answer of at most `SMALL_ANSWER` windows (a read of the last few) a
  * copy a window, so that a window read again does not keep its neighbours alive; a larger one in slabs of `SLAB` windows, each one copy that
- * its windows are views of (far fewer copies to make). What that costs: a slab stays while any of its windows does, so beyond the windows
- * held a book keeps at most the rest of the slab at each end of what it holds and of each stretch read again since (a window read again as it
- * was takes the new slab: `DepthCache.apply`).
+ * its windows are views of (far fewer copies to make). What that costs: a slab stays while any of its windows does, so what is kept alive is
+ * never more than `SLAB` times what is held, and only the slabs where a trim or a stretch read again begins or ends inside them carry windows
+ * no longer held (a window read again as it was takes the new slab: `DepthCache.apply`). The page's own reads stayed within 1.0 to 1.1 times
+ * what is held in a review's measurements (2026-10-30).
  */
 export const SMALL_ANSWER = 16, SLAB = 16;
 
@@ -225,6 +226,8 @@ export class DepthCache {
       // A book recorded on another grid (a source started again and chose another step): its bins mean other prices, so it starts again.
       if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); era.books.delete(b.id); book = undefined; }
       if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; era.books.set(b.id, book); }
+      // The market's description as the page now knows it (it may have learnt it after the book's first answer).
+      book.info = b.info;
       const incoming = keptWindows(b.times, b.counts, b.bins, b.bid, b.ask, t => t >= b.from && t < b.to && t >= keepFrom);
       for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to && !incoming.has(t)) { book.windows.delete(t); mark(t); }
       // A window read again as it was takes the new copy (the old one's slab can go) and keeps its revision: its candle need not run again.
