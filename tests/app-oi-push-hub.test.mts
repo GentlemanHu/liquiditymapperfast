@@ -104,6 +104,15 @@ test("the 20-second refresh reads only the last bars again and puts them on thos
   assert.deepEqual(r.store.state.oi.slice(-2).map(b => b[4]), [101, 102], 'a refresh that brought nothing changes nothing');
 });
 
+test('a market whose bars stopped long ago is asked for its last few bars only', async () => {
+  const r = await rig('binance:BTCUSDT');
+  await load(r, history(100).slice(0, 10));
+  const done = r.hub.loadOi(); await turn();
+  const tail = r.source.asked.shift()!;
+  assert.equal(tail.from, now0 - 6 * MIN, 'six bars back, not from its last bar thirty minutes ago');
+  tail.resolve([]); await done;
+});
+
 test('oiTail: the tail from its first bar on, the held ones before it and from where they are kept', () => {
   const bar = (t: number, v: number): OiBar => [t, v, v, v, v];
   const held = [bar(1, 1), bar(2, 2), bar(3, 3), bar(4, 4)];

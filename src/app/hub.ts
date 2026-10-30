@@ -97,8 +97,11 @@ export { oiVenueIds } from './market-choice.ts';
 
 /** At most this many pushed readings are held to be put on a load's answer (a load that takes longer may lose its oldest: the next push puts them right). */
 const OI_DURING_MAX = 512;
-/** How long the open interest read whole serves the 20-second refresh, which reads only its last bars again; then it is read whole again. */
-const OI_WHOLE_MS = 10 * 60_000;
+/**
+ * How long the open interest read whole serves the 20-second refresh, which reads only each market's last bars again (from the one before its
+ * last held, at most `OI_TAIL_BARS` back: a market whose bars stopped a day ago asked for that whole day every time); then it is read whole.
+ */
+const OI_WHOLE_MS = 10 * 60_000, OI_TAIL_BARS = 6;
 /** How many series (a market's timeframe) are kept for a switch to show at once: every timeframe of two markets. */
 const SERIES_KEPT = 16;
 /**
@@ -830,21 +833,20 @@ export class Hub {
   #oiHeld: { key: string; at: number } | null = null;
 
   /**
-   * The 20-second refresh of the markets read whole last: each one's bars from the one before its last on, put on those held (`oiTail`), an
-   * inverse market's at the one price its bars are at, with the readings pushed meanwhile. False where nothing is held to put them on (the
-   * caller reads whole).
+   * The 20-second refresh of the markets read whole last: each one's bars from the one before its own last on (`OI_TAIL_BARS` back at
+   * most), put on those held (`oiTail`), an inverse market's at the one price its bars are at, with the readings pushed meanwhile. False
+   * where nothing is held to put them on (the caller reads whole).
    */
   async #loadOiTail(key: string, tf: number, now: number, keepFrom: number): Promise<boolean> {
     const state = this.store.state, { timeframe } = state;
     const held: OiPart[] = state.oiParts.length > 1 ? state.oiParts : state.oiInstrument && state.oi.length ? [{ id: state.oiInstrument, bars: state.oi, ...(state.oiPrice ? { usdAt: state.oiPrice } : {}) }] : [];
-    if (!held.length || this.#oiTf !== tf) return false;
-    const last = Math.min(...held.map(part => part.bars[part.bars.length - 1]?.[0] ?? -Infinity));
-    if (!Number.isFinite(last)) return false;
-    const from = Math.max(keepFrom, last - tf), generation = ++this.#oiGen;
-    const tails = await Promise.all(held.map(part => this.oiSeries(part.id, timeframe, from, now + tf, part.usdAt).then(series => series.bars, (): OiBar[] => [])));
+    if (!held.length || this.#oiTf !== tf || held.some(part => !part.bars.length)) return false;
+    const floor = Math.max(keepFrom, (Math.floor(now / tf) - OI_TAIL_BARS) * tf), generation = ++this.#oiGen;
+    const froms = held.map(part => Math.max(floor, part.bars[part.bars.length - 1]![0] - tf));
+    const tails = await Promise.all(held.map((part, i) => this.oiSeries(part.id, timeframe, froms[i]!, now + tf, part.usdAt).then(series => series.bars, (): OiBar[] => [])));
     if (this.#oiKey !== key || generation !== this.#oiGen) return true;
     const pushed = this.#oiDuring.filter(entry => entry.at >= now).map(entry => entry.reading);
-    const parts = held.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, from, keepFrom) }, pushed, tf));
+    const parts = held.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keepFrom) }, pushed, tf));
     if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiParts: parts });
     else this.store.set({ oi: [...parts[0]!.bars] });
     return true;
