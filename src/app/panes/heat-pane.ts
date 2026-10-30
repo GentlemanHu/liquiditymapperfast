@@ -5,7 +5,7 @@ import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
-import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripLines, type StripBar } from '../measures/volume-strip.ts';
+import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../measures/volume-strip.ts';
 import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
@@ -316,6 +316,8 @@ export class HeatPane {
   #profileHits: ProfileHit[] = [];
   /** The volume strip's recorded rows (kept while what they come from is), and what it drew last frame, for the pointer. */
   #stripRows: { key: string; rows: TimeRows } | null = null;
+  /** The chart's candles with the exchange's before them (`withEarlier`), kept while both are the same. */
+  #stripCandles: { drawn: readonly CandleRow[]; own: ReadonlyMap<number, CandleRow>; rows: readonly CandleRow[] } | null = null;
   readonly #takerRows = new TakerRows();
   #strip: StripState | null = null;
   /** The market orders of the strip's candles pointed at (the footprint's statistics of the strip's markets, read on hover). */
@@ -1345,9 +1347,16 @@ export class HeatPane {
     // The candles are the series the chart reads (`seriesInstrument`: another market's when the chart's own has none), named and split as it.
     const series = state.seriesInstrument || state.marketId, target = historyTarget(series, currentCoin()), venue = target?.id.slice(0, target.id.indexOf(':')) ?? '';
     const binance = !!target && target.own && (venue === 'binance' || venue === 'binancespot'), market = venueLabel(target?.own ? target.id : series);
-    const candles = this.candlesDrawn(state), earliest = candles.find(c => c[0] + tf >= v.t0 - margin)?.[0] ?? v.t0;
-    let own: Map<number, CandleRow> | null = null;
+    // Where the view begins before the chart's first candle, the exchange's own candles of the timeframe stand in back to its start
+    // (`stripHistoryFrom`): those read before for a wider view are drawn too, wherever they fall in it.
+    const drawn = this.candlesDrawn(state), firstDrawn = drawn[0]![0], reach = binance ? stripHistoryFrom(firstDrawn, v.t0 - margin, tf) : Infinity;
+    const earliest = Math.min(reach, drawn.find(c => c[0] + tf >= v.t0 - margin)?.[0] ?? v.t0);
+    let own: Map<number, CandleRow> | null = null, candles = drawn;
     if (binance && (since === null || earliest < since)) own = this.takerRows(state, tf, earliest);
+    if (own && reach < firstDrawn) {
+      if (this.#stripCandles?.drawn !== drawn || this.#stripCandles.own !== own) this.#stripCandles = { drawn, own, rows: withEarlier(drawn, own, firstDrawn) };
+      candles = this.#stripCandles.rows;
+    }
     const place = (start: number): { x: number; w: number } => { const xc = v.xOf(start + tf / 2, pw); return { x: xc + (v.xOf(start, pw) + layout.candleCenter - xc) * narrowing, w: body }; };
     const all = stripBars(candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying());
     const first = all.findIndex(b => b.t + tf >= v.t0), cut = first < 0 ? all.length : first, bars = all.slice(cut);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { candleUsd, joinRows, stripBars, stripHighlights, stripLines, type StripBar } from '../src/app/measures/volume-strip.ts';
+import { STRIP_HISTORY_BARS, candleUsd, joinRows, stripBars, stripHighlights, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../src/app/measures/volume-strip.ts';
 import { ORDERS_CUT_REFRESH_MS, ORDERS_REST_MS, StripOrderCache, orderLines, stripOrdersOf, type StripOrders } from '../src/app/measures/strip-orders.ts';
 import { aggregateCandles } from '../src/shared/series.ts';
 import { fetchCandles, type Fetcher } from '../src/shared/history.ts';
@@ -202,4 +202,22 @@ test('the strip never borrows another bar: before the rows asked for, a bar is i
   assert.deepEqual([joined.buy.length, joined.total, joined.to, joined.gaps[6]], [8, 2400, T + 8 * H, 'notRecorded'], 'the closed buckets and the one under way, as one');
   const c = { rows: r, tf: H, now: T + 8 * H, market: 'Binance', tfName: '1h', reports: true, total: 2400 };
   assert.ok(stripLines({ t: T, x: 0, w: 1, source: 'candle', buy: 1000, sell: 0, split: false, i: -1, gap: null }, c).some(l => l.text.includes('not loaded yet')), 'Binance: not loaded yet, never does not say');
+});
+
+test("a long view: before the chart's first candle the exchange's own candles of the timeframe stand in, back to the view's start, capped", () => {
+  // The chart draws hours 100 to 107; the view (with the Highlights' run) begins at hour 2.5.
+  const first = T + 100 * H, drawn: CandleRow[] = Array.from({ length: 8 }, (_, i) => [first + i * H, 100, 110, 90, 100, 10, 1]);
+  assert.equal(stripHistoryFrom(first, T + 2.5 * H, H), T + 2 * H, 'from the candle the view begins inside');
+  assert.equal(stripHistoryFrom(first, first + 0.5 * H, H), Infinity, "a view that begins inside the chart's candles asks nothing");
+  assert.equal(stripHistoryFrom(first, first - (STRIP_HISTORY_BARS + 50) * H, H), first - STRIP_HISTORY_BARS * H, 'at most the cap before them');
+  // The exchange's rows by start (Binance's, with taker buys and quote volumes), the chart's own among them; read in no order.
+  const own = new Map<number, CandleRow>();
+  for (const i of [7, 2, 99, 3, 100, 101]) own.set(T + i * H, [T + i * H, 100, 110, 90, 100, 10, 1, 4, 3, 1000, 400]);
+  const all = withEarlier(drawn, own, first);
+  assert.deepEqual(all.map(c => (c[0] - T) / H), [2, 3, 7, 99, 100, 101, 102, 103, 104, 105, 106, 107], "the exchange's before the chart's, in time order, the chart's own kept");
+  assert.equal(all[4], drawn[0], "the chart's candle, not the exchange's copy of it");
+  assert.equal(withEarlier(drawn, new Map(), first), drawn, "nothing before them: the chart's list as it is");
+  // Drawn as the candles' part, as reported (quote volume and the part bought at market).
+  const bars = stripBars(all, H, null, null, T + 200 * H, T, T + 200 * H, place, s => own.get(s), false);
+  assert.deepEqual([bars[0]!.t, bars[0]!.source, bars[0]!.buy, bars[0]!.sell, bars[0]!.exact], [T + 2 * H, 'candle', 400, 600, true]);
 });

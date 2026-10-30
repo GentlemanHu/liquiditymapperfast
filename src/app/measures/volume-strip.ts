@@ -57,6 +57,27 @@ export function candleSides(own: CandleRow | undefined, dollars: number): { buy:
   return { buy, sell: dollars - buy, exact: false };
 }
 
+/** The most candles of the timeframe the strip reads from the exchange before the chart's own (about six of Binance's pages). */
+export const STRIP_HISTORY_BARS = 8_000;
+
+/**
+ * Where the strip reads the exchange's own candles from when the view (with the Highlights' run before it, `start`) begins before the
+ * first candle the chart draws (`first`): a long view, where the price history is a coarser line and the chart draws no candle (Karl,
+ * 2026-10-30: zoomed out a little more, the volume before the chart's candles was gone). At most `cap` candles before `first`; Infinity
+ * where the view begins at or after it.
+ */
+export function stripHistoryFrom(first: number, start: number, tf: number, cap = STRIP_HISTORY_BARS): number {
+  const from = Math.floor(start / tf) * tf;
+  return from < first ? Math.max(from, first - cap * tf) : Infinity;
+}
+
+/** The exchange's candles before `first` held in `own` (by start), in time order, then the chart's own (`drawn`, oldest first). */
+export function withEarlier(drawn: readonly CandleRow[], own: ReadonlyMap<number, CandleRow>, first: number): readonly CandleRow[] {
+  const before: CandleRow[] = [];
+  for (const [start, row] of own) if (start < first) before.push(row);
+  return before.length ? [...before.sort((a, b) => a[0] - b[0]), ...drawn] : drawn;
+}
+
 /**
  * The bars of the candles in [t0, t1]: from the recorded rows (buckets of the timeframe) from where the recording reaches (`since`), a
  * candle it starts inside partial; before it, or with nothing recorded, the candle itself, read with `exchange` (the exchange's own candle
