@@ -10,30 +10,33 @@ export function examples(): { key: ExampleKey; name: string; source: string; pla
   return [
     { key: STARTER_ID, name: t('VWAP with bands'), source: VWAP_SOURCE, place: 'map' },
     { key: HEATMAP_ID, name: t('Stochastic heat map'), source: HEATMAP_SOURCE },
-    // How far a size of the recorded order books reaches from the close, up and down (depthabove, depthbelow).
+    // How far a size of the recorded order books reaches from the close, up and down: the asks above it and the bids below it.
     { key: 'depth-bands', name: t('Depth bands'), place: 'map', source: `// Depth bands: how far a given number of dollars of the order book reaches from the close, on the books the page recorded.
 // Above the close, the price at which that many dollars of the book are passed going up; below it, going down. It shows
 // the liquidity typically recorded near the price, not what a market order of that size would pay.
-// A wide band is a thin book: the same money moves the price further. Each candle's book is the one recorded over it
-// (averaged over its minutes), on every exchange the heat map shows, added up as one book.
+// A wide band is a thin book: the same money moves the price further. Each candle's book is the one recorded at its close
+// (its last minute), on every exchange the heat map shows, added up as one book.
 
 // The size: a number of dollars, or a share of what an average candle traded at market (the band then means the same
 // on a quiet day and a busy one, and on any coin; it widens with the timeframe, as candles trade more). On Bitcoin's
-// books added up, $100M reached about 0.1 % from the close on 2026-10-29 at every timeframe, $250M about 0.2 %.
+// books added up, $250M reached about 0.2 % from the close on 2026-10-30 at every timeframe.
 size = option(type=number, default=250000000, min=100000, step=1000000, label="Size ($)")
 byVolume = option(type=checkbox, default=false, label="Size from the volume")
 share = option(type=number, default=0.1, min=0.01, step=0.01, label="Share of a candle's volume")
 len = option(type=number, default=20, min=1, step=1, label="Volume window (candles)")
 fill = option(type=color, default="rgba(128,128,128,0.08)", label="Fill")
 
-// depthabove(x) and depthbelow(x) are prices: NaN where the book was not recorded for the candle, or holds less than x.
-// They count every dollar recorded at each price: the book is an average over the candle, and in a candle that moved,
-// the prices it went through held bids part of the time and asks the rest. askdepth(x) and biddepth(x) count one side
-// only (the asks above, the bids below), which after a move reads the side the price came from as thin.
+// askdepth(x) and biddepth(x) are prices: the asks above the close, the bids below it; NaN where the book was not
+// recorded for the candle, or holds less than x. depthatclose() is false where the books are averages over the candle (a
+// server from before): there a move within the candle reads the side the price came from as thin, so depthabove(x) and
+// depthbelow(x), which count every dollar recorded at each price, stand in.
 var usd = byVolume ? share * sma(vbuy + vsell, len) : size
+var atclose = depthatclose()
+var upper = atclose ? askdepth(usd) : depthabove(usd)
+var lower = atclose ? biddepth(usd) : depthbelow(usd)
 // The lines in the theme's ink: the heat map under them is drawn in the page's own two colours, which would hide lines of either.
 var ink = theme.dark ? "#f2f2f2" : "#1c1c1c"
-cloudarea(depthbelow(usd), depthabove(usd), positiveColor=fill, negativeColor=fill, higherLineColor=ink, lowerLineColor=ink, higherLineWidth=2, lowerLineWidth=2, title="Depth bands")
+cloudarea(lower, upper, positiveColor=fill, negativeColor=fill, higherLineColor=ink, lowerLineColor=ink, higherLineWidth=2, lowerLineWidth=2, title="Depth bands")
 ` },
     // What each candle did to the range of the one before (inside, outside, up, down), and the patterns that follow from it (breakout,
     // failed break, rejection, outside close) marked where they happen, with their levels and what the order flow did there when pointed at.

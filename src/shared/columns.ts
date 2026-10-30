@@ -11,6 +11,11 @@ export interface ColumnSet {
   times: number[]; counts: number[]; samples: number[];
   bins: Int32Array; bid: Float32Array; ask: Float32Array;
   lt?: Float32Array;
+  /**
+   * In an answer to a question for each window's close: the minute each window's book is of (the latest recorded inside it). Absent where
+   * the windows are averages (a question for those, or a source from before).
+   */
+  at?: number[];
 }
 
 /**

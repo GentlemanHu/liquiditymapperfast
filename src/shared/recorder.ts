@@ -34,6 +34,11 @@ export interface Column {
    */
   lt?: Float32Array;
   ltN?: number;
+  /**
+   * In an answer to a question for each window's close (`query`'s `close`): the minute whose book the window is, the latest recorded inside
+   * it (its last minute where that was recorded); the window itself starts at `t`.
+   */
+  at?: number;
 }
 export interface ColumnStore {
   load(sinceMs: number): Iterable<{ instrumentId: string; column: Column; step: number }>;
@@ -512,13 +517,21 @@ export class DepthRecorder {
    * Columns in [from, to), optionally merged into stepMs windows (a multiple of COLUMN_MS, aligned to it). The open minute is included.
    * A window that lies wholly inside the question and has ended (none of its minutes can change) is kept, so zooming and panning over
    * the same days merges each of them once (and, reading back, reads them from the store once).
+   *
+   * `close`: each window is the book at its close instead of its average (Karl, 2026-10-30: the scripts' depth bands; a book averaged over a
+   * candle with a move in it reads the side the price came from thin): its latest recorded minute, its last where that was recorded and
+   * never one of another window, the open minute for the window under way, stamped with the window's start and saying its minute (`at`).
+   * Kept as the averages are, under keys of their own.
    */
-  query(instrumentId: string, from: number, to: number, stepMs = COLUMN_MS): Column[] {
+  query(instrumentId: string, from: number, to: number, stepMs = COLUMN_MS, close = false): Column[] {
     const open = this.#pending.get(instrumentId), openColumn = open && open.n > 0 && open.t >= from && open.t < to ? finalize(open, this.#minBinUsd) : null;
-    if (stepMs <= COLUMN_MS) { const inRange = this.#columnsIn(instrumentId, from, to); if (openColumn) inRange.push(openColumn); return inRange; }
+    if (stepMs <= COLUMN_MS) {
+      const inRange = this.#columnsIn(instrumentId, from, to); if (openColumn) inRange.push(openColumn);
+      return close ? inRange.map(c => closeOf(c, c.t)) : inRange;
+    }
     const settled = Math.min(Math.floor(this.#now() / COLUMN_MS) * COLUMN_MS, open ? open.t : Infinity);
     const whole = (t: number): boolean => t >= from && t + stepMs <= to && t + stepMs <= settled;
-    const keyOf = (t: number): string => `${instrumentId}|${stepMs}|${t}`;
+    const keyOf = (t: number): string => close ? `${instrumentId}|${stepMs}|${t}|close` : `${instrumentId}|${stepMs}|${t}`;
     const isKept = (t: number): boolean => whole(t) && this.#merged.has(keyOf(t));
     // Only the windows between the first minute held (in memory or the store) and the last have any.
     const list = this.columns.get(instrumentId) ?? [], stored = this.#extent.get(instrumentId);
@@ -536,7 +549,7 @@ export class DepthRecorder {
       if (openColumn && openColumn.t >= t && openColumn.t < end) columns.push(openColumn);
       for (let w = t, at = 0; w < end; w += stepMs) {
         let stop = at; while (stop < columns.length && columns[stop]!.t < w + stepMs) stop++;
-        const column = stop > at ? mergeWindow(columns, at, stop, w, this.#minBinUsd) : null;
+        const column = stop > at ? close ? closeOf(columns[stop - 1]!, w) : mergeWindow(columns, at, stop, w, this.#minBinUsd) : null;
         if (column) out.push(column);
         if (whole(w)) { const kept = column ?? { t: w, n: 0, bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0) }; this.#merged.set(keyOf(w), kept, weight(kept)); }
         at = stop;
@@ -547,6 +560,8 @@ export class DepthRecorder {
   }
 }
 
+/** A window `t` as the book of one of its minutes (`query`'s `close`): that minute's arrays, shared and never changed, and its time as `at`. */
+const closeOf = (c: Column, t: number): Column => ({ t, n: c.n, bins: c.bins, bid: c.bid, ask: c.ask, at: c.t });
 /** What a kept window weighs in the cache: its bins, and at least one (an empty window is kept too). */
 const weight = (column: Column): number => Math.max(1, column.bins.length);
 /** What a kept hour of columns weighs: their bins, and at least one (an hour with none is kept too). */

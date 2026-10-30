@@ -165,12 +165,15 @@ export async function getValueAreas(ids: string[], windows: { from: number; to: 
   if (!answer) throw new Error('value areas answered with something else');
   return answer;
 }
-/** Recorded columns for any number of instruments: the server serves a bounded number per request, so longer lists are split and merged. */
-export async function getColumns(ids: string[], from: number, to: number, stepMs: number): Promise<ColumnsFrame> {
+/**
+ * Recorded columns for any number of instruments: the server serves a bounded number per request, so longer lists are split and merged.
+ * `close`: each window's book at its close (a server from before answers averages, without `at`).
+ */
+export async function getColumns(ids: string[], from: number, to: number, stepMs: number, close = false): Promise<ColumnsFrame> {
   const chunks: string[][] = [];
   for (let i = 0; i < ids.length; i += COLUMNS_PER_REQUEST) chunks.push(ids.slice(i, i + COLUMNS_PER_REQUEST));
   const frames = await Promise.all(chunks.map(async chunk => {
-    const buffer = await (await request(`/api/v2/columns?inst=${chunk.map(encodeURIComponent).join(',')}&from=${Math.floor(from)}&to=${Math.ceil(to)}&stepMs=${stepMs}`)).arrayBuffer();
+    const buffer = await (await request(`/api/v2/columns?inst=${chunk.map(encodeURIComponent).join(',')}&from=${Math.floor(from)}&to=${Math.ceil(to)}&stepMs=${stepMs}${close ? '&close=1' : ''}`)).arrayBuffer();
     return decodeColumns(buffer);
   }));
   const first = frames[0];

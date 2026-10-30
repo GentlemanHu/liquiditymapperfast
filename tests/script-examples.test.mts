@@ -29,7 +29,7 @@ function inputs(): BarInputs {
     for (let b = lo; b < hi; b++) { bins.push(b); bid.push((b + 1) * 20 <= c ? 25e6 : 0); ask.push(b * 20 >= c ? 25e6 : 0); }
   }
   const time = Float64Array.from({ length: N }, (_, i) => i * HOUR);
-  depth.apply({ t: 'depth', key: '1h', revision: 1, prev: -1, reset: true, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 20, from: -Infinity, to: Infinity, times: [...time], counts, bins: Int32Array.from(bins), bid: Float32Array.from(bid), ask: Float32Array.from(ask) }] });
+  depth.apply({ t: 'depth', key: '1h', revision: 1, prev: -1, reset: true, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 20, close: true, from: -Infinity, to: Infinity, times: [...time], counts, bins: Int32Array.from(bins), bid: Float32Array.from(bid), ask: Float32Array.from(ask) }] });
   depth.holds({ key: '1h', revision: 1 });
   return {
     depth: depth.reader, depthEpochs: depth.epochs(time),
@@ -96,6 +96,23 @@ test('depth bands: the price a size of the book reaches either side of the close
   // A share of the average candle's traded dollars (about $200M here): twice it reaches further than $250M.
   const byVolume = band({ byVolume: true, share: 2 });
   assert.ok(byVolume.higher[at]! - close > fixed.higher[at]! - close);
+  // The asks above the close and the bids below it while the books are their closes; every dollar at each price where they are averages.
+  const read = analyze(source);
+  assert.ok(['askdepth', 'biddepth', 'depthabove', 'depthbelow', 'depthatclose'].every(name => source.includes(`${name}(`)), [...read.read].join());
+});
+
+test('depthatclose(): true where every book read is its book at the close, false where any is an average, na where none is held', () => {
+  const T = 3_600_000, time = Float64Array.from([0, T, 2 * T]), depth = new DepthCache();
+  const one = (id: string, close: boolean, times: number[]) => ({ id, info: { id, venue: id.startsWith('a:') ? 'binance' : 'bybit', kind: id.startsWith('a:') ? 'perp' as const : 'spot' as const, quote: 'USDT' }, step: 20, close, from: -Infinity, to: Infinity,
+    times, counts: times.map(() => 1), bins: Int32Array.from(times.map(() => 4_000)), bid: Float32Array.from(times.map(() => 1e6)), ask: Float32Array.from(times.map(() => 1e6)) });
+  depth.apply({ t: 'depth', key: '1h', revision: 1, prev: -1, reset: true, drop: [], books: [one('a:BTC', true, [0, T]), one('b:BTC', false, [T])] });
+  depth.holds({ key: '1h', revision: 1 });
+  const data = { ...inputs(), time, open: Float64Array.from([80_000, 80_000, 80_000]), high: Float64Array.from([80_100, 80_100, 80_100]), low: Float64Array.from([79_900, 79_900, 79_900]), close: Float64Array.from([80_000, 80_000, 80_000]), volume: Float64Array.from([1, 1, 1]), depth: depth.reader, depthEpochs: depth.epochs(time) };
+  const r = runScript('c', 'line(depthatclose() ? 1 : 0)\nline(na(depthatclose()) ? 1 : 0, title="none")\nline(source(depthatclose() ? 1 : 0, type=perp))', {}, data as never);
+  assert.ok(r.ok, JSON.stringify(r.ok ? '' : r.error));
+  assert.deepEqual([...r.plots[0]!.fields.value!], [1, 0, 0], 'one book at its close; one of them an average; none');
+  assert.deepEqual([...r.plots[1]!.fields.value!], [0, 0, 1], 'na where no book is held');
+  assert.deepEqual([...r.plots[2]!.fields.value!], [1, 1, 0], 'over the books of the set read: the average is a spot market\'s');
 });
 
 // ---- Bar patterns, on candles worked out by hand: each rule is read off the numbers, not off what the script answers.

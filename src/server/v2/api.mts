@@ -428,6 +428,8 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const to = num(url.searchParams.get('to'), Date.now() + COLUMN_MS);
     const from = Math.max(num(url.searchParams.get('from'), to - 6 * 3_600_000), to - MAX_COLUMN_SPAN_MS);
     const stepMs = Math.max(COLUMN_MS, Math.round(num(url.searchParams.get('stepMs'), COLUMN_MS) / COLUMN_MS) * COLUMN_MS);
+    // `close=1`: each window's book at its close, not its average (the scripts' depth; `DepthRecorder.query`).
+    const close = url.searchParams.get('close') === '1';
     // Times no clock reaches are refused: past 2^53 ms a step added to a time can leave it as it was.
     if (![from, to, stepMs].every(v => Math.abs(v) <= Number.MAX_SAFE_INTEGER)) return sendJson(res, { error: BAD_WINDOW }, 400);
     // An instrument at a time, the live loop running between them: days older than memory holds are read back from the store, which for a
@@ -436,10 +438,10 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
       const results: { instrumentId: string; step: number; columns: ReturnType<typeof recorder.query> }[] = [];
       for (const id of ids) {
         if (closed || res.destroyed) return;
-        results.push({ instrumentId: id, step: recorder.steps.get(id) ?? 0, columns: recorder.query(id, from, to, stepMs) });
+        results.push({ instrumentId: id, step: recorder.steps.get(id) ?? 0, columns: recorder.query(id, from, to, stepMs, close) });
         await new Promise<void>(resolve => setImmediate(resolve));
       }
-      if (!res.destroyed) sendBinary(res, encodeColumns(results, from, to, stepMs));
+      if (!res.destroyed) sendBinary(res, encodeColumns(results, from, to, stepMs, close));
     })().catch(error => { console.error('v2 /api/v2/columns failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); else res.end(); });
   };
   const candles = (url: URL, res: ServerResponse) => {

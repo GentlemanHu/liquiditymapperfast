@@ -23,7 +23,7 @@ const about = (): Readonly<Record<ExampleKey, { tip: string; body: readonly stri
   },
   'depth-bands': {
     tip: t('How far a given dollar size of the order book the page recorded reaches from the close, up and down.'),
-    body: [t('The upper line is how far up that many dollars of the order books reach, on every exchange the map shows added up as one, the lower how far down. Each candle\'s book is its average over the candle, so every dollar at a price counts, whichever side it stood on: a price the candle went through held bids part of the time and asks the rest.'),
+    body: [t('The upper line is how far up from the close that many dollars of asks reach, on every exchange the map shows added up as one, the lower how far down that many dollars of bids reach. Each candle\'s book is the one recorded in its last minute, as the candle closed.'),
       t('The size is a number of dollars, or a share of what an average candle traded at market. A wide band is a thin book. Unlike Bollinger bands, which measure how far prices moved, it measures how much stands in the way.'),
       t('Candles from before the page\'s recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it shows the liquidity typically recorded there, not what such an order would pay.')],
   },

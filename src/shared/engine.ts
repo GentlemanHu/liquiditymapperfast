@@ -115,14 +115,14 @@ const defaultPing = async (url: string, init?: { method: string; headers: Record
 };
 
 /** Columns as the page reads them: three flat arrays per instrument, concatenated across its columns. */
-export function packColumns(results: readonly { instrumentId: string; step: number; columns: readonly Column[] }[]): ColumnSet[] {
+export function packColumns(results: readonly { instrumentId: string; step: number; columns: readonly Column[] }[], close = false): ColumnSet[] {
   return results.map(({ instrumentId, step, columns }) => {
     const total = columns.reduce((sum, c) => sum + c.bins.length, 0);
     const bins = new Int32Array(total), bid = new Float32Array(total), ask = new Float32Array(total);
     let at = 0;
     for (const c of columns) { bins.set(c.bins, at); bid.set(c.bid, at); ask.set(c.ask, at); at += c.bins.length; }
     const lt = packLt(columns);
-    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), bins, bid, ask, ...(lt ? { lt } : {}) };
+    return { id: instrumentId, step, times: columns.map(c => c.t), counts: columns.map(c => c.bins.length), samples: columns.map(c => c.n), bins, bid, ask, ...(lt ? { lt } : {}), ...(close ? { at: columns.map(c => c.at ?? c.t) } : {}) };
   });
 }
 
@@ -408,9 +408,10 @@ export class Engine {
     return { asOf: now, now, markPrice: reference?.price ?? 0, markInstrumentId: reference?.instrumentId ?? '', markets, steps: Object.fromEntries(this.recorder.steps), recorded, columnMs: COLUMN_MS, timeframes: Object.keys(TIMEFRAMES), oiReferences };
   }
 
-  columns(ids: readonly string[], from: number, to: number, stepMs: number): ColumnsFrame {
+  /** `close`: each window's book at its close, not its average (`DepthRecorder.query`). */
+  columns(ids: readonly string[], from: number, to: number, stepMs: number, close = false): ColumnsFrame {
     const step = Math.max(COLUMN_MS, Math.round(stepMs / COLUMN_MS) * COLUMN_MS);
-    return { from, to, stepMs: step, instruments: packColumns(ids.map(id => ({ instrumentId: id, step: this.recorder.steps.get(id) ?? 0, columns: this.recorder.query(id, from, to, step) }))) };
+    return { from, to, stepMs: step, instruments: packColumns(ids.map(id => ({ instrumentId: id, step: this.recorder.steps.get(id) ?? 0, columns: this.recorder.query(id, from, to, step, close) })), close) };
   }
 
   /** One instrument's footprint, or several (comma separated) added together, as the server's route answers. */

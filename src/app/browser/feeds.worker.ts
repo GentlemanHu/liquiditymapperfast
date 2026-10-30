@@ -88,7 +88,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
   switch (call.method) {
     case 'bootstrap': return { result: run.bootstrap(), transfer: [] };
     case 'columns': {
-      const frame = run.columns(call.ids, call.from, call.to, call.stepMs);
+      const frame = run.columns(call.ids, call.from, call.to, call.stepMs, call.close === true);
       return { result: frame, transfer: frame.instruments.flatMap(set => [set.bins.buffer, set.bid.buffer, set.ask.buffer]) };
     }
     case 'footprint': return { result: run.footprint(call.inst, call.tfMs, call.from, call.to, call.rowStep, call.cuts ?? [], call.budget, call.venues === true), transfer: [] };

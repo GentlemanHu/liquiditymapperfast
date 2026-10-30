@@ -556,3 +556,24 @@ test('the store prunes and reads the day back through the (inst, t) index, never
     db.close();
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a question for each window's close: its latest recorded minute, never another window's, the open minute for the one under way, kept apart from the averages", () => {
+  const now = T0 + 12 * COLUMN_MS + 30_000, recorder = new DepthRecorder({ now: () => now });
+  recorder.steps.set('x:BTC', 10);
+  // Minutes 0 to 11 recorded, each with a bid of its number plus one at 100, all but minute 4 (the last of the first five-minute window); 12 under way.
+  for (let m = 0; m <= 12; m++) if (m !== 4) recorder.sample([book('x:BTC', T0 + m * COLUMN_MS, [[100, 100, m === 12 ? 99 : m + 1]], [])], T0 + m * COLUMN_MS);
+  const closes = recorder.query('x:BTC', T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS, true);
+  assert.deepEqual(closes.map(c => [(c.t - T0) / COLUMN_MS, (c.at! - T0) / COLUMN_MS, c.bid[0]]), [[0, 3, 4], [5, 9, 10], [10, 12, 99]]);
+  const averages = recorder.query('x:BTC', T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS);
+  assert.equal(averages[0]!.bid[0], 2.5, 'the averages as they were');
+  assert.equal(averages[0]!.at, undefined);
+  assert.equal(recorder.query('x:BTC', T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS, true)[0], closes[0], 'a window that has ended is kept');
+  assert.notEqual(recorder.query('x:BTC', T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS)[0], closes[0], 'under a key of its own');
+  // At a step of a minute a window is its minute.
+  assert.deepEqual(recorder.query('x:BTC', T0, T0 + 3 * COLUMN_MS, COLUMN_MS, true).map(c => c.at === c.t), [true, true, true]);
+  // On the wire: the minutes said, and an answer whose minutes are not a time for each window refused.
+  const decoded = decodeColumns(new Uint8Array(encodeColumns([{ instrumentId: 'x:BTC', step: 10, columns: closes }], T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS, true)).buffer);
+  assert.deepEqual(decoded.instruments[0]!.at, closes.map(c => c.at));
+  assert.equal(decodeColumns(new Uint8Array(encodeColumns([{ instrumentId: 'x:BTC', step: 10, columns: averages }], T0, T0 + 15 * COLUMN_MS, 5 * COLUMN_MS)).buffer).instruments[0]!.at, undefined);
+  assert.throws(() => decodeColumns(new Uint8Array(encodeColumns([{ instrumentId: 'x:BTC', step: 10, columns: [{ ...closes[0]!, at: NaN }] }], T0, T0 + 5 * COLUMN_MS, 5 * COLUMN_MS, true)).buffer), /at/);
+});
