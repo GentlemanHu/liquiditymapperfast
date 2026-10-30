@@ -272,6 +272,16 @@ test('open interest joins the venue history with the readings taken while the pa
   assert.ok(bars.some(b => b[4] === 100));
 });
 
+test('a page never asks OKX for its open-interest history (it sends no CORS header), and asks Bybit for it', async () => {
+  const hour = 3_600_000, base = Math.floor(Date.now() / hour) * hour, asked: string[] = [];
+  const get = async (url: string) => { asked.push(url); return url.includes('rubik') ? { code: '0', data: [] } : { retCode: 0, result: { list: [] } }; };
+  const { engine } = setup(['okx', 'bybit'], { get });
+  await engine.oi('okx:BTC-USDT-SWAP', hour, base - 2 * hour, base + hour);
+  assert.ok(!asked.some(u => u.includes('open-interest-history')), asked.join(' '));
+  await engine.oi('bybit:BTCUSDT', hour, base - 2 * hour, base + hour);
+  assert.ok(asked.some(u => u.includes('api.bybit.com/v5/market/open-interest')), 'the check reaches a venue a page can read');
+});
+
 test('open interest pushed on a venue socket lands in its own minute and the newest push moves that minute in place', async () => {
   const minute = 60_000, t0 = Math.floor(Date.now() / minute) * minute - 10 * minute;
   const { engine, fakes } = setup(['bybit'], { now: () => t0 + 4 * minute });
