@@ -119,12 +119,14 @@ export function ltCardLines(h: { time: number; bid: number; ask: number; halfLif
 }
 
 /** One bar of the Open Interest pane: the level, the step from the bar before, and how unusual that step is. */
-export function oiCardLines(h: { time: number; level: number; change: number | null; before: number | null; rank: number | null; of: number; sigma: number | null; source: string | null; staleMin: number | null }): InfoLine[] {
-  const signed = (value: number): string => `${value > 0 ? '+' : value < 0 ? '−' : ''}${fmtPrice(Math.abs(value), 1)}`;
+/** `estimate`: a reading of the long view (oi-long.ts), Bybit's scaled to meet the line: its time is the reading's, its figures marked ≈. */
+export function oiCardLines(h: { time: number; level: number; change: number | null; before: number | null; rank: number | null; of: number; sigma: number | null; source: string | null; staleMin: number | null; estimate?: boolean }): InfoLine[] {
+  const about = h.estimate ? '≈ ' : '';
+  const signed = (value: number): string => `${about}${value > 0 ? '+' : value < 0 ? '−' : ''}${fmtPrice(Math.abs(value), 1)}`;
   const lines: InfoLine[] = [
     { text: t('Open Interest'), bold: true },
-    { label: t('Candle'), text: clock(h.time, true) },
-    { label: t('Open interest'), text: fmtPrice(h.level, 1), bold: true },
+    { label: h.estimate ? t('Time') : t('Candle'), text: clock(h.time, true) },
+    { label: t('Open interest'), text: `${about}${fmtPrice(h.level, 1)}`, bold: true },
   ];
   if (h.change !== null) lines.push({ label: 'Δ', text: signed(h.change), color: sideColor(h.change), bold: true });
   if (h.before !== null) lines.push({ label: t('Candle before'), text: signed(h.before) });
@@ -132,6 +134,6 @@ export function oiCardLines(h: { time: number; level: number; change: number | n
   if (h.sigma !== null && Number.isFinite(h.sigma)) lines.push({ label: t('Unusual'), text: t('{z}σ above its baseline', { z: h.sigma.toFixed(1) }), bold: true });
   if (h.source) lines.push({ text: h.source, color: 'muted' });
   if (h.staleMin !== null) lines.push({ text: t('last sample {n} min ago', { n: h.staleMin }), color: 'above' });
-  lines.push({ text: t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
+  lines.push({ text: h.estimate ? t('Further back than the readings held: Bybit\'s own open interest, scaled to meet the line where it starts. An estimate of the total, and how far it moved since the reading before.') : t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
   return lines;
 }
