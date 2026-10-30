@@ -104,6 +104,15 @@ test("the 20-second refresh reads only the last bars again and puts them on thos
   assert.deepEqual(r.store.state.oi.slice(-2).map(b => b[4]), [101, 102], 'a refresh that brought nothing changes nothing');
 });
 
+test('a refresh asked again while its tail is still out is the same load: one question', async () => {
+  const r = await rig('binance:BTCUSDT');
+  await load(r, history(100));
+  const a = r.hub.loadOi(), b = r.hub.loadOi(); await turn();
+  assert.equal(a, b);
+  assert.equal(r.source.asked.length, 1);
+  r.source.asked.shift()!.resolve([]); await a;
+});
+
 test('a market whose bars stopped long ago is asked for its last few bars only', async () => {
   const r = await rig('binance:BTCUSDT');
   await load(r, history(100).slice(0, 10));

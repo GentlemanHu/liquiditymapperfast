@@ -791,9 +791,10 @@ export class Hub {
     const state = this.store.state, { timeframe } = state;
     const tf = TIMEFRAMES[timeframe] ?? 3_600_000, now = Date.now(), from = now - 500 * tf, to = now + tf;
     // The same markets read whole within OI_WHOLE_MS: only their last bars are read again (`#loadOiTail`); a venue that answered nothing, or
-    // a reference market standing in, is looked at again at the next whole read.
-    const held = this.#oiHeld;
-    if (held?.key === key && this.#oiKey === key && now - held.at < OI_WHOLE_MS && await this.#loadOiTail(key, tf, now, from)) return;
+    // a reference market standing in, is looked at again at the next whole read. Decided before anything is awaited, so the generation a
+    // load in flight is held under (`loadOi`) is its own.
+    const held = this.#oiHeld, parts = held?.key === key && this.#oiKey === key && now - held.at < OI_WHOLE_MS ? this.#oiHeldParts(tf) : null;
+    if (parts) return this.#loadOiTail(key, tf, now, from, parts);
     this.#oiKey = key;
     const generation = ++this.#oiGen;
     // The readings pushed since this load was asked for, put on its answer (it holds what the source had when asked). A server's push that
@@ -832,24 +833,30 @@ export class Hub {
   /** The markets last read whole and when (`#loadOi`): what the 20-second refresh reads only the last bars of. */
   #oiHeld: { key: string; at: number } | null = null;
 
-  /**
-   * The 20-second refresh of the markets read whole last: each one's bars from the one before its own last on (`OI_TAIL_BARS` back at
-   * most), put on those held (`oiTail`), an inverse market's at the one price its bars are at, with the readings pushed meanwhile. False
-   * where nothing is held to put them on (the caller reads whole).
-   */
-  async #loadOiTail(key: string, tf: number, now: number, keepFrom: number): Promise<boolean> {
-    const state = this.store.state, { timeframe } = state;
+  /** The markets on screen as parts (one market's bars are `state.oi`), or null where one has no bars or they are of another timeframe. */
+  #oiHeldParts(tf: number): OiPart[] | null {
+    const state = this.store.state;
     const held: OiPart[] = state.oiParts.length > 1 ? state.oiParts : state.oiInstrument && state.oi.length ? [{ id: state.oiInstrument, bars: state.oi, ...(state.oiPrice ? { usdAt: state.oiPrice } : {}) }] : [];
-    if (!held.length || this.#oiTf !== tf || held.some(part => !part.bars.length)) return false;
-    const floor = Math.max(keepFrom, (Math.floor(now / tf) - OI_TAIL_BARS) * tf), generation = ++this.#oiGen;
-    const froms = held.map(part => Math.max(floor, part.bars[part.bars.length - 1]![0] - tf));
+    return held.length && this.#oiTf === tf && held.every(part => part.bars.length) ? held : null;
+  }
+
+  /**
+   * The 20-second refresh of the markets read whole last (`held`, `#oiHeldParts`): each one's bars from the one before its own last on
+   * (`OI_TAIL_BARS` back at most), put on those held (`oiTail`), an inverse market's at the one price its bars are at, with the readings
+   * pushed meanwhile.
+   */
+  async #loadOiTail(key: string, tf: number, now: number, keepFrom: number, held: readonly OiPart[]): Promise<void> {
+    const timeframe = this.store.state.timeframe, generation = ++this.#oiGen;
+    const floor = Math.max(keepFrom, (Math.floor(now / tf) - OI_TAIL_BARS) * tf), froms = held.map(part => Math.max(floor, part.bars[part.bars.length - 1]![0] - tf));
     const tails = await Promise.all(held.map((part, i) => this.oiSeries(part.id, timeframe, froms[i]!, now + tf, part.usdAt).then(series => series.bars, (): OiBar[] => [])));
-    if (this.#oiKey !== key || generation !== this.#oiGen) return true;
+    if (this.#oiKey !== key || generation !== this.#oiGen) return;
     const pushed = this.#oiDuring.filter(entry => entry.at >= now).map(entry => entry.reading);
-    const parts = held.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keepFrom) }, pushed, tf));
+    // On the bars on screen now: pushes may have moved them while the tails were read.
+    const current = this.#oiHeldParts(tf);
+    if (!current || current.length !== held.length || current.some((part, i) => part.id !== held[i]!.id)) return;
+    const parts = current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keepFrom) }, pushed, tf));
     if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiParts: parts });
     else this.store.set({ oi: [...parts[0]!.bars] });
-    return true;
   }
 
   /**
