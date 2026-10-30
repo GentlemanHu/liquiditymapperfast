@@ -77,7 +77,7 @@ export function stripHistoryFrom(first: number, start: number, tf: number, cap =
  * was 8,500 of them in 1,500 pixels, each a few drawing calls, all drawn again on every pointer move: 3.6 frames a second at a 400-day
  * view, 30 with the strip off (measured 2026-10-30, Karl: "if I zoom out a lot ... it almost seems like the UI freezes").
  */
-export const STRIP_MIN_PX = 3;
+export const STRIP_MIN_PX = 2;
 
 /**
  * The timeframe of the strip's bars over `span` ms drawn `pw` pixels wide: the chart's own (`tfMs`) while its bars are at least `min`

@@ -1502,7 +1502,11 @@ export class HeatPane {
     // While the trade dust shows, a candle is its outline and a thin wick: a filled body (and its halo) would hide the orders inside it. Outline
     // candles are outlines always; OHLC bars and the line are drawn their own way (chart-type.ts).
     const type = this.previewChartType ?? state.chartType, hollow = type === 'outline' || this.#dustOn(state);
-    if (type === 'line') { this.#paintCloseLine(ctx, state, pw, ph, tf, layout, narrowing, hot); return; }
+    // Narrower than CANDLE_LINE_PX a candle is a few overlapping marks per pixel (a 45-day view of hourly ones drew 1,100 of them, six to
+    // eight drawing calls and a blurred ring each, on every pointer move: 14 frames a second, 2026-10-30): the candles are then the line
+    // through their closes, as the price history beyond them is.
+    const thin = bar < CANDLE_LINE_PX;
+    if (type === 'line' || thin) { this.#paintCloseLine(ctx, state, pw, ph, tf, layout, narrowing, hot, thin); return; }
     const history = this.historyCandles(state), count = history.length + state.candles.length;
     for (let k = 0; k < count; k++) {
       // The exchange's candles before the chart's own, which are drawn over them; Highlights rings only the chart's own (its baseline is theirs).
@@ -1544,8 +1548,9 @@ export class HeatPane {
         ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.fillRect(x - body / 2, top, body, height);
         if (body >= 3) { ctx.globalAlpha = outline; ctx.strokeStyle = edge; ctx.strokeRect(x - body / 2 + 0.5, top + 0.5, body - 1, Math.max(0.5, height - 1)); }
       }
-      // Hollow, filled or a bar, a candle of unusual volume keeps its ring (Highlights).
-      if (ci >= 0 && hot(ci)) { // unusually large volume: a glowing ring in the candle's own colour
+      // Hollow, filled or a bar, a candle of unusual volume keeps its ring (Highlights), while it is wide enough to be told from its
+      // neighbours: narrower, the ring (a blur each) covers the candles beside it, and the volume strip marks the candle as well.
+      if (ci >= 0 && hot(ci) && body >= 3) { // unusually large volume: a glowing ring in the candle's own colour
         ctx.save(); ctx.globalAlpha = 1; ctx.shadowColor = color; ctx.shadowBlur = 12; ctx.strokeStyle = color; ctx.lineWidth = 2.4;
         ctx.strokeRect(x - body / 2 - 2.5, top - 2.5, body + 5, height + 5); ctx.restore();
       }

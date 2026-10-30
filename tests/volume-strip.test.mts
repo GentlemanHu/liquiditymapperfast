@@ -243,8 +243,8 @@ test("zoomed out, the strip's bars are of the shortest longer timeframe that kee
   assert.deepEqual(stripTimeframe(H, 400 * D, 1500), { ms: D, name: '1d' });
   assert.deepEqual(stripTimeframe(H, 2000 * D, 1500), { ms: D, name: '1d' });
   // A whole number of the chart's candles: from 15 minutes the next is 30, then the hour.
-  assert.deepEqual(stripTimeframe(15 * M, 7 * D, 1500), { ms: 30 * M, name: '30m' });
-  assert.equal(stripTimeframe(15 * M, 7 * D, 1500, 6).ms, H);
+  assert.deepEqual(stripTimeframe(15 * M, 14 * D, 1500), { ms: 30 * M, name: '30m' });
+  assert.equal(stripTimeframe(15 * M, 14 * D, 1500, 4).ms, H);
   // Exactly STRIP_MIN_PX wide is wide enough; the chart's daily candles have nothing longer; no size yet keeps the chart's.
   assert.equal(stripTimeframe(H, 1500 * H / STRIP_MIN_PX, 1500).ms, H);
   assert.deepEqual(stripTimeframe(D, 4000 * D, 1500), { ms: D, name: '1d' });
