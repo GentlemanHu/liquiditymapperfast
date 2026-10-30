@@ -19,13 +19,11 @@ export function examples(): { key: ExampleKey; name: string; source: string; pla
 
 // The size: a number of dollars, or a share of what an average candle traded at market (the band then means the same
 // on a quiet day and a busy one, and on any coin; it widens with the timeframe, as candles trade more). On Bitcoin's
-// books added up, $100M reached about 0.1 % from the close on 2026-10-29 at every timeframe.
-size = option(type=number, default=100000000, min=100000, step=1000000, label="Size ($)")
+// books added up, $100M reached about 0.1 % from the close on 2026-10-29 at every timeframe, $250M about 0.2 %.
+size = option(type=number, default=250000000, min=100000, step=1000000, label="Size ($)")
 byVolume = option(type=checkbox, default=false, label="Size from the volume")
 share = option(type=number, default=0.1, min=0.01, step=0.01, label="Share of a candle's volume")
 len = option(type=number, default=20, min=1, step=1, label="Volume window (candles)")
-askColor = option(type=color, default="rgba(255,120,90,0.9)", label="Asks")
-bidColor = option(type=color, default="rgba(70,160,255,0.9)", label="Bids")
 fill = option(type=color, default="rgba(128,128,128,0.08)", label="Fill")
 
 // depthabove(x) and depthbelow(x) are prices: NaN where the book was not recorded for the candle, or holds less than x.
@@ -33,7 +31,9 @@ fill = option(type=color, default="rgba(128,128,128,0.08)", label="Fill")
 // the prices it went through held bids part of the time and asks the rest. askdepth(x) and biddepth(x) count one side
 // only (the asks above, the bids below), which after a move reads the side the price came from as thin.
 var usd = byVolume ? share * sma(vbuy + vsell, len) : size
-cloudarea(depthbelow(usd), depthabove(usd), positiveColor=fill, negativeColor=fill, higherLineColor=askColor, lowerLineColor=bidColor, title="Depth bands")
+// The lines in the theme's ink: the heat map under them is drawn in the page's own two colours, which would hide lines of either.
+var ink = theme.dark ? "#f2f2f2" : "#1c1c1c"
+cloudarea(depthbelow(usd), depthabove(usd), positiveColor=fill, negativeColor=fill, higherLineColor=ink, lowerLineColor=ink, higherLineWidth=2, lowerLineWidth=2, title="Depth bands")
 ` },
     // What each candle did to the range of the one before (inside, outside, up, down), and the patterns that follow from it (breakout,
     // failed break, rejection, outside close) marked where they happen, with their levels and what the order flow did there when pointed at.

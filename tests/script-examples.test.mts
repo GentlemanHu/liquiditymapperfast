@@ -87,14 +87,14 @@ test('depth bands: the price a size of the book reaches either side of the close
     return { lower: plot.fields.lowerValue!, higher: plot.fields.higherValue! };
   };
   const at = N - 1, close = data.close[at]!;
-  // $100M is four bins of $25M, from the edge of the first bin wholly past the close: $80 to $100 above it, and as far below.
+  // $250M is ten bins of $25M, from the edge of the first bin wholly past the close: $200 to $220 above it, and as far below.
   const fixed = band({}), up = fixed.higher[at]! - close, down = close - fixed.lower[at]!;
-  assert.ok(up > 80 && up <= 100, `${fixed.higher[at]} over ${close}`);
-  assert.ok(down > 80 && down <= 100, `${fixed.lower[at]} under ${close}`);
+  assert.ok(up > 200 && up <= 220, `${fixed.higher[at]} over ${close}`);
+  assert.ok(down > 200 && down <= 220, `${fixed.lower[at]} under ${close}`);
   // More than the book holds (2 % of the price, some $2B a side): no band.
   assert.ok(Number.isNaN(band({ size: 1e10 }).higher[at]!));
-  // A share of the average candle's traded dollars (about $200M here): all of it reaches further than $100M.
-  const byVolume = band({ byVolume: true, share: 1 });
+  // A share of the average candle's traded dollars (about $200M here): twice it reaches further than $250M.
+  const byVolume = band({ byVolume: true, share: 2 });
   assert.ok(byVolume.higher[at]! - close > fixed.higher[at]! - close);
 });
 

@@ -25,8 +25,9 @@ import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag
 /** How often the windows that can still change are read again, and how long a book may be gone before it is dropped (venues reconnect). */
 const REFRESH_MS = 30_000, DROP_AFTER_MS = 5_000;
 /**
- * In the first minutes of a timeframe's depth, books that answered nothing yet are asked again this often: a page that has just started
- * recording (the browser's source) has nothing for them at first, and waiting the full refresh left the bands empty for half a minute.
+ * In the first minutes of a timeframe's depth, the books that answered nothing yet (only they) are asked again this often: a page that has
+ * just started recording (the browser's source) has nothing for them at first, and waiting the full refresh left the bands empty for half a
+ * minute. A book its source never records costs a small question every 3 s for those two minutes.
  */
 const UNANSWERED_REFRESH_MS = 3_000, UNANSWERED_FOR_MS = 120_000;
 /**
@@ -66,12 +67,12 @@ interface Era {
   keepFrom: number;
   /** The windows from here on may still have changed (they had not settled when last read); when they were last read, and the candle then. */
   settledTo: number; tailAt: number; forming: number;
-  /** When its first read began. */
-  startedAt: number;
+  /** When its first read began, and when the books that answered nothing were last asked again. */
+  startedAt: number; reaskAt: number;
   /** Its revision, and the changes a host a few behind may lack (none while the timeframe is not on screen: it does not change then). */
   revision: number; log: DepthMessage[];
 }
-const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, startedAt: 0, revision, log: [] });
+const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, startedAt: 0, reaskAt: 0, revision, log: [] });
 /** The bins an era keeps alive (its windows' copies, each once: `binsKept`). */
 const binsOf = (era: Era): number => { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const h of era.books.values()) n += binsKept(h.windows.values(), seen); return n; };
 const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
@@ -137,21 +138,18 @@ export class DepthFeed {
     for (const id of ids) { const r = era.books.get(id)?.readFrom ?? Infinity; if (r > from && r > top) top = r; }
     if (top > -Infinity) {
       const group = ids.filter(id => (era.books.get(id)?.readFrom ?? Infinity) === top);
-      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; era.startedAt = now; }
+      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; era.startedAt = now; era.reaskAt = now; }
       void this.#read(key, era, state, group, from, Math.min(top, forming + tf), tf, true, now);
-    } else if (era.books.size && (now - era.tailAt >= this.#refresh(era, ids, now) || forming !== era.forming)) {
+    } else if (era.books.size && (now - era.tailAt >= REFRESH_MS || forming !== era.forming)) {
       const since = Math.max(from, era.settledTo);
       era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming;
       void this.#read(key, era, state, [...era.books.keys()], since, forming + tf, tf, false, now).then(ok => { if (!ok) era.settledTo = Math.min(era.settledTo, since); });
+    } else if (now - era.startedAt < UNANSWERED_FOR_MS && now - era.reaskAt >= UNANSWERED_REFRESH_MS) {
+      // The books that answered nothing yet, over the windows that can still have changed: what they recorded since the first read.
+      const unanswered = ids.filter(id => era.books.get(id)?.step === 0);
+      if (unanswered.length) { era.reaskAt = now; void this.#read(key, era, state, unanswered, Math.max(from, era.settledTo), forming + tf, tf, false, now); }
     }
     return this.tag;
-  }
-
-  /** How long after the last read of the windows that can change the next is due (`UNANSWERED_REFRESH_MS` while books answered nothing yet). */
-  #refresh(era: Era, ids: readonly string[], now: number): number {
-    if (now - era.startedAt >= UNANSWERED_FOR_MS) return REFRESH_MS;
-    for (const id of ids) if (era.books.get(id)?.step === 0) return UNANSWERED_REFRESH_MS;
-    return REFRESH_MS;
   }
 
   /** Post `port` what its worker lacks of the timeframe on screen: the changes since the revision it has, or everything. */

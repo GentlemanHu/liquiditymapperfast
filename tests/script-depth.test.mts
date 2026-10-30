@@ -422,9 +422,9 @@ test('the page keeps alive about what it holds: the series moving on lets the co
 test('books that answered nothing at first are asked again within seconds, for the first minutes only', async () => {
   const T = MIN, now = 1_000 * T + 5_000, starts = candlesFrom(901, 1_000, T);
   let recording = false;
-  const asks: number[] = [];
+  const asks: number[] = [], askedIds: string[][] = [];
   const source = { kind: 'browser', columns: async (ids: string[], from: number, to: number, stepMs: number) => {
-    asks.push(from);
+    asks.push(from); askedIds.push(ids);
     const times: number[] = [];
     if (recording) for (let t = Math.max(from, 999 * T); t < to; t += stepMs) times.push(t);
     return { from, to, stepMs, instruments: recording ? ids.map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length).fill(10), ask: new Float32Array(times.length).fill(10) })) : [] };
@@ -437,5 +437,26 @@ test('books that answered nothing at first are asked again within seconds, for t
   assert.equal(asks.length, first, 'not on every run');
   feed.sync(twoBooks('1m'), starts, T, now + 3_500); await settle();
   assert.ok(asks.length > first, 'again after 3 s');
+  assert.ok(askedIds.slice(first).every(x => x.length <= 2), 'only the books that answered nothing');
   assert.equal(held(feed, twoBooks('1m'), candlesFrom(999, 1_000, T), T, now + 3_500), 2);
+});
+
+test('the re-ask covers only books that answered nothing; a book that answers is not asked again before the refresh', async () => {
+  const T = MIN, now = 1_000 * T + 5_000, starts = candlesFrom(901, 1_000, T), asked: string[][] = [];
+  const source = { kind: 'server', columns: async (ids: string[], from: number, to: number, stepMs: number) => {
+    asked.push(ids);
+    const times: number[] = [];
+    for (let t = from; t < to; t += stepMs) times.push(t);
+    // b is never recorded by this source.
+    return { from, to, stepMs, instruments: ids.filter(id => id !== 'b:BTC').map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length).fill(10), ask: new Float32Array(times.length).fill(10) })) };
+  } };
+  const feed = new DepthFeed({ source } as never, () => {});
+  feed.sync(twoBooks('1m'), starts, T, now); await settle();
+  const first = asked.length;
+  feed.sync(twoBooks('1m'), starts, T, now + 3_500); await settle();
+  assert.deepEqual(asked.slice(first), [['b:BTC']]);
+  // Past the first two minutes: only the refresh, for both.
+  asked.length = 0;
+  feed.sync(twoBooks('1m'), starts, T, now + 125_000); await settle();
+  assert.ok(asked.every(x => x.length === 2));
 });
