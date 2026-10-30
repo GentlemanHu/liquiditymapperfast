@@ -25,9 +25,9 @@ import { binsKept, keptWindows, type DepthBook, type DepthMessage, type DepthTag
 /** How often the windows that can still change are read again, and how long a book may be gone before it is dropped (venues reconnect). */
 const REFRESH_MS = 30_000, DROP_AFTER_MS = 5_000;
 /**
- * In the first minutes of a timeframe's depth, the books that answered nothing yet (only they) are asked again this often: a page that has
- * just started recording (the browser's source) has nothing for them at first, and waiting the full refresh left the bands empty for half a
- * minute. A book its source never records costs a small question every 3 s for those two minutes.
+ * In a book's first two minutes, while it holds no window, it (only it) is asked again this often: a page that has just started recording
+ * (the browser's source), or a venue just switched on, has nothing for it at first, and waiting the full refresh left the bands without it
+ * for half a minute. A book its source never records costs a small question every 3 s for those two minutes.
  */
 const UNANSWERED_REFRESH_MS = 3_000, UNANSWERED_FOR_MS = 120_000;
 /**
@@ -56,8 +56,11 @@ export const MAX_WINDOWS = 1_000;
  */
 const KEPT_ERAS = 3, KEPT_BINS = 4_000_000, KEPT_BINS_BROWSER = 1_000_000;
 
-/** One book: its windows, its grid (0 while it has answered nothing), and how far back it has been read (windows from there on are held). */
-interface Held { info: MarketInfo; step: number; windows: Map<number, Window>; readFrom: number }
+/**
+ * One book: its windows, its grid (0 while it has answered nothing), how far back it has been read (windows from there on are held), and when
+ * it was first asked for.
+ */
+interface Held { info: MarketInfo; step: number; windows: Map<number, Window>; readFrom: number; bornAt: number }
 /** What is held for one timeframe. */
 interface Era {
   books: Map<string, Held>;
@@ -67,12 +70,12 @@ interface Era {
   keepFrom: number;
   /** The windows from here on may still have changed (they had not settled when last read); when they were last read, and the candle then. */
   settledTo: number; tailAt: number; forming: number;
-  /** When its first read began, and when the books that answered nothing were last asked again. */
-  startedAt: number; reaskAt: number;
+  /** When the books that hold nothing yet were last asked again (`UNANSWERED_REFRESH_MS`). */
+  reaskAt: number;
   /** Its revision, and the changes a host a few behind may lack (none while the timeframe is not on screen: it does not change then). */
   revision: number; log: DepthMessage[];
 }
-const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, startedAt: 0, reaskAt: 0, revision, log: [] });
+const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, reaskAt: 0, revision, log: [] });
 /** The bins an era keeps alive (its windows' copies, each once: `binsKept`). */
 const binsOf = (era: Era): number => { const seen = new Set<ArrayBufferLike>(); let n = 0; for (const h of era.books.values()) n += binsKept(h.windows.values(), seen); return n; };
 const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
@@ -138,15 +141,16 @@ export class DepthFeed {
     for (const id of ids) { const r = era.books.get(id)?.readFrom ?? Infinity; if (r > from && r > top) top = r; }
     if (top > -Infinity) {
       const group = ids.filter(id => (era.books.get(id)?.readFrom ?? Infinity) === top);
-      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; era.startedAt = now; era.reaskAt = now; }
+      if (!era.books.size) { era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming; era.reaskAt = now; }
       void this.#read(key, era, state, group, from, Math.min(top, forming + tf), tf, true, now);
     } else if (era.books.size && (now - era.tailAt >= REFRESH_MS || forming !== era.forming)) {
       const since = Math.max(from, era.settledTo);
       era.settledTo = Math.min(settledBefore(now, tf), forming); era.tailAt = now; era.forming = forming;
       void this.#read(key, era, state, [...era.books.keys()], since, forming + tf, tf, false, now).then(ok => { if (!ok) era.settledTo = Math.min(era.settledTo, since); });
-    } else if (now - era.startedAt < UNANSWERED_FOR_MS && now - era.reaskAt >= UNANSWERED_REFRESH_MS) {
-      // The books that answered nothing yet, over the windows that can still have changed: what they recorded since the first read.
-      const unanswered = ids.filter(id => era.books.get(id)?.step === 0);
+    } else if (now - era.reaskAt >= UNANSWERED_REFRESH_MS) {
+      // The books that hold no window yet, first asked for between a few seconds and two minutes ago, over the windows that can still have
+      // changed: what they recorded since.
+      const unanswered = ids.filter(id => { const h = era.books.get(id); return !!h && !h.windows.size && now - h.bornAt >= UNANSWERED_REFRESH_MS && now - h.bornAt < UNANSWERED_FOR_MS; });
       if (unanswered.length) { era.reaskAt = now; void this.#read(key, era, state, unanswered, Math.max(from, era.settledTo), forming + tf, tf, false, now); }
     }
     return this.tag;
@@ -258,7 +262,7 @@ export class DepthFeed {
           // A book recorded on another grid than the one held (a source started again): what was held of it is of the old grid, and goes, and
           // it is read again whole, on the new one. One that had answered nothing has no grid yet: its first answer is not another grid.
           const regrid = !!held && held.step !== set.step, anew = regrid && held!.step > 0;
-          if (!held || regrid) { held = { info: marketInfo(state.markets, set.id), step: set.step, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity }; era.books.set(set.id, held); }
+          if (!held || regrid) { held = { info: marketInfo(state.markets, set.id), step: set.step, windows: new Map(), readFrom: anew ? Infinity : held?.readFrom ?? Infinity, bornAt: held?.bornAt ?? now }; era.books.set(set.id, held); }
           // The market's description as the page knows it now (the markets may have been listed after the book's first answer).
           else held.info = marketInfo(state.markets, set.id);
           if (anew) regridded.add(set.id);
@@ -272,7 +276,7 @@ export class DepthFeed {
         for (const id of ids) {
           if (era.dropped.has(id)) continue;
           let held = era.books.get(id);
-          if (!held) { held = { info: marketInfo(state.markets, id), step: 0, windows: new Map(), readFrom: Infinity }; era.books.set(id, held); }
+          if (!held) { held = { info: marketInfo(state.markets, id), step: 0, windows: new Map(), readFrom: Infinity, bornAt: now }; era.books.set(id, held); }
           // The windows from `start` on are held only where this answer joins those held before it (a read under way while old windows were
           // let go, or past a gap, leaves the windows below it to the next read).
           if (back && !regridded.has(id) && end >= Math.min(held.readFrom, to)) held.readFrom = Math.min(held.readFrom, Math.max(start, era.keepFrom));
@@ -290,8 +294,9 @@ export class DepthFeed {
       ok = true;
       return true;
     } finally {
-      // What is left to read (another group of books, candles loaded meanwhile) is looked for at the next run, now rather than at the pane's refresh.
-      if (this.#reading === mine) { this.#reading = null; if (ok) this.changed(); }
+      // What is left to read after a read back (another group of books, candles loaded meanwhile) is looked for at the next run, now rather than
+      // at the pane's refresh; a read of the last windows that changed nothing asks for no run (each change asked for one already).
+      if (this.#reading === mine) { this.#reading = null; if (ok && back) this.changed(); }
     }
   }
 }

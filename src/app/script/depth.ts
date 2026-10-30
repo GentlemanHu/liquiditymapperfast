@@ -226,7 +226,10 @@ export class DepthCache {
       // A book recorded on another grid (a source started again and chose another step): its bins mean other prices, so it starts again.
       if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); era.books.delete(b.id); book = undefined; }
       if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; era.books.set(b.id, book); }
-      // The market's description as the page now knows it (it may have learnt it after the book's first answer).
+      // The market's description as the page now knows it (it may have learnt it after the book's first answer): one that changed changes what
+      // a source(...) filter reads at every candle the book has.
+      const was = book.info;
+      if (was.venue !== b.info.venue || was.kind !== b.info.kind || was.quote !== b.info.quote) for (const t of book.windows.keys()) mark(t);
       book.info = b.info;
       const incoming = keptWindows(b.times, b.counts, b.bins, b.bid, b.ask, t => t >= b.from && t < b.to && t >= keepFrom);
       for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to && !incoming.has(t)) { book.windows.delete(t); mark(t); }

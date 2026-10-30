@@ -460,3 +460,43 @@ test('the re-ask covers only books that answered nothing; a book that answers is
   feed.sync(twoBooks('1m'), starts, T, now + 125_000); await settle();
   assert.ok(asked.every(x => x.length === 2));
 });
+
+test('a book is re-asked at most every 3 s and only in its first two minutes; a change of its market description reruns its candles', async () => {
+  const T = MIN, now = 1_000 * T + 5_000, starts = candlesFrom(901, 1_000, T), asked: string[][] = [];
+  const source = { kind: 'server', columns: async (ids: string[], from: number, to: number, stepMs: number) => {
+    asked.push(ids);
+    const times: number[] = [];
+    for (let t = from; t < to; t += stepMs) times.push(t);
+    return { from, to, stepMs, instruments: ids.filter(id => id !== 'b:BTC').map(id => ({ id, step: 10, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(100), bid: new Float32Array(times.length).fill(10), ask: new Float32Array(times.length).fill(10) })) };
+  } };
+  const feed = new DepthFeed({ source } as never, () => {});
+  for (const at of [0, 3_500]) { feed.sync(twoBooks('1m'), starts, T, now + at); await settle(); }
+  const n = asked.length;
+  feed.sync(twoBooks('1m'), starts, T, now + 4_000); await settle();
+  assert.equal(asked.length, n, 'not again within 3 s');
+  for (const at of [31_000, 62_000, 93_000, 124_000]) { feed.sync(twoBooks('1m'), starts, T, now + at); await settle(); }
+  asked.length = 0;
+  feed.sync(twoBooks('1m'), starts, T, now + 127_500); await settle();
+  assert.deepEqual(asked, [], 'b is past its first two minutes');
+  // The worker: the same windows with another market description read again change the candles' revisions.
+  const cache = new DepthCache(), times = Float64Array.from([0, M]);
+  const msg = (revision: number, kind: 'perp' | 'spot', reset: boolean): DepthMessage => ({ t: 'depth', key: '1m', revision, prev: revision - 1, reset, drop: [],
+    books: [{ ...book('a:BTC', 'binance', -Infinity, Infinity, [0, M], () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] })), info: { id: 'a:BTC', venue: 'binance', kind, quote: 'USDT' } }] });
+  cache.apply(msg(1, 'perp', true));
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
+  const before = cache.epochs(times);
+  cache.apply(msg(2, 'spot', false));
+  assert.ok(cache.holds({ key: '1m', revision: 2 }));
+  const after = cache.epochs(times);
+  assert.ok(after[0] !== before[0] && after[1] !== before[1]);
+  assert.equal(cache.reader.books(M, { kinds: ['spot'] }, 'type=spot'), 1);
+  // The page: a market listed after the book's first answer is described as listed in what it sends.
+  const late = new DepthFeed({ source: { kind: 'server', columns: source.columns } } as never, () => {});
+  late.sync({ timeframe: '1m', markets: [], levels: { books: [{ id: 'a:BTC' }] } } as never, starts, T, now); await settle();
+  const listed = { timeframe: '1m', markets: [{ id: 'a:BTC', instrumentId: 'a:BTC', venue: 'binance', marketType: 'spot', quote: 'USDT' }], levels: { books: [{ id: 'a:BTC' }] } } as never;
+  late.sync(listed, starts, T, now + 31_000); await settle();
+  const sent: DepthMessage[] = [];
+  late.sync(listed, starts, T, now + 31_000);
+  late.deliver({ generation: 1, post: m => sent.push(m) });
+  assert.equal(sent[0]!.books.find(b => b.id === 'a:BTC')!.info.kind, 'spot');
+});
