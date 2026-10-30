@@ -74,6 +74,12 @@ test('a view far back is asked around itself, not up to the seam, and a window n
   assert.equal((cut.to - cut.from) / HOUR, OI_LONG_MAX_ROWS);
   assert.ok(cut.to >= seamT);
   assert.equal(oiLongWindow({ ident: 'bybit:BTCUSDT', period: HOUR, ...cut, bars: [] }, wide, HOUR, seamT, NOW), null, 'no question every frame');
+  // A wide plot (2,400 px) draws 45 days in hourly readings 2.2 px apart: three views are 3,240 readings, and the margin after the view gives
+  // way so that its start is kept (review round 2: cut at the start, its first 6.7 days were never read).
+  const long = { t0: NOW - 195 * DAY, t1: NOW - 150 * DAY }, kept = oiLongWindow(null, long, HOUR, seamT, NOW)!;
+  assert.ok(kept.from <= long.t0 - HOUR && kept.to >= long.t1 + HOUR, 'the whole view and a reading either side');
+  assert.ok((kept.to - kept.from) / HOUR <= OI_LONG_MAX_ROWS);
+  assert.equal(oiLongWindow({ ident: 'bybit:BTCUSDT', period: HOUR, ...kept, bars: [] }, long, HOUR, seamT, NOW), null);
 });
 
 const settle = (): Promise<void> => new Promise(resolve => setImmediate(resolve));

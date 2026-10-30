@@ -70,14 +70,16 @@ export const OI_LONG_MAX_ROWS = 2_000;
 /**
  * The window to ask for, or null when what is held covers the view: a reading before the view's start up to its end or the seam, whichever
  * comes first. Asked: a view before the view's start (so zooming out a step or panning back asks nothing) up to a view after its end or a day
- * past the seam (the line's first bars move on with the clock), never past now, and `OI_LONG_MAX_ROWS` readings at most, cut at the start: a
- * window always ran to the seam, and a ten-day view 150 days back in hourly readings was asked 3,400 of them, of which the reader kept the
- * newest 2,400, none in view (review, 2026-10-30). What one window cannot hold is not asked for again.
+ * past the seam (the line's first bars move on with the clock), never past now, and `OI_LONG_MAX_ROWS` readings at most: a window always ran
+ * to the seam, and a ten-day view 150 days back in hourly readings was asked 3,400 of them, of which the reader kept the newest 2,400, none in
+ * view (review, 2026-10-30). Over the cap the margin after the view goes first, then the one before it (a view of more than the cap keeps its
+ * end), so a wide plot's long view far back keeps its start. What one window cannot hold is not asked for again.
  */
 export function oiLongWindow(held: OiLongHeld | null, view: { t0: number; t1: number }, periodMs: number, seamT: number, now: number): { from: number; to: number } | null {
-  const span = Math.max(periodMs, view.t1 - view.t0);
-  const to = Math.min(now, Math.ceil(Math.min(seamT + Math.max(periodMs, DAY), view.t1 + span) / periodMs) * periodMs);
-  const ask = { from: Math.floor(Math.max(view.t0 - span, to - OI_LONG_MAX_ROWS * periodMs) / periodMs) * periodMs, to };
+  const span = Math.max(periodMs, view.t1 - view.t0), cap = OI_LONG_MAX_ROWS * periodMs, start = Math.floor((view.t0 - periodMs) / periodMs) * periodMs;
+  const after = Math.min(now, Math.ceil(Math.min(seamT + Math.max(periodMs, DAY), view.t1 + span) / periodMs) * periodMs);
+  const to = Math.min(after, Math.max(Math.ceil((view.t1 + periodMs) / periodMs) * periodMs, start + cap));
+  const ask = { from: Math.max(Math.floor((view.t0 - span) / periodMs) * periodMs, to - cap), to };
   const needFrom = Math.max(view.t0 - periodMs, ask.from), needTo = Math.min(seamT, view.t1 + periodMs);
   return held && held.period === periodMs && held.from <= needFrom && held.to >= needTo ? null : ask;
 }
