@@ -4,7 +4,7 @@ import type { ColumnSet } from '../../shared/columns.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { settledBefore } from '../column-holds.ts';
 import { marketInfo, type MarketInfo } from './inputs.ts';
-import type { DepthBook, DepthMessage, DepthTag } from './depth.ts';
+import { SMALL_ANSWER, type DepthBook, type DepthMessage, type DepthTag } from './depth.ts';
 
 /**
  * The page's side of the scripts' order book (`depth.ts`): the recorded windows at the chart's timeframe of every book the heat map adds up
@@ -13,10 +13,13 @@ import type { DepthBook, DepthMessage, DepthTag } from './depth.ts';
  * is read whole, one gone for a few seconds is dropped, candles loaded further back are read when they come, and the windows that can still
  * change (from the source's settle mark at the last read on: the candle under way, and the last ones until they settle) are read again every
  * 30 s and as each candle starts. One read at a time for the timeframe on screen; a read for one left behind stops at its next answer, and
- * the new one does not wait for it. What was held for the last few timeframes is kept for a return, so a switch back has its depth at once.
+ * the new one does not wait for it. What was held for the last few timeframes is kept for a return, here and in the worker, so a switch back
+ * has its depth at once and sends nothing.
  *
- * Every change is a message (`DepthMessage`) with the next revision; `deliver` posts a host what it lacks: the messages since the one it
- * has when they are all still kept, else everything (a worker started since, one far behind, or another timeframe).
+ * Each timeframe's depth (an era) has its own revision, from one counter, so no revision is ever used twice. Every change is a message
+ * (`DepthMessage`) that says the revision it builds on; `deliver` posts a host what its worker lacks of the timeframe on screen: the
+ * messages since the revision it has, when they are all still kept, else everything (a worker started since, one far behind, a timeframe
+ * it never had).
  */
 
 /** How often the windows that can still change are read again, and how long a book may be gone before it is dropped (venues reconnect). */
@@ -27,14 +30,17 @@ const REFRESH_MS = 30_000, DROP_AFTER_MS = 5_000;
  * 100 s for one on 2026-10-29).
  */
 const RETRY_MS = 5_000, READ_TIMEOUT_MS = 150_000;
-/** How many messages are kept for a host a few behind, and how many bins they may hold together (about 24 MB); one further behind gets everything. */
+/**
+ * How many messages are kept for a host a few behind, and how many bins they may hold together (about 24 MB): one further behind gets
+ * everything, and a message larger than that alone is not kept (a read's chunks are sized to stay well under it).
+ */
 const LOG = 32, LOG_BINS = 2_000_000;
 /**
  * Windows a read asks for at once, the newest first so the bands start at the chart's right edge and fill in back in time: a few at first,
- * so the first answer comes at once, then four times as many each time (a quiet server merges a hundred windows of a dozen books in about
- * 0.1 s; 2026-10-29).
+ * so the first answer comes at once, then four times as many each time, but no more than about `CHUNK_BINS` bins of all the books together
+ * by what the last answer held a window (a quiet server merges a hundred windows of a dozen books in about 0.1 s; 2026-10-29).
  */
-const FIRST_CHUNK = 24, MAX_CHUNK = 384;
+const FIRST_CHUNK = 24, MAX_CHUNK = 384, CHUNK_BINS = 1_000_000;
 /** How many of the newest candles have their depth read: a window holds about 200 bins a book (2026-10-29), so 24 books take some 58 MB. */
 export const MAX_WINDOWS = 1_000;
 /**
@@ -49,36 +55,41 @@ interface Held { info: MarketInfo; step: number; windows: Map<number, Window>; r
 /** What is held for one timeframe. */
 interface Era {
   books: Map<string, Held>;
+  /** Books dropped while a read may still answer for them: that answer does not bring them back (one listed again is read anew). */
+  dropped: Set<string>;
   /** Where the windows kept begin: older ones are let go, in the worker too (`keepFrom`). */
   keepFrom: number;
   /** The windows from here on may still have changed (they had not settled when last read); when they were last read, and the candle then. */
   settledTo: number; tailAt: number; forming: number;
+  /** Its revision, and the changes a host a few behind may lack (none while the timeframe is not on screen: it does not change then). */
+  revision: number; log: DepthMessage[];
 }
-const newEra = (): Era => ({ books: new Map(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0 });
+const newEra = (revision: number): Era => ({ books: new Map(), dropped: new Set(), keepFrom: -Infinity, settledTo: Infinity, tailAt: 0, forming: 0, revision, log: [] });
 const binsOf = (era: Era): number => { let n = 0; for (const h of era.books.values()) for (const w of h.windows.values()) n += w.bins.length; return n; };
-/** What a host was last sent: the worker it went to and the revision. */
-interface Sent { generation: number; revision: number }
-/** What `deliver` posts to: a script host (`host.ts ScriptHost`). */
-export interface DepthPort { readonly generation: number; post(message: DepthMessage): void }
+const binsIn = (msg: DepthMessage): number => { let n = 0; for (const b of msg.books) n += b.bins.length; return n; };
+/** What a host's worker was last sent: which worker, and the revision of each timeframe it holds. */
+interface Sent { generation: number; revisions: Map<string, number> }
+/** What `deliver` posts to: a script host (`host.ts ScriptHost`). `transfer` lists buffers the message alone holds, handed over rather than copied. */
+export interface DepthPort { readonly generation: number; post(message: DepthMessage, transfer?: ArrayBuffer[]): void }
 
 export class DepthFeed {
   #key = '';
-  #revision = 0;
-  #era = newEra();
+  /** The one revision counter of every era. */
+  #counter = 0;
+  #era = newEra(0);
   /** Other timeframes' eras, the one left longest ago first. */
   readonly #kept = new Map<string, Era>();
   /** Books held that the page no longer lists, since when. */
   readonly #gone = new Map<string, number>();
-  #log: DepthMessage[] = [];
   readonly #sent = new WeakMap<DepthPort, Sent>();
-  /** The read under way, and when a failed one may be tried again. */
+  /** The read under way, and when a failed one may be tried again (on the clock `sync` is given). */
   #reading: { key: string } | null = null;
   #retryAt = 0;
 
   constructor(private hub: Hub, private changed: () => void, private readTimeoutMs = READ_TIMEOUT_MS) {}
 
   /** The revision a run reads, for the timeframe it is for; null while nothing has been asked. */
-  get tag(): DepthTag | null { return this.#key ? { key: this.#key, revision: this.#revision } : null; }
+  get tag(): DepthTag | null { return this.#key ? { key: this.#key, revision: this.#era.revision } : null; }
 
   /**
    * Keep the order book of the candles starting at `starts` (oldest first) for the timeframe on screen, starting what is due to be read; the
@@ -90,6 +101,7 @@ export class DepthFeed {
     if (key !== this.#key) this.#switch(key);
     const era = this.#era, ids = state.levels?.books.map(b => b.id) ?? [];
     const listed = new Set(ids), drop: string[] = [];
+    for (const id of listed) era.dropped.delete(id);
     for (const id of era.books.keys()) {
       if (listed.has(id)) { this.#gone.delete(id); continue; }
       const since = this.#gone.get(id);
@@ -101,12 +113,12 @@ export class DepthFeed {
     const keepFrom = from - tf;
     if (keepFrom < era.keepFrom) era.keepFrom = keepFrom;
     if (drop.length || keepFrom > era.keepFrom + tf * 8) {
-      for (const id of drop) { era.books.delete(id); this.#gone.delete(id); }
+      for (const id of drop) { era.books.delete(id); era.dropped.add(id); this.#gone.delete(id); }
       if (keepFrom > era.keepFrom) {
         era.keepFrom = keepFrom;
         for (const h of era.books.values()) { for (const t of [...h.windows.keys()]) if (t < keepFrom) h.windows.delete(t); h.readFrom = Math.max(h.readFrom, keepFrom); }
       }
-      this.#push({ t: 'depth', key, revision: ++this.#revision, reset: false, books: [], drop, keepFrom: era.keepFrom });
+      this.#change(era, key, { books: [], drop, keepFrom: era.keepFrom });
     }
     if (this.#reading?.key === key || now < this.#retryAt) return this.tag;
     // The books not read as far back as the candles (new ones: not at all), those read least far first; then the windows that can still change.
@@ -124,27 +136,36 @@ export class DepthFeed {
     return this.tag;
   }
 
-  /** Post `port` what it lacks: the messages since its revision, or everything (a worker started since it was sent, or one far behind). */
+  /** Post `port` what its worker lacks of the timeframe on screen: the changes since the revision it has, or everything. */
   deliver(port: DepthPort): void {
     if (!this.#key) return;
-    const seen = this.#sent.get(port);
-    if (seen && seen.generation === port.generation && seen.revision === this.#revision) return;
-    const since = seen && seen.generation === port.generation ? this.#log.filter(m => m.revision > seen.revision) : null;
-    if (since && since.length === this.#revision - seen!.revision && since.length > 0) for (const m of since) port.post(m);
-    else port.post(this.#whole());
-    this.#sent.set(port, { generation: port.generation, revision: this.#revision });
+    const era = this.#era;
+    let sent = this.#sent.get(port);
+    if (!sent || sent.generation !== port.generation) { sent = { generation: port.generation, revisions: new Map() }; this.#sent.set(port, sent); }
+    const seen = sent.revisions.get(this.#key);
+    if (seen !== era.revision) {
+      const since = seen === undefined ? [] : era.log.filter(m => m.revision > seen);
+      if (since.length && since[0]!.prev === seen && since[since.length - 1]!.revision === era.revision) for (const m of since) port.post(m);
+      else { const whole = this.#whole(); port.post(whole, buffersOf(whole)); }
+    }
+    // A post may have started the worker: what is recorded is for the one that has it now.
+    if (sent.generation !== port.generation) { sent.generation = port.generation; sent.revisions.clear(); }
+    sent.revisions.set(this.#key, era.revision);
   }
 
   /** The next delivery to `port` sends everything (its worker said it did not hold what a run was told of). */
   forget(port: DepthPort): void { this.#sent.delete(port); }
 
+  /** The timeframes whose depth the page keeps: a worker lets go of the others. */
+  #keys(): string[] { return [this.#key, ...this.#kept.keys()]; }
+
   /**
    * Another timeframe: what was held for this one is kept for a return (the few left most recently, as far as `KEPT_BINS` allows), and the
-   * new one's, when kept, comes back. The log starts again, so every host is sent everything with its next delivery.
+   * new one's, when kept, comes back, at the revision it had (a worker that holds it then needs nothing).
    */
   #switch(key: string): void {
-    if (this.#key && this.#era.books.size) this.#kept.set(this.#key, this.#era);
-    this.#era = this.#kept.get(key) ?? newEra();
+    if (this.#key) { const old = this.#era; old.log = []; if (old.books.size) this.#kept.set(this.#key, old); }
+    this.#era = this.#kept.get(key) ?? newEra(++this.#counter);
     this.#kept.delete(key);
     let bins = 0;
     for (const era of this.#kept.values()) bins += binsOf(era);
@@ -152,17 +173,22 @@ export class DepthFeed {
       if (this.#kept.size <= KEPT_ERAS && bins <= (this.hub.source.kind === 'browser' ? KEPT_BINS_BROWSER : KEPT_BINS)) break;
       bins -= binsOf(era); this.#kept.delete(k);
     }
-    this.#key = key; this.#gone.clear(); this.#log = []; this.#revision++;
+    this.#key = key; this.#gone.clear();
   }
 
-  #push(msg: DepthMessage): void {
-    this.#log.push(msg);
+  /** One change of the era on screen, as the message hosts are sent: it builds on the era's revision and gives it the next one. */
+  #change(era: Era, key: string, change: Pick<DepthMessage, 'books' | 'drop' | 'keepFrom'>): void {
+    const msg: DepthMessage = { t: 'depth', key, revision: ++this.#counter, prev: era.revision, reset: false, ...change, keys: this.#keys() };
+    era.revision = msg.revision;
+    const size = binsIn(msg);
+    if (size > LOG_BINS) { era.log = []; return; }
+    era.log.push(msg);
     let bins = 0;
-    for (const m of this.#log) for (const b of m.books) bins += b.bins.length;
-    while (this.#log.length > 1 && (this.#log.length > LOG || bins > LOG_BINS)) for (const b of this.#log.shift()!.books) bins -= b.bins.length;
+    for (const m of era.log) bins += binsIn(m);
+    while (era.log.length > 1 && (era.log.length > LOG || bins > LOG_BINS)) bins -= binsIn(era.log.shift()!);
   }
 
-  /** Everything held, as one message that starts the worker's depth again. */
+  /** Everything held of the era on screen, as one message that starts the worker's depth of it again (its arrays its own: they are handed over). */
   #whole(): DepthMessage {
     const books: DepthBook[] = [];
     for (const [id, h] of this.#era.books) {
@@ -173,39 +199,44 @@ export class DepthFeed {
       for (const t of times) { const w = h.windows.get(t)!; bins.set(w.bins, at); bid.set(w.bid, at); ask.set(w.ask, at); at += w.bins.length; }
       books.push({ id, info: h.info, step: h.step, from: -Infinity, to: Infinity, times, counts, bins, bid, ask });
     }
-    return { t: 'depth', key: this.#key, revision: this.#revision, reset: true, books, drop: [], keepFrom: this.#era.keepFrom };
+    return { t: 'depth', key: this.#key, revision: this.#era.revision, prev: -1, reset: true, books, drop: [], keepFrom: this.#era.keepFrom, keys: this.#keys() };
   }
 
   /**
-   * Read `ids`' windows over [from, to) at step `tf`, the newest first: `FIRST_CHUNK` windows, then four times as many each time up to
-   * `MAX_CHUNK`, every book in one question (a source splits it into requests of a dozen and asks them at once). Each answer is a message of
-   * its own, which replaces exactly the windows it was asked for; a book asked for is held from then on, answered or not (one with nothing
-   * recorded is not asked for again on every run). A read `back` (books not read as far back as the candles) moves each book's `readFrom`
-   * back with every answer (no further than the windows kept), so one that stops (another timeframe, a failure) goes on from there the next
-   * time. The page keeps a copy of each window of its own and the message a copy of each book's, so that no answer's buffer outlives what is
-   * kept of it. Whether every answer came.
+   * Read `ids`' windows over [from, to) at step `tf`, the newest first: `FIRST_CHUNK` windows, then more each time (see `CHUNK_BINS`), every
+   * book in one question (a source splits it into requests of a dozen and asks them at once). Each answer is a message of its own, which
+   * replaces exactly the windows it was asked for; a book asked for is held from then on, answered or not (one with nothing recorded is not
+   * asked for again on every run), unless it was dropped meanwhile. A read `back` (books not read as far back as the candles) moves each
+   * book's `readFrom` back with every answer that joins the windows it holds (no further than those kept), so one that stops (another
+   * timeframe, a failure, windows let go meanwhile) goes on from there the next time. Each book's answer is copied once, for the page's
+   * windows and the message alike, so no answer's buffer of other books outlives what is kept of it; a small one (a read of the last few
+   * windows) is copied a window at a time, so a window read again does not keep its neighbours' copy alive. Whether every answer came.
    */
   async #read(key: string, era: Era, state: AppState, ids: string[], from: number, to: number, tf: number, back: boolean, now: number): Promise<boolean> {
     if (!(to > from)) return true;
-    const mine = { key }, asked = new Set(ids);
+    const mine = { key }, asked = new Set(ids), started = Date.now();
     // Books found on another grid during this read: read again whole by the next one, so no later answer of this one counts them as read.
     const regridded = new Set<string>();
     this.#reading = mine;
     let ok = false;
     try {
-      for (let end = to, chunk = FIRST_CHUNK; end > from; end -= chunk * tf, chunk = Math.min(MAX_CHUNK, chunk * 4)) {
+      for (let end = to, chunk = FIRST_CHUNK; end > from;) {
         const start = Math.max(from, end - chunk * tf);
         let sets: ColumnSet[], timer: ReturnType<typeof setTimeout> | undefined;
         try {
           const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), this.readTimeoutMs); });
           sets = (await Promise.race([this.hub.source.columns(ids, start, end, tf), late])).instruments;
-        } catch { if (this.#reading === mine) this.#retryAt = now + RETRY_MS; return false; }
-        finally { clearTimeout(timer); }
+        } catch {
+          // Tried again after the wait, counted from when it failed (a timeout fails long after the read began).
+          if (this.#reading === mine) this.#retryAt = now + (Date.now() - started) + RETRY_MS;
+          return false;
+        } finally { clearTimeout(timer); }
         // A read started since (for another timeframe, or this one again after it), or another timeframe on screen: this one stops here.
         if (this.#reading !== mine || key !== this.#key) return false;
         const books: DepthBook[] = [], answered = new Set<string>();
+        let bins = 0;
         for (const set of sets) {
-          if (!asked.has(set.id) || !(set.step > 0) || answered.has(set.id)) continue;
+          if (!asked.has(set.id) || era.dropped.has(set.id) || !(set.step > 0) || answered.has(set.id)) continue;
           answered.add(set.id);
           let held = era.books.get(set.id);
           // A book recorded on another grid than the one held (a source started again): what was held of it is of the old grid, and goes, and
@@ -215,24 +246,31 @@ export class DepthFeed {
           if (anew) regridded.add(set.id);
           const [a, b] = regrid ? [-Infinity, Infinity] : [start, end];
           for (const t of [...held.windows.keys()]) if (t >= a && t < b) held.windows.delete(t);
-          let at = 0;
-          for (let c = 0; c < set.times.length; c++) {
-            const n = set.counts[c]!, t = set.times[c]!;
-            if (t >= start && t < end && t >= era.keepFrom) held.windows.set(t, { bins: set.bins.slice(at, at + n), bid: set.bid.slice(at, at + n), ask: set.ask.slice(at, at + n) });
-            at += n;
+          const own = { bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() }, small = set.times.length <= SMALL_ANSWER;
+          for (let c = 0, at = 0; c < set.times.length; at += set.counts[c]!, c++) {
+            const n = set.counts[c]!, t = set.times[c]!, cut = small ? 'slice' : 'subarray';
+            if (t >= start && t < end && t >= era.keepFrom) held.windows.set(t, { bins: own.bins[cut](at, at + n), bid: own.bid[cut](at, at + n), ask: own.ask[cut](at, at + n) });
           }
-          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, bins: set.bins.slice(), bid: set.bid.slice(), ask: set.ask.slice() });
+          bins += own.bins.length;
+          books.push({ id: set.id, info: held.info, step: set.step, from: a, to: b, times: set.times, counts: set.counts, ...own });
         }
         for (const id of ids) {
+          if (era.dropped.has(id)) continue;
           let held = era.books.get(id);
           if (!held) { held = { info: marketInfo(state.markets, id), step: 0, windows: new Map(), readFrom: Infinity }; era.books.set(id, held); }
-          if (back && !regridded.has(id)) held.readFrom = Math.min(held.readFrom, Math.max(start, era.keepFrom));
+          // The windows from `start` on are held only where this answer joins those held before it (a read under way while old windows were
+          // let go, or past a gap, leaves the windows below it to the next read).
+          if (back && !regridded.has(id) && end >= Math.min(held.readFrom, to)) held.readFrom = Math.min(held.readFrom, Math.max(start, era.keepFrom));
           // A book held and asked for that answered nothing has no windows over [start, end) any more.
           if (answered.has(id) || !held.windows.size) continue;
           for (const t of [...held.windows.keys()]) if (t >= start && t < end) held.windows.delete(t);
           books.push({ id, info: held.info, step: held.step, from: start, to: end, times: [], counts: [], bins: new Int32Array(0), bid: new Float32Array(0), ask: new Float32Array(0) });
         }
-        if (books.length) { this.#push({ t: 'depth', key, revision: ++this.#revision, reset: false, books, drop: [], keepFrom: era.keepFrom }); this.changed(); }
+        if (books.length) { this.#change(era, key, { books, drop: [] , keepFrom: era.keepFrom }); this.changed(); }
+        // The next chunk: four times as many windows, within what the bins a window of this answer allow.
+        const windows = Math.max(1, Math.round((end - start) / tf)), perWindow = bins / windows;
+        chunk = Math.max(FIRST_CHUNK, Math.min(MAX_CHUNK, chunk * 4, perWindow > 0 ? Math.floor(CHUNK_BINS / perWindow) : MAX_CHUNK));
+        end = start;
       }
       ok = true;
       return true;
@@ -241,4 +279,11 @@ export class DepthFeed {
       if (this.#reading === mine) { this.#reading = null; if (ok) this.changed(); }
     }
   }
+}
+
+/** The buffers of a message's arrays, each once (a whole message's are its own). */
+function buffersOf(msg: DepthMessage): ArrayBuffer[] {
+  const out = new Set<ArrayBuffer>();
+  for (const b of msg.books) for (const a of [b.bins, b.bid, b.ask]) if (a.buffer instanceof ArrayBuffer) out.add(a.buffer);
+  return [...out];
 }

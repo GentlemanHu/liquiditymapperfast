@@ -65,7 +65,7 @@ const M = 60_000;
 
 test('the worker keeps what the page sends: windows replaced over their range, books dropped, old windows let go, a bad book left out', () => {
   const cache = new DepthCache(), w = () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] });
-  const msg = (revision: number, over: Partial<DepthMessage>): DepthMessage => ({ t: 'depth', key: '1m', revision, reset: false, books: [], drop: [], ...over });
+  const msg = (revision: number, over: Partial<DepthMessage>): DepthMessage => ({ t: 'depth', key: '1m', revision, prev: revision - 1, reset: false, books: [], drop: [], ...over });
   cache.apply(msg(1, { reset: true, books: [book('a:BTC', 'binance', -Infinity, Infinity, [0, M, 2 * M], w), book('b:BTC', 'bybit', -Infinity, Infinity, [0, M], w)] }));
   assert.ok(cache.holds({ key: '1m', revision: 1 }));
   assert.equal(cache.reader.books(M, {}, ''), 2);
@@ -86,24 +86,34 @@ test('the worker keeps what the page sends: windows replaced over their range, b
   const bad = book('c:BTC', 'okx', -Infinity, Infinity, [M], w); bad.counts = [5];
   cache.apply(msg(4, { books: [bad] }));
   assert.equal(cache.reader.books(M, {}, ''), 1);
-  // A change for another timeframe, or out of turn, is not taken: nothing is held for a run until everything is sent again.
+  // A change for a timeframe never started is not taken, and leaves the others as they were.
   cache.apply(msg(5, { key: '5m' }));
-  assert.ok(!cache.holds({ key: '1m', revision: 4 }) && !cache.holds({ key: '5m', revision: 5 }));
+  assert.ok(!cache.holds({ key: '5m', revision: 5 }) && cache.holds({ key: '1m', revision: 4 }));
+  // Another timeframe, started: a run reads it once its tag is held; going back to 1m reads 1m's as it was.
   cache.apply(msg(6, { reset: true, key: '5m' }));
   assert.ok(cache.holds({ key: '5m', revision: 6 }));
   assert.equal(cache.reader.books(M, {}, ''), 0);
-  cache.apply(msg(8, {}));
-  assert.ok(!cache.holds({ key: '5m', revision: 8 }) && !cache.holds({ key: '5m', revision: 6 }), 'a revision skipped');
+  assert.ok(cache.holds({ key: '1m', revision: 4 }));
+  assert.equal(cache.reader.books(M, {}, ''), 1);
+  // A change that builds on a revision the worker does not have: nothing of that timeframe is held for a run until it is sent whole again.
+  cache.apply({ ...msg(9, {}), prev: 7 });
+  assert.ok(!cache.holds({ key: '1m', revision: 4 }) && !cache.holds({ key: '1m', revision: 9 }), 'a change skipped');
+  cache.apply(msg(10, { reset: true }));
+  assert.ok(cache.holds({ key: '1m', revision: 10 }));
+  // The page keeps 1m only: the worker lets 5m go.
+  cache.apply(msg(11, { keys: ['1m'] }));
+  assert.ok(!cache.holds({ key: '5m', revision: 6 }) && cache.holds({ key: '1m', revision: 11 }));
 });
 
 test('a script reads the book with askdepth, biddepth and depthbooks, over the books of its source(...) set, NaN where nothing is known', () => {
   const cache = new DepthCache();
-  cache.apply({ t: 'depth', key: '1m', revision: 1, reset: true, drop: [], books: [
+  cache.apply({ t: 'depth', key: '1m', revision: 1, prev: -1, reset: true, drop: [], books: [
     book('a:BTC', 'binance', -Infinity, Infinity, [M], () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] })),
     book('b:BTC', 'bybit', -Infinity, Infinity, [M], () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] })),
   ] });
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
   const inputs: BarInputs = { tf: M, time: Float64Array.from([0, M]), open: Float64Array.from([1000, 1000]), high: Float64Array.from([1000, 1000]), low: Float64Array.from([1000, 1000]), close: Float64Array.from([1000, 1000]), volume: Float64Array.from([1, 1]), sources: {}, forming: true, depth: cache.reader, depthEpochs: cache.epochs(Float64Array.from([0, M])) };
-  const run = createRunner('d', 'line(askdepth(10))\nline(biddepth(8))\nline(depthbooks())\nline(source(askdepth(10), exchange=BYBIT))\nline(depthabove(10))\nline(depthbelow(8))\n', {}).run(inputs);
+  const run = createRunner('d', 'line(askdepth(10))\nline(biddepth(8))\nline(depthbooks())\nline(source(askdepth(10), exchange=BYBIT))\nline(depthabove(10))\nline(depthbelow(8))\nvar fs = [depthabove]\nvar o = { reach: depthbelow }\nline(fs[0](10))\nline(o.reach(8))\n', {}).run(inputs);
   assert.ok(run.ok, JSON.stringify(run));
   if (!run.ok) return;
   const at = (p: number, i: number): number => run.plots[p]!.fields.value![i]!;
@@ -111,6 +121,8 @@ test('a script reads the book with askdepth, biddepth and depthbooks, over the b
   near(at(0, 1), 1005); near(at(1, 1), 995); assert.equal(at(2, 1), 2); near(at(3, 1), 1010);
   // Each side of the close held one side only: every dollar at each price reads the same.
   near(at(4, 1), 1005); near(at(5, 1), 995);
+  // Reached through an array or an object, the same.
+  near(at(6, 1), 1005); near(at(7, 1), 995);
   // A script's own name of one stays its own; a run without the book reads NaN.
   const own = createRunner('o', 'function askdepth(x) { return 7 }\nline(askdepth(1))\n', {}).run(inputs);
   assert.ok(own.ok && own.plots[0]!.fields.value![1] === 7);
@@ -159,7 +171,7 @@ test('the page reads every candle\'s windows newest first, keeps them for a retu
   hang = false;
   tag = feed.sync(state('5m'), starts, T, now)!;
   feed.deliver(port);
-  assert.ok(cache.holds(tag) && cache.key === '5m');
+  assert.ok(cache.holds(tag));
   assert.equal(heldAt(starts), starts.length);
   assert.equal(asks.length, 1, 'nothing read again');
   // 30 s on: the windows that had not settled are read again (the source settles a window two minutes after it ends).
@@ -186,21 +198,21 @@ test('the page reads every candle\'s windows newest first, keeps them for a retu
 
 const MIN = 60_000;
 /** A source of columns for the feed's tests: every window holds one bin of $10 a side, on the grid `step(asked)`; `hold` keeps an answer back. */
-function columnsSource(step: (n: number) => number = () => 10) {
+function columnsSource(step: (n: number) => number = () => 10, holdFrom = Infinity) {
   const asks: { from: number; to: number; ids: string[] }[] = [], waiting: (() => void)[] = [];
   let hold = false;
   const source = {
     kind: 'server',
     columns: async (ids: string[], from: number, to: number, stepMs: number) => {
       const n = asks.push({ from, to, ids });
-      if (hold) await new Promise<void>(resolve => waiting.push(resolve));
+      if (hold || n >= holdFrom) await new Promise<void>(resolve => waiting.push(resolve));
       const times: number[] = [];
       for (let t = from; t < to; t += stepMs) times.push(t);
       const s = step(n);
       return { from, to, stepMs, instruments: ids.map(id => ({ id, step: s, times, counts: times.map(() => 1), samples: times.map(() => 1), bins: new Int32Array(times.length).fill(Math.floor(1000 / s)), bid: new Float32Array(times.length).fill(10), ask: new Float32Array(times.length).fill(10) })) };
     },
   };
-  return { source, asks, waiting, setHold: (h: boolean) => { hold = h; } };
+  return { source, asks, waiting, setHold: (h: boolean) => { hold = h; }, release: () => { holdFrom = Infinity; hold = false; } };
 }
 const twoBooks = (timeframe: string) => ({ timeframe, markets: [], levels: { books: [{ id: 'a:BTC' }, { id: 'b:BTC' }] } }) as never;
 const settle = async () => { for (let k = 0; k < 30; k++) await new Promise(r => setTimeout(r, 0)); };
@@ -225,46 +237,52 @@ test('a book found on another grid partway through a read is read again whole: n
 });
 
 test('a read under way when old windows are let go does not count them as read: candles loaded back later are read again', async () => {
-  const T = 5 * MIN, now = 1_000 * T + 2 * MIN, all = candlesFrom(501, 1_000, T), later = candlesFrom(599, 1_000, T);
-  const { source, waiting, setHold } = columnsSource();
+  const T = MIN, now = 1_000 * T + 5_000, all = candlesFrom(1, 1_000, T), later = candlesFrom(600, 1_000, T);
+  // Two answers come; the third and later are held back.
+  const { source, asks, waiting, release } = columnsSource(() => 10, 3);
   const feed = new DepthFeed({ source } as never, () => {});
-  feed.sync(twoBooks('5m'), all, T, now);
+  feed.sync(twoBooks('1m'), all, T, now);
   await settle();
-  // The second answer held back; meanwhile the series starts later and the older windows are let go.
-  setHold(true);
-  await settle();
-  feed.sync(twoBooks('5m'), later, T, now);
-  setHold(false);
+  assert.equal(asks.length, 3);
+  // The series starts later (old windows let go); the third answer comes; the series reaches back again before the others come.
+  feed.sync(twoBooks('1m'), later, T, now);
+  waiting.shift()!(); await settle();
+  feed.sync(twoBooks('1m'), all, T, now);
+  release();
   while (waiting.length) { waiting.shift()!(); await settle(); }
   await settle();
-  // The series reaches back again: what was let go is read again.
-  feed.sync(twoBooks('5m'), all, T, now);
+  // What was let go is read again.
+  feed.sync(twoBooks('1m'), all, T, now);
   await settle();
-  feed.sync(twoBooks('5m'), all, T, now);
+  feed.sync(twoBooks('1m'), all, T, now);
   await settle();
-  assert.equal(held(feed, twoBooks('5m'), all, T, now), all.length);
+  assert.equal(held(feed, twoBooks('1m'), all, T, now), all.length);
 });
 
 test('a request that never answers lets go of the timeframe after a while, and it is read again', async () => {
   const T = 5 * MIN, now = 1_000 * T + 2 * MIN, starts = candlesFrom(901, 1_000, T);
   const { source, asks, setHold } = columnsSource();
   setHold(true);
-  const feed = new DepthFeed({ source } as never, () => {}, 20);
+  const feed = new DepthFeed({ source } as never, () => {}, 300);
   feed.sync(twoBooks('5m'), starts, T, now);
   await settle();
   assert.equal(asks.length, 1);
-  await new Promise(r => setTimeout(r, 40));
+  await new Promise(r => setTimeout(r, 360));
   feed.sync(twoBooks('5m'), starts, T, now + 1_000);
   assert.equal(asks.length, 1, 'not again at once');
+  // The wait counts from the failure, 300 ms after the read began: not yet 5 s after it.
+  feed.sync(twoBooks('5m'), starts, T, now + 5_150);
+  assert.equal(asks.length, 1, 'not 5 s after the read began');
   feed.sync(twoBooks('5m'), starts, T, now + 6_000);
   assert.equal(asks.length, 2, 'again after the wait');
 });
 
 test('a candle runs again only when its depth changed: a window read again as it was keeps its revision, one let go or dropped does not', () => {
   const cache = new DepthCache(), times = Float64Array.from([0, M, 2 * M]);
-  const msg = (revision: number, over: Partial<DepthMessage>): DepthMessage => ({ t: 'depth', key: '1m', revision, reset: false, books: [], drop: [], ...over });
+  const msg = (revision: number, over: Partial<DepthMessage>): DepthMessage => ({ t: 'depth', key: '1m', revision, prev: revision - 1, reset: false, books: [], drop: [], ...over });
   const w = () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] });
   cache.apply(msg(1, { reset: true, books: [book('a:BTC', 'binance', -Infinity, Infinity, [0, M, 2 * M], w), book('b:BTC', 'bybit', -Infinity, Infinity, [2 * M], w)] }));
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
   const first = cache.epochs(times);
   cache.apply(msg(2, { books: [book('a:BTC', 'binance', M, 3 * M, [M, 2 * M], w)] }));
   assert.deepEqual([...cache.epochs(times)], [...first], 'read again as they were');
@@ -279,15 +297,65 @@ test('a candle runs again only when its depth changed: a window read again as it
 test('the worker takes no book whose dollars are not finite and above 0 or whose bins do not rise; a walk over empty bins pays for them', () => {
   const cache = new DepthCache();
   const bad = (bid: number[], ask: number[], bins: number[]) => book('a:BTC', 'binance', -Infinity, Infinity, [M], () => ({ bins, bid, ask }));
-  cache.apply({ t: 'depth', key: '1m', revision: 1, reset: true, drop: [], books: [bad([0, 1], [Infinity, 1], [99, 100]), { ...bad([0, 1], [1, 1], [100, 99]), id: 'b:BTC' }, { ...bad([-1, 1], [1, 1], [99, 100]), id: 'c:BTC' }] });
+  cache.apply({ t: 'depth', key: '1m', revision: 1, prev: -1, reset: true, drop: [], books: [bad([0, 1], [Infinity, 1], [99, 100]), { ...bad([0, 1], [1, 1], [100, 99]), id: 'b:BTC' }, { ...bad([-1, 1], [1, 1], [99, 100]), id: 'c:BTC' }] });
+  assert.ok(cache.holds({ key: '1m', revision: 1 }));
   assert.equal(cache.reader.books(M, {}, ''), 0);
   const empty = 200_000, bins = Array.from({ length: empty + 1 }, (_, i) => 100 + i), usd = Array.from({ length: empty + 1 }, (_, i) => i === empty ? 10 : 0);
   const r = reachOf([win(10, bins, usd)], 'ask', 1000, 5);
   assert.ok(r.cost >= empty, `cost ${r.cost}`);
+  // More empty bins than a walk may pass: no answer, though another book holds the size at the close.
+  const huge = 3_000_000, emptyBook = win(10, Array.from({ length: huge }, (_, i) => 100 + i), new Array(huge).fill(0));
+  assert.ok(Number.isNaN(reachOf([emptyBook, win(10, [100], [1000])], 'ask', 1000, 5).price));
 });
 
 test('a depth function only named (kept under another name, handed on) still has the page read the book', () => {
   assert.ok(analyze('var reach = askdepth\nline(reach(5))\n').inputs.has('depth'));
   assert.ok(analyze('function f(g) { return g(5) }\nline(f(depthabove))\n').inputs.has('depth'));
   assert.ok(!analyze('line(close)\n').inputs.has('depth'));
+  // A parameter of that name in another function does not make the call elsewhere the script's own.
+  assert.ok(analyze('function unused(depthabove) { return depthabove }\nline(depthabove(5))\n').inputs.has('depth'));
+});
+
+test('a book dropped while a read still answers for it is not brought back', async () => {
+  const T = 5 * MIN, now = 1_000 * T + 2 * MIN, starts = candlesFrom(901, 1_000, T);
+  const { source, waiting, setHold } = columnsSource();
+  const feed = new DepthFeed({ source } as never, () => {});
+  feed.sync(twoBooks('5m'), starts, T, now);
+  await settle();
+  // The tail read 30 s on is held back; meanwhile b goes away and is dropped.
+  setHold(true);
+  feed.sync(twoBooks('5m'), starts, T, now + 31_000);
+  await settle();
+  const one = { timeframe: '5m', markets: [], levels: { books: [{ id: 'a:BTC' }] } } as never;
+  feed.sync(one, starts, T, now + 32_000);
+  feed.sync(one, starts, T, now + 38_000);
+  setHold(false);
+  while (waiting.length) { waiting.shift()!(); await settle(); }
+  const cache = new DepthCache(), tag = feed.sync(one, starts, T, now + 38_000)!;
+  feed.deliver({ generation: 1, post: m => cache.apply(m) });
+  assert.ok(cache.holds(tag));
+  assert.equal(cache.reader.books(starts[starts.length - 1]!, {}, ''), 1);
+});
+
+test('a switch back to a timeframe the worker holds sends nothing; one it does not hold is sent whole', async () => {
+  const T = 5 * MIN, H = 60 * MIN, now = 1_000 * T + 2 * MIN, starts = candlesFrom(901, 1_000, T);
+  const { source } = columnsSource();
+  const feed = new DepthFeed({ source } as never, () => {});
+  const cache = new DepthCache(), posted: DepthMessage[] = [], port = { generation: 1, post: (m: DepthMessage) => { posted.push(m); cache.apply(m); } };
+  feed.sync(twoBooks('5m'), starts, T, now); await settle();
+  let tag = feed.sync(twoBooks('5m'), starts, T, now)!; feed.deliver(port);
+  assert.ok(cache.holds(tag));
+  feed.sync(twoBooks('1h'), candlesFrom(1, 100, H), H, now); await settle();
+  tag = feed.sync(twoBooks('1h'), candlesFrom(1, 100, H), H, now)!; feed.deliver(port);
+  assert.ok(cache.holds(tag));
+  posted.splice(0);
+  tag = feed.sync(twoBooks('5m'), starts, T, now)!; feed.deliver(port);
+  const sentOnReturn = posted.length;
+  assert.equal(sentOnReturn, 0, 'nothing sent');
+  assert.ok(cache.holds(tag));
+  assert.equal(cache.reader.books(starts[50]!, {}, ''), 2);
+  // A worker started since holds nothing: everything.
+  const fresh = new DepthCache(), again = { generation: 2, post: (m: DepthMessage) => { posted.push(m); fresh.apply(m); } };
+  feed.deliver(again);
+  assert.ok(posted.length === 1 && posted[0]!.reset && fresh.holds(tag));
 });

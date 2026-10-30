@@ -65,9 +65,9 @@ export class ScriptHost {
 
   /**
    * Post the depth's change to the worker now, starting one if there is none: messages to one worker arrive in order, so a run asked for after
-   * this reads it. Not a run: it is never dropped for a newer one.
+   * this reads it. Not a run: it is never dropped for a newer one. `transfer`: buffers only this message holds, handed over, not copied.
    */
-  post(message: DepthMessage): void { try { this.#ensure().postMessage(message, []); } catch { /* the next run reports a worker that fails */ } }
+  post(message: DepthMessage, transfer: ArrayBuffer[] = []): void { try { this.#ensure().postMessage(message, transfer); } catch { /* the next run reports a worker that fails */ } }
 
   /** Whether a run is under way (asked for, its worker loading or running it). */
   get busy(): boolean { return this.#running !== null; }

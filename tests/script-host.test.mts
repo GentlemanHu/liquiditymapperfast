@@ -197,7 +197,7 @@ test('a host with no worker has no generation: the depth posted next goes to a f
   await p;
   assert.equal(workers[0]!.ended, true);
   assert.equal(host.generation, -1, 'its worker ended, none started yet');
-  host.post({ t: 'depth', key: '1m', revision: 1, reset: true, books: [], drop: [] });
+  host.post({ t: 'depth', key: '1m', revision: 1, prev: -1, reset: true, books: [], drop: [] });
   assert.equal(workers.length, 2);
   assert.ok(host.generation > first);
 });

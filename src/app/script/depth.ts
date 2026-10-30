@@ -26,11 +26,11 @@ export interface DepthBook {
   times: number[]; counts: number[]; bins: Int32Array; bid: Float32Array; ask: Float32Array;
 }
 /**
- * What the page sends the script worker of the depth: for the timeframe `key`, at `revision` (each message the next), either everything
- * (`reset`) or what changed: books whose windows over their [from, to) are replaced, and books no longer read (`drop`); windows before
- * `keepFrom` are let go (the series moved on past them).
+ * What the page sends the script worker of the depth: for the timeframe `key`, at `revision`, either everything (`reset`) or what changed
+ * since revision `prev`: books whose windows over their [from, to) are replaced, and books no longer read (`drop`); windows before `keepFrom`
+ * are let go (the series moved on past them). `keys` are the timeframes the page keeps the depth of: the worker lets go of the others.
  */
-export interface DepthMessage { t: 'depth'; key: string; revision: number; reset: boolean; books: DepthBook[]; drop: string[]; keepFrom?: number }
+export interface DepthMessage { t: 'depth'; key: string; revision: number; prev: number; reset: boolean; books: DepthBook[]; drop: string[]; keepFrom?: number; keys?: string[] }
 /** Which depth a run reads: the timeframe and the revision the page had sent before it. */
 export interface DepthTag { key: string; revision: number }
 
@@ -39,6 +39,12 @@ export interface SideWindow { step: number; bins: Int32Array; usd: Float32Array;
 
 /** The most work one walk may do, bins passed and empty bins skipped, all books together (a size past the whole book stops there). */
 const MAX_COST = 2_000_000;
+/**
+ * A book's answer of at most this many windows (a read of the last few) is kept a copy a window, so that a window read again does not keep
+ * its neighbours' buffer alive; a larger one is kept as views of one copy (what it costs: windows read again or let go stay in that copy
+ * until all of its windows have gone, at most about as much again as is held).
+ */
+export const SMALL_ANSWER = 16;
 
 /** The first index of `a` (ascending) whose value is at least `x`. */
 function lowerBound(a: ArrayLike<number>, x: number): number {
@@ -73,8 +79,9 @@ export function reachOf(windows: readonly SideWindow[], side: 'ask' | 'bid', clo
       const w = windows[b]!, step = w.step, bins = w.bins, usdOf = w.usd, also = w.also;
       let k = at[b]!;
       // A bin with nothing in it is no bin.
-      while (k >= 0 && k < bins.length && !(usdOf[k]! + (also ? also[k]! : 0) > 0)) { k += up ? 1 : -1; cost++; }
+      while (k >= 0 && k < bins.length && !(usdOf[k]! + (also ? also[k]! : 0) > 0) && cost < MAX_COST) { k += up ? 1 : -1; cost++; }
       at[b] = k;
+      if (cost >= MAX_COST) return { price: NaN, cost };
       if (k < 0 || k >= bins.length) continue;
       const lo = bins[k]! * step, hi = lo + step, usd = usdOf[k]! + (also ? also[k]! : 0);
       if (up) {
@@ -138,78 +145,91 @@ function sameWindow(a: Window, b: Window): boolean {
   return true;
 }
 
+/** One timeframe's depth in the worker. */
+interface Era {
+  /** Whether what is held follows from a start with every change since, and the revision it is at. */
+  sound: boolean; revision: number;
+  books: Map<string, Book>;
+  /** The revision each candle's depth last changed at (a window that came, changed or went), by candle start: none (-1) where none is held. */
+  changed: Map<number, number>;
+}
+const freshEra = (): Era => ({ sound: false, revision: -1, books: new Map(), changed: new Map() });
+
 /**
- * The script worker's depth: the windows of the books of one timeframe, as the page's messages left them. A start (`reset`) replaces it all;
- * a change is taken only on top of the revision before it, of the same timeframe: a worker that missed one (started since the page last sent
- * it everything, or sent one out of turn) holds nothing a run may read until the page sends everything again. Each candle remembers the
- * revision its depth last changed at, so a run can tell that a closed candle's depth changed (`epochs`) and run that candle again; a window
- * read again as it was keeps its revision.
+ * The script worker's depth: the windows of the books of each timeframe the page keeps, as its messages left them. A start (`reset`) replaces
+ * a timeframe's; a change is taken only on top of the revision it says it builds on (`prev`): a worker that missed one (started since the page
+ * last sent it everything, or sent one out of turn) holds nothing of that timeframe a run may read until the page sends everything again.
+ * Each candle remembers the revision its depth last changed at, so a run can tell that a closed candle's depth changed (`epochs`) and run that
+ * candle again; a window read again as it was keeps its revision. A run reads the timeframe of the tag `holds` last said yes to.
  */
 export class DepthCache {
-  key = '';
-  revision = -1;
-  /** Whether what is held follows from a start with every change since. */
-  #sound = false;
-  readonly #books = new Map<string, Book>();
-  /** The revision each candle's depth last changed at (a window that came, changed or went), by candle start: none (-1) where none is held. */
-  readonly #changed = new Map<number, number>();
+  readonly #eras = new Map<string, Era>();
+  #era: Era = freshEra();
   readonly #filters = new Map<string, string[]>();
   /** The windows a candle's walks read, for the calls of one candle (a script often asks both sides, or several sizes). */
   #last: { key: string; ask: SideWindow[]; bid: SideWindow[]; above: SideWindow[]; below: SideWindow[] } | null = null;
   #spent = 0;
 
   apply(msg: DepthMessage): void {
-    if (!msg || typeof msg.key !== 'string' || !Number.isFinite(msg.revision) || !Array.isArray(msg.books) || !Array.isArray(msg.drop)) { this.#sound = false; return; }
-    if (msg.reset) { this.#books.clear(); this.#changed.clear(); this.#filters.clear(); this.key = msg.key; this.#sound = true; }
-    else if (!this.#sound || msg.key !== this.key || msg.revision !== this.revision + 1) { this.#sound = false; return; }
-    this.#last = null;
-    const revision = msg.revision, mark = (t: number): void => { this.#changed.set(t, revision); };
-    let listed = msg.reset;
+    if (!msg || typeof msg.key !== 'string' || !Number.isFinite(msg.revision) || !Array.isArray(msg.books) || !Array.isArray(msg.drop)) return;
+    let era = this.#eras.get(msg.key);
+    if (!era) { era = freshEra(); this.#eras.set(msg.key, era); }
+    if (Array.isArray(msg.keys)) for (const k of [...this.#eras.keys()]) if (k !== msg.key && !msg.keys.includes(k)) this.#eras.delete(k);
+    if (msg.reset) { era.books.clear(); era.changed.clear(); era.sound = true; }
+    else if (!era.sound || msg.prev !== era.revision) { era.sound = false; return; }
+    if (era === this.#era) { this.#last = null; this.#filters.clear(); }
+    const revision = msg.revision, mark = (t: number): void => { era.changed.set(t, revision); };
     for (const id of msg.drop) {
-      const book = this.#books.get(id);
+      const book = era.books.get(id);
       if (!book) continue;
       for (const t of book.windows.keys()) mark(t);
-      this.#books.delete(id); listed = true;
+      era.books.delete(id);
     }
     const keepFrom = msg.keepFrom !== undefined && Number.isFinite(msg.keepFrom) ? msg.keepFrom : -Infinity;
     if (keepFrom > -Infinity) {
       // A window let go reads NaN from then on; its candle's revision goes with it, which differs from any it had.
-      for (const book of this.#books.values()) for (const t of [...book.windows.keys()]) if (t < keepFrom) book.windows.delete(t);
-      for (const t of [...this.#changed.keys()]) if (t < keepFrom) this.#changed.delete(t);
+      for (const book of era.books.values()) for (const t of [...book.windows.keys()]) if (t < keepFrom) book.windows.delete(t);
+      for (const t of [...era.changed.keys()]) if (t < keepFrom) era.changed.delete(t);
     }
     for (const b of msg.books) {
       if (!wellFormed(b)) continue;
-      let book = this.#books.get(b.id);
+      let book = era.books.get(b.id);
       // A book recorded on another grid (a source started again and chose another step): its bins mean other prices, so it starts again.
-      if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); this.#books.delete(b.id); book = undefined; }
-      if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; this.#books.set(b.id, book); listed = true; }
+      if (book && book.step !== b.step) { for (const t of book.windows.keys()) mark(t); era.books.delete(b.id); book = undefined; }
+      if (!book) { book = { info: b.info, step: b.step, windows: new Map() }; era.books.set(b.id, book); }
       const incoming = new Map<number, Window>();
       for (let c = 0, at = 0; c < b.times.length; at += b.counts[c]!, c++) {
         const n = b.counts[c]!, t = b.times[c]!;
         if (t >= b.from && t < b.to && t >= keepFrom) incoming.set(t, { bins: b.bins.subarray(at, at + n), bid: b.bid.subarray(at, at + n), ask: b.ask.subarray(at, at + n) });
       }
       for (const t of [...book.windows.keys()]) if (t >= b.from && t < b.to && !incoming.has(t)) { book.windows.delete(t); mark(t); }
-      // Each window kept is a copy of its own, so the message's buffer goes once it is read (a window read again as it was keeps the one held).
+      // The message's arrays are the worker's own (a copy made in passing): a large answer's windows are kept as views of them, a small one's
+      // as copies of their own (`SMALL_ANSWER`); a window read again as it was keeps the one held.
+      const small = b.times.length <= SMALL_ANSWER;
       for (const [t, w] of incoming) {
         const old = book.windows.get(t);
         if (old && sameWindow(old, w)) continue;
-        book.windows.set(t, { bins: w.bins.slice(), bid: w.bid.slice(), ask: w.ask.slice() }); mark(t);
+        book.windows.set(t, small ? { bins: w.bins.slice(), bid: w.bid.slice(), ask: w.ask.slice() } : w); mark(t);
       }
     }
-    if (listed) this.#filters.clear();
-    this.revision = revision;
+    era.revision = revision;
   }
 
-  /** Whether the cache holds what a run was told it would read. */
-  holds(tag: DepthTag): boolean { return !!tag && this.#sound && tag.key === this.key && tag.revision === this.revision; }
+  /** Whether the worker holds what a run was told it would read; when it does, that timeframe is the one read from then on. */
+  holds(tag: DepthTag): boolean {
+    const era = tag ? this.#eras.get(tag.key) : undefined;
+    if (!era || !era.sound || era.revision !== tag.revision) return false;
+    if (era !== this.#era) { this.#era = era; this.#last = null; this.#filters.clear(); }
+    return true;
+  }
 
   /** Each candle's depth revision (-1 where none is held), for a run to tell whether a closed candle's depth changed. */
-  epochs(time: Float64Array): Float64Array { return Float64Array.from(time, t => this.#changed.get(t) ?? -1); }
+  epochs(time: Float64Array): Float64Array { const changed = this.#era.changed; return Float64Array.from(time, t => changed.get(t) ?? -1); }
 
   #ids(filter: SourceFilter, key: string): string[] {
     let ids = this.#filters.get(key);
     if (!ids) {
-      const infos = [...this.#books.values()].map(b => b.info);
+      const infos = [...this.#era.books.values()].map(b => b.info);
       ids = key === '' ? infos.map(i => i.id) : marketsMatching(infos, filter);
       this.#filters.set(key, ids);
     }
@@ -221,7 +241,7 @@ export class DepthCache {
     if (this.#last?.key === k) return this.#last;
     const ask: SideWindow[] = [], bid: SideWindow[] = [], above: SideWindow[] = [], below: SideWindow[] = [];
     for (const id of this.#ids(filter, key)) {
-      const book = this.#books.get(id), w = book?.windows.get(t);
+      const book = this.#era.books.get(id), w = book?.windows.get(t);
       if (!book || !w || !w.bins.length) continue;
       ask.push({ step: book.step, bins: w.bins, usd: w.ask }); bid.push({ step: book.step, bins: w.bins, usd: w.bid });
       above.push({ step: book.step, bins: w.bins, usd: w.ask, also: w.bid }); below.push({ step: book.step, bins: w.bins, usd: w.bid, also: w.ask });
@@ -235,7 +255,7 @@ export class DepthCache {
       this.#spent += r.cost;
       return r.price;
     },
-    books: (t, filter, key) => { let n = 0; for (const id of this.#ids(filter, key)) if (this.#books.get(id)?.windows.has(t)) n++; this.#spent += 1; return n; },
+    books: (t, filter, key) => { let n = 0; for (const id of this.#ids(filter, key)) if (this.#era.books.get(id)?.windows.has(t)) n++; this.#spent += 1; return n; },
     spent: () => { const s = this.#spent; this.#spent = 0; return s; },
   };
 }

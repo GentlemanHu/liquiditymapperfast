@@ -1914,8 +1914,8 @@
  "Drag to size the window; a double click gives back its size": "拖动以调整窗口大小；双击恢复原来的大小",
  "It is recorded while this page is open: there is no way to fetch what the order books looked like in the past, so the map starts at the moment you opened the page and grows to the right, from a dashed line that says when the recording began.": "它在本页面打开期间录制：无法获取过去订单簿的样子，所以地图从你打开页面的那一刻开始，从一条标明录制开始时间的虚线向右延伸。",
  "Depth bands": "深度带",
- "How far a market order of a given size would move the price: up through the order book above the close, and down through the book below it.": "给定金额的市价单会把价格推多远：向上穿过收盘价上方的订单簿，向下穿过其下方的订单簿。",
  "The upper line is how far up that many dollars of the order books reach, on every exchange the map shows added up as one, the lower how far down. Each candle's book is its average over the candle, so every dollar at a price counts, whichever side it stood on: a price the candle went through held bids part of the time and asks the rest.": "上线是把地图所示所有交易所的订单簿合成一本后，这么多美元向上能到哪里，下线是向下能到哪里。每根 K 线的订单簿是它在这根 K 线期间的平均，所以一个价位上的每一美元都算，不管它在哪一边：K 线穿过的价位，一部分时间挂着买单，其余时间挂着卖单。",
  "The size is a number of dollars, or a share of what an average candle traded at market. A wide band is a thin book. Unlike Bollinger bands, which measure how far prices moved, it measures how much stands in the way.": "金额可以是固定美元数，也可以是平均每根 K 线市价成交额的一部分。带越宽，订单簿越薄。布林带衡量价格走了多远，它衡量的则是前方挡着多少挂单。",
- "Candles from before the page's recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it shows the liquidity typically recorded there, not what such an order would pay.": "页面开始记录之前的 K 线没有带。订单簿时刻在变，这么大的单子还会碰到隐藏单和被撤走的单：它显示的是那里通常记录到的流动性，而不是这样一笔单子要付的价格。"
+ "Candles from before the page's recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it shows the liquidity typically recorded there, not what such an order would pay.": "页面开始记录之前的 K 线没有带。订单簿时刻在变，这么大的单子还会碰到隐藏单和被撤走的单：它显示的是那里通常记录到的流动性，而不是这样一笔单子要付的价格。",
+ "How far a given dollar size of the order book the page recorded reaches from the close, up and down.": "页面记录的订单簿中，给定美元数额从收盘价向上、向下能到哪里。"
 }

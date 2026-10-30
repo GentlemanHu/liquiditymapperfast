@@ -222,7 +222,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     source: new NativeFunction('source', () => undefined),
     alert: new NativeFunction('alert', () => undefined),
   });
-  for (const name of DEPTH_FUNCTIONS) globals[name] = new NativeFunction(name, () => undefined);
+  // The order book's functions work however they are reached (kept under another name, in an array or an object: `depthAt`).
+  for (const name of DEPTH_FUNCTIONS) globals[name] = new NativeFunction(name, args => depthAt(name, args));
   for (const name of Object.keys(BUILTINS)) globals[name] = new NativeFunction(name, () => undefined);
   for (const name of Object.keys(PLOTS)) if (!Object.prototype.hasOwnProperty.call(globals, name)) globals[name] = new NativeFunction(name, () => undefined);
 

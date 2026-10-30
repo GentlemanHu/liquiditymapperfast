@@ -29,7 +29,8 @@ function inputs(): BarInputs {
     for (let b = lo; b < hi; b++) { bins.push(b); bid.push((b + 1) * 20 <= c ? 25e6 : 0); ask.push(b * 20 >= c ? 25e6 : 0); }
   }
   const time = Float64Array.from({ length: N }, (_, i) => i * HOUR);
-  depth.apply({ t: 'depth', key: '1h', revision: 1, reset: true, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 20, from: -Infinity, to: Infinity, times: [...time], counts, bins: Int32Array.from(bins), bid: Float32Array.from(bid), ask: Float32Array.from(ask) }] });
+  depth.apply({ t: 'depth', key: '1h', revision: 1, prev: -1, reset: true, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 20, from: -Infinity, to: Infinity, times: [...time], counts, bins: Int32Array.from(bins), bid: Float32Array.from(bid), ask: Float32Array.from(ask) }] });
+  depth.holds({ key: '1h', revision: 1 });
   return {
     depth: depth.reader, depthEpochs: depth.epochs(time),
     tf: HOUR, time,

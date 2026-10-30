@@ -10,9 +10,10 @@ export function examples(): { key: ExampleKey; name: string; source: string; pla
   return [
     { key: STARTER_ID, name: t('VWAP with bands'), source: VWAP_SOURCE, place: 'map' },
     { key: HEATMAP_ID, name: t('Stochastic heat map'), source: HEATMAP_SOURCE },
-    // Where a market order of a size would move the price, from the recorded order books (askdepth, biddepth).
-    { key: 'depth-bands', name: t('Depth bands'), place: 'map', source: `// Depth bands: how far a market order of a given size would move the price, from the order books the page recorded.
-// Above the close, the price at which that many dollars of the book are passed going up; below it, going down.
+    // How far a size of the recorded order books reaches from the close, up and down (depthabove, depthbelow).
+    { key: 'depth-bands', name: t('Depth bands'), place: 'map', source: `// Depth bands: how far a given number of dollars of the order book reaches from the close, on the books the page recorded.
+// Above the close, the price at which that many dollars of the book are passed going up; below it, going down. It shows
+// the liquidity typically recorded near the price, not what a market order of that size would pay.
 // A wide band is a thin book: the same money moves the price further. Each candle's book is the one recorded over it
 // (averaged over its minutes), on every exchange the heat map shows, added up as one book.
 

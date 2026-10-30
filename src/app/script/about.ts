@@ -22,7 +22,7 @@ const about = (): Readonly<Record<ExampleKey, { tip: string; body: readonly stri
       t('Its colours follow the page\'s theme and stay apart for colour-blind eyes, and an option colours the map\'s candles by the average. It says where price sits in its ranges, not where it goes next: a market can stay blue for a long time while it climbs.')],
   },
   'depth-bands': {
-    tip: t('How far a market order of a given size would move the price: up through the order book above the close, and down through the book below it.'),
+    tip: t('How far a given dollar size of the order book the page recorded reaches from the close, up and down.'),
     body: [t('The upper line is how far up that many dollars of the order books reach, on every exchange the map shows added up as one, the lower how far down. Each candle\'s book is its average over the candle, so every dollar at a price counts, whichever side it stood on: a price the candle went through held bids part of the time and asks the rest.'),
       t('The size is a number of dollars, or a share of what an average candle traded at market. A wide band is a thin book. Unlike Bollinger bands, which measure how far prices moved, it measures how much stands in the way.'),
       t('Candles from before the page\'s recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it shows the liquidity typically recorded there, not what such an order would pay.')],
