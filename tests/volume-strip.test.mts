@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { STRIP_HISTORY_BARS, candleUsd, joinRows, stripBars, stripHighlights, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../src/app/measures/volume-strip.ts';
+import { STRIP_HISTORY_BARS, StripHighlightMemo, candleUsd, joinRows, stripBars, stripHighlights, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../src/app/measures/volume-strip.ts';
 import { ORDERS_CUT_REFRESH_MS, ORDERS_REST_MS, StripOrderCache, orderLines, stripOrdersOf, type StripOrders } from '../src/app/measures/strip-orders.ts';
 import { aggregateCandles } from '../src/shared/series.ts';
 import { fetchCandles, type Fetcher } from '../src/shared/history.ts';
@@ -220,4 +220,15 @@ test("a long view: before the chart's first candle the exchange's own candles of
   // Drawn as the candles' part, as reported (quote volume and the part bought at market).
   const bars = stripBars(all, H, null, null, T + 200 * H, T, T + 200 * H, place, s => own.get(s), false);
   assert.deepEqual([bars[0]!.t, bars[0]!.source, bars[0]!.buy, bars[0]!.sell, bars[0]!.exact], [T + 2 * H, 'candle', 400, 600, true]);
+});
+
+test('the strip\'s Highlights are worked out again only when the bars\' figures or the options change', () => {
+  const bars = (values: number[]): StripBar[] => values.map((v, i) => ({ t: T + i * H, x: i, w: 1, source: 'candle', buy: v, sell: 0, split: false, i: -1, gap: null }));
+  const values = Array.from({ length: 40 }, (_, i) => i === 30 ? 1_000 : 10 + (i % 3)), memo = new StripHighlightMemo(), options = { length: 12, mult: 2 };
+  const first = memo.of(bars(values), options);
+  assert.equal(first.flag[30], 1, 'the spike is flagged');
+  assert.equal(memo.of(bars(values), options), first, 'the same figures drawn elsewhere (another frame): kept');
+  const moved = values.slice(); moved[39] = 12.5;
+  assert.notEqual(memo.of(bars(moved), options), first, 'a figure changed: worked out again');
+  assert.notEqual(memo.of(bars(moved), { length: 12, mult: 3 }), first, 'the options changed: worked out again');
 });

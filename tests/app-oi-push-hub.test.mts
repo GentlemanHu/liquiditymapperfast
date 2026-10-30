@@ -113,6 +113,24 @@ test('a refresh asked again while its tail is still out is the same load: one qu
   r.source.asked.shift()!.resolve([]); await a;
 });
 
+test("the minute's reload of the same series keeps the refresh to the last bars; another series reads whole", async () => {
+  const r = await rig('binance:BTCUSDT');
+  // The page's first load of its series (main.ts), then its open interest read whole.
+  void r.hub.loadSeries().catch(() => {}); await turn();
+  await load(r, history(100));
+  void r.hub.loadSeries(true).catch(() => {}); await turn();
+  let done = r.hub.loadOi(); await turn();
+  const tail = r.source.asked.shift()!;
+  assert.equal(tail.from, now0 - MIN, 'still only the last bars');
+  tail.resolve([]); await done;
+  r.store.set({ timeframe: '5m' });
+  void r.hub.loadSeries(true).catch(() => {}); await turn();
+  done = r.hub.loadOi(); await turn();
+  const whole = r.source.asked.shift()!;
+  assert.ok(whole.from < now0 - 400 * 5 * MIN, 'another timeframe is read whole');
+  whole.resolve([]); await done;
+});
+
 test('a market whose bars stopped long ago is asked for its last few bars only', async () => {
   const r = await rig('binance:BTCUSDT');
   await load(r, history(100).slice(0, 10));

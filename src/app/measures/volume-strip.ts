@@ -126,6 +126,23 @@ export function stripHighlights(bars: readonly StripBar[], options: { length: nu
   return { flag, threshold };
 }
 
+/**
+ * `stripHighlights` kept while the bars' candles, figures and sources and the options are the same (Sol review, 2026-10-30: a long view's
+ * thousands of bars had their baselines worked out again on every pointer move): comparing them is one pass, the baselines many.
+ */
+export class StripHighlightMemo {
+  #held: { t: Float64Array; v: Float64Array; k: Uint8Array; length: number; mult: number; result: ReturnType<typeof stripHighlights> } | null = null;
+  of(bars: readonly StripBar[], options: { length: number; mult: number }): ReturnType<typeof stripHighlights> {
+    const n = bars.length, h = this.#held, code = (b: StripBar): number => b.source === 'candle' ? 1 : b.source === 'recorded' ? 2 : 0;
+    let same = !!h && h.t.length === n && h.length === options.length && h.mult === options.mult;
+    for (let i = 0; same && i < n; i++) { const b = bars[i]!; same = h!.t[i] === b.t && Object.is(h!.v[i], b.buy + b.sell) && h!.k[i] === code(b); }
+    if (same) return h!.result;
+    const result = stripHighlights(bars, options);
+    this.#held = { t: Float64Array.from(bars, b => b.t), v: Float64Array.from(bars, b => b.buy + b.sell), k: Uint8Array.from(bars, code), length: options.length, mult: options.mult, result };
+    return result;
+  }
+}
+
 /** What the strip draws besides its bars. */
 export interface StripDraw {
   pw: number; ph: number; height: number; palette: Palette;

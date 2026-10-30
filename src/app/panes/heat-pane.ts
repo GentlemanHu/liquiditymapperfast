@@ -5,7 +5,7 @@ import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
-import { joinRows, paintVolumeStrip, stripBars, stripHighlights, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../measures/volume-strip.ts';
+import { StripHighlightMemo, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, withEarlier, type StripBar } from '../measures/volume-strip.ts';
 import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
@@ -318,6 +318,8 @@ export class HeatPane {
   #stripRows: { key: string; rows: TimeRows } | null = null;
   /** The chart's candles with the exchange's before them (`withEarlier`), kept while both are the same. */
   #stripCandles: { drawn: readonly CandleRow[]; own: ReadonlyMap<number, CandleRow>; rows: readonly CandleRow[] } | null = null;
+  /** The strip's Highlights, worked out again only when its bars' figures or the options change. */
+  readonly #stripHighlights = new StripHighlightMemo();
   readonly #takerRows = new TakerRows();
   #strip: StripState | null = null;
   /** The market orders of the strip's candles pointed at (the footprint's statistics of the strip's markets, read on hover). */
@@ -1360,7 +1362,7 @@ export class HeatPane {
     const place = (start: number): { x: number; w: number } => { const xc = v.xOf(start + tf / 2, pw); return { x: xc + (v.xOf(start, pw) + layout.candleCenter - xc) * narrowing, w: body }; };
     const all = stripBars(candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying());
     const first = all.findIndex(b => b.t + tf >= v.t0), cut = first < 0 ? all.length : first, bars = all.slice(cut);
-    const found = state.highlight.on ? stripHighlights(all, state.highlight) : null, highlights = found ? { flag: found.flag.slice(cut), threshold: found.threshold.slice(cut) } : null;
+    const found = state.highlight.on ? this.#stripHighlights.of(all, state.highlight) : null, highlights = found ? { flag: found.flag.slice(cut), threshold: found.threshold.slice(cut) } : null;
     const height = volumeBand(ph), top = ph - height - 6;
     const total = bars.reduce((sum, b) => b.source === 'recorded' ? sum + b.buy + b.sell : sum, 0);
     const hv = state.hover, hy = hv && hv.source === 'heat' && hv.price !== null ? v.yOf(hv.price, ph) : NaN, hx = hv ? v.xOf(hv.t, pw) : NaN;

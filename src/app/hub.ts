@@ -614,10 +614,13 @@ export class Hub {
     const { marketId, timeframe } = this.store.state;
     const key = `${marketId}|${timeframe}`;
     if (!marketId) return;
+    const sameSeries = this.#series === key;
     this.#series = key;
     const generation = ++this.#seriesGen;
-    // Open interest that is still on its way for the context just left must not land in this one.
-    this.#oiGen++; this.#oiKey = ''; this.#oiHeld = null;
+    // Open interest that is still on its way for the context just left must not land in this one. A reload of the same series (the one each
+    // minute) keeps what was read whole of it, so the 20-second refresh goes on reading only the last bars (Sol review, 2026-10-30: it read
+    // every market's whole window again each minute).
+    if (!sameSeries) { this.#oiGen++; this.#oiKey = ''; this.#oiHeld = null; }
     const tf = TIMEFRAMES[timeframe] ?? 3_600_000;
     // What is kept is shown at once only while it ends near enough to now to frame (`fit` frames the latest run of candles without a hole
     // wider than three; a page hidden for a while keeps a series of long ago), and without the live candle set past such a hole.
