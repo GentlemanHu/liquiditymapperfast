@@ -1,8 +1,9 @@
 import { marketsMatching, type MarketInfo, type SourceFilter } from './inputs.ts';
 
 /**
- * The order book as scripts read it (`askdepth`, `biddepth`, `depthbooks`): each candle's recorded depth of every book the heat map adds up,
- * as the recorder averaged it over the candle (its window at the chart's timeframe), measured from the candle's close outward. The page
+ * The order book as scripts read it (`askdepth`, `biddepth`, `depthabove`, `depthbelow`, `depthbooks`): each candle's recorded depth of every
+ * book the heat map adds up, as the recorder averaged it over the candle (its window at the chart's timeframe), measured from the candle's
+ * close outward. The page
  * reads the windows from its source and hands them to the script worker once; the worker keeps them for the timeframe on screen
  * (`DepthCache`) and the page sends only what changed (new books, the windows still under way).
  *
@@ -11,6 +12,12 @@ import { marketsMatching, type MarketInfo, type SourceFilter } from './inputs.ts
  * until the dollars passed reach it (`reachOf`): exact under that even spread, and as quick as the size is small (a few bins of each book
  * for most), with nothing worked out ahead or kept. Never better than the recording, which averages a minute of samples and leaves out a
  * large column's smallest bins.
+ *
+ * A window averaged over a candle with a move in it holds, at a price the candle went through, bids for the part of the candle the price was
+ * above it and asks for the rest, and cannot say which stood there at the close. So a walk of one side from the close (`askdepth`,
+ * `biddepth`) finds the side the price came from thin, by as much as the price spent past those levels (a 1h candle after a fall,
+ * 2026-10-29: $100M of asks 650 dollars above the close, of bids 140 below). A walk of every dollar recorded at each price (`depthabove`,
+ * `depthbelow`) reads a book of the usual depth there instead; on a candle without a move the two are nearly the same.
  */
 
 /** One book's windows at the chart's timeframe as the page sends them: they replace those held over [from, to) (-Infinity to Infinity: all). */
@@ -27,8 +34,8 @@ export interface DepthMessage { t: 'depth'; key: string; revision: number; reset
 /** Which depth a run reads: the timeframe and the revision the page had sent before it. */
 export interface DepthTag { key: string; revision: number }
 
-/** One book's window as a walk reads it: its bins (ascending), their step, and one side's dollars per bin. */
-export interface SideWindow { step: number; bins: Int32Array; usd: Float32Array }
+/** One book's window as a walk reads it: its bins (ascending), their step, and the dollars per bin it counts (one side's, or with `also` both). */
+export interface SideWindow { step: number; bins: Int32Array; usd: Float32Array; also?: Float32Array }
 
 /** The most bins one walk may pass, all books together (a size past the whole book stops there). */
 const MAX_WALK = 1_000_000;
@@ -55,6 +62,7 @@ export function reachOf(windows: readonly SideWindow[], side: 'ask' | 'bid', clo
   for (let b = 0; b < count; b++) {
     const w = windows[b]!, step = w.step;
     at[b] = up ? lowerBound(w.bins, Math.floor(close / step)) : lowerBound(w.bins, Math.ceil(close / step)) - 1;
+    if (w.also && w.also.length !== w.usd.length) return { price: NaN, cost };
     cost += 8;
   }
   let x = close, passed = 0;
@@ -62,18 +70,18 @@ export function reachOf(windows: readonly SideWindow[], side: 'ask' | 'bid', clo
     // The nearest edge ahead of any book's, and the dollars per unit of price of every bin the walk is inside of.
     let edge = up ? Infinity : -Infinity, density = 0;
     for (let b = 0; b < count; b++) {
-      const w = windows[b]!, step = w.step, bins = w.bins, usdOf = w.usd;
+      const w = windows[b]!, step = w.step, bins = w.bins, usdOf = w.usd, also = w.also;
       let k = at[b]!;
       // A bin with nothing in it is no bin.
-      while (k >= 0 && k < bins.length && !(usdOf[k]! > 0)) k += up ? 1 : -1;
+      while (k >= 0 && k < bins.length && !(usdOf[k]! + (also ? also[k]! : 0) > 0)) k += up ? 1 : -1;
       at[b] = k;
       if (k < 0 || k >= bins.length) continue;
-      const lo = bins[k]! * step, hi = lo + step;
+      const lo = bins[k]! * step, hi = lo + step, usd = usdOf[k]! + (also ? also[k]! : 0);
       if (up) {
         if (x < lo) { if (lo < edge) edge = lo; }
-        else { if (hi < edge) edge = hi; density += usdOf[k]! / step; }
+        else { if (hi < edge) edge = hi; density += usd / step; }
       } else if (x > hi) { if (hi > edge) edge = hi; }
-      else { if (lo > edge) edge = lo; density += usdOf[k]! / step; }
+      else { if (lo > edge) edge = lo; density += usd / step; }
     }
     cost += count;
     if (!Number.isFinite(edge)) return { price: NaN, cost };
@@ -91,9 +99,11 @@ export function reachOf(windows: readonly SideWindow[], side: 'ask' | 'bid', clo
   return { price: NaN, cost };
 }
 
+/** Which walk: one side from the close (the asks up, the bids down), or every dollar recorded at each price, up or down. */
+export type DepthWalk = 'ask' | 'bid' | 'above' | 'below';
 /** What a run reads depth through: for the candle starting at `t` with close `close`, over the books a filter keeps. */
 export interface DepthReader {
-  reach(side: 'ask' | 'bid', t: number, close: number, usd: number, filter: SourceFilter, key: string): number;
+  reach(walk: DepthWalk, t: number, close: number, usd: number, filter: SourceFilter, key: string): number;
   books(t: number, filter: SourceFilter, key: string): number;
   /** The work done since the last call (bins walked), for the step budget; it starts again from 0. */
   spent(): number;
@@ -126,7 +136,7 @@ export class DepthCache {
   #booksAt = 0;
   readonly #filters = new Map<string, string[]>();
   /** The windows a candle's walks read, for the calls of one candle (a script often asks both sides, or several sizes). */
-  #last: { key: string; ask: SideWindow[]; bid: SideWindow[] } | null = null;
+  #last: { key: string; ask: SideWindow[]; bid: SideWindow[]; above: SideWindow[]; below: SideWindow[] } | null = null;
   #spent = 0;
 
   apply(msg: DepthMessage): void {
@@ -174,20 +184,25 @@ export class DepthCache {
     return ids;
   }
 
-  #windows(t: number, filter: SourceFilter, key: string): { key: string; ask: SideWindow[]; bid: SideWindow[] } {
+  #windows(t: number, filter: SourceFilter, key: string): { key: string; ask: SideWindow[]; bid: SideWindow[]; above: SideWindow[]; below: SideWindow[] } {
     const k = `${key}\u0001${t}`;
     if (this.#last?.key === k) return this.#last;
-    const ask: SideWindow[] = [], bid: SideWindow[] = [];
+    const ask: SideWindow[] = [], bid: SideWindow[] = [], above: SideWindow[] = [], below: SideWindow[] = [];
     for (const id of this.#ids(filter, key)) {
       const book = this.#books.get(id), w = book?.windows.get(t);
       if (!book || !w || !w.bins.length) continue;
       ask.push({ step: book.step, bins: w.bins, usd: w.ask }); bid.push({ step: book.step, bins: w.bins, usd: w.bid });
+      above.push({ step: book.step, bins: w.bins, usd: w.ask, also: w.bid }); below.push({ step: book.step, bins: w.bins, usd: w.bid, also: w.ask });
     }
-    return this.#last = { key: k, ask, bid };
+    return this.#last = { key: k, ask, bid, above, below };
   }
 
   readonly reader: DepthReader = {
-    reach: (side, t, close, usd, filter, key) => { const w = this.#windows(t, filter, key); const r = reachOf(side === 'ask' ? w.ask : w.bid, side, close, usd); this.#spent += r.cost; return r.price; },
+    reach: (walk, t, close, usd, filter, key) => {
+      const w = this.#windows(t, filter, key), r = reachOf(w[walk], walk === 'ask' || walk === 'above' ? 'ask' : 'bid', close, usd);
+      this.#spent += r.cost;
+      return r.price;
+    },
     books: (t, filter, key) => { let n = 0; for (const id of this.#ids(filter, key)) if (this.#books.get(id)?.windows.has(t)) n++; this.#spent += 1; return n; },
     spent: () => { const s = this.#spent; this.#spent = 0; return s; },
   };

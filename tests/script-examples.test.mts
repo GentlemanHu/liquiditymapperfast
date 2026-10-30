@@ -8,6 +8,7 @@ import { filterKey, type BarInputs, type ScriptTheme, type SourceInputs } from '
 import { AlertNews } from '../src/app/script/alert-news.ts';
 import { interpolateColors, safeColor } from '../src/app/script/lang/colors.ts';
 import { MARK_TIP, type ScriptResult } from '../src/app/script/protocol.ts';
+import { DepthCache } from '../src/app/script/depth.ts';
 
 const N = 300, HOUR = 3_600_000;
 /** Candles of a wandering price with flow and liquidations on every market set the examples read. */
@@ -20,8 +21,18 @@ function inputs(): BarInputs {
     vbuy: Float64Array.from({ length: N }, () => rnd() * 2e8), vsell: Float64Array.from({ length: N }, () => rnd() * 2e8),
     lbuy: Float64Array.from({ length: N }, () => rnd() < 0.3 ? rnd() * 5e6 : 0), lsell: Float64Array.from({ length: N }, () => rnd() < 0.3 ? rnd() * 5e6 : 0), markets: 3,
   });
+  // An order book a candle: $25M a $20 bin for 2 % either side of the close, bids below it and asks above.
+  const depth = new DepthCache(), counts: number[] = [], bins: number[] = [], bid: number[] = [], ask: number[] = [];
+  for (const c of close) {
+    const lo = Math.floor(c * 0.98 / 20), hi = Math.ceil(c * 1.02 / 20);
+    counts.push(hi - lo);
+    for (let b = lo; b < hi; b++) { bins.push(b); bid.push((b + 1) * 20 <= c ? 25e6 : 0); ask.push(b * 20 >= c ? 25e6 : 0); }
+  }
+  const time = Float64Array.from({ length: N }, (_, i) => i * HOUR);
+  depth.apply({ t: 'depth', key: '1h', revision: 1, reset: true, drop: [], books: [{ id: 'a:BTC', info: { id: 'a:BTC', venue: 'binance', kind: 'perp', quote: 'USDT' }, step: 20, from: -Infinity, to: Infinity, times: [...time], counts, bins: Int32Array.from(bins), bid: Float32Array.from(bid), ask: Float32Array.from(ask) }] });
   return {
-    tf: HOUR, time: Float64Array.from({ length: N }, (_, i) => i * HOUR),
+    depth: depth.reader, depthEpochs: depth.epochs(time),
+    tf: HOUR, time,
     // Wicks of their own length a candle, so candles can sit inside or reach past the one before, as real ones do.
     open: Float64Array.from(close, (c, i) => i ? close[i - 1]! : c), high: Float64Array.from(close, (c, i) => Math.max(c, i ? close[i - 1]! : c) * (1 + rnd() * 0.006)), low: Float64Array.from(close, (c, i) => Math.min(c, i ? close[i - 1]! : c) * (1 - rnd() * 0.006)),
     close: Float64Array.from(close), volume: Float64Array.from(close, () => 1),
@@ -64,6 +75,26 @@ test('the heat map: sixteen rows of colour on 0..100, its average over them, its
   const colored = runScript('heat', HEATMAP_SOURCE, { colorCandles: true }, inputs());
   assert.ok(colored.ok && colored.candleColors?.some(c => !!c), 'candle colours when switched on');
   assert.ok(!r.candleColors?.some(c => !!c), 'and none by default');
+});
+
+test('depth bands: the price a size of the book reaches either side of the close, from a fixed size or a share of the volume', () => {
+  const source = examples().find(e => e.key === 'depth-bands')!.source, data = inputs();
+  const band = (options: Record<string, number | boolean>) => {
+    const r = runScript('d', source, options, data);
+    assert.ok(r.ok);
+    const plot = r.plots.find(p => p.kind === 'cloudarea')!;
+    return { lower: plot.fields.lowerValue!, higher: plot.fields.higherValue! };
+  };
+  const at = N - 1, close = data.close[at]!;
+  // $100M is four bins of $25M, from the edge of the first bin wholly past the close: $80 to $100 above it, and as far below.
+  const fixed = band({}), up = fixed.higher[at]! - close, down = close - fixed.lower[at]!;
+  assert.ok(up > 80 && up <= 100, `${fixed.higher[at]} over ${close}`);
+  assert.ok(down > 80 && down <= 100, `${fixed.lower[at]} under ${close}`);
+  // More than the book holds (2 % of the price, some $2B a side): no band.
+  assert.ok(Number.isNaN(band({ size: 1e10 }).higher[at]!));
+  // A share of the average candle's traded dollars (about $200M here): all of it reaches further than $100M.
+  const byVolume = band({ byVolume: true, share: 1 });
+  assert.ok(byVolume.higher[at]! - close > fixed.higher[at]! - close);
 });
 
 // ---- Bar patterns, on candles worked out by hand: each rule is read off the numbers, not off what the script answers.

@@ -21,6 +21,12 @@ const about = (): Readonly<Record<ExampleKey, { tip: string; body: readonly stri
       t('One look shows whether a move is short or broad: when only the bottom rows turn, the move is recent and the longer windows have not followed; a column of one colour means every window agrees, which a stochastic with a single window cannot show.'),
       t('Its colours follow the page\'s theme and stay apart for colour-blind eyes, and an option colours the map\'s candles by the average. It says where price sits in its ranges, not where it goes next: a market can stay blue for a long time while it climbs.')],
   },
+  'depth-bands': {
+    tip: t('How far a market order of a given size would move the price: up through the order book above the close, and down through the book below it.'),
+    body: [t('The upper line is where a market buy of that size would have to go, the lower where a sell would, through the order books the map shows on every exchange, added up as one. A wide band is a thin book: the same money moves the price further.'),
+      t('The size is a number of dollars, or a share of what an average candle traded at market, so that the band means the same on a quiet day and a busy one. Unlike Bollinger bands, which measure how far prices have moved, it measures how much stands in the way.'),
+      t('It reads the books the page recorded, each candle\'s as it stood on average over the candle, so candles from before the recording have no band. Books change all the time, and an order this large would meet orders that are hidden or that move away: it is a guide, not a quote.')],
+  },
   'bar-patterns': {
     tip: t('Labels what each candle did to the range of the one before it, and marks the patterns that follow from that.'),
     body: [t('“in” marks an inside candle (within the range of the one before), “out” an outside one (past both its ends). Arrows mark patterns: a breakout of an inside candle, a failed break (one the next candle took back), a rejection (a long wick past the candle before, closing back inside: hammers and shooting stars) and an engulfing candle.'),

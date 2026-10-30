@@ -33,8 +33,11 @@ const LOG = 32;
 const FIRST_CHUNK = 24, MAX_CHUNK = 384;
 /** How many of the newest candles have their depth read: a window holds about 200 bins a book (2026-10-29), so 24 books take some 58 MB. */
 export const MAX_WINDOWS = 1_000;
-/** How many other timeframes' depth is kept for a return, and how many bins all of them may hold together (about 48 MB). */
-const KEPT_ERAS = 3, KEPT_BINS = 4_000_000;
+/**
+ * How many other timeframes' depth is kept for a return, and how many bins all of them may hold together: about 48 MB on a server's source,
+ * 12 MB in a browser's, which may be a phone's (its own recording, a day of a dozen books or so, also holds much less).
+ */
+const KEPT_ERAS = 3, KEPT_BINS = 4_000_000, KEPT_BINS_BROWSER = 1_000_000;
 
 interface Window { bins: Int32Array; bid: Float32Array; ask: Float32Array }
 /** One book: its windows, its grid (0 while it has answered nothing), and how far back it has been read (windows from there on are held). */
@@ -142,7 +145,7 @@ export class DepthFeed {
     let bins = 0;
     for (const era of this.#kept.values()) bins += binsOf(era);
     for (const [k, era] of this.#kept) {
-      if (this.#kept.size <= KEPT_ERAS && bins <= KEPT_BINS) break;
+      if (this.#kept.size <= KEPT_ERAS && bins <= (this.hub.source.kind === 'browser' ? KEPT_BINS_BROWSER : KEPT_BINS)) break;
       bins -= binsOf(era); this.#kept.delete(k);
     }
     this.#key = key; this.#gone.clear(); this.#log = []; this.#revision++;

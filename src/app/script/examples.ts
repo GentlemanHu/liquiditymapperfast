@@ -3,13 +3,37 @@ import type { ScriptRecord } from './records.ts';
 import { HEATMAP_ID, HEATMAP_SOURCE, STARTER_ID, VWAP_SOURCE } from './starter.ts';
 
 /** Each example's key, the same in every language: the starters' ids, and the start of the id of a script added from an example (about.ts). */
-export type ExampleKey = typeof STARTER_ID | typeof HEATMAP_ID | 'bar-patterns' | 'buyer-and-seller-vwaps' | 'liquidations' | 'volume-anomalies' | 'cumulative-delta' | 'spot-and-perpetual-cvd' | 'delta-histogram' | 'buy-share';
+export type ExampleKey = typeof STARTER_ID | typeof HEATMAP_ID | 'depth-bands' | 'bar-patterns' | 'buyer-and-seller-vwaps' | 'liquidations' | 'volume-anomalies' | 'cumulative-delta' | 'spot-and-perpetual-cvd' | 'delta-histogram' | 'buy-share';
 
 /** Scripts to start from, written for this page: the two a page starts with first, then the others. */
 export function examples(): { key: ExampleKey; name: string; source: string; place?: ScriptRecord['place'] }[] {
   return [
     { key: STARTER_ID, name: t('VWAP with bands'), source: VWAP_SOURCE, place: 'map' },
     { key: HEATMAP_ID, name: t('Stochastic heat map'), source: HEATMAP_SOURCE },
+    // Where a market order of a size would move the price, from the recorded order books (askdepth, biddepth).
+    { key: 'depth-bands', name: t('Depth bands'), place: 'map', source: `// Depth bands: how far a market order of a given size would move the price, from the order books the page recorded.
+// Above the close, the price at which that many dollars of the book are passed going up; below it, going down.
+// A wide band is a thin book: the same money moves the price further. Each candle's book is the one recorded over it
+// (averaged over its minutes), on every exchange the heat map shows, added up as one book.
+
+// The size: a number of dollars, or a share of what an average candle traded at market (the band then means the same
+// on a quiet day and a busy one, and on any coin; it widens with the timeframe, as candles trade more). On Bitcoin's
+// books added up, $100M reached about 0.1 % from the close on 2026-10-29 at every timeframe.
+size = option(type=number, default=100000000, min=100000, step=1000000, label="Size ($)")
+byVolume = option(type=checkbox, default=false, label="Size from the volume")
+share = option(type=number, default=0.1, min=0.01, step=0.01, label="Share of a candle's volume")
+len = option(type=number, default=20, min=1, step=1, label="Volume window (candles)")
+askColor = option(type=color, default="rgba(255,120,90,0.9)", label="Asks")
+bidColor = option(type=color, default="rgba(70,160,255,0.9)", label="Bids")
+fill = option(type=color, default="rgba(128,128,128,0.08)", label="Fill")
+
+// depthabove(x) and depthbelow(x) are prices: NaN where the book was not recorded for the candle, or holds less than x.
+// They count every dollar recorded at each price: the book is an average over the candle, and in a candle that moved,
+// the prices it went through held bids part of the time and asks the rest. askdepth(x) and biddepth(x) count one side
+// only (the asks above, the bids below), which after a move reads the side the price came from as thin.
+var usd = byVolume ? share * sma(vbuy + vsell, len) : size
+cloudarea(depthbelow(usd), depthabove(usd), positiveColor=fill, negativeColor=fill, higherLineColor=askColor, lowerLineColor=bidColor, title="Depth bands")
+` },
     // What each candle did to the range of the one before (inside, outside, up, down), and the patterns that follow from it (breakout,
     // failed break, rejection, outside close) marked where they happen, with their levels and what the order flow did there when pointed at.
     { key: 'bar-patterns', name: t('Bar patterns'), source: `// Bar patterns: what each candle did to the range of the candle before it, and the few patterns that follow from that,

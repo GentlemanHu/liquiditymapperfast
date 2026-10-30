@@ -27,6 +27,20 @@ test('a size is reached walking out from the close, each bin\'s dollars spread e
   assert.ok(Number.isNaN(reachOf(bids, 'bid', 995, 10.5).price));
 });
 
+test('after a move within the candle, the walk of every dollar at each price reads the book where the walk of one side finds the side the price came from thin', () => {
+  // A candle that fell from 1,050 to 1,000: the bins it went through held bids most of the candle ($9 of them, $1 of asks), the ones above
+  // it asks all along ($10); below the close, bids all along.
+  const bins = [98, 99, 100, 101, 102, 103, 104, 105, 106], bid = [10, 10, 9, 9, 9, 9, 9, 0, 0], ask = [0, 0, 1, 1, 1, 1, 1, 10, 10];
+  const both = (usd: number[], also: number[]): SideWindow => ({ ...win(10, bins, usd), also: Float32Array.from(also) });
+  // One side: $5 of asks to 1,050, then $10 a bin: $20 at 1,065. Both: $10 a bin from the close: $20 at 1,020.
+  near(reachOf([win(10, bins, ask)], 'ask', 1000, 20).price, 1065);
+  near(reachOf([both(ask, bid)], 'ask', 1000, 20).price, 1020);
+  // Below the close only bids stood: both walks read the same there.
+  near(reachOf([both(bid, ask)], 'bid', 1000, 15).price, reachOf([win(10, bins, bid)], 'bid', 1000, 15).price);
+  // A second array that does not match the bins is no book.
+  assert.ok(Number.isNaN(reachOf([{ ...win(10, bins, ask), also: new Float32Array(2) }], 'ask', 1000, 5).price));
+});
+
 test('books on grids of different steps are added up by price, and a gap in the book holds nothing', () => {
   // $10 over 1,000-1,010 in one book, $20 over 1,000-1,020 in another: $2 a dollar of price to 1,010, then $1.
   const both = [win(10, [100], [10]), win(20, [50], [20])];
@@ -85,12 +99,14 @@ test('a script reads the book with askdepth, biddepth and depthbooks, over the b
     book('b:BTC', 'bybit', -Infinity, Infinity, [M], () => ({ bins: [99, 100], bid: [8, 0], ask: [0, 10] })),
   ] });
   const inputs: BarInputs = { tf: M, time: Float64Array.from([0, M]), open: Float64Array.from([1000, 1000]), high: Float64Array.from([1000, 1000]), low: Float64Array.from([1000, 1000]), close: Float64Array.from([1000, 1000]), volume: Float64Array.from([1, 1]), sources: {}, forming: true, depth: cache.reader, depthEpochs: cache.epochs(Float64Array.from([0, M])) };
-  const run = createRunner('d', 'line(askdepth(10))\nline(biddepth(8))\nline(depthbooks())\nline(source(askdepth(10), exchange=BYBIT))\n', {}).run(inputs);
+  const run = createRunner('d', 'line(askdepth(10))\nline(biddepth(8))\nline(depthbooks())\nline(source(askdepth(10), exchange=BYBIT))\nline(depthabove(10))\nline(depthbelow(8))\n', {}).run(inputs);
   assert.ok(run.ok, JSON.stringify(run));
   if (!run.ok) return;
   const at = (p: number, i: number): number => run.plots[p]!.fields.value![i]!;
   assert.ok(Number.isNaN(at(0, 0)), 'no window at the first candle');
   near(at(0, 1), 1005); near(at(1, 1), 995); assert.equal(at(2, 1), 2); near(at(3, 1), 1010);
+  // Each side of the close held one side only: every dollar at each price reads the same.
+  near(at(4, 1), 1005); near(at(5, 1), 995);
   // A script's own name of one stays its own; a run without the book reads NaN.
   const own = createRunner('o', 'function askdepth(x) { return 7 }\nline(askdepth(1))\n', {}).run(inputs);
   assert.ok(own.ok && own.plots[0]!.fields.value![1] === 7);

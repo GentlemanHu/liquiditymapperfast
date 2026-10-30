@@ -289,6 +289,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   for (const node of sites.keys()) if (node.k === 'call' && node.callee.k === 'id' && node.callee.name === 'source') { const f = sourceFilter(node.named, opt), k = filterKey(f); sourceSites.set(node, k); filters.set(k, f); }
   /**
    * `askdepth(usd)` / `biddepth(usd)`: the price at which the asks above the candle's close (the bids below it) add up to `usd` dollars;
+   * `depthabove(usd)` / `depthbelow(usd)` the same over every dollar recorded at each price, bids and asks alike (`depth.ts` says why);
    * `depthbooks()`: how many of the books read have depth at this candle. Over the books of the set being read (`source(...)`), NaN where
    * nothing is known. The work the book took is paid from the step budget.
    */
@@ -297,7 +298,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     const reader = inputs.depth;
     if (!reader) return NaN;
     const key = sourceStack[sourceStack.length - 1]!, filter = filters.get(key) ?? {};
-    const value = name === 'depthbooks' ? reader.books(inputs.time[i]!, filter, key) : reader.reach(name === 'askdepth' ? 'ask' : 'bid', inputs.time[i]!, inputs.close[i]!, args.length ? num(args[0]) : NaN, filter, key);
+    const walk = name === 'askdepth' ? 'ask' : name === 'biddepth' ? 'bid' : name === 'depthabove' ? 'above' : 'below';
+    const value = name === 'depthbooks' ? reader.books(inputs.time[i]!, filter, key) : reader.reach(walk, inputs.time[i]!, inputs.close[i]!, args.length ? num(args[0]) : NaN, filter, key);
     const spent = reader.spent();
     if (spent > 0) charge(budget, Math.ceil(spent / 4));
     return value;

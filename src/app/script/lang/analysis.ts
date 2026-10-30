@@ -46,7 +46,7 @@ export interface Analysis {
 }
 
 /** The functions that read the order book (`depth.ts`); like the names version 2 added, not in `KNOWN_INPUTS`: a script's own name of one stays its own. */
-export const DEPTH_FUNCTIONS = new Set(['askdepth', 'biddepth', 'depthbooks']);
+export const DEPTH_FUNCTIONS = new Set(['askdepth', 'biddepth', 'depthabove', 'depthbelow', 'depthbooks']);
 
 /** What `renderer` answers when a script runs (the engine's `rendererObject`); any other member reads nothing and is warned of. */
 export const RENDERER_MEMBERS = new Set(['length', 'timestamp', 'localTimestamp', 'timeframe', 'type', 'lastTradeTimestamp', 'forming']);
