@@ -31,7 +31,9 @@ import { LT_HALF_LIVES } from '../../shared/lt-sample.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
 import { panelSwitchRow, panelSwitchOn, panelSwitchTip, setPanelSwitch } from '../sound/panel.ts';
 import { t, tn } from '../i18n.ts';
-import { scaledUsd, unscaledUsd } from '../coin.ts';
+import { currentCoin, scaledUsd, unscaledUsd } from '../coin.ts';
+import { fetchOiHistory, webGet } from '../../shared/history.ts';
+import { OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, type OiLongHeld, type OiLongSeam } from './oi-long.ts';
 import { DRAG_MIN_PX, selects } from '../range/selection.ts';
 import type { RangeTool } from '../range/tool.ts';
 import type { FlowBook } from '../flow-book.ts';
@@ -407,6 +409,33 @@ export class OiPane extends TimePane {
     this.#oiCut = { src: bars, slot, out };
     return out;
   }
+  /** Bybit's history further back than the readings held (oi-long.ts), read by the pane straight from Bybit: the server's store holds days of it. */
+  readonly #long = new OiLongHistory((id, period, from, to) => {
+    const listing = currentCoin().markets.bybit;
+    if (!listing || `bybit:${listing.symbol}` !== id) return Promise.resolve([]);
+    return fetchOiHistory(id, period, from, to, webGet, listing).then(rows => rows.map((r): OiBar => [Number(r.start), Number(r.open), Number(r.high), Number(r.low), Number(r.close)]));
+  }, () => this.invalidate());
+  #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongSeam | null } | null = null;
+  #scaled: { held: OiLongHeld; t: number; k: number; bars: OiBar[] } | null = null;
+  /**
+   * The long view, for venues added together that count Bybit's perpetual and a view that starts before the readings held: the seam, Bybit's
+   * readings before it put at its scale, and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows
+   * what was known at its moment. Not for a view inside the readings held: where only Bybit's go back (a coin with no Binance perpetual, or
+   * Binance's history not read), the seam is near the newest bar, and the estimate took the place of the readings in every view (review,
+   * 2026-10-30).
+   */
+  #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongSeam; period: number; bars: readonly OiBar[] } | null {
+    const listing = currentCoin().markets.bybit;
+    if (replaying() || parts.length < 2 || !listing || listing.inverse) return null;
+    const id = `bybit:${listing.symbol}`;
+    if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== id) this.#seam = { parts, oi, id, seam: oiLongSeam(parts, id, oi) };
+    const seam = this.#seam.seam, v = this.view;
+    if (!seam || v.t0 >= oi[0]![0]) return null;
+    const held = this.#long.rows(id, oiLongPeriod(tf, v.t1 - v.t0, this.plotW), v, seam.t);
+    if (!held) return { seam, period: tf, bars: [] };
+    if (this.#scaled?.held !== held || this.#scaled.t !== seam.t || this.#scaled.k !== seam.k) this.#scaled = { held, t: seam.t, k: seam.k, bars: oiLongBars(held.bars, held.period, seam) };
+    return { seam, period: held.period, bars: this.#scaled.bars };
+  }
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state: AppState = this.store.state;
     // Replay: the bar under way at its moment would carry what came after; only bars that ended by then.
@@ -421,17 +450,25 @@ export class OiPane extends TimePane {
     const say = (html: string): void => setHtml(readout, html);
     if (!oi.length) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('No open-interest history for this market yet.'), 12, ph / 2); say(''); return; }
     const analysis = this.#analysis(oi, highlight, parts, tf);
-    const visible: number[] = [];
-    for (let i = 0; i < oi.length; i++) if (oi[i]![0] + tf >= v.t0 && oi[i]![0] <= v.t1) visible.push(i);
-    if (!visible.length) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
+    // Further back than the readings held, Bybit's history goes on from the seam (oi-long.ts): the bars before it, Bybit's readings alone, give
+    // way to it. It is drawn as the level only, dashed: an estimate, and its readings a day or four hours apart beside the candles' changes.
+    // (While its readings are read, the bars before the seam stay drawn.)
+    const ext = this.#extension(parts, oi, tf), early = ext?.bars ?? [], seamI = early.length ? ext!.seam.index : 0, ep = ext?.period ?? tf;
+    const visible: number[] = [], shownEarly: number[] = [];
+    for (let i = seamI; i < oi.length; i++) if (oi[i]![0] + tf >= v.t0 && oi[i]![0] <= v.t1) visible.push(i);
+    for (let j = 0; j < early.length; j++) if (early[j]![0] + ep >= v.t0 && early[j]![0] <= v.t1) shownEarly.push(j);
+    // A view starting between the last reading's period and the seam: the last reading's level is what the line holds there.
+    if (!shownEarly.length && early.length && early[early.length - 1]![0] < v.t0 && v.t0 < oi[seamI]![0]) shownEarly.push(early.length - 1);
+    if (!visible.length && !shownEarly.length) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
     // Geometry: the level on top, the change below (when the pane is tall enough to hold both).
     const split = ph >= 84, lineBottom = split ? Math.round(ph * 0.6) : ph - 6, bandTop = lineBottom + 12, bandBottom = ph - 5, mid = (bandTop + bandBottom) / 2, half = (bandBottom - bandTop) / 2;
     let lo = Infinity, hi = -Infinity, maxDelta = 0;
     for (const i of visible) { const b = oi[i]!; lo = Math.min(lo, b[3], b[4]); hi = Math.max(hi, b[2], b[4]); maxDelta = Math.max(maxDelta, Math.abs(analysis.delta[i]!)); }
+    for (const j of shownEarly) { const b = early[j]!; lo = Math.min(lo, b[3], b[4]); hi = Math.max(hi, b[2], b[4]); }
     const pad = Math.max((hi - lo) * 0.18, hi * 0.0004), min = lo - pad, max = hi + pad;
     const y = (value: number) => 6 + (1 - (value - min) / (max - min)) * (lineBottom - 6);
-    const xc = (i: number) => v.xOf(oi[i]![0] + tf / 2, pw);
-    const first = Math.max(0, visible[0]! - 1), last = visible[visible.length - 1]!;
+    const xc = (i: number) => v.xOf(oi[i]![0] + tf / 2, pw), xe = (j: number) => v.xOf(early[j]![0] + ep / 2, pw);
+    const first = visible.length ? Math.max(seamI, visible[0]! - 1) : -1, last = visible.length ? visible[visible.length - 1]! : -1;
     const lastBar = oi[oi.length - 1]!, newestCandle = state.candles[state.candles.length - 1];
     const reachT = Math.min(v.t1, Math.max(lastBar[0] + tf, newestCandle ? newestCandle[0] + tf : 0));
     const xEnd = Math.min(pw, v.xOf(reachT, pw)), xSampled = Math.min(pw, xc(oi.length - 1));
@@ -457,37 +494,65 @@ export class OiPane extends TimePane {
     }
     // Level: soft area, step line, dashed continuation, sample dots.
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
-    // The line holds the last sample on screen. It ends at the newest sample's centre only when that sample is the one on screen; looking at
-    // the past it carries its level to the edge of the view, and the newest value (which is somewhere to the right) is not joined to it.
-    const tail = oiTail(oi.length, last, xSampled, pw), endY = y(oi[last]![4]);
-    line(first, last); ctx.lineTo(tail.x, endY); ctx.lineTo(tail.x, lineBottom); ctx.lineTo(xc(first), lineBottom); ctx.closePath();
-    ctx.globalAlpha = 0.09; ctx.fillStyle = p.accent; ctx.fill(); ctx.globalAlpha = 1;
-    ctx.lineWidth = 1.6; ctx.strokeStyle = p.accent;
+    ctx.lineWidth = 1.6; ctx.strokeStyle = p.accent; ctx.fillStyle = p.accent;
+    if (shownEarly.length) {
+      // Bybit's history: a step line through its readings, the last stepping to the line's level where the line starts (Bybit's reading
+      // there times k is that level), faint and dashed as the stretches with fewer venues are. Readings under 6 px apart (a day apart over
+      // a year) are joined straight: steps that narrow broke the dashes into specks.
+      const j0 = Math.max(0, shownEarly[0]! - 1), j1 = Math.min(early.length - 1, shownEarly[shownEarly.length - 1]! + 1), joins = j1 === early.length - 1;
+      const endX = joins ? xc(seamI) : xe(j1), stepped = pw * ep / Math.max(1, v.t1 - v.t0) >= 6;
+      const trace = (): void => {
+        ctx.beginPath(); ctx.moveTo(xe(j0), y(early[j0]![4]));
+        for (let j = j0 + 1; j <= j1; j++) { if (stepped) ctx.lineTo(xe(j), y(early[j - 1]![4])); ctx.lineTo(xe(j), y(early[j]![4])); }
+        if (joins) { if (stepped) ctx.lineTo(endX, y(early[j1]![4])); ctx.lineTo(endX, y(oi[seamI]![4])); }
+      };
+      trace(); ctx.lineTo(endX, lineBottom); ctx.lineTo(xe(j0), lineBottom); ctx.closePath();
+      ctx.globalAlpha = 0.05; ctx.fill();
+      trace(); ctx.globalAlpha = 0.45; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
     // Venues added together: where fewer of them have a reading than elsewhere in view (a recording gap), the sum is drawn dashed and faint,
     // so a gap does not read as positions opened or closed.
     const venues = parts.length > 1 ? oiSumOf(parts, tf).venues : null, most = venues ? Math.max(...visible.map(i => venues[i] ?? 0)) : 0;
-    if (venues && visible.some(i => (venues[i] ?? 0) < most)) {
-      const full = (i: number): boolean => (venues[i] ?? 0) >= most;
-      for (let i = first; i <= last; i++) {
-        const x0 = i === first ? xc(i) : xc(i), y0 = y(oi[Math.max(first, i - 1)]![4]);
-        ctx.setLineDash(full(i) ? [] : [3, 3]); ctx.globalAlpha = full(i) ? 1 : 0.45; ctx.beginPath();
-        if (i === first) { ctx.moveTo(x0, y(oi[i]![4])); } else { ctx.moveTo(x0, y0); ctx.lineTo(x0, y(oi[i]![4])); }
-        ctx.lineTo(i === last ? tail.x : xc(i + 1), y(oi[i]![4])); ctx.stroke();
-      }
-      ctx.setLineDash([]); ctx.globalAlpha = 1;
-    } else { line(first, last); ctx.lineTo(tail.x, endY); ctx.stroke(); }
-    if (tail.live && xEnd > xSampled + 2) { ctx.globalAlpha = 0.55; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(xSampled, y(lastBar[4])); ctx.lineTo(xEnd, y(lastBar[4])); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
-    ctx.lineWidth = 1;
-    const spacing = visible.length > 1 ? (xc(visible[visible.length - 1]!) - xc(visible[0]!)) / (visible.length - 1) : 99;
-    if (spacing >= 9) { ctx.fillStyle = p.accent; for (const i of visible) { ctx.beginPath(); ctx.arc(xc(i), y(oi[i]![4]), 2.4, 0, Math.PI * 2); ctx.fill(); } }
+    if (visible.length) {
+      // The line holds the last sample on screen. It ends at the newest sample's centre only when that sample is the one on screen; looking at
+      // the past it carries its level to the edge of the view, and the newest value (which is somewhere to the right) is not joined to it.
+      const tail = oiTail(oi.length, last, xSampled, pw), endY = y(oi[last]![4]);
+      line(first, last); ctx.lineTo(tail.x, endY); ctx.lineTo(tail.x, lineBottom); ctx.lineTo(xc(first), lineBottom); ctx.closePath();
+      ctx.globalAlpha = 0.09; ctx.fill(); ctx.globalAlpha = 1;
+      if (venues && visible.some(i => (venues[i] ?? 0) < most)) {
+        const full = (i: number): boolean => (venues[i] ?? 0) >= most;
+        for (let i = first; i <= last; i++) {
+          const x0 = i === first ? xc(i) : xc(i), y0 = y(oi[Math.max(first, i - 1)]![4]);
+          ctx.setLineDash(full(i) ? [] : [3, 3]); ctx.globalAlpha = full(i) ? 1 : 0.45; ctx.beginPath();
+          if (i === first) { ctx.moveTo(x0, y(oi[i]![4])); } else { ctx.moveTo(x0, y0); ctx.lineTo(x0, y(oi[i]![4])); }
+          ctx.lineTo(i === last ? tail.x : xc(i + 1), y(oi[i]![4])); ctx.stroke();
+        }
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      } else { line(first, last); ctx.lineTo(tail.x, endY); ctx.stroke(); }
+      if (tail.live && xEnd > xSampled + 2) { ctx.globalAlpha = 0.55; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(xSampled, y(lastBar[4])); ctx.lineTo(xEnd, y(lastBar[4])); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1; }
+      ctx.lineWidth = 1;
+      const spacing = visible.length > 1 ? (xc(visible[visible.length - 1]!) - xc(visible[0]!)) / (visible.length - 1) : 99;
+      if (spacing >= 9) { ctx.fillStyle = p.accent; for (const i of visible) { ctx.beginPath(); ctx.arc(xc(i), y(oi[i]![4]), 2.4, 0, Math.PI * 2); ctx.fill(); } }
+    }
     ctx.restore();
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     // A coin counted in billions (PEPE) would not fit the axis written out in full.
     const amount = (v: number): string => Math.abs(v) >= 1e6 ? usd(v) : fmtPrice(v, 1);
     ctx.fillText(amount(max), this.w - AXIS_W + 6, 10); ctx.fillText(amount(min), this.w - AXIS_W + 6, lineBottom - 4);
-    if (split) { ctx.fillText(`±${amount(maxDelta)}`, this.w - AXIS_W + 6, mid); }
+    if (split && visible.length) { ctx.fillText(`±${amount(maxDelta)}`, this.w - AXIS_W + 6, mid); }
     // Readout: the hovered sample, else the newest, with where the data comes from and how old it is.
     const hover = state.hover;
+    // Over Bybit's history: its reading there, marked as the estimate it is.
+    if (hover && early.length && hover.t < oi[seamI]![0]) {
+      let j = 0;
+      while (j + 1 < early.length && early[j + 1]![0] <= hover.t) j++;
+      const there = early[j]!, change = j > 0 ? there[4] - early[j - 1]![4] : null, sign = change === null ? '' : change > 0 ? '+' : change < 0 ? '−' : '';
+      const name = Object.entries(TIMEFRAMES).find(([, ms]) => ms === ep)?.[0] ?? '';
+      const from = t('from Bybit\'s {period} history ×{k}, scaled to meet the line', { period: name, k: ext!.seam.k.toFixed(2) });
+      if (this.pointer) this.#lines = oiCardLines({ time: there[0], level: there[4], change, before: null, rank: null, of: 0, sigma: null, source: from, staleMin: null, estimate: true });
+      say(`${t('base')} <b>≈ ${fmtPrice(there[4], 1)}</b>${change === null ? '' : ` Δ <b class="${change > 0 ? 'bid' : change < 0 ? 'ask' : ''}">≈ ${sign}${fmtPrice(Math.abs(change), 1)}</b>`} <span class="muted">${from}</span>`);
+      return;
+    }
     let shown = oi.length - 1;
     if (hover) { shown = -1; for (let i = 0; i < oi.length; i++) if (oi[i]![0] <= hover.t) shown = i; else break; if (shown < 0) shown = 0; }
     const bar = oi[shown]!, d = shown > 0 ? analysis.delta[shown]! : 0, flagged = highlight.on && analysis.flag[shown] === 1;
