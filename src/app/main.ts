@@ -37,6 +37,7 @@ import { openedSheet } from './sheet.ts';
 import { topShown } from './measures/strip.ts';
 import { tableHeight } from './panes/bar-stats.ts';
 import { Layout } from './layout.ts';
+import { LayoutActions } from './layouts/actions.ts';
 import { Dock, axisOf, fillsArea } from './dock.ts';
 import { RangeTool } from './range/tool.ts';
 import { startDevice, onLayoutMode, isPhone, layoutMode } from './device.ts';
@@ -131,7 +132,7 @@ async function main(): Promise<void> {
   // The phone's Candle view: a tab of its own that fills the area (panes/candle-pane.ts); it counts the markets the map's footprint counts.
   const candle = new CandlePane(main, store, hub, kernels, s => heat.footprintMarkets(s));
   toolbar.tapeFields = () => candle.settingsFields();
-  const arrange = new Layout(main, chart, side, [
+  const arrange = new Layout(main, chart, { left: flowCol, right: side }, [
     { id: 'heat', root: heat.root, min: 240 },
     { id: 'bars', root: bars.root, height: 84, min: 56, head: bars.header },
     { id: 'depth', root: depth.root, height: 132, min: 70, head: depth.header },
@@ -139,8 +140,18 @@ async function main(): Promise<void> {
     { id: 'delta', root: delta.root, height: 150, min: 60, head: delta.header },
     { id: 'ls', root: ls.root, height: 120, min: 60, head: ls.header },
     { id: 'lt', root: lt.root, height: 128, min: 70, head: lt.header },
-    { id: 'script', root: script.root, height: 220, min: 60, head: script.header },
-  ], flowCol);
+    { id: 'script', root: script.root, height: 220, min: 60, head: script.header, closable: false },
+  ], [
+    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow') },
+    { id: 'book', root: ladder.root, head: ladder.controls, title: t('Order Book') },
+  ]);
+  // What the person does to the layout (layouts/actions.ts): the layouts panel, a pane's close button and the edge tab of a closed side pane (the Panels row in the top bar flips the same switches).
+  const layouts = new LayoutActions(store, {
+    arrangement: () => arrange.arrangement(), apply: a => arrange.apply(a), defaults: () => arrange.defaults(), swapSides: () => arrange.swapSides(),
+    env: () => ({ width: window.innerWidth, height: chart.clientHeight || Math.max(400, window.innerHeight - 200), held: scriptRows(store.state) ? ['script' as const] : [] }),
+  });
+  arrange.onClose = id => layouts.hide(id, arrange.title(id)); arrange.onOpen = id => layouts.setPane(id, true);
+  toolbar.layouts = layouts;
   const lower = () => { depth.invalidate(); oi.invalidate(); delta.invalidate(); ls.invalidate(); lt.invalidate(); bars.invalidate(); script.invalidate(); cvd.followMap(); };
   // Replay: the map's candle under way is rebuilt from the flow, so flow arriving while paused redraws it too (live, the map has its own pace).
   // The volume profile along the top of the map draws traded volume from the flow too: history that has landed redraws it (a live second
@@ -173,7 +184,6 @@ async function main(): Promise<void> {
     live: () => { if (replaying()) replayBar.stop(); else toolbar.onRecenter(); },
   };
   hub.onWhaleChanged = () => toolbar.refreshOpenPanel();
-  toolbar.panes = { arrangement: () => arrange.arrangement(), apply: a => arrange.apply(a), defaults: () => arrange.defaults() };
   toolbar.onSelectMarket = id => store.set({ marketId: id });
   toolbar.onVenuesApplied = () => { void hub.refreshMarkets(); window.setTimeout(() => void hub.refreshMarkets(), 15_000); };
   const sounds = new Sounds(store); toolbar.attachSounds(sounds); sounds.start();
@@ -267,6 +277,7 @@ async function main(): Promise<void> {
     else if (a.kind === 'recenter') toolbar.onRecenter();
     else if (a.kind === 'zoom') heat.zoomStep(a.dir);
     else if (a.kind === 'toggle') { store.set(togglePatch(store.state, a.feature)); toolbar.refreshOpenPanel(); }
+    else if (a.kind === 'column') layouts.toggleColumn(a.side);
     else if (a.kind === 'range') range.toggle();
     else if (a.kind === 'draw') drawBar.toggle();
     else if (a.kind === 'goto') toolbar.openGoTo();
@@ -285,9 +296,8 @@ async function main(): Promise<void> {
     const s = store.state;
     gutters();
     depth.root.hidden = !s.show.depth; oi.root.hidden = !s.show.oi; delta.root.hidden = !s.show.delta; ls.root.hidden = !s.show.ls; lt.root.hidden = !s.show.lt; bars.root.hidden = !s.show.stats; script.root.hidden = !scriptRows(s);
-    // The two side panels vanish and return at once: nothing is rebuilt, a hidden column is simply not laid out.
-    cvd.root.hidden = !s.show.cvd; ladder.root.hidden = !s.show.book;
-    arrange.columns({ flow: s.show.cvd, book: s.show.book });
+    // The two side panels vanish and return at once: nothing is rebuilt, a hidden column is simply not laid out (a closed one leaves an edge tab).
+    arrange.sides({ cvd: s.show.cvd, book: s.show.book });
     arrange.rebuild();
     if (s.show.cvd) cvd.invalidate(); if (s.show.book) ladder.invalidate();
     // The Scripts tab, like its pane, is there only for scripts drawn in rows: those on the map need neither.
@@ -365,6 +375,7 @@ async function main(): Promise<void> {
 
   for (const p of [heat, ladder, depth, oi, delta, ls, lt, bars, script, cvd, candle]) p.setPalette(store.state.theme);
   layout(); ladder.syncControls(); lt.refresh();
+  layouts.seedDefault();
   arrange.setPaneHeight('bars', tableHeight(store.state.barStats, store.state.barStatOptions));
   toolbar.sync(store.state, heat.window);
   // The page opens on the coin's Binance perpetual wherever it is read (`defaultMarket`): its series is asked for as the page starts. Giving
@@ -379,6 +390,13 @@ async function main(): Promise<void> {
   // Each new open-interest reading is pushed as it lands (Hub.#oiPush); this load is the reconciliation: history, the markets added
   // together, a reading a push missed.
   window.setInterval(() => { void hub.loadOi(); }, 20_000);
+  // A visitor the tour was never offered to is offered it once, a moment after the page has drawn (`?tour=0` leaves it out, for pictures and tests). With a window or the
+  // Settings sheet open over the page at that moment it asks again every few seconds, for a minute, and records nothing until the offer is on the screen.
+  if (new URLSearchParams(location.search).get('tour') !== '0') {
+    let asked = 0;
+    const offer = (): void => { if (!toolbar.inviteToTour() && ++asked < 12) window.setTimeout(offer, 5_000); };
+    window.setTimeout(offer, 2500);
+  }
   (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script };
 }
 

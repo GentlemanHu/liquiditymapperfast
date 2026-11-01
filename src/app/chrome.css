@@ -22,7 +22,7 @@
 .seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
 .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
 .chip { border-radius: var(--radius); }
-.panel, .menu, dialog.venues { border: 1px solid var(--edge); border-radius: var(--radius); box-shadow: 2px 2px 0 var(--shadow); }
+.panel, .menu, dialog.venues, .tour-card { border: 1px solid var(--edge); border-radius: var(--radius); box-shadow: 2px 2px 0 var(--shadow); }
 .panel-head { gap: 6px; padding: 3px 4px 3px 10px; min-height: 26px; border-bottom: 1px solid var(--line); }
 .panel-head h3 { font-size: 12px; font-weight: 700; letter-spacing: .02em; }
 .panel-x { width: 20px; height: 20px; --cross: 8px; --weight: 1.6px; }
@@ -56,8 +56,8 @@ button.help:hover, button.help.open { color: var(--bg); background: var(--text);
 .theme-btn::after { content: ""; flex: none; width: 0; height: 0; border: 4px solid transparent; border-top-color: currentColor; border-bottom-width: 0; margin-left: 2px; }
 
 /* Over the map: nothing that blurs or softens what is painted underneath, which repaints all the time. */
-.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto { border-radius: var(--radius); background: var(--face); -webkit-backdrop-filter: none; backdrop-filter: none; }
-.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover { background: var(--face); border-color: var(--text); }
+.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto, .pane.heat .map-layout { border-radius: var(--radius); background: var(--face); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover, .pane.heat .map-layout:hover { background: var(--face); border-color: var(--text); }
 
 /* Numbers that label things are squares, not discs. */
 .guide-link .num, .guide-section h2 .num { border-radius: var(--radius); }
@@ -115,6 +115,10 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 /* Every close button is the same square with a drawn cross: the window's, the guide's, a notice's, a list row's, a sheet's. */
 :is(.panel-x, .guide-x, .notice-close, .panel .srow .x, .sheet-x) { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--face); color: var(--text); }
 :is(.panel-x, .guide-x, .notice-close, .panel .srow .x, .sheet-x):hover { background: var(--face); color: var(--text); border-color: var(--text); }
+/* The menu key beside a pane's close button is the same small square (the bevel frame draws its own, from its generic button). */
+:where(:root:not([data-frame="bevel"])) .pane-more { border: 1px solid var(--edge); border-radius: var(--radius); background: var(--face); }
+:where(:root:not([data-frame="bevel"])) .pane-more:hover { border-color: var(--text); }
+:root[data-frame="bevel"]:not([data-bar="compact"]) .pane-head .pane-more { width: 16px; height: 14px; flex: none; }
 /* A menu's lit row: a tint of the theme's blue, the text left as it is. */
 .menu-item:hover, .menu-item:focus-visible { background: color-mix(in srgb, var(--ui) 16%, var(--panel)); color: var(--text); }
 .menu-item:focus-visible { outline: 2px solid var(--ui); outline-offset: -2px; }
@@ -134,7 +138,7 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 .toolbar .deck { border: 3px double color-mix(in srgb, var(--edge) 55%, var(--line)); border-radius: var(--radius); }
 
 /* ==== Paper: the Editor, softer: rounder corners, windows lifted by their outline alone ============================================ */
-:where([data-frame="paper"]) .panel, :where([data-frame="paper"]) .menu, :where([data-frame="paper"]) dialog.venues { box-shadow: 0 2px 0 var(--shadow); }
+:where([data-frame="paper"]) .panel, :where([data-frame="paper"]) .menu, :where([data-frame="paper"]) dialog.venues, :where([data-frame="paper"]) .tour-card { box-shadow: 0 2px 0 var(--shadow); }
 :where([data-frame="paper"]) .toolbar { background: var(--panel); border-bottom-color: var(--line); }
 :where([data-frame="paper"]) .statusbar { background: var(--panel); border-top-color: var(--line); }
 :where([data-frame="paper"]) .pane-head { background: var(--panel); }
@@ -313,8 +317,11 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 
 
 /* ---- windows: a raised frame, a navy title bar with bold white text and a small raised close key, a face to work on ---------------------------- */
-:where([data-frame="bevel"]) :is(.panel, dialog.venues) { background: var(--face); color: var(--text); border: 2px solid; border-color: var(--bv-c-window); border-image: var(--bv-window) 2 / 2px; box-shadow: var(--bv-shadow); padding: 2px; }
-:root[data-frame="bevel"] :is(.panel, dialog.venues) { font-size: 11px; }
+:where([data-frame="bevel"]) :is(.panel, dialog.venues, .tour-card) { background: var(--face); color: var(--text); border: 2px solid; border-color: var(--bv-c-window); border-image: var(--bv-window) 2 / 2px; box-shadow: var(--bv-shadow); padding: 2px; }
+:root[data-frame="bevel"] :is(.panel, dialog.venues, .tour-card) { font-size: 11px; }
+:root[data-frame="bevel"] .tour-card { padding: 8px 12px 10px; }
+:root[data-frame="bevel"] .tour-title { font-size: 12px; }
+:root[data-frame="bevel"] .tour-body { font-size: 11px; line-height: 1.45; }
 :where([data-frame="bevel"]) .panel-head { background: var(--bar); color: var(--bar-text); border-bottom: 0; }
 :where([data-frame="bevel"]) .panel-head h3 { font-size: 11px; font-weight: 700; letter-spacing: 0; }
 :root[data-frame="bevel"]:not([data-bar="compact"]) .panel-head { gap: 2px; padding: 0 2px 0 3px; min-height: 18px; height: 18px; }
@@ -398,7 +405,7 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 :where([data-frame="bevel"]) .venue-list { background: transparent; }
 
 /* ---- over the map and in a pane ---------------------------------------------------------------------------------------------------------- */
-:root[data-frame="bevel"] .pane.heat :is(.map-recenter, .map-select, .map-goto) { height: 23px; box-shadow: none; }
+:root[data-frame="bevel"] .pane.heat :is(.map-recenter, .map-select, .map-goto, .map-layout) { height: 23px; box-shadow: none; }
 :where([data-frame="bevel"]) .pane.heat .replay-bar { background: var(--face); border: 2px solid; border-color: var(--bv-c-window); border-image: var(--bv-window) 2 / 2px; box-shadow: var(--bv-shadow); padding: 2px 6px; }
 
 /* ---- the guide is a help window: a title bar, a contents list and a page, each in a sunken white well ------------------------------------------ */
@@ -410,8 +417,10 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 }
 :root[data-frame="bevel"] .guide-head > div { display: contents; }
 :root[data-frame="bevel"] .guide-head h1 { grid-column: 1; grid-row: 1; margin: 0; padding: 0 4px; height: 18px; line-height: 18px; font-size: 11px; font-weight: 700; letter-spacing: 0; color: var(--bar-text); }
-:root[data-frame="bevel"] .guide-head .guide-x { grid-column: 2; grid-row: 1; margin: 0 2px 0 0; }
-:root[data-frame="bevel"] .guide-head .sub { grid-column: 1 / -1; grid-row: 2; padding: 6px 4px 2px; font-size: 11px; color: var(--text); }
+:root[data-frame="bevel"] .guide-head .guide-x { grid-column: 2; grid-row: 1; justify-self: end; margin: 0 2px 0 0; }
+:root[data-frame="bevel"] .guide-head .sub { grid-column: 1; grid-row: 2; padding: 6px 4px 2px; font-size: 11px; color: var(--text); }
+/* The Tour button stands at the right end of the subtitle's row (placed by nobody it would be a bar the width of the window under it). */
+:root[data-frame="bevel"] .guide-head .guide-tour { grid-column: 2; grid-row: 2; align-self: end; margin: 2px 2px 0 8px; height: 22px; padding: 0 10px; font-size: 11px; }
 :root[data-frame="bevel"] .guide-head .guide-jump { grid-column: 1 / -1; grid-row: 3; margin-top: 4px; }
 :root[data-frame="bevel"] .guide-body { gap: 4px; padding: 4px; }
 :root[data-frame="bevel"] :is(.guide-toc, .guide-scroll) { background: var(--well); border: 2px solid; border-color: var(--bv-c-sunken); border-image: var(--bv-sunken) 2 / 2px; }
@@ -538,7 +547,7 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 
 /* ==== Text mode: the terminal and the DOS screen =================================================================================== */
 /* Windows and bars are ruled with double lines, a lit row is inverse video, and the keyboard's place is a plain box. */
-:where([data-frame="textmode"]) .panel, :where([data-frame="textmode"]) .menu, :where([data-frame="textmode"]) dialog.venues { border: 3px double var(--edge); box-shadow: 2px 2px 0 rgba(0, 0, 0, .6); }
+:where([data-frame="textmode"]) .panel, :where([data-frame="textmode"]) .menu, :where([data-frame="textmode"]) dialog.venues, :where([data-frame="textmode"]) .tour-card { border: 3px double var(--edge); box-shadow: 2px 2px 0 rgba(0, 0, 0, .6); }
 :where([data-frame="textmode"]) .toolbar { background: var(--panel); border-bottom: 3px double var(--edge); }
 :where([data-frame="textmode"]) .statusbar { background: var(--panel); border-top: 3px double var(--edge); }
 :where([data-frame="textmode"]) .pane-head { background: var(--panel); border-bottom-color: var(--edge); }

@@ -7,6 +7,7 @@
   --mark-settings: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M3.5 6.5h17M3.5 12h17M3.5 17.5h17'/%3E%3Ccircle cx='9' cy='6.5' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='15.5' cy='12' r='2.7' fill='black' stroke='none'/%3E%3Ccircle cx='7.5' cy='17.5' r='2.7' fill='black' stroke='none'/%3E%3C/svg%3E");
   /* The question mark of every "?" (chrome.css button.help, and a script's row button): drawn, so it sits in the middle of its box whatever the font. */
   --mark-help: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.2 8.6a3.9 3.9 0 1 1 5.9 3.3c-1.3.8-2.1 1.5-2.1 3'/%3E%3Cpath d='M12 19.6h.01'/%3E%3C/svg%3E");
+  --mark-more: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2.2'/%3E%3Ccircle cx='12' cy='12' r='2.2'/%3E%3Ccircle cx='19' cy='12' r='2.2'/%3E%3C/svg%3E");
   --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12.5l5 5L20 6.5'/%3E%3C/svg%3E");
   --ui: #2f6bff; --bid: #0fa44a; --bid-soft: #cdeed8; --ask: #e0066f; --ask-soft: #ffd0e6; --gutter: 192px;
   font: 12px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -69,8 +70,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 /* A notice lies over the top of the chart, not in the bar's flow: the bar keeps its height when one comes or goes. */
 .toolbar.cockpit { position: relative; z-index: 30; }
 .toolbar.cockpit .notice { position: absolute; left: 8px; right: 8px; top: calc(100% + 4px); z-index: 45; box-shadow: 2px 2px 0 var(--shadow); }
-/* Two at once (a venue this place cannot reach, a coin that is not on the list) lie one under the other, not on the same spot. */
-.toolbar.cockpit .notice:not([hidden]) ~ .notice:not([hidden]) { top: calc(100% + 40px); }
+/* Several at once (a venue this place cannot reach, a coin that is not on the list, the invitation to the tour) lie one under the other, each by what the one above
+   measures: the toolbar sets each one's `top` (`#stackNotices`), as a notice that wraps is taller than a line. */
 
 .toolbar .deck { display: flex; flex-direction: column; justify-content: center; gap: 4px; min-inline-size: 0; margin: 0; padding: 1px 4px 5px; }
 .toolbar .deck > legend { padding: 0 4px; margin-left: -2px; font-size: 10px; line-height: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
@@ -78,14 +79,16 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .toolbar .deck-tools { margin-left: auto; }
 /* The last deck's title is the page's name, in its own case. */
 .toolbar .deck.deck-tools > legend { text-transform: none; letter-spacing: 0; font-weight: 700; color: var(--text); }
-/* The page's own deck is a grid: what it opens on the left (Guide, Author), the tools on the right as marks (the screenshot, installing),
-   both rows on the same two columns. Installing keeps its place whether the browser offers it or not, so the deck never changes; where it
-   is not offered, Author takes the row. */
-.toolbar.cockpit .deck-tools .deck-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px; gap: 4px; }
+/* The page's own deck holds how to learn the page on its first row (the Tour and the Guide, side by side) and its utilities on the second: Author, and the
+   screenshot and installing as marks. The screenshot mark keeps its place whether the browser offers installing or not (Install comes in before it, beside
+   Author), so the deck's width never changes; where installing is not offered, Author takes its column. */
+.toolbar.cockpit .deck-tools .deck-row { display: grid; grid-template-columns: minmax(0, 1fr) 24px 24px; gap: 4px; }
+.toolbar.cockpit .deck-tools .deck-row > button.icon-btn { padding: 0; }
+.toolbar.cockpit .deck-tools .deck-row:first-of-type { grid-template-columns: auto minmax(0, 1fr); }
 .toolbar.cockpit .deck-tools .deck-row > button { width: 100%; min-width: 0; justify-content: center; text-align: center; }
 .toolbar.cockpit .deck-tools .deck-row > button.install { position: relative; font-size: 0; padding: 0; }
 .toolbar.cockpit .deck-tools .deck-row > button.install::before { content: ""; position: absolute; left: 50%; top: 50%; width: 14px; height: 14px; transform: translate(-50%, -50%); background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5v11M7.5 10L12 14.5 16.5 10M4.5 15.5v4h15v-4'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3.5v11M7.5 10L12 14.5 16.5 10M4.5 15.5v4h15v-4'/%3E%3C/svg%3E") center / contain no-repeat; }
-.toolbar.cockpit .deck-tools .deck-row:has(> button.install[hidden]) > :first-child { grid-column: 1 / -1; }
+.toolbar.cockpit .deck-tools .deck-row:has(> button.install[hidden]) > :first-child:not(.tour-btn) { grid-column: 1 / 3; }
 /* A monospaced face is wider: the text-mode bar a size smaller, so its decks fit as the others do. */
 html[data-frame="textmode"] .toolbar.cockpit { font-size: 10.5px; }
 html[data-frame="textmode"] .toolbar.cockpit :is(button, select) { padding: 2px 4px; }
@@ -196,10 +199,90 @@ button.on { background: var(--text); color: var(--bg); border-color: var(--text)
 .seg.scope button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
 
 /* The columns' widths until one is dragged: the golden section for the map, the rest shared (layouts/layouts.ts `defaultColumns` says the same). */
-main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(260px, 18.75vw, 300px), 19.1vw); display: grid; grid-template-columns: var(--flow-w) 6px minmax(0, 1fr) 6px var(--side-w); min-height: 0; }
+main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(260px, 18.75vw, 300px), 19.1vw); display: grid; grid-template-columns: var(--left-w) 6px minmax(0, 1fr) 6px var(--right-w); min-height: 0; }
+/* The columns beside the map are as wide as the stylesheet makes the pane in them; layout.ts writes a width of its own where a drag set one, and `--side-w`
+   to the left column where the book stands there (the flow column on the right takes `--flow-w`). A column with nothing open is a strip `--rail-w` wide. */
+main { --left-w: var(--flow-w); --right-w: var(--side-w); --rail-w: 22px; }
 .chart-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .side-col, .flow-col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .side-col[hidden], .flow-col[hidden], .splitter[hidden] { display: none; }
+/* A column with nothing open is a strip along the window's edge with a tab for each pane it holds, which opens that pane again (layout.ts #railTabs). */
+.edge-rail { display: none; }
+:is(.flow-col, .side-col)[data-state="rail"] { background: var(--panel); }
+.flow-col[data-state="rail"] { border-right: 1px solid var(--line); }
+.side-col[data-state="rail"] { border-left: 1px solid var(--line); }
+:is(.flow-col, .side-col)[data-state="rail"] > .edge-rail { display: flex; flex-direction: column; align-items: stretch; gap: 6px; flex: 1 1 auto; min-height: 0; padding: 8px 0; overflow: hidden; }
+.edge-tab { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 0 1 auto; min-height: 0; padding: 9px 0; border-color: transparent; background: transparent; color: var(--muted); font-size: 11px; line-height: 1; overflow: hidden; }
+.edge-tab span { writing-mode: vertical-rl; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flow-col .edge-tab span { transform: rotate(180deg); }
+.edge-tab:hover, .edge-tab:focus-visible { color: var(--text); border-color: var(--edge); background: color-mix(in srgb, var(--ui) 14%, var(--panel)); }
+.edge-chev { flex: none; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.6px 1.6px 0; }
+.flow-col .edge-chev { transform: rotate(-45deg); }
+.side-col .edge-chev { transform: rotate(135deg); }
+html[data-layout^="phone"] .edge-rail { display: none !important; }
+/* The menu and the close button at the end of a pane's header (layout.ts #mover): the header keeps room for them, and its first row ends where they begin. */
+html[data-layout="desktop"] .pane-head.has-tools { position: relative; padding-right: 54px; touch-action: none; }
+.pane-tools { position: absolute; top: 3px; right: 4px; z-index: 7; display: flex; gap: 2px; }
+html[data-layout^="phone"] .pane-tools { display: none; }
+/* A side pane's title bar (layout.ts #mover): the pane's name, its handle, its menu and its close button, above a header that has no title of its own. */
+.pane-head.pane-bar { flex-wrap: nowrap; gap: 6px; padding: 2px 4px 2px 8px; cursor: grab; touch-action: none; user-select: none; }
+.pane-bar strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pane-bar .pane-tools { position: static; flex: none; }
+html[data-layout^="phone"] .pane-bar { display: none; }
+html[data-layout="desktop"] .pane.has-bar > .pane-head:not(.pane-bar) > strong { display: none; }
+html[data-layout] .pane-head :is(.pane-x, .pane-more) { position: relative; width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 0; line-height: 0; color: var(--muted); }
+html[data-layout] .pane-head .pane-x { --cross: 9px; }
+html[data-layout] .pane-head :is(.pane-x, .pane-more):hover { color: var(--text); }
+.pane-more::before { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--mark-more) center / contain no-repeat; mask: var(--mark-more) center / contain no-repeat; }
+/* A pane being dragged by its grip: a label with the pointer, a mark where it would stand (a bar between two panes, or the strip along an edge where a column is not there), and the pane itself dimmed. */
+body.pane-dragging, body.pane-dragging * { cursor: grabbing !important; user-select: none !important; }
+.pane.moving { opacity: .55; }
+.pane-ghost { position: fixed; left: 0; top: 0; z-index: 90; display: flex; align-items: center; gap: 7px; padding: 4px 11px 4px 7px; border: 1px solid var(--text); border-radius: var(--radius); background: var(--panel); color: var(--text); font-size: 12px; font-weight: 700; white-space: nowrap; pointer-events: none; box-shadow: 3px 3px 0 var(--shadow); }
+.pane-ghost .grip-mark { flex: none; width: 10px; height: 15px; color: var(--muted); background: radial-gradient(circle, currentColor 1.2px, transparent 1.6px) 0 0 / 5px 5px; }
+.drop-mark { position: fixed; z-index: 89; pointer-events: none; border-radius: 2px; background: var(--ui); }
+.drop-mark[hidden] { display: none; }
+.drop-mark.area { border-radius: 0; background: color-mix(in srgb, var(--ui) 14%, transparent); outline: 2px dashed var(--ui); outline-offset: -2px; }
+/* Layouts (layouts/gallery.ts): a card is a picture of the panes drawn from the layout itself, with its name and what it is for. */
+.pane.heat .map-layout::before { content: ""; width: 13px; height: 13px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M9 4v16M9 12h12'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='16' rx='1.5'/%3E%3Cpath d='M9 4v16M9 12h12'/%3E%3C/svg%3E") center / contain no-repeat; }
+.layout-now { display: flex; align-items: center; gap: 10px; padding: 2px 0 6px; }
+.layout-now .layout-thumb { flex: none; width: 66px; }
+.layout-now-text { font-size: 12px; font-weight: 600; }
+.layout-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.layout-card { position: relative; display: flex; min-width: 0; }
+.layout-card > .layout-apply { flex: 1 1 auto; display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-width: 0; padding: 6px 6px 7px; text-align: left; background: var(--panel); }
+.layout-card > .layout-apply:hover { border-color: var(--text); }
+.layout-card.on > .layout-apply { border-color: var(--ui); box-shadow: inset 0 0 0 1px var(--ui); }
+.layout-thumb { display: block; width: 100%; height: auto; }
+.layout-thumb rect { fill: var(--panel); stroke: var(--muted); stroke-width: .8; }
+.layout-thumb polyline { fill: none; stroke: var(--muted); stroke-width: 1.1; stroke-linecap: round; stroke-linejoin: round; }
+.layout-thumb .t-map rect { fill: color-mix(in srgb, var(--ui) 22%, var(--panel)); stroke: var(--ui); }
+.layout-thumb .t-map polyline { stroke: var(--ui); }
+.layout-thumb .t-strip rect { fill: color-mix(in srgb, var(--text) 6%, var(--panel)); }
+.layout-title { display: block; font-size: 12px; font-weight: 700; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layout-blurb { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; font-size: 10.5px; line-height: 1.3; color: var(--muted); }
+.layout-card.own .layout-blurb { -webkit-line-clamp: 1; }
+.layout-card .layout-more { position: absolute; top: 9px; right: 9px; width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 0; color: var(--muted); }
+.layout-card .layout-more:hover { color: var(--text); }
+.layout-rename { width: 100%; min-width: 0; box-sizing: border-box; padding: 1px 4px; font-family: inherit; font-size: 12px; font-weight: 700; line-height: 1.25; }
+.layout-name-field { flex: 1 1 auto; min-width: 0; padding: 3px 7px; font: inherit; }
+.layout-keep { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: 11px; color: var(--muted); cursor: pointer; }
+.layout-chips, .layout-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 640px) { .layout-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* A short message at the foot of the page that goes by itself, with a way back (toast.ts). */
+.toast { position: fixed; left: 50%; bottom: calc(44px + env(safe-area-inset-bottom)); z-index: 400; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; max-width: min(560px, calc(100vw - 24px)); padding: 7px 8px 7px 14px; border: 1px solid var(--text); border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 13px; line-height: 1.4; box-shadow: 3px 3px 0 var(--shadow); }
+.toast-action { flex: none; padding: 2px 10px; border: 1px solid currentColor; background: transparent; color: inherit; font-weight: 700; }
+.toast-action:hover { background: var(--bg); color: var(--text); border-color: var(--bg); }
+html[data-bar="compact"] .toast { bottom: 76px; }
+@media (pointer: coarse) {
+  main { --rail-w: 30px; }
+  html[data-layout="desktop"] .pane-head.has-tools { padding-right: 76px; }
+  html[data-layout] .pane-head :is(.pane-x, .pane-more) { width: 30px; height: 30px; }
+  html[data-layout] .pane-head .pane-x { --cross: 12px; }
+  .pane-more::before { width: 18px; height: 18px; }
+  .edge-tab { font-size: 12px; }
+}
 .pane { position: relative; display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
 .pane[hidden] { display: none; }
 .pane.heat { flex: 1 1 auto; min-height: 240px; overflow: hidden; }
@@ -210,7 +293,7 @@ main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(
 .pane.heat canvas.dust { pointer-events: none; }
 /* Select and Recenter act on the map, so they sit in the map's top-right corner, left of the profile column. */
 .pane.heat .map-tools { position: absolute; z-index: 3; top: 8px; right: calc(var(--gutter, 192px) + 8px); display: flex; gap: 6px; }
-.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto, .pane.heat .map-draw { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 7px; border-radius: var(--radius);
+.pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto, .pane.heat .map-draw, .pane.heat .map-layout { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 7px; border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 86%, transparent); font-size: 11px; color: var(--text); box-shadow: 3px 3px 0 var(--shadow); }
 /* Select wears the Range lamp on its left, then a dashed box: the selection it makes. */
 .pane.heat .map-select { padding-left: 21px; }
@@ -221,10 +304,10 @@ main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(
 .pane.heat .map-recenter::before { content: ""; width: 14px; height: 14px; background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='6.5'/%3E%3Cpath d='M12 2v4M12 18v4M2 12h4M18 12h4'/%3E%3C/svg%3E") center / contain no-repeat; }
-.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover, .pane.heat .map-draw:hover { background: var(--panel); }
+.pane.heat .map-recenter:hover, .pane.heat .map-select:hover, .pane.heat .map-goto:hover, .pane.heat .map-draw:hover, .pane.heat .map-layout:hover { background: var(--panel); }
 /* On a window this narrow the three buttons over the top right of the map would hide the title and the figures beside it: they shrink to their drawings. */
 @media (max-width: 1560px) {
-  html[data-layout="desktop"] .pane.heat .map-tools :is(.map-goto, .map-select, .map-recenter, .map-draw) { font-size: 0; gap: 0; padding: 0 7px; }
+  html[data-layout="desktop"] .pane.heat .map-tools :is(.map-goto, .map-select, .map-recenter, .map-draw, .map-layout) { font-size: 0; gap: 0; padding: 0 7px; }
   html[data-layout="desktop"] .pane.heat .map-tools .map-select, html[data-layout="desktop"] .pane.heat .map-tools .map-draw { padding-left: 21px; }
 }
 .pane.ladder { flex: 1 1 auto; }
@@ -287,6 +370,7 @@ pre.fatal { position: fixed; inset: 20px; color: var(--ask); white-space: pre-wr
 .splitter.v { cursor: col-resize; touch-action: none; }
 .splitter.h { cursor: row-resize; height: 6px; touch-action: none; }
 .splitter::after { content: ""; position: absolute; inset: -3px; }
+.splitter:focus-visible { outline: 2px solid var(--ui); outline-offset: -2px; }
 .grip { cursor: grab; touch-action: none; color: var(--muted); user-select: none; margin-right: -4px; font-size: 14px; line-height: 1; position: relative; z-index: 6; /* above a splitter's wider touch zone, which would otherwise take the touch */ }
 .pane.moving { box-shadow: inset 0 0 0 2px var(--muted); }
 /* A pane's grip: two columns of three dots, drawn (a typed braille character looks as its font draws it). */
@@ -407,7 +491,6 @@ dialog.shot::backdrop { background: transparent; }
 .shot-preview { position: absolute; display: block; pointer-events: none; }
 .shot-preview[hidden] { display: none; }
 .shot-text { position: absolute; min-width: 140px; padding: 0 3px; margin: 0; border: 1px dashed rgba(255, 255, 255, .8); border-radius: var(--radius); background: rgba(0, 0, 0, .18); outline: none; text-shadow: 1px 1px 0 rgba(0, 0, 0, .55); }
-.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 400; max-width: min(92vw, 460px); padding: 11px 16px; border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 13px; line-height: 1.4; box-shadow: 3px 3px 0 var(--shadow); }
 .shot-toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); padding: 9px 16px; border-radius: var(--radius); background: rgba(22, 25, 31, .95); color: #f2f4f7; font-size: 12.5px; box-shadow: 3px 3px 0 var(--shadow); z-index: 500; animation: shot-toast 2.4s ease both; }
 @keyframes shot-toast { 0% { opacity: 0; transform: translate(-50%, 8px); } 12%, 82% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
 
@@ -462,6 +545,43 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
   .guide-article { padding: 0 18px; }
 }
 @media (prefers-reduced-motion: reduce) { .guide-scroll { scroll-behavior: auto; } }
+/* The tour's button: the one filled button of the page, wider than its neighbours and with a play mark (the invitation's Take the tour is the same). */
+.toolbar.cockpit .deck-tools button.tour-btn, .sheet-tiles > button.tour-btn { font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+:is(button.tour-btn, button.guide-tour, .tour-invite-go) { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+:is(button.tour-btn, button.guide-tour, .tour-invite-go)::before { content: ""; flex: none; width: 8px; height: 10px; background: currentColor; clip-path: polygon(0 0, 100% 50%, 0 100%); }
+/* In the top bar the button has no mark: the bar is fitted to the pixel, and the mark was 14 px of width that took Russian and Japanese past the bar's smallest zoom at 1,500 px (it is filled and bold, the one such button there). */
+.toolbar.cockpit .deck-tools button.tour-btn::before { display: none; }
+.toolbar.cockpit .deck-tools button.tour-btn:hover, .sheet-tiles > button.tour-btn:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+/* The invitation to the tour (tour/invite.ts), a notice: its text takes the room, the buttons wrap under it on a narrow screen. */
+.toolbar .tour-invite { flex-wrap: wrap; row-gap: 6px; }
+.tour-invite-text { flex: 1 1 220px; min-width: 0; }
+.toolbar .tour-invite button { flex: none; height: 24px; padding: 0 12px; }
+.toolbar .tour-invite button.tour-invite-go { font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+button.guide-tour { flex: none; height: 28px; padding: 0 12px; font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+button.guide-tour:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+/* The tour (tour/tour.ts): a modal as big as the window holding the light (a hole in the dim layer, which glides from step to step) and the card. */
+dialog.tour { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: var(--text); overflow: hidden; }
+dialog.tour::backdrop { background: transparent; }
+.tour-hole { position: absolute; box-sizing: border-box; border-radius: calc(var(--radius) + 2px); box-shadow: 0 0 0 100vmax rgba(8, 10, 14, .62); outline: 2px solid var(--ui); outline-offset: -1px; pointer-events: none; transition: left .3s cubic-bezier(.3, .7, .2, 1), top .3s cubic-bezier(.3, .7, .2, 1), width .3s cubic-bezier(.3, .7, .2, 1), height .3s cubic-bezier(.3, .7, .2, 1); }
+.tour-card { position: absolute; box-sizing: border-box; width: min(340px, calc(100vw - 24px)); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); overflow: auto; padding: 14px 16px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); box-shadow: 3px 3px 0 var(--shadow), 0 12px 32px rgba(0, 0, 0, .28); transition: left .3s cubic-bezier(.3, .7, .2, 1), top .3s cubic-bezier(.3, .7, .2, 1); animation: tour-in .22s ease-out; }
+dialog.tour.settling :is(.tour-hole, .tour-card) { transition: none; }
+@keyframes tour-in { from { opacity: 0; transform: translateY(6px); } }
+.tour-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.tour-count { font-size: 11px; letter-spacing: .04em; color: var(--muted); }
+.tour-dots { display: flex; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.tour-dots li { width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--text) 18%, transparent); }
+.tour-dots li.past { background: color-mix(in srgb, var(--ui) 45%, transparent); }
+.tour-dots li.on { background: var(--ui); transform: scale(1.35); }
+.tour-title { margin: 0 0 4px; font-size: 15px; line-height: 1.3; }
+.tour-body { margin: 0 0 12px; font-size: 13px; line-height: 1.55; }
+.tour-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.tour-side, .tour-nav { display: flex; align-items: center; gap: 6px; }
+.tour-card button.tour-skip { padding: 4px 2px; border: 0; background: transparent; color: var(--muted); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.tour-card button.tour-skip:hover { color: var(--text); }
+.tour-card button.tour-next { min-width: 64px; font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+.tour-card button.tour-next:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+@media (pointer: coarse) { .tour-card button { min-height: 40px; padding-left: 14px; padding-right: 14px; } .tour-card button.tour-skip { min-height: 40px; } }
+@media (prefers-reduced-motion: reduce) { .tour-hole, .tour-card { transition: none; animation: none; } }
 
 button.icon-btn { display: inline-grid; place-items: center; padding: 3px 7px; }
 button.install { border-color: var(--ui); color: var(--ui); font-weight: 600; }

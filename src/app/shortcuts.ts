@@ -1,5 +1,6 @@
 import { t } from './i18n.ts';
 import type { AppState } from './store.ts';
+import type { Side } from './layouts/dock-model.ts';
 
 /**
  * Keyboard shortcuts: one table, matched by one listener (main.ts). A key does nothing while typing in a field, while a dialog is open (the
@@ -12,6 +13,7 @@ export type Feature = 'footprint' | 'trades' | 'liquidations' | 'absorption' | '
 export type ShortcutAction =
   | { kind: 'timeframe'; tf: string }
   | { kind: 'recenter' }
+  | { kind: 'column'; side: Side }
   | { kind: 'zoom'; dir: 1 | -1 }
   | { kind: 'toggle'; feature: Feature }
   | { kind: 'range' }
@@ -51,6 +53,9 @@ export const SHORTCUTS: readonly Shortcut[] = [
   toggle('K', t('Key levels'), 'keyLevels'),
   toggle('V', t('VWAP'), 'vwap'),
   toggle('H', t('Highlights'), 'highlights'),
+  // Matched by their place on the keyboard too: on many layouts a bracket needs AltGr, which a shortcut leaves to the browser.
+  { group: 'show', caps: ['['], label: t('Left column'), codes: ['BracketLeft'], keys: ['['], action: { kind: 'column', side: 'left' } },
+  { group: 'show', caps: [']'], label: t('Right column'), codes: ['BracketRight'], keys: [']'], action: { kind: 'column', side: 'right' } },
   { group: 'tools', caps: ['G'], label: t('Go to a date and time'), keys: ['g'], action: { kind: 'goto' } },
   { group: 'tools', caps: ['X'], label: t('Range: the next drag selects (Esc cancels)'), keys: ['x'], action: { kind: 'range' } },
   { group: 'tools', caps: ['D'], label: t('Drawing tools: levels, zones, lines and notes (Delete removes the one selected, Ctrl+Z undoes)'), keys: ['d'], action: { kind: 'draw' } },

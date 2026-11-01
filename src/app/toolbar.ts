@@ -11,7 +11,7 @@ import { lazy } from './lazy.ts';
 import { setTip } from './tip.ts';
 import { InstallButton } from './install.ts';
 import { toggleAuthor } from './author.ts';
-import { HELP, helpButton, showGuide, type HelpId } from './help.ts';
+import { HELP, helpButton, setTourStarter, showGuide, showTour, type HelpId } from './help.ts';
 import { openVenueDialog } from './venue-dialog.ts';
 import type { VenueControl } from './source.ts';
 import { coverage } from './panes/levels-data.ts';
@@ -20,7 +20,9 @@ import { HIGHLIGHT_LIMITS } from './anomaly.ts';
 import { rangeRow, switchRow, note, togglePanel, checkRow, heading, selectRow, numberRow, openedPanel, button, sizeRow } from './ui.ts';
 import { SIZE_MAX_USD } from './sizes.ts';
 import { GROUP_TITLES, SHORTCUTS, togglePatch, type Feature, type ShortcutGroup } from './shortcuts.ts';
-import { buildLayoutsPanel, type LayoutsPanelState, type PaneHost } from './layouts/panel.ts';
+import { buildGallery, newGalleryState } from './layouts/gallery.ts';
+import type { LayoutActions } from './layouts/actions.ts';
+import { TourInvite } from './tour/invite.ts';
 import { clampGoTo, formatDateTime, parseDateTime } from './price-line.ts';
 import { ABSORPTION_LIMITS, type AbsorptionSettings } from './absorption.ts';
 import { BUBBLE_LIMITS, BUBBLE_MINIMUMS, type BubbleSettings } from './prints.ts';
@@ -113,7 +115,11 @@ export class Toolbar {
   #blocked = el('div', { class: 'chips blocked-chips' });
   readonly #notice = new VenueNotice();
   readonly #install = new InstallButton();
-  #guide = el('button', { type: 'button', class: 'guide-btn', textContent: t('Guide'), tip: t('A ten-minute tour of what everything is and how to use it, with moving pictures. Every button also explains itself on hover.'), onclick: () => { showGuide(); } });
+  #guide = el('button', { type: 'button', class: 'guide-btn', textContent: t('Guide'), tip: t('The whole story of what everything is and how to use it, with moving pictures. Every button also explains itself on hover.'), onclick: () => { showGuide(); } });
+  /** The quick tour (tour/tour.ts), which lights the page a part at a time; beside the Guide, which is the whole story. */
+  #tour = el('button', { type: 'button', class: 'tour-btn', textContent: t('Tour'), tip: t('A one-minute tour of the page: what the map shows and where everything is. The Guide goes deeper.'), onclick: () => { this.#sheet?.close(); this.startTour(); } });
+  /** Offers the tour once to a visitor who has never been offered it (a notice under the bar). */
+  readonly #invite = new TourInvite(() => this.startTour(), () => compactBar() ? t('You can take the tour any time from Settings.') : t('You can take the tour any time with the Tour button at the top right.'));
   #shot = el('button', { type: 'button', class: 'icon-btn', ariaLabel: t('Screenshot'), tip: t('Take a picture of the chart (keyboard: S): select an area or click a pane, draw on it, hide anything private with pixelate or blur, then copy or save it.'), onclick: () => { void lazy(() => import('./screenshot/editor.ts')).then(m => m?.startScreenshot()); } });
   #author = el('button', { type: 'button', textContent: t('Author'), tip: t('Who made this, and where to find the code. Free, no sign-ups, open source.') });
   #scope = el('div', { class: 'seg scope', tip: t('Which markets the liquidity views draw. A filter on the enabled venues: it never switches a venue on or off.') });
@@ -219,9 +225,9 @@ export class Toolbar {
   #zone = el('button', { class: 'zone-btn' });
   /** The list of keyboard shortcuts (also the ? key); on the status bar, so a phone, which has no keyboard, does not show it. */
   #keys = el('button', { type: 'button', class: 'keys-btn', textContent: t('Keys'), tip: t('Keyboard shortcuts (?)'), onclick: () => this.openShortcuts() });
-  /** Saved layouts (the status bar, beside Keys); `panes` is the page's Layout, set by main. */
-  #layouts = el('button', { type: 'button', class: 'layouts-btn', textContent: t('Layouts'), tip: t('Save the panes and what the chart shows under a name, and switch between them'), onclick: () => this.#openLayouts() });
-  panes: PaneHost | null = null;
+  /** Layouts, from the map's corner (a compact bar has it in Settings): the layout the screen is showing, the ready-made ones and the person's own (layouts/gallery.ts). `layouts` is set by main. */
+  #layoutCorner = el('button', { type: 'button', class: 'map-layout', ariaLabel: t('Layouts'), tip: t('Layouts: choose a ready-made arrangement of the panels, or save your own'), onclick: () => this.#openLayouts(this.#layoutCorner) }, t('Layouts'));
+  layouts: LayoutActions | null = null;
   /** The lamp panel open now, with what redraws it. */
   #open: { panel: Panel; redraw: () => void } | null = null;
   #language = el('button', { class: 'language-btn', ariaLabel: t('Language'), tip: t('Language: the page uses the language of your browser unless you choose another here') }, el('span', { textContent: language().toUpperCase() }));
@@ -287,6 +293,13 @@ export class Toolbar {
   }
 
   constructor(private store: Store, private venueControl: VenueControl) {
+    // The Guide's link to the tour starts it as the Tour button does (the bar unfolded for it).
+    setTourStarter(() => this.startTour());
+    // A notice that comes, goes, or wraps differently moves the ones under it.
+    if (typeof ResizeObserver === 'function') {
+      const stack = new ResizeObserver(() => this.#stackNotices());
+      for (const notice of [this.#notice.root, this.#coinNotice, this.#invite.root]) stack.observe(notice);
+    }
     const missing = coinChoice().notice;
     if (missing) {
       this.#coinNotice.append(el('span', { class: 'notice-mark mark-info', ariaHidden: 'true' }), el('span', { textContent: missing.reason === 'unreadable' ? t('The coin list could not be read, so only BTC is offered.') : t('{coin} is not on the coin list, so the page is on BTC.', { coin: missing.coin }) }),
@@ -476,11 +489,14 @@ export class Toolbar {
     const panel = togglePanel(this.#goto, { title: t('Go to'), width: 340, align: 'right', stays: true }, build);
   }
 
-  #openLayouts(): void {
-    const panes = this.panes; if (!panes) return;
-    const ui: LayoutsPanelState = { message: null, armed: null };
-    const build = (_tools: HTMLElement, body: HTMLElement): void => buildLayoutsPanel(this.store, panes, body, () => panel?.render(build), ui);
-    const panel = togglePanel(this.#layouts, { title: t('Layouts'), width: 440, align: 'right' }, build);
+  #openLayouts(anchor: HTMLElement): void {
+    const actions = this.layouts; if (!actions) return;
+    const ui = newGalleryState();
+    // A redraw after the panel was closed (a toast's Undo, a frame later) leaves it closed.
+    const build = (_tools: HTMLElement, body: HTMLElement): void => buildGallery(actions, body, () => { if (panel && openedPanel() === panel) panel.render(build); }, ui);
+    const panel = togglePanel(anchor, { title: t('Layouts'), width: 560, align: 'right' }, build);
+    // The toast of a deleted layout can outlive the panel it was deleted from: its Undo redraws the Layouts panel that is open then.
+    actions.onListChanged = () => { if (panel && openedPanel() === panel) panel.render(build); };
   }
 
   /** The list of keyboard shortcuts, made from the table itself so the two cannot disagree (the status bar's Keys button, and ?). */
@@ -502,10 +518,42 @@ export class Toolbar {
 
   hostStatusControls(host: HTMLElement): void { this.#statusHost = host; this.#arrange(); }
 
+  /** Take the tour (the Tour button, the invitation): a bar folded away is brought back for it and folded again after. */
+  startTour(): void {
+    // The invitation has been answered, whichever button answered it.
+    this.#invite.root.hidden = true;
+    showTour({ prepare: () => {
+      if (!this.store.state.barCollapsed) return () => {};
+      this.store.set({ barCollapsed: false });
+      // The setting is written as it changes: a tab closed or reloaded in the middle of the tour must not leave the bar unfolded for good.
+      const fold = (): void => this.store.set({ barCollapsed: true });
+      window.addEventListener('pagehide', fold);
+      return () => { window.removeEventListener('pagehide', fold); fold(); };
+    } });
+  }
+  /** Offer the tour to a visitor who has not been offered it; false when something is open over the page and it should be tried again. */
+  inviteToTour(): boolean { return this.#invite.offer(); }
+
+  /**
+   * The notices lie over the top of the chart, one under the other, each under the one above by what that one measures now: a notice that wraps on a narrow
+   * screen (the blocked venues' is three lines on a phone) is taller than the fixed step the stylesheet would give it, and the next would cover its words.
+   */
+  #stackNotices(): void {
+    let top = 4;
+    for (const notice of [this.#notice.root, this.#coinNotice, this.#invite.root]) {
+      if (notice.hidden) { notice.style.top = ''; continue; }
+      notice.style.top = `calc(100% + ${top}px)`;
+      top += notice.offsetHeight + 4;
+    }
+  }
+
   /** Fold the bar away or bring it back (`state.barCollapsed`): folded, only its strip (`#expand`) and its notices show. */
   setCollapsed(collapsed: boolean): void {
+    const held = this.root.contains(document.activeElement);
     this.root.classList.toggle('collapsed', collapsed);
     this.#collapse.setAttribute('aria-expanded', String(!collapsed));
+    // A control of the bar that held the focus goes with the fold (the Hide button, or the Tour button after a tour that had unfolded the bar): the arrow that unfolds it takes the focus.
+    if (collapsed && held) this.#expand.focus({ preventScroll: true });
   }
 
   /**
@@ -529,10 +577,10 @@ export class Toolbar {
       this.#sheet?.close();
       this.#fillHeatControls();
       const inCorner = this.#mapHost !== null;
-      if (inCorner) { this.#mapTools.replaceChildren(this.#goto, this.#rangeCorner, ...(this.#drawCorner ? [this.#drawCorner] : []), this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
+      if (inCorner) { this.#mapTools.replaceChildren(this.#layoutCorner, this.#goto, this.#rangeCorner, ...(this.#drawCorner ? [this.#drawCorner] : []), this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
       const host = this.#statusHost;
       // With a status bar the connection state, the language and theme buttons and Waves' lamp live there.
-      host?.replaceChildren(this.#layouts, this.#keys, this.#zone, this.#language, this.#theme, this.#glass);
+      host?.replaceChildren(this.#keys, this.#zone, this.#language, this.#theme, this.#glass);
       // A console of decks, each a framed group of what belongs together, at most two rows tall, wrapping as whole decks (Karl,
       // 2026-10-16: one wrapping row read as a jumble). The venues are switched from the Venues button, not listed as chips.
       setTip(this.#venuesButton!, t('Venues: switch each exchange on or off for the map, the book and the flow column, or choose which ones feed the page'));
@@ -541,7 +589,8 @@ export class Toolbar {
       // The name of the page is the last deck's title: what it holds is about the page itself (the guide, the author, installing it). The
       // arrow that folds the bar away sits on that deck's bottom edge, taking no width: room kept for it at the bar's end wrapped this deck
       // onto a second row at 1,600 px, doubling the bar, and the top edge holds the title.
-      const tools = deck('tools', 'LiquidityMapperFast', [this.#guide, this.#shot], [this.#author, this.#install.root, ...(host ? [] : [this.#zone, this.#language, this.#theme, this.#glass, this.#status])]);
+      // Install stands before the screenshot mark, so that the mark keeps its place whether the browser offers installing or not (Install comes in beside Author).
+      const tools = deck('tools', 'LiquidityMapperFast', [this.#tour, this.#guide], [this.#author, this.#install.root, this.#shot, ...(host ? [] : [this.#zone, this.#language, this.#theme, this.#glass, this.#status])]);
       tools.append(this.#collapse);
       this.#deckBreaks = []; this.#fitted = null; this.#fittedOrder = '';
       this.#decks = [
@@ -553,7 +602,7 @@ export class Toolbar {
         deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound]),
         tools];
-      this.root.replaceChildren(...this.#decks, this.#expand, this.#notice.root, this.#coinNotice);
+      this.root.replaceChildren(...this.#decks, this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root);
       this.#fit();
       return;
     }
@@ -567,7 +616,7 @@ export class Toolbar {
         // The coin alone (Karl, 2026-10-17): the market is chosen in Settings, where the venues are.
         el('div', { class: 'tb-row tb-main' }, this.#brand, this.#coin, this.#spacer, this.#status, this.#more, this.#collapse),
         el('div', { class: 'tb-row tb-time' }, this.#timeframes, this.#recenter)),
-      this.#expand, this.#notice.root, this.#coinNotice);
+      this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root);
   }
 
   /**
@@ -647,8 +696,10 @@ export class Toolbar {
     this.#sheet = openSheet(t('Settings'), body => {
       this.#heatctl.replaceChildren();
       body.append(
-        section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#range, this.#guide, this.#shot, this.#author, this.#install.root)]),
+        section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#tour, this.#range, this.#guide, this.#shot, this.#author, this.#install.root)]),
         section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S, LT and Stats each add a tab to the bar under the map.') })]),
+        // A phone arranges its panes by tab; a touch tablet that keeps the desktop's arrangement has the layouts here, its map's corner being clear of buttons.
+        ...(isPhone() ? [] : [section(t('Layouts'), [el('div', { class: 'sheet-tiles' }, button(t('Layouts'), () => { this.#sheet?.close(); this.#openLayouts(this.#more); }, t('Layouts: choose a ready-made arrangement of the panels, or save your own')))])]),
         section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#scriptsSplit)]),
         // Only a phone has the Tape tab; a touch tablet keeps the desktop's panes and gets this sheet without it.
         ...(this.tapeFields && isPhone() ? [section(t('Tape'), this.tapeFields().map(([label, control]) => field(label, control)), helpButton('candlePane'))] : []),
