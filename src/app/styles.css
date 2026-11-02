@@ -9,6 +9,11 @@
   --mark-help: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.2 8.6a3.9 3.9 0 1 1 5.9 3.3c-1.3.8-2.1 1.5-2.1 3'/%3E%3Cpath d='M12 19.6h.01'/%3E%3C/svg%3E");
   --mark-more: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5' cy='12' r='2.2'/%3E%3Ccircle cx='12' cy='12' r='2.2'/%3E%3Ccircle cx='19' cy='12' r='2.2'/%3E%3C/svg%3E");
   --mark-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 12.5l5 5L20 6.5'/%3E%3C/svg%3E");
+  /* A list's arrow, as heavy as the settings key's sliders (the same stroke in the same box), so the two read as one column of marks. */
+  --mark-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.5 9l6.5 6.5L18.5 9'/%3E%3C/svg%3E");
+  /* The phone bar's light-or-dark key: the sun where a tap brings the light theme, the moon where it brings the dark one. */
+  --mark-sun: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='4.2'/%3E%3Cpath d='M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3M5.35 5.35l1.6 1.6M17.05 17.05l1.6 1.6M5.35 18.65l1.6-1.6M17.05 6.95l1.6-1.6'/%3E%3C/svg%3E");
+  --mark-moon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linejoin='round'%3E%3Cpath d='M19.8 14.6A8 8 0 1 1 9.4 4.2a6.6 6.6 0 0 0 10.4 10.4z'/%3E%3C/svg%3E");
   --ui: #2f6bff; --bid: #0fa44a; --bid-soft: #cdeed8; --ask: #e0066f; --ask-soft: #ffd0e6; --gutter: 192px;
   font: 12px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: light;
@@ -196,7 +201,7 @@ button.on { background: var(--text); color: var(--bg); border-color: var(--text)
 .toolbar .notice-close { margin-left: auto; width: 24px; height: 22px; --cross: 9px; }
 .venue-list .blocked { color: var(--ask); }
 .seg.scope.inert { opacity: .6; }
-.seg.scope button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+.seg:is(.scope, .zone-seg) button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
 
 /* The columns' widths until one is dragged: the golden section for the map, the rest shared (layouts/layouts.ts `defaultColumns` says the same). */
 main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(260px, 18.75vw, 300px), 19.1vw); display: grid; grid-template-columns: var(--left-w) 6px minmax(0, 1fr) 6px var(--right-w); min-height: 0; }
@@ -224,12 +229,19 @@ html[data-layout^="phone"] .edge-rail { display: none !important; }
 html[data-layout="desktop"] .pane-head.has-tools { position: relative; padding-right: 54px; touch-action: none; }
 .pane-tools { position: absolute; top: 3px; right: 4px; z-index: 7; display: flex; gap: 2px; }
 html[data-layout^="phone"] .pane-tools { display: none; }
-/* A side pane's title bar (layout.ts #mover): the pane's name, its handle, its menu and its close button, above a header that has no title of its own. */
-.pane-head.pane-bar { flex-wrap: nowrap; gap: 6px; padding: 2px 4px 2px 8px; cursor: grab; touch-action: none; user-select: none; }
-.pane-bar strong { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.pane-bar .pane-tools { position: static; flex: none; }
-html[data-layout^="phone"] .pane-bar { display: none; }
-html[data-layout="desktop"] .pane.has-bar > .pane-head:not(.pane-bar) > strong { display: none; }
+/* A side pane's header (layout.ts #mover) is one header: its handle, its name, the "?", the menu and the close button on the first line, whatever the width of its column (it can
+   be made as narrow as 200 px), the pane's first controls joining that line where the column is wide (the @container rules, here and under each pane), the others on the lines
+   under it. A title bar of its own above the header (Karl, 2026-11-01) left the header's first line holding the "?" and the settings key alone: three rows where two or one do. */
+.side-break { display: none; }
+html[data-layout="desktop"] .pane-head.side-head { --head-row-gap: 5px; row-gap: var(--head-row-gap); container: sidehead / inline-size; cursor: grab; touch-action: none; user-select: none; }
+html[data-layout="desktop"] .side-head > .grip { order: -2; }
+/* The name takes the room it needs and no more, and gives way (ending in "…") before the line breaks, so that the menu and the close button never leave the first line. */
+html[data-layout="desktop"] .side-head > strong { order: -1; flex: 1 1 0; min-width: 2.2em; max-width: max-content; overflow: hidden; text-overflow: ellipsis; }
+html[data-layout="desktop"] .pane-head.side-head > button.help { order: 0; margin-left: 0; }
+html[data-layout="desktop"] .side-head > .pane-tools { position: static; flex: none; order: 2; margin: 0 -4px 0 auto; }
+/* The break after the first line (zero high, so the two gaps around it set the first line off from the controls): what the first line does not take starts the next one. */
+html[data-layout="desktop"] .side-head > .side-break { display: block; order: 3; flex: 1 0 100%; height: 0; }
+html[data-layout="desktop"] .side-head > :not(.grip, strong, button.help, .pane-tools, .side-break) { order: 4; }
 html[data-layout] .pane-head :is(.pane-x, .pane-more) { position: relative; width: 20px; height: 20px; min-height: 0; padding: 0; font-size: 0; line-height: 0; color: var(--muted); }
 html[data-layout] .pane-head .pane-x { --cross: 9px; }
 html[data-layout] .pane-head :is(.pane-x, .pane-more):hover { color: var(--text); }
@@ -326,17 +338,44 @@ html[data-bar="compact"] .toast { bottom: 76px; }
 .cvd-wrap canvas { position: absolute; left: 0; top: 0; display: block; }
 .cvd-wrap canvas.cvd-flash { pointer-events: none; }
 .pane.cvd .cvd-span-select { display: none; }
-.pane.cvd .pane-head .cvd-gear { margin-left: auto; }
-.pane.cvd .pane-head .help { margin-left: 4px; }
-/* On the desktop the title and its "?" share the first line with the gear at the end of it, and the span buttons take the second line whole
-   (a phone swaps the buttons for a select). */
-html[data-layout="desktop"] .pane.cvd .pane-head strong { order: 0; }
-html[data-layout="desktop"] .pane.cvd .pane-head button.help { order: 1; margin-left: 0; }
-html[data-layout="desktop"] .pane.cvd .pane-head .cvd-gear { order: 2; margin-left: auto; }
-html[data-layout="desktop"] .pane.cvd .pane-head .cvd-seg { order: 3; flex: 1 1 100%; }
-html[data-layout="desktop"] .pane.cvd .pane-head .cvd-seg button { flex: 1 1 0; }
-/* The book's Recenter sits at the end of the first line, beside the title and the "?", not alone on the last one. */
+/* On the desktop the first line of the flow column holds its name, the "?", the settings key and the menu and the close button, and the span buttons take the second line
+   whole; where the column is wide enough they join the first line, between the "?" and the settings key (a phone swaps the buttons for a select). */
+html[data-layout="desktop"] .pane.cvd .side-head > .cvd-gear { order: 1; margin-left: 0; }
+html[data-layout="desktop"] .pane.cvd .side-head > .cvd-seg { order: 4; flex: 1 1 100%; }
+html[data-layout="desktop"] .pane.cvd .side-head > .cvd-seg button { flex: 1 1 0; }
+/* The width a tier starts at is the widest first line of the eleven languages (measured in headless Chrome, 2026-11-01) and 5 % more; a touch screen's buttons are bigger, so its tier starts later
+   (tests/app-side-head.test.mts keeps the numbers). */
+@media not all and (pointer: coarse) {
+  @container sidehead (min-width: 440px) {
+    html[data-layout="desktop"] .pane.cvd .side-head > .cvd-seg { order: 1; flex: 1 1 200px; min-width: 200px; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .cvd-gear { order: 2; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .pane-tools { order: 3; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .side-break { display: none; }
+  }
+}
+@media (pointer: coarse) {
+  @container sidehead (min-width: 525px) {
+    html[data-layout="desktop"] .pane.cvd .side-head > .cvd-seg { order: 1; flex: 1 1 265px; min-width: 265px; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .cvd-gear { order: 2; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .pane-tools { order: 3; }
+    html[data-layout="desktop"] .pane.cvd .side-head > .side-break { display: none; }
+  }
+}
+/* The book's Recenter sits at the end of its first line of controls, beside the mode, not alone on the last one: under the name and the "?" where the column is narrow, beside
+   the name, the "?" and the mode where it is wide. (All its controls on one line take about 950 px: not a width a column is made to.) */
 .pane.ladder .pane-head .recenter-btn { margin-left: auto; }
+@media not all and (pointer: coarse) {
+  @container sidehead (min-width: 470px) {
+    html[data-layout="desktop"] .pane.ladder .side-head > label.ctl:first-of-type { order: 1; }
+    html[data-layout="desktop"] .pane.ladder .side-head > .recenter-btn { order: 1; margin-left: 0; }
+  }
+}
+@media (pointer: coarse) {
+  @container sidehead (min-width: 560px) {
+    html[data-layout="desktop"] .pane.ladder .side-head > label.ctl:first-of-type { order: 1; }
+    html[data-layout="desktop"] .pane.ladder .side-head > .recenter-btn { order: 1; margin-left: 0; }
+  }
+}
 .pane > canvas { flex: 1 1 auto; width: 100%; min-height: 0; display: block; }
 
 .pane-head { display: flex; align-items: center; gap: 10px; min-height: 26px; padding: 2px 10px; flex: 0 0 auto; flex-wrap: wrap; border-bottom: 1px solid var(--line); font-size: 11px; }

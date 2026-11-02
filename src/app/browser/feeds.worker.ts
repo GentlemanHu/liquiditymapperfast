@@ -6,6 +6,7 @@ import type { Print } from '../../shared/prints.ts';
 import { openRecordings, type Recordings } from './idb.ts';
 import type { FeedsIn, FeedsOut, RpcCall } from './protocol.ts';
 import { frameOf } from './levels-frame.ts';
+import { heldOf, importHistory } from './history-import.ts';
 
 /**
  * The data engine on its own thread: exchange sockets, book valuation, recording and the history requests all run here, and the page
@@ -47,7 +48,8 @@ function stopRecording(): void {
   post({ type: 'recording', recording: false, failed: true });
 }
 
-async function init(selected: string[] | null, known: string[] | null, persist: boolean, coin: Coin, tier: number, database: string, lock: string): Promise<void> {
+async function init(selected: string[] | null, known: string[] | null, persist: boolean, coin: Coin, tier: number, database: string, lock: string, history: string): Promise<void> {
+  const gridSteps = new Map<string, number>();
   if (persist && typeof indexedDB !== 'undefined') {
     // A write that fails is tried again (the status bar says so meanwhile); only a newer page taking the database over ends the saving here.
     let failing = false;
@@ -64,10 +66,21 @@ async function init(selected: string[] | null, known: string[] | null, persist: 
       // Ask the browser not to evict the recordings when disk is short (it may decline, and some browsers ask the person).
       void navigator.storage?.persist?.().catch(() => false);
       claimRecorder(lock);
+      // The recorded history (app/history-url.ts): the minutes of the day before this visit, read before the engine starts so it starts with them.
+      if (history) {
+        const kept = recordings, now = Date.now(), since = now - BROWSER_RETENTION_MS, held = heldOf(kept.columns.load(since), kept.coverage.load(since), kept.importedHours()), epoch = kept.writeEpoch();
+        const done = await importHistory({ url: history, held, add: columns => kept.importColumns(columns), addRows: rows => kept.importRows(rows), since, now });
+        if (done.error || done.failed) console.warn('recorded history:', done.error ?? `${done.failed} hours could not be read`);
+        if (done.read?.length) void kept.markImported(done.read, epoch);
+        if (done.columns || done.rows) console.info(`recorded history: ${done.columns} map minutes and ${done.rows} other records from ${done.hours} hours`);
+        // A book this page holds nothing of (and was given nothing of in time) records on the service's grid, so the next visit can show
+        // the service's minutes with its own.
+        for (const [inst, step] of Object.entries(done.steps ?? {})) if (!held.steps.has(inst)) gridSteps.set(inst, step);
+      }
     }
   }
   const venues = browserVenues(coin);
-  const next = new Engine({ coin, tier, venues, columns: recordings?.columns ?? null, footprint: recordings?.footprint ?? null, prints: recordings?.prints ?? null, flow: recordings?.flow ?? null, absorption: recordings?.absorption ?? null, coverage: recordings?.coverage ?? null, liquidations: recordings?.liquidations ?? null, oi: recordings?.oi ?? null });
+  const next = new Engine({ coin, tier, venues, columns: recordings?.columns ?? null, footprint: recordings?.footprint ?? null, prints: recordings?.prints ?? null, flow: recordings?.flow ?? null, absorption: recordings?.absorption ?? null, coverage: recordings?.coverage ?? null, liquidations: recordings?.liquidations ?? null, oi: recordings?.oi ?? null, gridSteps });
   next.onLevels = (books, asOf) => post({ type: 'levels', frame: frameOf(books, asOf) });
   next.onTick = tick => post({ type: 'tick', tick });
   next.onPrints = (items: Print[]) => post({ type: 'prints', items });
@@ -116,7 +129,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
 scope.onmessage = event => {
   const message = event.data;
   if (message.type === 'visible') { setPageShown(message.shown); return; }
-  if (message.type === 'init') { init(message.selected, message.known, message.persist, message.coin, message.tier, message.database, message.lock).catch(error => post({ type: 'failed', error: error instanceof Error ? error.message : String(error) })); return; }
+  if (message.type === 'init') { init(message.selected, message.known, message.persist, message.coin, message.tier, message.database, message.lock, message.history).catch(error => post({ type: 'failed', error: error instanceof Error ? error.message : String(error) })); return; }
   if (!engine) { if (message.type === 'rpc') post({ type: 'rpc', id: message.id, error: 'the engine has not started' }); return; }
   if (message.type === 'select') engine.select(message.selected);
   else if (message.type === 'flush') { engine.flush(); void recordings?.flush(); }

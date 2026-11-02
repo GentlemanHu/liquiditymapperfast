@@ -447,6 +447,8 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 
 /* The handle that moves a pane or a row is a gripper: two raised lines side by side. */
 :root[data-frame="bevel"] .pane-head .grip { font-size: 0; display: inline-block; width: 7px; height: 14px; margin: 0 2px 0 0; background: var(--bv-gripper) 1px 1px / 5px 12px no-repeat; }
+/* A phone has no panes to move (the panes are tabs): the frame must not draw the handle there either (mobile.css hides it, and this rule is the stronger). */
+:root[data-frame="bevel"][data-layout^="phone"] .pane-head .grip { display: none; }
 :root[data-frame="bevel"] .panel .grip { background: var(--bv-gripper) center / 5px 12px no-repeat; }
 :root[data-frame="bevel"] .panel .grip:hover { background-color: transparent; }
 
@@ -490,7 +492,7 @@ input[type="number"], input[type="text"] { border: 1px solid var(--edge); border
 :root[data-frame="bevel"] .sheet .seg.toggles { gap: 6px; }
 /* The toggles are labelled in the size of the tiles beside them (15px); on the narrowest phones a long word still shrinks a little (the shared rule has the vw clause). */
 :root[data-frame="bevel"] .sheet .seg.toggles button { font-size: min(15px, 3.9vw); }
-:root[data-frame="bevel"] .sheet .seg.scope button { margin-left: 0; }
+:root[data-frame="bevel"] .sheet .seg:is(.scope, .zone-seg) button { margin-left: 0; }
 :root[data-frame="bevel"] .sheet-tiles { gap: 6px; }
 :root[data-frame="bevel"] .sheet-chips, :root[data-frame="bevel"] .sheet-chips .chips { gap: 6px; }
 :root[data-frame="bevel"][data-bar="compact"] .menu { padding: 2px 2px calc(2px + env(safe-area-inset-bottom)); }

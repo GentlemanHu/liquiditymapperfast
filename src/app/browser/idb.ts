@@ -7,6 +7,7 @@ import { hoursOf, peakOf, type AbsorptionGroup, type AbsorptionMinute, type Abso
 import type { CoverageRow, CoverageStore } from '../../shared/coverage.ts';
 import { largestLiquidations, liquidationKey, type Liquidation, type LiquidationStore } from '../../shared/liquidations.ts';
 import type { OiReading, OiStore } from '../../shared/engine.ts';
+import type { HistoryRows } from './history-import.ts';
 
 /**
  * Recordings kept in this browser (IndexedDB): the same four stores the server keeps in SQLite. The recorders read everything they
@@ -28,8 +29,12 @@ interface PrintRow extends Print { k: string }
 interface LiquidationRow extends Liquidation { k: string }
 /** An open-interest reading (shared/engine.ts `OiReading`): about one a minute for each of six venues, some 8,600 a day. */
 type OiRow = OiReading;
-/** A stretch of the coverage record, with its end as `t` (the time index every store prunes by). */
-interface CoverRow extends CoverageRow { t: number }
+/**
+ * A stretch of the coverage record, with its end as `t` (the time index every store prunes by). Metric `history` (never handed to the
+ * recorders) marks an hour of the recorded history read whole (`markImported`): an hour already taken is not read again.
+ */
+interface CoverRow extends Omit<CoverageRow, 'metric'> { metric: CoverageRow['metric'] | 'history'; t: number }
+const IMPORTED = 'history', IMPORTED_INST = '', HOUR = 3_600_000;
 
 /** `name` is the coin's database (app/coin.ts recordingsName): each coin's recordings are kept and read apart. */
 function openDatabase(name: string): Promise<IDBDatabase> {
@@ -95,6 +100,23 @@ const own = <A extends Int32Array | Float32Array>(array: A): A => array.byteLeng
 
 export interface Recordings {
   columns: ColumnStore; footprint: FootprintStore; prints: PrintStore; flow: FlowStore; absorption: AbsorptionStore; coverage: CoverageStore; liquidations: LiquidationStore; oi: OiStore;
+  /**
+   * Adds minutes recorded elsewhere (the recorded history, app/browser/history-import.ts) before the recorders start: each joins what `load`
+   * hands them, in place of a thinner copy of the same minute, and is stored as this tab's own recordings are. Returns how many it took.
+   */
+  importColumns(columns: readonly { inst: string; step: number; column: Column }[]): number;
+  /**
+   * The same for the other recordings: a flow minute joins second by second where it is the fuller copy, a liquidation or an open-interest
+   * reading the page does not hold is added, a large trade only outside the stretches this page recorded itself (where its own are the ones
+   * to keep: an order rebuilt from the same fills elsewhere may differ in its price); the service's stretches of trade coverage are not
+   * taken into the page's own (see `importRows`).
+   */
+  importRows(rows: HistoryRows): number;
+  /** The hours of the recorded history read whole (kept as the coverage record is, so they go with it), and marking more. */
+  importedHours(): number[];
+  /** `since`: `writeEpoch()` before the import; the hours are marked only when every write since went through. */
+  markImported(hours: readonly number[], since: number): Promise<void>;
+  writeEpoch(): number;
   /** Apply what is queued now instead of at the next half second. */
   flush(): Promise<void>;
   close(): void;
@@ -117,13 +139,17 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     readSince<AbsorptionRow>(db, 'absorption', absorptionSince), readSince<AbsorptionMinuteRow>(db, 'absorptionMinutes', absorptionSince), readSince<CoverRow>(db, 'coverage', since), readSince<LiquidationRow>(db, 'liquidations', since), readSince<OiRow>(db, 'oi', since)]);
   console.info(`recordings read back in ${Math.round(performance.now() - started)} ms: ${columnRows.length} map minutes, ${footprintRows.length} footprint minutes, ${printRows.length} trades, ${liquidationRows.length} liquidations, ${oiRows.length} open-interest readings`);
   let queue: ((tx: IDBTransaction) => void)[] = [], timer: ReturnType<typeof setTimeout> | null = null, failed = false, closed = false, failures = 0;
+  // Counts every write let go (not this tab's to make, or a batch that failed): a mark that an hour was imported is kept only when nothing
+  // was let go while it was imported (`markImported`). `writing` is the batch in flight.
+  let epoch = 0, writing: Promise<void> = Promise.resolve();
   const schedule = (): void => { if (!timer) timer = setTimeout(() => { void write(); }, failures ? Math.min(RETRY_MAX_MS, WRITE_DELAY_MS * 2 ** failures) : WRITE_DELAY_MS); };
 
   const prune = (tx: IDBTransaction, name: Name, before: number): void => {
     const store = tx.objectStore(name), request = store.index('t').openKeyCursor(IDBKeyRange.upperBound(before, true));
     request.onsuccess = () => { const cursor = request.result; if (cursor) { store.delete(cursor.primaryKey); cursor.continue(); } };
   };
-  const write = async (): Promise<void> => {
+  const write = (): Promise<void> => { const run = writing.then(writeNow); writing = run; return run; };
+  const writeNow = async (): Promise<void> => {
     timer = null;
     const ops = queue; queue = [];
     if (!ops.length || failed || closed) return;
@@ -145,7 +171,7 @@ export async function openRecordings(name: string, since: number, canWrite: () =
       // The batch is let go (what it held stays on screen, and a minute that changes again is written again) and writing goes on after a
       // pause that grows. One failed write used to end saving for the session, so a page left open for days could reload to nothing.
       if (error instanceof DOMException && error.name === 'InvalidStateError') lost = true;
-      failures++;
+      failures++; epoch++;
       events.failed?.(error, false);
       if (queue.length) schedule();
     }
@@ -160,7 +186,7 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     request.onsuccess = () => { const chosen = fuller(request.result as Row | undefined, row); if (chosen) store.put(chosen); };
   };
   const enqueue = (op: (tx: IDBTransaction) => void): void => {
-    if (failed || closed || !canWrite()) return;
+    if (failed || closed || !canWrite()) { epoch++; return; }
     queue.push(op);
     schedule();
   };
@@ -277,7 +303,7 @@ export async function openRecordings(name: string, since: number, canWrite: () =
   };
   // The coverage record: a stretch is written again as it grows (its start is its key), cut at the minute still open (shared/coverage.ts).
   const coverage: CoverageStore = {
-    load: () => coverRows.map(({ t: _t, ...row }) => row),
+    load: () => coverRows.flatMap(({ t: _t, ...row }) => row.metric === IMPORTED ? [] : [row as CoverageRow]),
     save: (rows, expireBefore) => enqueue(tx => { const store = tx.objectStore('coverage'); for (const row of rows) store.put({ ...row, t: row.to } satisfies CoverRow); prune(tx, 'coverage', expireBefore); }),
     close: () => {},
   };
@@ -306,8 +332,77 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     save: (rows, expireBefore) => enqueue(tx => { const store = tx.objectStore('oi'); for (const row of rows) store.put({ ...row } satisfies OiRow); prune(tx, 'oi', expireBefore); }),
     close: () => {},
   };
+  // Minutes recorded elsewhere join the rows `load` hands the recorder (a thinner copy of the same minute is replaced) and are stored like
+  // the recorder's own (by the tab that writes; another tab shows them and stores nothing, as it does with what it records).
+  const importColumns = (incoming: readonly { inst: string; step: number; column: Column }[]): number => {
+    const at = new Map<string, number>();
+    columnRows.forEach((row, i) => at.set(`${row.inst}|${row.t}`, i));
+    let taken = 0;
+    for (const { inst, step, column } of incoming) {
+      const key = `${inst}|${column.t}`, i = at.get(key), kept = i === undefined ? undefined : columnRows[i];
+      const row = { inst, t: column.t, step, n: column.n, bins: own(column.bins), bid: own(column.bid), ask: own(column.ask), ...(column.lt && (column.ltN ?? 0) > 0 ? { lt: own(column.lt), ltN: column.ltN! } : {}) } satisfies ColumnRow;
+      if (kept && (kept.step !== step || !fullerColumn(kept, row) || kept.n === row.n)) continue;
+      if (i === undefined) { at.set(key, columnRows.length); columnRows.push(row); } else columnRows[i] = row;
+      columns.save(inst, column, step);
+      taken++;
+    }
+    return taken;
+  };
+  const importRows = (incoming: HistoryRows): number => {
+    let taken = 0;
+    // Flow: second by second, the fuller copy (as two tabs' copies of a minute are merged).
+    const flowAt = new Map<string, number>();
+    flowRows.forEach((row, i) => flowAt.set(`${row.inst}|${row.t}`, i));
+    for (const row of incoming.flow) {
+      const i = flowAt.get(`${row.inst}|${row.t}`), merged = fullerFlowMinute(i === undefined ? undefined : flowRows[i], row);
+      if (!merged) continue;
+      if (i === undefined) { flowAt.set(`${row.inst}|${row.t}`, flowRows.length); flowRows.push(merged); } else flowRows[i] = merged;
+      taken++;
+    }
+    if (incoming.flow.length) flow.save(incoming.flow, since);
+    // Liquidations and open-interest readings the page does not hold (a liquidation is known by the venue's own facts).
+    const newLiquidations = incoming.liquidations.filter(row => !everyLiquidation.has(liquidationKey(row)));
+    for (const row of newLiquidations) { const k = liquidationKey(row); everyLiquidation.set(k, { ...row, k }); liquidationRows.push({ ...row, k }); }
+    if (newLiquidations.length) { liquidationRows.sort((a, b) => a.t - b.t); liquidations.save(newLiquidations, since); taken += newLiquidations.length; }
+    // An open-interest minute keeps its newest reading (the minute's last, as the recorders keep it): the service's when it was read later.
+    const oiAt = new Map(oiRows.map((row, i) => [`${row.venue}|${row.t}`, i]));
+    const newOi: OiRow[] = [];
+    for (const row of incoming.oi) {
+      const key = `${row.venue}|${row.t}`, i = oiAt.get(key);
+      if (i === undefined) { oiAt.set(key, oiRows.length); oiRows.push(row); newOi.push(row); }
+      else if ((row.at ?? 0) > (oiRows[i]!.at ?? 0)) { oiRows[i] = row; newOi.push(row); }
+    }
+    if (newOi.length) { oi.save(newOi, since); taken += newOi.length; }
+    // Large trades only where this page did not record the trades itself.
+    const own = new Map<string, [number, number][]>();
+    for (const row of coverRows) if (row.metric === 'trades') { let list = own.get(row.inst); if (!list) own.set(row.inst, list = []); list.push([row.from, row.to]); }
+    const ownsIt = (id: string, t: number): boolean => (own.get(id) ?? []).some(([a, b]) => t >= a && t < b);
+    const newPrints = incoming.prints.filter(row => !ownsIt(row.id, row.t) && !everyPrint.has(printKey(row)));
+    if (newPrints.length) {
+      for (const row of newPrints) printRows.push({ ...row, k: printKey(row) });
+      printRows.sort((a, b) => a.t - b.t);
+      prints.save(newPrints, since); taken += newPrints.length;
+    }
+    // The stretches the service recorded trades over are not taken into this page's own: the page's coverage says where its footprint holds
+    // every trade (the Candle tab judges a bar only over markets covered since it opened, and a recovery fills what it lacks), and the
+    // service records no footprint.
+    return taken;
+  };
+  const importedHours = (): number[] => coverRows.filter(row => row.metric === IMPORTED).map(row => row.from);
+  // Written once what the import queued has been written (or let go), and only when nothing was let go since `since` (`writeEpoch()`
+  // before the import): a mark without its rows would keep the hour from being read again.
+  const markImported = async (hours: readonly number[], since: number): Promise<void> => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    await write();
+    if (epoch !== since || failed || closed || !canWrite()) return;
+    const held = new Set(importedHours()), rows = hours.filter(h => !held.has(h)).map(h => ({ inst: IMPORTED_INST, metric: IMPORTED, from: h, to: h + HOUR, kind: 'live' as const, t: h + HOUR }) satisfies CoverRow);
+    if (!rows.length) return;
+    enqueue(tx => { const store = tx.objectStore('coverage'); for (const row of rows) store.put(row); });
+    await write();
+    if (epoch === since) coverRows.push(...rows);
+  };
   return {
-    columns, footprint, prints, flow, absorption, coverage, liquidations, oi,
+    columns, footprint, prints, flow, absorption, coverage, liquidations, oi, importColumns, importRows, importedHours, markImported, writeEpoch: () => epoch,
     flush() { if (timer) clearTimeout(timer); return write(); },
     close() { if (timer) clearTimeout(timer); void write().finally(() => { closed = true; db.close(); }); },
   };
