@@ -2069,6 +2069,8 @@
  "Look around": "Olhe ao redor",
  "Pinch to zoom: sideways for time, up and down for price. Drag to look back in time. Tap anything to read it, and use Recenter to come back to now.": "Faça o gesto de pinça para dar zoom: na horizontal para o tempo, na vertical para o preço. Arraste para ver o passado. Toque em qualquer coisa para ler os valores e use Recentralizar para voltar ao agora.",
  "The wheel zooms time and price together; drag to look back in time. Point at anything to read it, and press R to come back to now.": "A roda do mouse dá zoom no tempo e no preço juntos; arraste para ver o passado. Aponte para qualquer coisa para ler os valores e pressione R para voltar ao agora.",
+ "Right-drag to zoom": "Arraste com o botão direito",
+ "Hold the right mouse button on the chart and drag: right or left zooms time, up or down zooms price. The wheel zooms both, a left drag looks back, R returns to now.": "Segure o botão direito sobre o gráfico e arraste: para a direita ou esquerda dá zoom no tempo, para cima ou para baixo no preço. A roda faz os dois, arrastar com o esquerdo olha para trás, R volta ao agora.",
  "Who is buying and selling at market, exchange by exchange. It is closed now: its tab at the edge opens it.": "Quem está comprando e vendendo a mercado, exchange por exchange. Este painel está fechado agora; para abri-lo, use a aba na borda.",
  "Who is buying and selling at market, exchange by exchange, and when. The same moment is marked on the map.": "Quem está comprando e vendendo a mercado, exchange por exchange, e quando. O mesmo momento aparece marcado no mapa.",
  "The live order book as a ladder of prices. It is closed now: its tab at the edge opens it.": "O livro de ofertas ao vivo, em forma de escada de preços. Ele está fechado agora; para abri-lo, use a aba na borda.",
@@ -2151,5 +2153,6 @@
  "Light or dark: one tap switches the theme. Every theme is in Settings, under Appearance.": "Claro ou escuro: um toque troca o tema. Todos os temas estão em Configurações, em Aparência.",
  "3 h": "3 h",
  "History": "Histórico",
- "How much recorded history this device downloads when the page opens: the last 3 hours (a few MB), the whole day (tens of MB) or none. It applies the next time the page opens.": "Quanto histórico gravado este dispositivo baixa quando a página abre: as últimas 3 horas (poucos MB), o dia inteiro (dezenas de MB) ou nada. Vale a partir da próxima vez que a página abrir."
+ "How much recorded history this device downloads when the page opens: the last 3 hours (a few MB), the whole day (tens of MB) or none. It applies the next time the page opens.": "Quanto histórico gravado este dispositivo baixa quando a página abre: as últimas 3 horas (poucos MB), o dia inteiro (dezenas de MB) ou nada. Vale a partir da próxima vez que a página abrir.",
+ "{name} is folded to leave the map room. Show it anyway": "{name} está recolhido para deixar espaço ao mapa. Mostrar mesmo assim"
 }

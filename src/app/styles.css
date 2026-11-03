@@ -233,6 +233,8 @@ main { --left-w: var(--flow-w); --right-w: var(--side-w); --rail-w: 22px; }
 .edge-tab span { writing-mode: vertical-rl; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .flow-col .edge-tab span { transform: rotate(180deg); }
 .edge-tab:hover, .edge-tab:focus-visible { color: var(--text); border-color: var(--edge); background: color-mix(in srgb, var(--ui) 14%, var(--panel)); }
+/* A pane folded to leave the map room (layout.ts `chooseFold`), not closed: its tab in the accent, dashed, so it reads as put aside for space. */
+.edge-tab.folded { color: var(--ui); border: 1px dashed color-mix(in srgb, var(--ui) 55%, transparent); }
 .edge-chev { flex: none; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.6px 1.6px 0; }
 .flow-col .edge-chev { transform: rotate(-45deg); }
 .side-col .edge-chev { transform: rotate(135deg); }
@@ -644,6 +646,24 @@ dialog.tour.settling :is(.tour-hole, .tour-card) { transition: none; }
 .tour-card button.tour-skip:hover { color: var(--text); }
 .tour-card button.tour-next { min-width: 64px; font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
 .tour-card button.tour-next:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+/* The tour's moving picture of the right-button drag (tour/demo.ts): a mouse with its right button lit moves over the chart as the chart zooms, its trail
+   and the axis it zooms beside it. In the theme's colours, above the dim layer; nothing in it takes the pointer. */
+.tour-drag { position: absolute; inset: 0; pointer-events: none; transition: opacity .2s; }
+/* The card stands above the picture: on a short chart the hand passes under it, never over its words (Sol, 2026-11-03). */
+dialog.tour .tour-card { z-index: 1; }
+.tour-drag-hand { position: absolute; left: 0; top: 0; will-change: transform; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, .55)); }
+.tour-drag-hand svg { display: block; }
+.tour-mouse-body { fill: var(--panel); stroke: var(--text); stroke-width: 2; }
+.tour-mouse-line { fill: none; stroke: var(--text); stroke-width: 1.5; }
+.tour-mouse-right { fill: transparent; stroke: none; transition: fill .12s; }
+.tour-drag-hand.pressed .tour-mouse-right { fill: var(--ui); }
+.tour-drag-trail { position: absolute; box-sizing: border-box; }
+.tour-drag-trail.time { height: 0 !important; border-top: 3px dashed var(--ui); }
+.tour-drag-trail.price { width: 0 !important; border-left: 3px dashed var(--ui); }
+.tour-drag-word, .tour-drag-arrow { position: absolute; left: 0; top: 0; padding: 3px 8px; border-radius: 10px; background: var(--ui); color: var(--on-ui, #fff); font: 700 12px/1.2 ui-sans-serif, system-ui, sans-serif; white-space: nowrap; }
+.tour-drag-word:empty { display: none; }
+.tour-drag-still { position: absolute; left: 0; top: 0; display: flex; flex-direction: column; gap: 6px; }
+.tour-drag-still .tour-drag-arrow { position: static; }
 @media (pointer: coarse) { .tour-card button { min-height: 40px; padding-left: 14px; padding-right: 14px; } .tour-card button.tour-skip { min-height: 40px; } }
 @media (prefers-reduced-motion: reduce) { .tour-hole, .tour-card { transition: none; animation: none; } }
 

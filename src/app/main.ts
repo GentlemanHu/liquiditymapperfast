@@ -18,11 +18,12 @@ import { installTips } from './tip.ts';
 import { installTouchSelects } from './touch-select.ts';
 import { lazy, preload } from './lazy.ts';
 import { ScreenWake } from './wake.ts';
-import { HeatPane, gutter, leftGutter } from './panes/heat-pane.ts';
+import { HeatPane, gutter, gutterAt, leftGutter } from './panes/heat-pane.ts';
 import { LadderPane } from './panes/ladder-pane.ts';
 import { CvdPane } from './panes/cvd-pane.ts';
 import { BarStatsPane, DepthPane, LtPane, OiPane } from './panes/lower-panes.ts';
 import { LiqPane } from './panes/liq-pane.ts';
+import { setTourDemo } from './tour/demo.ts';
 import { liqLevelsUrl } from './liq-url.ts';
 import { DeltaPane } from './panes/delta-pane.ts';
 import { LsPane } from './panes/ls-pane.ts';
@@ -116,6 +117,8 @@ async function main(): Promise<void> {
 
   const heat = new HeatPane(chart, store, hub, kernels);
   toolbar.placeRecenter(heat.root);
+  // The tour's moving picture of the right-button drag moves this chart (tour/demo.ts), and puts its view back when its step is left.
+  setTourDemo({ plotRect: () => heat.plotRect(), zoom: (press, at) => heat.demoZoom(press, at), end: () => heat.endDemo() });
   const bars = new BarStatsPane(chart, store, heat.view, heat, hub);
   const depth = new DepthPane(chart, store, heat.view, hub);
   const oi = new OiPane(chart, store, heat.view, hub.flow);
@@ -124,6 +127,10 @@ async function main(): Promise<void> {
   const ls = new LsPane(chart, store, heat.view, hub);
   const lt = new LtPane(chart, store, heat.view, hub);
   const script = new ScriptPane(chart, store, heat.view, hub);
+  // Scripts read the candles the chart draws, its own and the exchange's before them, and the map asks for some before its left edge while they
+  // run (Karl, 2026-11-03: a script's line began wherever the 500th candle back fell).
+  script.candlesOf = state => heat.scriptCandles(state);
+  heat.scriptsReading = () => script.reading;
   // The scripts placed on the map draw over it, and a script's candle colours (`$price.color`) colour its candles.
   heat.scriptLayer = (ctx, pw, ph) => script.paintOnMap(ctx, pw, ph); heat.candleColor = t => script.candleColorAt(t); script.onMapChanged = () => heat.invalidate();
   heat.scriptHover = (t, y, touch) => script.mapHoverLines(t, y, touch); heat.scriptMarkAt = (x, y, touch) => script.mapMarkAt(x, y, touch);
@@ -163,6 +170,8 @@ async function main(): Promise<void> {
     env: () => ({ width: window.innerWidth, height: chart.clientHeight || Math.max(400, window.innerHeight - 200), held: scriptRows(store.state) ? ['script' as const] : [] }),
   });
   arrange.onClose = id => layouts.hide(id, arrange.title(id)); arrange.onOpen = id => layouts.setPane(id, true);
+  // A desktop folds its side columns to their edge tabs when the map would be left too little plot (layouts/dock-model.ts `chooseFold`).
+  arrange.plotAt = paneW => paneW - gutterAt(paneW, store.state);
   toolbar.layouts = layouts;
   const lower = () => { depth.invalidate(); oi.invalidate(); delta.invalidate(); ls.invalidate(); lt.invalidate(); bars.invalidate(); script.invalidate(); cvd.followMap(); };
   // Replay: the map's candle under way is rebuilt from the flow, so flow arriving while paused redraws it too (live, the map has its own pace).
@@ -330,7 +339,9 @@ async function main(): Promise<void> {
     if (changed.has('material')) { applyMaterial(); hub.setTape(tapeWanted()); }
     if (changed.has('cvd')) cvd.settingsChanged();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
-    if (changed.has('show') || changed.has('liqLevels')) layout(); else if (changed.has('traded')) gutters();
+    if (changed.has('show') || changed.has('liqLevels')) layout(); else if (changed.has('traded')) { gutters(); arrange.refit(); }
+    // The map's own columns change with the market too (the liquidation column is BTC's, the price axis as wide as its prices).
+    if (changed.has('marketId')) arrange.refit();
     if (changed.has('mark') || changed.has('liqLevels')) liq.invalidate();
     if (changed.has('marketId') || changed.has('timeframe')) {
       // A series kept from before is framed the moment it is shown; one read afresh when it comes (framing it again then would undo a pan made meanwhile).
