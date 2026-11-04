@@ -210,6 +210,10 @@ function withHistory(history: readonly CandleRow[], candles: readonly CandleRow[
 
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
 const NARROW_PLOT = 420;
+/** The most room the legend's title and prices ask beside the map's corner tools before these drop their names (px): about a candle's line of figures. */
+const LEGEND_NEED_PX = 272;
+/** The least room beside the corner tools the legend takes (px): with less (a narrow map) it stands under them, as wide as the plot. */
+const LEGEND_MIN_BESIDE_PX = 160;
 /** The legend's script lines: how many at most (the others are counted), and the room each of a line's buttons takes (px), on a phone too. */
 const SCRIPT_LINES = 6, SCRIPT_TOOL_W = 20, SCRIPT_TOOL_W_TOUCH = 28;
 
@@ -292,6 +296,8 @@ export class HeatPane {
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
   /** The last values given to --gutter and --gutter-left on the pane, so a frame that changes nothing writes nothing. */
   #gutterCss = ''; #leftCss = '';
+  /** What the corner tools' names were last judged on (`#fitCorner`), and the room the legend wants for its title and prices (`#paintLegend`). */
+  #cornerKey = ''; #legendNeed = LEGEND_NEED_PX;
   onStats: () => void = () => {};
   onView: () => void = () => {};
   /** Whether scripts are running and read the candles (main.ts): then the price history reaches `SCRIPT_WARM_BARS` before the view too. */
@@ -800,6 +806,7 @@ export class HeatPane {
     const gutterCss = `${gutter(state)}px`, leftCss = `${this.#left}px`;
     if (this.#gutterCss !== gutterCss) { this.#gutterCss = gutterCss; this.root.style.setProperty('--gutter', gutterCss); }
     if (this.#leftCss !== leftCss) { this.#leftCss = leftCss; this.root.style.setProperty('--gutter-left', leftCss); }
+    this.#fitCorner(this.plotW);
     this.#manageRaster();
     if (state.show.bubbles) this.hub.ensurePrints(this.view, scaledUsd(state.tradeBubbles.minUsd));
     if (state.liquidations.on) this.hub.ensureLiquidations(this.view, scaledUsd(state.liquidations.minUsd));
@@ -1140,6 +1147,24 @@ export class HeatPane {
     return { t: this.view.tOf(Math.max(0, Math.min(pw, x)), pw), p: this.view.pOf(Math.max(0, Math.min(ph, y)), ph) };
   }
 
+  /**
+   * The map's corner tools (Layouts, Go to, Select, Draw, Recenter) wear their names only where the plot leaves the legend the room its title and
+   * prices want beside them, and their drawings alone where it does not (Karl, 2026-11-03: at 1,600 px with both columns open the named buttons
+   * covered the market's name and its prices). Judged on the plot, not the window (a window as wide with a column folded has room for the names),
+   * with the names measured on and a step of slack, so a width at the edge does not flip back and forth.
+   */
+  #fitCorner(pw: number): void {
+    const tools = this.root.querySelector<HTMLElement>('.map-tools');
+    if (!tools || isPhone()) return;
+    const key = `${pw}|${this.#legendNeed}|${tools.childElementCount}|${tools.textContent?.length ?? 0}|${document.documentElement.dataset.frame ?? ''}`;
+    if (key === this.#cornerKey) return;
+    this.#cornerKey = key;
+    const was = tools.classList.contains('compact');
+    if (was) tools.classList.remove('compact');
+    const named = tools.offsetWidth;
+    tools.classList.toggle('compact', pw - 28 - named < this.#legendNeed + (was ? 16 : 0));
+  }
+
   #paintLegend(ctx: CanvasRenderingContext2D, state: AppState): void {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, p = this.#palette;
     const under = (c: CandleRow): boolean => state.hover!.t >= c[0] && state.hover!.t < c[0] + tf;
@@ -1164,12 +1189,21 @@ export class HeatPane {
     }
     // A translucent plate keeps the text readable over bright heat.
     // The map's corner tools (Go to, Select, Recenter) lie over the top right of the plot: the text ends before them (with an ellipsis) instead of running under them.
-    const corner = this.root.querySelector<HTMLElement>('.map-tools'), room = Math.max(160, this.plotW - 20 - (corner ? corner.offsetWidth + 8 : 0));
+    const corner = this.root.querySelector<HTMLElement>('.map-tools'), beside = this.plotW - 20 - (corner ? corner.offsetWidth + 8 : 0);
+    // Where even their drawings alone leave the legend too little room beside them (a narrow map), it stands under them instead, as wide as the plot.
+    const stacked = corner !== null && corner.offsetWidth > 0 && beside < LEGEND_MIN_BESIDE_PX, room = stacked ? this.plotW - 20 : Math.max(160, beside);
+    const dy = stacked && corner ? Math.max(0, corner.offsetTop + corner.offsetHeight + 4 - (ctx.canvas as HTMLCanvasElement).offsetTop - 6) : 0;
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     const wide = (text: string): number => ctx.measureText(text).width, tailW = tail ? wide(tail) + 10 : 0;
+    const detailNatural = detail ? wide(detail) : 0;
+    // The candle's figures on two lines where one does not fit beside the corner tools (Karl, 2026-11-03: at 1,600 px the close was cut
+    // off): the open and high on the first, the low, the close and the rest on the second; the title keeps its corner.
+    const cut = phone ? -1 : detail.indexOf('  L ');
+    let detail2 = '';
+    if (detailNatural > room && cut > 0) { detail2 = fitText(wide, detail.slice(cut + 2), room); detail = detail.slice(0, cut); }
     detail = fitText(wide, detail, room);
     const extra = [phone && borrowed ? borrowed.replace(/^\s*·\s*/, '') : '', this.#overviewLegend(state)].filter(Boolean).join('  ·  ');
-    const note = fitText(wide, extra, room), noteW = note ? wide(note) : 0, detailW = detail ? wide(detail) : 0;
+    const note = fitText(wide, extra, room), noteW = note ? wide(note) : 0, detailW = Math.max(detail ? wide(detail) : 0, detail2 ? wide(detail2) : 0);
     // The scripts drawn on the map, a line each under the candle's: a swatch of its colour, its name, its buttons right after the name
     // (where they stay whatever the values beside them, so they do not move from under a pointer coming to them), then its values at this
     // candle or what it is doing. At most a few, the others counted. In a phone's arrangement the buttons are a finger's size (as their
@@ -1181,19 +1215,24 @@ export class HeatPane {
     const scriptValues = listed.map((s, k) => namesOnly || !s.text ? '' : fitText(wide, s.text, Math.max(0, room - 30 - wide(scriptNames[k]!) - toolsW[k]! - 12)));
     const moreScripts = unlisted > 0 ? tn(unlisted, '+{n} more script', '+{n} more scripts') : '';
     const scriptsW = Math.max(0, ...listed.map((_, k) => 18 + wide(scriptNames[k]!) + 6 + toolsW[k]! + (scriptValues[k] ? 6 + wide(scriptValues[k]!) : 0)), moreScripts ? wide(moreScripts) : 0);
-    const textH = (detail ? 36 : 22) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
+    const textH = (detail ? 36 : 22) + (detail2 ? 14 : 0) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     const shownTitle = fitText(wide, phone ? `${name}  ${state.timeframe}` : title, room - tailW), titleW = wide(shownTitle);
+    // The room the legend wants beside the corner tools, in steps (a candle's figures a pixel wider must not judge the tools again).
+    this.#legendNeed = Math.min(LEGEND_NEED_PX, Math.ceil(Math.max(detailNatural, wide(phone ? `${name}  ${state.timeframe}` : title) + tailW) / 16) * 16);
     const plateW = Math.max(titleW + tailW, detailW, noteW, scriptsW) + 14, plateH = textH + (scriptRows ? scriptRows * lineH + 2 : 0);
-    this.#legendBox = { right: 6 + plateW, bottom: 6 + plateH };
+    this.#legendBox = { right: 6 + plateW, bottom: 6 + dy + plateH };
+    // Shifted by a translation alone, undone after: a save and restore here would also take back the font, alignment and colours this leaves set,
+    // which what is drawn after the legend inherits (Sol: the crosshair's labels took the title's 600 12px).
+    if (dy) ctx.translate(0, dy);
     ctx.globalAlpha = 0.82; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(6, 6, plateW, plateH, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
     ctx.textAlign = 'left'; ctx.fillStyle = p.text; ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     ctx.fillText(shownTitle, 12, 16);
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     if (tail) { ctx.fillStyle = p.muted; ctx.fillText(tail, 12 + titleW + 10, 16); }
-    if (detail) { ctx.fillStyle = up ? p.candleUp : p.candleDown; ctx.fillText(detail, 12, 32); }
+    if (detail) { ctx.fillStyle = up ? p.candleUp : p.candleDown; ctx.fillText(detail, 12, 32); if (detail2) ctx.fillText(detail2, 12, 46); }
     // The note stands under the prices, or under the title where there are none (it stood below the plate then, over what follows).
-    if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, detail ? 46 : 32); }
+    if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, detail ? (detail2 ? 60 : 46) : 32); }
     const places: { id: string; x: number; y: number }[] = [];
     let y = 6 + textH + lineH / 2;
     listed.forEach((s, k) => {
@@ -1206,9 +1245,10 @@ export class HeatPane {
       y += lineH;
     });
     if (moreScripts) { ctx.fillStyle = p.muted; ctx.fillText(moreScripts, 12, y); }
+    if (dy) ctx.translate(0, -dy);
     // The buttons are page elements over this canvas, placed in the pane's own pixels (the plot starts after the columns left of it).
     const canvas = ctx.canvas as HTMLCanvasElement;
-    this.onScriptLegend(places.map(q => ({ id: q.id, x: canvas.offsetLeft + this.#left + q.x, y: canvas.offsetTop + q.y })));
+    this.onScriptLegend(places.map(q => ({ id: q.id, x: canvas.offsetLeft + this.#left + q.x, y: canvas.offsetTop + dy + q.y })));
   }
 
   /** Plan only when the data or a whole minute of the view changes; pointer redraws never scan coverage or start a read. */
