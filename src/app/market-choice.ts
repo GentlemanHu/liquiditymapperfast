@@ -1,6 +1,6 @@
 import type { AppState } from './store.ts';
 import type { FlowBook } from './flow-book.ts';
-import { flowIds, type MapState } from './cvd/ids.ts';
+import { oiFlowIds, type MapState } from './cvd/ids.ts';
 import { aggregateIds } from './cvd/model.ts';
 import { buildFamilies, familyKey, venueOfInstrument } from './cvd/families.ts';
 import { kindOf } from './scope.ts';
@@ -74,9 +74,12 @@ export function resolvePicks(state: Pick<AppState, 'markets'>, flow: FlowBook | 
   return [...new Set(picks.filter(p => !oi || oiPickable(p)).map(p => byPick.get(p)).filter((id): id is string => !!id))].sort().slice(0, MAX_PICKS);
 }
 
-/** The perpetuals the ALL VENUES lines count on an exchange whose open interest is read: the OI pane's markets with venues added together. */
+/**
+ * The perpetuals the ALL VENUES lines count on an exchange whose open interest is read: the OI pane's markets with venues added together.
+ * Whatever the Spot / Perp filter says (`oiFlowIds`): under Spot these are the perpetuals Both counts, not none.
+ */
 export function oiVenueIds(state: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'> & MapState, flow: FlowBook): string[] {
-  return aggregateIds(flow, flowIds(state, flow.ids), id => kindOf(state.markets, id)).filter(id => kindOf(state.markets, id) === 'perp' && OI_SAMPLE_VENUES.includes(familyKey(venueOfInstrument(id)))).sort();
+  return aggregateIds(flow, oiFlowIds(state, flow.ids), id => kindOf(state.markets, id)).filter(id => kindOf(state.markets, id) === 'perp' && OI_SAMPLE_VENUES.includes(familyKey(venueOfInstrument(id)))).sort();
 }
 
 /**
