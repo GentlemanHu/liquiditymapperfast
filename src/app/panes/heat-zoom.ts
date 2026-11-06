@@ -1,9 +1,12 @@
+import type { CandleRow } from '../store.ts';
+
 /**
  * Zooming the map's axes with the pointer. The wheel on the chart zooms time and price together, by the same factor, so the picture keeps the
  * shape the person gave it; the wheel (or a drag) on the price scale zooms price alone and the wheel on the time strip time alone. Each axis holds
  * still the thing a person is watching: the live edge for time and the current price for price while the map follows the market (while the live
  * edge is on it), the point under the pointer once it stays where it was left (and always with Alt). Pure functions, so the rules are tested
- * without a canvas.
+ * without a canvas. How a recentre frames the price, the current price in the middle, is here too (`fitPrices`), and how the price axis follows
+ * the market while the map does (`followPrice`).
  */
 
 /**
@@ -50,6 +53,55 @@ export function liveEdgeShown(view: { t0: number; t1: number }, now: number): bo
   return view.t1 > view.t0 && now >= view.t0 && now <= view.t1;
 }
 
+/** A pan that moves the price this many pixels up or down, and more up or down than across, moved it on purpose (`holdsPrice`). */
+export const PRICE_HOLD_PX = 24;
+/**
+ * Whether a pan that moved the map (`dx`, `dy`) pixels in all, a gesture's net move, moved the price on purpose: PRICE_HOLD_PX or more up or
+ * down, and more up or down than across. A drag along the time axis drifts up or down by tens of pixels without meaning to: counted as a move of
+ * the price, it held the price until Live or a recentre, and a trend then took the live candle off a map that went on following it (YRN, 2026-11-06).
+ */
+export function holdsPrice(dx: number, dy: number): boolean {
+  return Math.abs(dy) >= PRICE_HOLD_PX && Math.abs(dy) > Math.abs(dx);
+}
+
+/**
+ * While the map follows the market, the current price is kept clear of this share of the height at the top and the bottom (`priceClear`): nearer,
+ * it is brought back to the middle. A hand that puts it there, or off the map, is looking above or below the price on purpose (`priceHeldAfter`).
+ */
+export const PRICE_BAND = 0.1;
+
+/** Whether `mark` is clear of the top and bottom tenths of the map (PRICE_BAND), where the map following the market keeps it: false with no price or no view. */
+export function priceClear(view: { p0: number; p1: number }, mark: number): boolean {
+  const band = (view.p1 - view.p0) * PRICE_BAND;
+  return mark > 0 && view.p1 > view.p0 && mark >= view.p0 + band && mark <= view.p1 - band;
+}
+/** Whether there is a price and it is at the top or bottom tenth of the map or off it, where the following would bring it back to the middle. */
+export function priceAtEdge(view: { p0: number; p1: number }, mark: number): boolean {
+  return mark > 0 && view.p1 > view.p0 && !priceClear(view, mark);
+}
+
+/**
+ * Whether the price is held where a hand put it after a pan that moved the map (`dx`, `dy`) pixels in all, given whether the map follows the
+ * market, whether the pan left the price at an `edge` (`priceAtEdge`) and whether it was `held` before. Only a pan that moved the price on purpose
+ * (`holdsPrice`) while the map follows decides: it holds the price where it left it at an edge or off the map, where the follow would bring it
+ * back to the middle at once (a look above or below the price), and lets it go where it left it in the clear, where the follow keeps it on the
+ * map as it does a price no hand moved. Any other pan leaves the hold as it was. A hold taken in the clear did nothing then and one thing later:
+ * it let a trend take the live candle off a map that went on following it (YRN, 2026-11-06).
+ */
+export function priceHeldAfter(o: { dx: number; dy: number; follow: boolean; edge: boolean; held: boolean }): boolean {
+  return o.follow && holdsPrice(o.dx, o.dy) ? o.edge : o.held;
+}
+
+/**
+ * One frame of the price axis following the market, while the map follows it and no hand holds the map: the current price is brought back to the
+ * middle, the span kept, once it is no longer clear of the top and bottom tenths (`priceClear`), unless a hand holds it where it put it (`held`).
+ */
+export function followPrice(o: { p0: number; p1: number; mark: number; held: boolean }): { p0: number; p1: number } {
+  const span = o.p1 - o.p0;
+  if (o.held || !(o.mark > 0) || !(span > 0) || priceClear(o, o.mark)) return { p0: o.p0, p1: o.p1 };
+  return { p0: o.mark - span / 2, p1: o.mark + span / 2 };
+}
+
 /** The shortest and longest time span the map zooms to, and the price span as a share of the current price. */
 export const TIME_SPAN_MS = { min: 30_000, max: 400 * 86_400_000 } as const;
 export const PRICE_SPAN_SHARE = { min: 1e-4, max: 2 } as const;
@@ -66,6 +118,41 @@ export function limitFactor(factor: number, span: number, min: number, max: numb
 
 /** The price the span limits are a share of: the current price, or the middle of the view before there is one. */
 export const priceRef = (mark: number, p0: number, p1: number): number => mark > 0 ? mark : Math.max(1e-9, Math.abs(p0 + p1) / 2);
+
+/** The room a fit leaves above the highest high and below the lowest low of the candles it frames, as a share of their range. */
+export const FIT_PAD = 0.18;
+/** How much wider than the candles' own frame a fit may make the price axis to keep the current price in its middle. */
+export const FIT_WIDEN_MAX = 1.5;
+
+/**
+ * The price axis the page opens on, and a recentre gives: the current price (`mark`) in the middle of it, the recent `candles` (the caller's
+ * run of them) in view with room above and below them (`FIT_PAD`). The span is the candles' own frame (their range and that room), widened as
+ * far as the price needs to stay in the middle with them all in view, but no further than `FIT_WIDEN_MAX` times that frame: after a fall the
+ * price sits at the foot of those candles, and keeping all of the move above it would squash the heat map into a thin band, so the end of it
+ * farthest from the price is cut and a zoom out or a pan shows it (a pan alone where the span is already the zoom's limit, below) (Karl,
+ * 2026-11-06: the charts opened with the price near the bottom of the axis and stayed there).
+ * Candles without a range (none, or all at one price): 1 % either side of the price with that room, as before. No price yet (the page frames
+ * before its first price on most openings): the newest candle's close stands in for it, which is the price as the candles last saw it, so the
+ * axis is right from the first frame and nothing frames it again when the price comes. Nothing to centre on at all: the candles' own frame,
+ * centred on them; neither candles nor a price: null, nothing to frame. The span is never more than PRICE_SPAN_SHARE.max times the price (the
+ * zoom's own limit), so the axis never goes below zero after a fall that halved the price.
+ */
+export function fitPrices(candles: readonly CandleRow[], mark: number): { p0: number; p1: number } | null {
+  let lo = Infinity, hi = -Infinity;
+  for (const c of candles) { lo = Math.min(lo, c[3]); hi = Math.max(hi, c[2]); }
+  const close = candles.length ? candles[candles.length - 1]![4] : 0;
+  const price = mark > 0 && Number.isFinite(mark) ? mark : close > 0 && Number.isFinite(close) ? close : 0;
+  if (!(hi > lo)) {
+    if (!price) return null;
+    lo = price * 0.99; hi = price * 1.01;
+  }
+  const pad = (hi - lo) * FIT_PAD, frame = hi - lo + 2 * pad;
+  if (!price) return { p0: lo - pad, p1: hi + pad };
+  // Twice the farther of the candles' extremes from the price, with their room: never less than their frame (the farther one is at least half
+  // their range away wherever the price is) unless twice the price is less, as after a fall that halved it.
+  const span = Math.min(2 * (Math.max(hi - price, price - lo) + pad), FIT_WIDEN_MAX * frame, PRICE_SPAN_SHARE.max * price);
+  return { p0: price - span / 2, p1: price + span / 2 };
+}
 
 /** How far one turn of the wheel zooms (> 1 zooms out): exp(0.0016 per pixel), a line counted as 33 pixels and a page as the plot's height, a turn at most 240 pixels. */
 export function wheelFactor(deltaY: number, deltaMode: number, plotH: number): number {
