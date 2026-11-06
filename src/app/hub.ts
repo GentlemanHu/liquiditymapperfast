@@ -30,7 +30,7 @@ import { TapeRing, tapeCapacity } from './tape/ring.ts';
 import { isPhone } from './device.ts';
 import type { SumRow } from '../shared/print-sums.ts';
 import { ChartPriceHistory } from './price-history.ts';
-import { ColumnHolds, columnReach, settledBefore, type ColumnDrop } from './column-holds.ts';
+import { ColumnHolds, columnReach, columnStepFor, settledBefore, type ColumnDrop } from './column-holds.ts';
 
 export const TIMEFRAMES: Readonly<Record<string, number>> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 };
 const MINUTE = 60_000;
@@ -418,6 +418,14 @@ export class Hub {
   }
   /** Oldest recorded depth minute across instruments (ms), or 0 when nothing is recorded. */
   recordedSince = 0;
+  /**
+   * Where the depth the map can draw begins: the long history's first window when the source has one (app/archive/), else the recordings'.
+   * The flow and candle seams stay on `recordedSince` (the archive holds depth only).
+   */
+  depthSince(): number {
+    const archive = this.source.archiveFirst?.() ?? null;
+    return archive !== null && archive > 0 && (this.recordedSince <= 0 || archive < this.recordedSince) ? archive : this.recordedSince;
+  }
   /** Instrument with candle history to fall back to when the selected market has none. */
   #reference = '';
   /** Instruments with an open-interest series to fall back to, best first. */
@@ -515,6 +523,12 @@ export class Hub {
       onOiPush: items => this.#oiPush(items),
     });
     this.#live.tape(this.#tapeOn);
+    // The long history's tiles come after the columns that could use them were answered: what is held is asked for whole again (the worker
+    // keeps drawing it meanwhile), and the frame that asks comes now.
+    this.source.setArchiveListener?.(change => {
+      if (change) { void this.#archiveArrived(change.level * MINUTE, change.from, change.to).catch(error => console.warn('long history:', error)); return; }
+      this.#columns.expireWhole(); this.#columnsStale = true; this.onColumns();
+    });
     // A hidden page reads nothing ahead (`#prefetch`): shown again, it reads what went stale meanwhile.
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (!document.hidden && this.#prefetched) this.#schedulePrefetch(); });
   }
@@ -1178,14 +1192,15 @@ export class Hub {
   async loadColumns(view: Bounds, widthPx: number): Promise<void> {
     const ids = this.store.state.levels?.books.map(book => book.id) ?? [];
     if (!ids.length) return;
-    const span = view.t1 - view.t0;
-    // About two pixels a column, in minutes that double from one level to the next: zooming moves between a few steps the server has merged before.
-    const stepMs = MINUTE * 2 ** Math.max(0, Math.round(Math.log2(span / Math.max(1, widthPx) * 2 / MINUTE)));
+    // About two pixels a column, in minutes that double from one level to the next: zooming moves between a few steps the server has merged
+    // before; at least the long history's two minutes where the view reaches before the page's own day (`columnStepFor`).
+    const stepMs = columnStepFor(view, widthPx, this.source.archiveFirst?.() ?? null, this.source.depthSince?.(ids) ?? this.recordedSince, this.sourceNow());
     const holds = this.#columns;
     // The view is one object the pane moves on: what an answer is judged against below is the view it was asked for.
     const seen: Bounds = { t0: view.t0, t1: view.t1, p0: view.p0, p1: view.p1 };
     this.#columnsWanted = stepMs;
     holds.touch(stepMs);
+    this.#archiveView(stepMs);
     // A step held for every book is read at once, whatever else is under way.
     if (holds.covers(ids, seen, stepMs)) this.#readColumns(stepMs);
     if (this.#columnsLoading) return;
@@ -1232,11 +1247,63 @@ export class Hub {
       }
       // A load for a step nobody wants any more reads nothing and changes nothing the page would draw: say so, so that the frame that waits for this load to end comes.
       if (stepMs !== this.#columnsWanted) this.onColumns();
-    } finally { this.#columnsLoading = false; }
+    } finally {
+      this.#columnsLoading = false;
+      // What is held now at the step the view wants, for the long history's files: answered, or cut short by a question that failed.
+      this.#archiveView(this.#columnsWanted);
+    }
+  }
+
+  /**
+   * The long history brought [from, to) at `stepMs`: those windows are asked for again for the books held at that step, each inside the
+   * window its columns were asked for (a range the view has left is not taken in), on the grid they are held on, and spliced into what the
+   * worker holds (what it holds elsewhere is kept, so a view larger than the tiles' cache never empties and asks for itself again). A book
+   * whose answer comes on another grid (its engine's changed) is asked for whole again instead. Holds change while an answer is awaited (a
+   * pan asks for a new window): a book is asked and spliced only while its hold still contains the range (a new window's whole answer already
+   * drew on the files that came).
+   */
+  async #archiveArrived(stepMs: number, from: number, to: number): Promise<void> {
+    const source = this.source;
+    if (!source.archiveRange) return;
+    const groups = new Map<string, { from: number; to: number; ids: string[] }>();
+    for (const [id, hold] of this.#columns.at(stepMs)) {
+      const lo = Math.max(from, hold.from), hi = Math.min(to, hold.to);
+      if (!(hi > lo)) continue;
+      const key = `${lo}|${hi}`, group = groups.get(key);
+      if (group) group.ids.push(id); else groups.set(key, { from: lo, to: hi, ids: [id] });
+    }
+    for (const group of groups.values()) {
+      const holding = (id: string): boolean => { const hold = this.#columns.at(stepMs).get(id); return !!hold && hold.from <= group.from && hold.to >= group.to; };
+      const ids = group.ids.filter(holding);
+      if (!ids.length) continue;
+      const grids: Record<string, number> = {};
+      for (const id of ids) grids[id] = this.#columns.at(stepMs).get(id)?.grid ?? 0;
+      const frame = await source.archiveRange(ids, group.from, group.to, stepMs, grids);
+      const sets = frame.instruments.filter(set => holding(set.id));
+      const other = new Set(this.#columns.gridChanged(stepMs, sets));
+      if (other.size) {
+        this.#forgetColumns(this.#columns.forgetElsewhere(stepMs, [...other]));
+        this.#columns.expire(stepMs, [...other]); this.#columnsStale = true; this.onColumns();
+      }
+      const same = sets.filter(set => !other.has(set.id));
+      if (!same.length) continue;
+      const buffers = new Set<ArrayBuffer>();
+      for (const set of same) for (const array of [set.bins, set.bid, set.ask]) if (array.buffer instanceof ArrayBuffer) buffers.add(array.buffer);
+      this.#post({ type: 'columnsRange', stepMs, from: group.from, to: group.to, instruments: same }, [...buffers]);
+      if (stepMs === this.#columnsDrawn) this.#columnsChanged();
+    }
   }
 
   /** The steps the page holds recorded columns for, and the books at each (what it has told the worker to keep). */
   heldColumns(): { stepMs: number; ids: string[] }[] { return this.#columns.steps().map(stepMs => ({ stepMs, ids: [...this.#columns.at(stepMs).keys()] })); }
+
+  /** Tells the long history the step the map reads and the windows held there (`DataSource.archiveView`). */
+  #archiveView(stepMs: number): void {
+    if (!this.source.archiveView) return;
+    const windows = new Map<string, { from: number; to: number }>();
+    for (const hold of this.#columns.at(stepMs).values()) windows.set(`${hold.from}|${hold.to}`, { from: hold.from, to: hold.to });
+    this.source.archiveView(stepMs, [...windows.values()]);
+  }
 
   /** Hand columns to the worker. The instruments are views onto a few fetch buffers that nothing on this thread reads again: hand the buffers over instead of copying tens of MB. */
   #postColumns(message: Extract<WorkerIn, { type: 'columns' | 'columnsTail' }>, stepMs: number): void {
@@ -1263,6 +1330,8 @@ export class Hub {
 
   #forgetColumns(drops: readonly ColumnDrop[]): void {
     for (const drop of drops) this.#post({ type: 'columnsDrop', stepMs: drop.stepMs, ids: drop.ids });
+    // A hold let go is no longer the long history's to keep files for, whichever path let it go and whether or not a load follows.
+    if (drops.length) this.#archiveView(this.#columnsWanted);
   }
 
   /** The source's clock (the page's, less the difference seen at boot): what the source counts as settled is by its own time. */
