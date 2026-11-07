@@ -140,6 +140,10 @@ export interface DataSource {
   archiveView?(stepMs: number, windows: readonly { from: number; to: number }[]): void;
   /** Where that long history's depth begins (ms), or null when there is none. */
   archiveFirst?(): number | null;
+  /** That long history's finest window (ms, its first level: two minutes for BTC, eight for ETH and SOL), or null when there is none. */
+  archiveMinStep?(): number | null;
+  /** Whether a view that includes now is drawn from that long history before the source's own depth too (a coin whose hours carry no book minutes). */
+  archiveLive?(): boolean;
   /** Where the source's own depth begins for `ids` (the latest of their contiguous runs' starts), or null when it cannot say yet. */
   depthSince?(ids: readonly string[]): number | null;
   /**

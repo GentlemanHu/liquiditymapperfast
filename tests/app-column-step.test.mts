@@ -16,6 +16,34 @@ test('an old range at a minute\'s zoom asks for the long history\'s two minutes'
   assert.equal(columnStepFor(view(NOW - 5 * HOUR), 1_500, ARCHIVE, 0, NOW), 2 * MIN);
 });
 
+test('a coin whose tiles start at eight minutes (ETH, SOL) draws its old ranges at eight, never at two or four', () => {
+  const EIGHT = 8 * MIN;
+  assert.equal(columnStepFor(view(NOW - 3 * DAY), 1_500, ARCHIVE, SINCE, NOW, EIGHT), EIGHT, 'a minute\'s zoom');
+  // A view whose own step would be two or four minutes is lifted too: the archive has no window at either.
+  assert.equal(columnStepFor(view(NOW - 3 * DAY, DAY), 1_500, ARCHIVE, SINCE, NOW, EIGHT), EIGHT);
+  assert.equal(columnStepFor(view(NOW - 3 * DAY, 2 * DAY), 1_500, ARCHIVE, SINCE, NOW, EIGHT), EIGHT);
+  assert.equal(columnStepFor(view(NOW - 3 * DAY, 7 * DAY), 1_500, ARCHIVE, SINCE, NOW, EIGHT), 16 * MIN, 'wider zooms as they always were');
+  // Inside the page's day, and with now in view, the page's own minutes.
+  assert.equal(columnStepFor(view(NOW - 3 * HOUR), 1_500, ARCHIVE, SINCE, NOW, EIGHT), MIN);
+  assert.equal(columnStepFor(view(NOW), 1_500, ARCHIVE, NOW - 10 * MIN, NOW, EIGHT), MIN);
+  assert.equal(columnStepFor(view(NOW - 3 * DAY), 1_500, null, SINCE, NOW, EIGHT), MIN, 'no archive: as before');
+});
+
+test('a coin whose hours carry no book minutes (ETH, SOL) draws a live view reaching before the page\'s recording from its tiles', () => {
+  const EIGHT = 8 * MIN, OPENED = NOW - 10 * MIN;
+  // A tab opened ten minutes ago, at the default zoom: a minute's step would leave all but its last ten minutes blank.
+  assert.equal(columnStepFor(view(NOW), 1_500, ARCHIVE, OPENED, NOW, EIGHT, true), EIGHT);
+  assert.equal(columnStepFor(view(NOW + 5 * MIN), 1_500, ARCHIVE, OPENED, NOW, EIGHT, true), EIGHT);
+  // Two or four minutes are lifted too (the tiles have neither); wider zooms as they always were.
+  assert.equal(columnStepFor(view(NOW, DAY), 1_500, ARCHIVE, OPENED, NOW, EIGHT, true), EIGHT);
+  assert.equal(columnStepFor(view(NOW, 7 * DAY), 1_500, ARCHIVE, OPENED, NOW, EIGHT, true), 16 * MIN);
+  // Once the tab has recorded the whole view, its own minutes; and with no tiles, as before.
+  assert.equal(columnStepFor(view(NOW), 1_500, ARCHIVE, NOW - 3 * HOUR, NOW, EIGHT, true), MIN);
+  assert.equal(columnStepFor(view(NOW), 1_500, null, OPENED, NOW, EIGHT, true), MIN);
+  // BTC (its hours carry its minutes, imported for the day): a live view keeps its minutes.
+  assert.equal(columnStepFor(view(NOW), 1_500, ARCHIVE, OPENED, NOW), MIN);
+});
+
 test('a view inside the page\'s day keeps its minutes', () => {
   assert.equal(columnStepFor(view(NOW - 3 * HOUR), 1_500, ARCHIVE, SINCE, NOW), MIN);
 });
