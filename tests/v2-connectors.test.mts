@@ -56,6 +56,15 @@ test('Bitunix keeps full snapshots and rejects a crossed book', () => {
   const c = live(new BitunixConnector());
   c.onMessage(msg({ ch: 'depth_books', symbol: 'BTCUSDT', data: { b: [['100', '1']], a: [['101', '1']] } }));
   assert.ok(c.valued(Date.now()));
+  // Its snapshots are the whole book: only the levels within 10 % of the touch are kept, whatever order they come in; malformed rows go.
+  c.onMessage(msg({ ch: 'depth_books', symbol: 'BTCUSDT', data: { b: [['50', '9'], ['100', '1'], ['91', '2'], ['x', '1'], ['89', '3']], a: [['1000', '1'], ['101', '1'], ['110', '2'], ['112', '4']] } }));
+  const near = c.valued(Date.now())!;
+  assert.deepEqual([...near.bids.lo], [100, 91], 'bids within 10 % of 100');
+  assert.deepEqual([...near.asks.lo], [101, 110], 'asks within 10 % of 101');
+  // A zero-size row at a stray price is no touch: the book stays.
+  c.onMessage(msg({ ch: 'depth_books', symbol: 'BTCUSDT', data: { b: [['100', '1'], ['200', '0']], a: [['101', '1'], ['5', '0']] } }));
+  const kept = c.valued(Date.now())!;
+  assert.deepEqual([[...kept.bids.lo], [...kept.asks.lo]], [[100], [101]]);
   c.onMessage(msg({ ch: 'depth_books', symbol: 'BTCUSDT', data: { b: [['102', '1']], a: [['101', '1']] } }));
   assert.equal(c.valued(Date.now()), null);
   c.stop();

@@ -14,6 +14,7 @@ import { pickOi, weakOi, type OiCandidate } from './oi-source.ts';
 import { takeOiPushes, withOiPushes, type OiPush } from './oi-push.ts';
 import { replaying } from './replay/clock.ts';
 import { atOnePrice, inverseOi, oiSumOf, oiTail, type OiPart } from './oi-change.ts';
+import { OI_FINE_MS, OI_FINE_TAIL_MS, fineKept, fineKey, fineTargets, fineWant } from './oi-fine.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
@@ -114,6 +115,20 @@ const SERIES_KEPT = 16;
 const PREFETCH_FIRST_MS = 4_000, PREFETCH_AFTER_MS = 1_500, PREFETCH_GAP_MS = 400, PREFETCH_FRESH_MS = 3 * MINUTE;
 /** A kept series is shown at once while its newest candle is at most this far behind now (or three of its candles, when longer). */
 const KEPT_GAP_MS = 10 * MINUTE;
+/**
+ * A zoom passes several column steps in a second (a wheel turn): what it rests on is asked for once its step and span have held this long.
+ * Asked at every step, a zoom out over weeks held the server with each passing step's tens of MB (its first wheel steps widen the window at
+ * the step held), and the step it ended on was asked only after them, seconds later (Research_Findings.md). A load under way is finished,
+ * not let go for a newer step: letting it go measured no better (each step then started its own).
+ */
+const COLUMN_STEP_SETTLE_MS = 200;
+/**
+ * On the server's page the map's first columns are read before the other history (open interest, the volume profile and value areas, the
+ * bubbles and liquidations, the flow's minutes, the flow strip's sizes and price), or this long at most (`Hub.mapFirst`): the books are known
+ * only from the first live frame, so the columns were asked for after some twenty other reads and waited behind them on the page's six
+ * connections and the server's one thread, 26-36 s on a busy PC (Research_Findings.md). The browser's own worker answers at once: no wait.
+ */
+const MAP_FIRST_MS = 10_000;
 
 
 /** The other timeframes in the order they are read ahead: the nearest to the one on screen first, the shorter before the longer. */
@@ -159,6 +174,29 @@ export class Hub {
   #columnsLoading = false;
   /** The newest windows may have changed since they were asked for (the clock says so every 30 s): the next load asks for them again. */
   #columnsStale = false;
+  /**
+   * When the view last zoomed (its step or its span changed: a live view moving on keeps both), the span then, and the timer that looks
+   * again once it has held (`COLUMN_STEP_SETTLE_MS`).
+   */
+  #wantedSince = 0; #wantedSpan = 0;
+  #settleTimer: ReturnType<typeof setTimeout> | undefined;
+  #arrived: () => void = () => {};
+  /** Resolved when the first recorded columns reach the worker: what can wait for the map (the depth sound's baseline hours) waits for this. */
+  readonly columnsArrived = new Promise<void>(resolve => { this.#arrived = resolve; });
+  readonly #bornAt = performance.now();
+  /**
+   * The page's pacing of its reads (`paced`, set by the page; a hub built for a test asks at once): a column step asked for once it has held
+   * (`COLUMN_STEP_SETTLE_MS`), history after the map's first columns on the server's page (`MAP_FIRST_MS`), the bubbles and liquidations once
+   * the live stream has opened.
+   */
+  readonly #paced: boolean;
+  #afterMapRead: Promise<void> | null = null;
+  /** The wait for the map has ended (`#afterMap` resolved): history no longer waits, whatever the clock says to the last millisecond. */
+  #mapWaited = false;
+  /** Resolves once history reads no longer wait for the map's first columns (`mapFirst`). */
+  #afterMap(): Promise<void> {
+    return this.#afterMapRead ??= Promise.race([this.columnsArrived, new Promise<void>(resolve => setTimeout(resolve, Math.max(0, MAP_FIRST_MS - (performance.now() - this.#bornAt))))]).then(() => { this.#mapWaited = true; });
+  }
   #series = '';
   /** What the candles on screen are of (the context asked for, and the instrument that answered), or null when they are of nothing that can be told. */
   #loaded: { key: string; instrument: string } | null = null;
@@ -209,6 +247,12 @@ export class Hub {
   onRecovered: (id: string, from: number, to: number) => void = () => {};
   /** The live connection's handle, so the dust can be asked for or stopped. */
   #live: { close(): void; tape(on: boolean): void } | null = null;
+  /** The live stream has been asked for and has not opened yet (the page's first seconds). */
+  #opening(): boolean { return this.#paced && this.#live !== null && this.#connection === 0; }
+  /** The map is covered by a view of its own (a phone's Tape or Flow tab, set by the page): it asks for no columns, so nothing waits for them. */
+  mapCovered = false;
+  /** Whether history reads still wait for the map's first columns (`MAP_FIRST_MS`): the server's page only, its first seconds only. */
+  mapFirst(): boolean { return this.#paced && this.source.kind === 'server' && !this.mapCovered && !this.#mapWaited && this.columnsVersion === 0 && performance.now() - this.#bornAt < MAP_FIRST_MS; }
   #tapeOn = false;
   /** Ask the source for every order (the trade dust) or stop it; what is held stays until the page goes. */
   setTape(on: boolean): void {
@@ -433,7 +477,8 @@ export class Hub {
   /** Instruments with an open-interest series to fall back to, best first. */
   #oiReferences: string[] = [];
 
-  constructor(readonly store: Store, readonly source: DataSource) {
+  constructor(readonly store: Store, readonly source: DataSource, options: { paced?: boolean } = {}) {
+    this.#paced = options.paced === true;
     this.priceHistory = new ChartPriceHistory((id, tf, from, to, signal) => {
       if (!source.priceHistory) return Promise.reject(new Error('Price history is unavailable'));
       return source.priceHistory(id, tf, from, to, signal);
@@ -754,6 +799,13 @@ export class Hub {
   loadOi(): Promise<void> {
     const state = this.store.state, { marketId, seriesInstrument, timeframe } = state;
     const own = seriesInstrument || marketId; if (!own) return Promise.resolve();
+    // After the map's first columns (MAP_FIRST_MS): the load asked for meanwhile happens then, and the pane says it is reading meanwhile
+    // (that load's end clears it, as every load's does).
+    if (this.mapFirst()) {
+      this.#oiGen++;   // a load already out (a phone's, before its map was shown) answers for another market or timeframe
+      if (!state.oi.length && !state.oiReading) this.store.set({ oiReading: true });
+      return this.#afterMap().then(() => this.loadOi());
+    }
     const added = oiMarketIds(state, this.flow), venues = added ?? [];
     const key = `${own}|${timeframe}|${state.oiMarkets}|${venues.join(',')}`;
     // A load for the same markets still under way is the answer: asking again on the 20 s clock while a slow history (Bybit's pages, in a
@@ -790,6 +842,12 @@ export class Hub {
     } else if (state.oiInstrument) {
       const bars = withOiPushes(state.oi, readings.filter(reading => reading.instrumentId === state.oiInstrument), tf, state.oiPrice);
       if (bars) this.store.set({ oi: bars });
+    }
+    // The minute readings take the same pushes, a minute apart (NL/NS works candles out on them), and a read of them under way gets them again.
+    if (this.#fineInflight) { this.#fineDuring.push(...readings); if (this.#fineDuring.length > OI_DURING_MAX) this.#fineDuring.splice(0, this.#fineDuring.length - OI_DURING_MAX); }
+    if (state.oiFine.length) {
+      const fine = state.oiFine.map(part => withPushed(part, readings, MINUTE));
+      if (fine.some((part, i) => part !== state.oiFine[i])) this.store.set({ oiFine: fine });
     }
   }
   /** The newest reading taken per market, by its own time. */
@@ -835,6 +893,62 @@ export class Hub {
     if (this.#oiShown !== key) this.#oiShowHeld(key, own, added, tf, now);
     try { await this.#loadOiWhole(own, key, added, venues, tf, now, from, to, generation); }
     finally { if (this.#oiKey === key && generation === this.#oiGen && this.store.state.oiReading) this.store.set({ oiReading: false }); }
+    // The markets counted may have changed: their minute readings follow.
+    void this.loadOiFine();
+  }
+
+  /**
+   * The minute readings of the markets that need them (store `oiFine`, `fineTargets`), for NL/NS to work candles out minute by minute where they
+   * reach (delta/nlns.ts): read whole over the last OI_FINE_MS when those markets change and every OI_WHOLE_MS, else each one's newest minutes
+   * again at most every OI_FINE_TAIL_MS (the pushes keep the newest minute current, `#oiPush`, and those pushed during a read are put on its
+   * answer). They do not depend on the chart's timeframe, so a switch keeps them. A market with no minute reading yet is kept, empty, so the
+   * pushes build it up. Nothing is read on a one-minute chart or while nothing that works NL/NS out is shown, and what was read is let go then;
+   * an answer for markets no longer wanted is dropped. Safe to call often.
+   */
+  loadOiFine(): Promise<void> {
+    const state = this.store.state, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    if (replaying()) return Promise.resolve();
+    if (!fineWant(state, tf)) { if (state.oiFine.length) this.store.set({ oiFine: [] }); this.#fineHeld = null; return Promise.resolve(); }
+    // Markets no longer wanted are let go (the Funding pane alone wants Hyperliquid's perpetual and nothing else, counted or not); while the
+    // markets on screen are being read again (a timeframe or market switch clears them for a moment), what is held stays.
+    const parts = fineTargets(state, tf), keep = fineKept(state, tf, parts);
+    if (keep && state.oiFine.some(part => !keep.has(part.id))) this.store.set({ oiFine: state.oiFine.filter(part => keep.has(part.id)) });
+    if (!parts.length) return Promise.resolve();
+    const key = fineKey(parts), now = Date.now(), held = this.#fineHeld;
+    if (this.#fineInflight?.key === key) return this.#fineInflight.promise;
+    const whole = !held || held.key !== key || now - held.at >= OI_WHOLE_MS;
+    if (!whole && now - held.tailAt < OI_FINE_TAIL_MS) return Promise.resolve();
+    const promise: Promise<void> = (whole ? this.#readFineWhole(key, parts, now) : this.#readFineTail(key, now)).catch(() => undefined)
+      .finally(() => { if (this.#fineInflight?.promise === promise) { this.#fineInflight = null; this.#fineDuring = []; } });
+    this.#fineInflight = { key, promise }; this.#fineDuring = [];
+    return promise;
+  }
+  #fineInflight: { key: string; promise: Promise<void> } | null = null;
+  /** The readings pushed while a read of the minute readings was out, put on its answer (it holds what the source had when asked). */
+  #fineDuring: OiPush[] = [];
+  /** The markets whose minute readings were read whole last, when, and when their newest minutes were read again. */
+  #fineHeld: { key: string; at: number; tailAt: number } | null = null;
+  /** Whether the markets wanting minute readings are still those of `key` (an answer for others is dropped). */
+  #fineStill(key: string): boolean { return fineKey(fineTargets(this.store.state, TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000)) === key; }
+  async #readFineWhole(key: string, parts: readonly OiPart[], now: number): Promise<void> {
+    // An inverse market's minutes at the one price the bars on screen are at now: a whole read replaces them all, so they stay one price
+    // within themselves, and close to the bars' (kept at their first price, they drifted from them with the price all session).
+    const read = await Promise.all(parts.map(async part => ({ id: part.id, ...(part.usdAt ? { usdAt: part.usdAt } : {}), bars: await this.oiBars(part.id, '1m', now - OI_FINE_MS, now + MINUTE, part.usdAt).catch((): OiBar[] => []) })));
+    if (!this.#fineStill(key)) return;
+    const pushed = this.#fineDuring;
+    this.store.set({ oiFine: read.map(part => withPushed(part, pushed, MINUTE)) });
+    this.#fineHeld = { key, at: now, tailAt: now };
+  }
+  async #readFineTail(key: string, now: number): Promise<void> {
+    // A market with no reading held (none yet, or none in the last OI_FINE_MS) is left to its pushes and the next whole read: asking it for the
+    // whole window each minute asked a venue that answers nothing 25 times in 25 minutes.
+    const held = this.store.state.oiFine, froms = held.map(part => { const last = part.bars[part.bars.length - 1]; return last ? Math.max(now - OI_FINE_MS, last[0] - MINUTE) : now; });
+    const tails = await Promise.all(held.map((part, i) => part.bars.length ? this.oiBars(part.id, '1m', froms[i]!, now + MINUTE, part.usdAt).catch((): OiBar[] => []) : Promise.resolve<OiBar[]>([])));
+    // On the readings held now: pushes may have moved them while the tails were read, and those are put on the answer again.
+    const current = this.store.state.oiFine, pushed = this.#fineDuring;
+    if (!this.#fineStill(key) || current.length !== held.length || current.some((part, i) => part.id !== held[i]!.id)) return;
+    this.store.set({ oiFine: current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, now - OI_FINE_MS) }, pushed, MINUTE)) });
+    if (this.#fineHeld) this.#fineHeld = { ...this.#fineHeld, tailAt: now };
   }
   /** The key of the open interest in the store (`#loadOi`): '' while none, or after a series change cleared it. */
   #oiShown = '';
@@ -970,7 +1084,9 @@ export class Hub {
    * live edge only made the server sort the same hours of orders again.
    */
   ensurePrints(view: Bounds, minUsd = 25_000): void {
-    if (this.#printsLoading || !(view.t1 > view.t0)) return;
+    // Not while the stream is opening for the first time: an answer asked before it opens covers nothing once it does (below), so a page asked
+    // every window twice.
+    if (this.#printsLoading || !(view.t1 > view.t0) || this.#opening() || this.mapFirst()) return;
     const have = this.#printsWindow;
     const narrower = have !== null && have.cut && view.t1 - view.t0 < (have.t1 - have.t0) / 4;
     if (have && have.min === minUsd && have.t0 <= view.t0 && (have.live || have.t1 >= Math.min(view.t1, Date.now())) && !narrower) return;
@@ -989,7 +1105,7 @@ export class Hub {
   ensureLiquidations(view: Bounds, minUsd: number): void {
     const source = this.source;
     if (!source.liquidations) { this.liquidationsState = 'unavailable'; return; }
-    if (this.#liquidationsLoading || !(view.t1 > view.t0)) return;
+    if (this.#liquidationsLoading || !(view.t1 > view.t0) || this.#opening() || this.mapFirst()) return;
     if (this.liquidationsState === 'unavailable' && Date.now() < this.#liquidationsRetryAt) return;
     const have = this.#liquidationsWindow;
     const narrower = have !== null && have.cut && view.t1 - view.t0 < (have.t1 - have.t0) / 4;
@@ -1014,6 +1130,7 @@ export class Hub {
    * and only the absorption column judges groups) only the minutes are asked for (`#ensureAbsorptionMinutes`).
    */
   ensureAbsorption(allIds: readonly string[], allThresholds: readonly (number | null)[], view: Bounds, sdMinutes: number, statsOnly = false): void {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     // More instruments than one question may name is more markets than any page has; the first are asked about.
     const ids = allIds.slice(0, MAX_ABSORPTION_INSTRUMENTS), thresholds = allThresholds.slice(0, MAX_ABSORPTION_INSTRUMENTS);
     if (statsOnly) { if (ids.length) this.#ensureAbsorptionMinutes(ids, sdMinutes); return; }
@@ -1092,6 +1209,7 @@ export class Hub {
    * minute later. A window a recovery filled trades into is asked again (`#dropValueAreas`).
    */
   ensureValueAreas(ids: readonly string[], windows: readonly { from: number; to: number }[], step: number, share: number): void {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     if (this.#vaLoading || !ids.length || !windows.length || !(step > 0)) return;
     const now = Date.now();
     if (this.valueAreasState === 'unavailable' && now < this.#vaRetryAt) return;
@@ -1130,6 +1248,7 @@ export class Hub {
    * keeps) on rows of `step`, the level rows, so zooming asks nothing again.
    */
   ensureWindowProfiles(ids: readonly string[], windows: readonly { from: number; to: number }[], step: number): void {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     if (this.#wpLoading || !ids.length || !windows.length || !(step > 0)) return;
     const now = Date.now();
     if (now < this.#wpRetryAt) return;
@@ -1154,6 +1273,7 @@ export class Hub {
    * asked again a minute later. `tag` names the window for the answer held (`traded`).
    */
   ensureTraded(ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }): void {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     // A window longer than a source may be asked about (a chart zoomed out past eight days, a month) is asked for its newest part: refused
     // whole, it left the column on its last answer, asked again a minute later and refused again. The header says from when it holds.
     ({ from, to } = askedSpan(from, to));
@@ -1181,6 +1301,7 @@ export class Hub {
    * `ensureTraded` asks (`live`, `settled`, the same spacing), and `tag` names the window for the answer held.
    */
   ensureMetricProfile(metric: Exclude<ProfileMetric, 'volume'>, ids: readonly string[], from: number, to: number, step: number, live: boolean, period: { tag: string; settled: boolean } = { tag: '', settled: false }, thresholds: Thresholds = new Map()): void {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     const c = this.#metricColumn(metric), def = measureDef(metric).byPrice;
     ({ from, to } = askedSpan(from, to));   // as `ensureTraded`
     if (c.loading || !(to > from) || !(step > 0)) return;
@@ -1223,6 +1344,7 @@ export class Hub {
    * every frame: one request at a time, none while everything asked for is here, and a source that cannot answer is asked again a minute later.
    */
   async ensureFlowMinutes(ids: readonly string[], from: number, to: number): Promise<void> {
+    if (this.mapFirst()) return;   // after the map's first columns (MAP_FIRST_MS)
     const source = this.source;
     if (!source.flowMinutes) { this.flowMinutesState = 'unavailable'; return; }
     if (this.#flowMinutesLoading || Date.now() < this.#flowMinutesRetryAt) return;
@@ -1254,12 +1376,24 @@ export class Hub {
     const holds = this.#columns;
     // The view is one object the pane moves on: what an answer is judged against below is the view it was asked for.
     const seen: Bounds = { t0: view.t0, t1: view.t1, p0: view.p0, p1: view.p1 };
+    // A zoom changes the span before it changes the step: its first wheel steps ask for a wider window at the step held (tens of MB at days).
+    const span = view.t1 - view.t0;
+    if (stepMs !== this.#columnsWanted || Math.abs(span - this.#wantedSpan) > span * 0.01) { this.#wantedSince = performance.now(); this.#wantedSpan = span; }
     this.#columnsWanted = stepMs;
     holds.touch(stepMs);
     this.#archiveView(stepMs);
     // A step held for every book is read at once, whatever else is under way.
     if (holds.covers(ids, seen, stepMs)) this.#readColumns(stepMs);
     if (this.#columnsLoading) return;
+    // While a zoom is still going on, the view is asked for once it has held (the map's first columns are asked for at once).
+    // Another coin's books (nothing of them held at the step drawn) are asked for at once too: the map is empty for them meanwhile.
+    const drawn = holds.at(this.#columnsDrawn), zooming = this.#paced && this.columnsVersion > 0 && ids.some(id => drawn.has(id));
+    const settling = zooming ? COLUMN_STEP_SETTLE_MS - (performance.now() - this.#wantedSince) : 0;
+    if (settling > 0) {
+      clearTimeout(this.#settleTimer);
+      this.#settleTimer = setTimeout(() => this.onColumns(), settling + 10);
+      return;
+    }
     const clock = Date.now();
     // What is asked from here on answers every refresh mark made so far; one made while it is under way is answered by the next.
     const stale = this.#columnsStale;
@@ -1381,6 +1515,7 @@ export class Hub {
   /** Panes keyed on `columnsVersion` ask the worker again. */
   #columnsChanged(): void {
     this.columnStepMs = this.#columnsDrawn; this.columnsVersion++;
+    this.#arrived();
     this.onColumns();
   }
 

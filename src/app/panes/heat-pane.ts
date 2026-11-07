@@ -77,7 +77,7 @@ import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../rep
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
 import { TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../tape/trace.ts';
 import { curveColors } from './ladder-curves.ts';
-import { priceInstrument, priceTarget, type PriceHistoryAnswer, type PriceTarget } from '../../shared/price-history.ts';
+import { PRICE_TIMEFRAMES, priceInstrument, priceTarget, type PriceHistoryAnswer, type PriceTarget } from '../../shared/price-history.ts';
 import type { DrawController } from '../draw/controller.ts';
 import { paintDrawings, paintEditing } from '../draw/paint.ts';
 import type { Projection } from '../draw/geometry.ts';
@@ -342,6 +342,17 @@ export class HeatPane {
   onScriptLegend: (places: readonly { id: string; x: number; y: number }[]) => void = () => {};
   #glCanvas = document.createElement('canvas');
   #ctx: CanvasRenderingContext2D;
+  /**
+   * The pointer's layer, over the overlay: the legend (it reads the candle under the pointer), the Range box, the book's row, the crosshair
+   * and its box. A frame that only moves the pointer draws this alone (`#renderHover`) while what the overlay itself draws of the pointer
+   * stays the same (`#hoverKey`): every move drew the whole map again, 19-26 frames a second on a wide 4K window (Research_Findings.md).
+   */
+  readonly #hoverCanvas = document.createElement('canvas');
+  #hoverCtx: CanvasRenderingContext2D;
+  /** A frame is wanted for the pointer's layer (`invalidateHover`); `#dirty` asks for the whole map. */
+  #hoverDirty = false;
+  /** `#hoverKey` as the overlay was last drawn: a pointer move that changes it draws the whole map. */
+  #hoverKeyDrawn = '';
   /** The pane's whole width; the plot and everything right of it start after the columns left of the map (`#left`). */
   #paneW = 0; #h = 0; #dpr = 1;
   #dirty = true; #frame = 0;
@@ -517,12 +528,15 @@ export class HeatPane {
     this.#pulse.className = 'pulse';
     this.#dustCanvas.className = 'dust';
     this.#drawEdit.className = 'draw-edit'; this.#drawEdit.setAttribute('data-no-capture', '');
+    this.#hoverCanvas.className = 'hover';
     this.#liveButton.hidden = true;
     this.#liveButton.addEventListener('click', () => this.jumpToNow());
-    this.root.append(this.#glCanvas, this.#dustCanvas, this.#pulse, this.#drawEdit, this.overlay, this.#liveButton);
+    // The pointer's layer right after the overlay: over it and under what is stacked over it, as when it was drawn into the overlay.
+    this.root.append(this.#glCanvas, this.#dustCanvas, this.#pulse, this.#drawEdit, this.overlay, this.#hoverCanvas, this.#liveButton);
     host.append(this.root);
     this.gl = new HeatGL(this.#glCanvas);
     this.#ctx = this.overlay.getContext('2d')!;
+    this.#hoverCtx = this.#hoverCanvas.getContext('2d')!;
     this.#drawEditCtx = this.#drawEdit.getContext('2d')!;
     new ResizeObserver(() => this.#resize()).observe(this.root);
     this.hub.onRaster = result => this.#onRaster(result);
@@ -555,7 +569,35 @@ export class HeatPane {
     this.#baseline = nextBaseline(this.#baseline, this.stats, { auto: this.store.state.heat.auto, force: this.#forceBaseline, spanP: this.view.p1 - this.view.p0, now: performance.now() });
     this.#forceBaseline = false;
   }
-  invalidate(): void { this.#dirty = true; if (!this.#frame && !this.#suspended) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#render(); }); }
+  invalidate(): void { this.#dirty = true; this.#schedule(); }
+  /**
+   * The pointer moved (here or over another pane), nothing else: the next frame draws the pointer's layer alone, or the whole map where what
+   * the overlay draws of the pointer changed (`#hoverKey`: the strip's bar, the bubbles' venue, the columns' mirrors under it).
+   */
+  invalidateHover(): void { this.#hoverDirty = true; this.#schedule(); }
+  #schedule(): void {
+    if (this.#frame || this.#suspended) return;
+    this.#frame = requestAnimationFrame(() => {
+      this.#frame = 0;
+      if (this.#dirty || this.#hoverKey(this.store.state) !== this.#hoverKeyDrawn) this.#render(); else if (this.#hoverDirty) this.#renderHover();
+    });
+  }
+  /**
+   * What the overlay draws of the pointer, as a key: the volume strip's bar under it, the venue whose bubbles step forward, the top bands'
+   * framed buckets, the profile's, liquidation column's and traded column's mirrors (which follow it to the pixel), and a finger's pin.
+   * The rest of the pointer (the crosshair, its box, the legend's candle) is the pointer's layer. The drawings say themselves when their
+   * hover changes (`redraw`).
+   */
+  #hoverKey(state: AppState): string {
+    const hv = state.hover, pw = this.plotW, ph = this.plotH, profile = this.#profileHover, traded = this.#tradedHover;
+    const x = hv ? this.view.xOf(hv.t, pw) : NaN, y = hv && hv.source === 'heat' && hv.price !== null ? this.view.yOf(hv.price, ph) : NaN;
+    // As the strip judges its bar (`#paintVolume`): only a pointer of this map, inside the strip's rows.
+    const strip = state.show.volume && Number.isFinite(y) ? this.#stripAt(x, y, ph, pw) : -1;
+    const focus = state.show.bubbles ? this.#bubbleFocus(state, pw, ph) ?? '' : '';
+    const pin = hv?.touch ? `${x},${y}` : '';
+    const bands = this.#bands.hoverKey(state, { view: this.view, ph });
+    return `${strip}|${focus}|${pin}|${bands}|${profile ? `${profile.column},${profile.y}` : ''}|${traded ? `${traded.side},${traded.i},${traded.y}` : ''}`;
+  }
   /**
    * Covered by a view of its own (the phone's Candle tab): nothing is drawn, the dust included, until it shows again, when it draws at once.
    * A covered map drew at 1 x 1 px every frame, and its dust some 55 times a second (measured 2026-10-16).
@@ -581,6 +623,8 @@ export class HeatPane {
     this.#pulse.style.width = this.overlay.style.width; this.#pulse.style.height = this.overlay.style.height;
     this.#drawEdit.width = this.overlay.width; this.#drawEdit.height = this.overlay.height;
     this.#drawEdit.style.width = this.overlay.style.width; this.#drawEdit.style.height = this.overlay.style.height;
+    this.#hoverCanvas.width = this.overlay.width; this.#hoverCanvas.height = this.overlay.height;
+    this.#hoverCanvas.style.width = this.overlay.style.width; this.#hoverCanvas.style.height = this.overlay.style.height;
     this.#positionGl();
     this.#rasteredKey = ''; this.onView(); this.invalidate();
   }
@@ -614,12 +658,35 @@ export class HeatPane {
   /** Orders arrived for the dust: it is redrawn on the next frame, alone (the overlay's price line follows with its own next frame). */
   tapeArrived(): void { if (!this.#dustFrame && !document.hidden && !this.#suspended) this.#dustFrame = requestAnimationFrame(() => { this.#dustFrame = 0; this.#drawDust(); }); }
 
-  /** The dust's renderer, made the first time it is shown (null where the card cannot draw it, said once in the console). */
+  /**
+   * The dust's renderer, once it can draw: made the first time the dust is shown, when the page has a moment, and its programs built beside
+   * the page (gl-build.ts); null until then, and for good where the card cannot draw it (said once in the console). Its WebGL context alone
+   * took 320 ms of this thread when made on the page's first frames, its programs another ~100 ms (Research_Findings.md, 2026-11-07). The
+   * orders wait in the ring meanwhile and are drawn when it can.
+   */
+  #dustPending = false;
   #ensureDust(): TapeGL | null {
-    if (this.#dust || this.#dustFailed || !this.hub.tape) return this.#dust;
-    try { this.#dust = new TapeGL(this.#dustCanvas, this.hub.tape); this.#dust.resize(this.plotW, this.plotH, this.#dustDpr()); }
-    catch (error) { this.#dustFailed = true; console.warn('live trades cannot be drawn here:', error); }
-    return this.#dust;
+    if (this.#dustFailed || !this.hub.tape) return null;
+    const dust = this.#dust;
+    if (dust) {
+      // A lost context answers "not built" for ever (the dust is not made again): it is let go rather than looked at every frame.
+      if (dust.gl.isContextLost()) { this.#dust = null; this.#dustFailed = true; console.warn('live trades are no longer drawn here: the card dropped their canvas'); this.invalidate(); return null; }
+      try { if (dust.built()) return dust; } catch (error) { this.#dust = null; this.#dustFailed = true; console.warn('live trades cannot be drawn here:', error); this.invalidate(); return null; }
+      // Still being built: looked at again on the next frame.
+      this.tapeArrived();
+      return null;
+    }
+    if (this.#dustPending) return null;
+    this.#dustPending = true;
+    const make = (): void => {
+      this.#dustPending = false;
+      if (this.#dust || this.#dustFailed || !this.hub.tape) return;
+      try { this.#dust = new TapeGL(this.#dustCanvas, this.hub.tape); this.#dust.resize(this.plotW, this.plotH, this.#dustDpr()); }
+      catch (error) { this.#dustFailed = true; console.warn('live trades cannot be drawn here:', error); this.invalidate(); }
+      this.tapeArrived();
+    };
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(make, { timeout: 1_500 }); else window.setTimeout(make, 300);
+    return null;
   }
 
   /**
@@ -780,8 +847,9 @@ export class HeatPane {
     const outside = !cov || v.t0 < cov.t0 || v.t1 > cov.t1 || v.p0 < cov.p0 || v.p1 > cov.p1
       || (v.t1 - v.t0) / (cov.t1 - cov.t0) < 0.55 || (v.p1 - v.p0) / (cov.p1 - cov.p0) < 0.55;
     // What is live is drawn again every second and a half, or, where a raster takes long (days of many venues), no more often than leaves the
-    // worker two thirds of its time for the panes' questions.
-    const stale = this.#rasteredVersion !== this.#dataVersion || this.#rasteredKey !== key || performance.now() - this.#lastRasterAt > Math.max(1_500, 3 * this.hub.busyMs);
+    // worker seven eighths of its time: there the live minute is a pixel or two at the edge, and a whole raster every 1.5-2 s of 0.5-0.7 s
+    // kept a third of a core busy for it (Research_Findings.md). New columns, a pan or a zoom are drawn at once whatever this says.
+    const stale = this.#rasteredVersion !== this.#dataVersion || this.#rasteredKey !== key || performance.now() - this.#lastRasterAt > Math.max(1_500, 8 * this.hub.busyMs);
     // A new view of other venues or another size takes a new colour window; a pan or zoom only asks for a new raster (#rasteredKey).
     if (this.#baselineKey !== key) { this.#baselineKey = key; this.#forceBaseline = true; }
     void this.hub.loadColumns(v, this.plotW).catch(error => console.error('column load failed', error));
@@ -858,7 +926,7 @@ export class HeatPane {
 
   #render(): void {
     this.#lastRender = performance.now();
-    this.#dirty = false;
+    this.#dirty = false; this.#hoverDirty = false;
     // A hand or a drawing that held the map has let go of it: whether it follows on is decided where the live edge now is (`#settleFollow`).
     const held = this.#followHeld();
     if (!held && (this.#followPaused || this.#settlePending)) this.#settleFollow();
@@ -914,7 +982,16 @@ export class HeatPane {
     if (state.layer === 'liquidity' && this.#lodFrame.heatmapOpacity > 0.003) this.gl.draw(this.view, this.#style()); else this.gl.clear();
     this.#drawDust();
     this.#paintOverlay(state);
+    // After the overlay: the strip's bars and the bubbles it judges the pointer against are this frame's.
+    this.#hoverKeyDrawn = this.#hoverKey(state);
     this.onFrame();
+  }
+
+  /** A frame that only moved the pointer: the pointer's layer alone, over the overlay as it was last drawn (`invalidateHover`). */
+  #renderHover(): void {
+    this.#hoverDirty = false;
+    if (this.#paneW <= 1 || this.#h <= 1) return;
+    this.#paintHoverLayer(this.#displayState(), true);
   }
 
   #footprintIds: { key: unknown[]; ids: string[] } | null = null;
@@ -1093,8 +1170,28 @@ export class HeatPane {
     for (const label of timeLabels) ctx.fillText(label.text, label.x, ph + TIME_H / 2);
     // Which clock the labels are on, under the price axis where no tick label goes (a screenshot says it too).
     ctx.textAlign = 'right'; ctx.fillText(zoneName(), w - 6, ph + TIME_H / 2); ctx.textAlign = 'center';
+    this.#paintHoverLayer(state, false);
+    // After the legend: the drawing tools' controls are placed under its foot (`onDrawFrame`).
+    this.#paintDrawEdit();
+  }
+
+  /**
+   * The pointer's layer (`#hoverCanvas`): the overlay's last strokes before it had one, in their order (the legend, what the map says when it
+   * has nothing to draw, the Range box, the book's row, the crosshair and its box). Drawn after the overlay, and alone for a pointer move.
+   */
+  #paintHoverLayer(state: AppState, alone: boolean): void {
+    const ctx = this.#hoverCtx, pw = this.plotW, ph = this.plotH, p = this.#palette;
+    ctx.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+    ctx.clearRect(0, 0, this.#paneW, this.#h);
+    ctx.setTransform(this.#dpr, 0, 0, this.#dpr, this.#dpr * this.#left, 0);
+    // What the overlay leaves set for its last strokes (the time axis's font and alignment), which these were drawn with.
+    ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'center';
+    ctx.fillStyle = p.muted; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.globalAlpha = 1; ctx.setLineDash([]);
+    const legendBottom = this.#legendBox.bottom;
     this.#paintLegend(ctx, state);
-    if (this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate(); // the legend changed height: place the bands under it again
+    // The legend changed height (a candle's figures on two lines, a script's line): the bands, the corner tools and the drawing tools are
+    // placed by its foot, so the map is drawn again under it (a whole frame places the drawing tools after this, `#paintOverlay`).
+    if (alone ? this.#legendBox.bottom !== legendBottom : this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate();
     if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, 50); }
     const emptyScope = heatmapSourceOf(state) === 'aggregated' ? emptyScopeMessage(state) : null;
     if (emptyScope) { // the filter selected nothing: say so instead of drawing a blank map
@@ -1106,7 +1203,6 @@ export class HeatPane {
     this.#paintRange(ctx, state, pw, ph);
     this.#paintBookRow(ctx, state, pw, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
-    this.#paintDrawEdit();
   }
 
   /** What belongs to editing the drawings, on its own canvas over the map, in the plot's coordinates as the overlay draws. */
@@ -1438,7 +1534,7 @@ export class HeatPane {
     const h = this.hub.priceHistory, a = h.answer, target = this.#overviewTarget;
     let text = '';
     if (a?.candles.length && target) {
-      const tf = Object.entries(TIMEFRAMES).find(([, ms]) => ms === a.tfMs)?.[0] ?? '';
+      const tf = Object.entries(PRICE_TIMEFRAMES).find(([, ms]) => ms === a.tfMs)?.[0] ?? '';
       const market = `${venueLabel(a.instrumentId)} ${target.listing.symbol} ${target.kind === 'spot' ? t('Spot') : t('Perp')}`;
       text = t('Price · {market} · {timeframe}', { market, timeframe: tf });
       // The price only where the line is drawn: over a candle the candle says it, and the line's close would be one nothing on the chart shows.
@@ -1853,7 +1949,7 @@ export class HeatPane {
     const edge = p.dark ? 'rgba(255,255,255,0.92)' : 'rgba(18,20,24,0.92)', halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)', outline = 1 - 0.85 * narrowing;
     // While the trade dust shows, a candle is its outline and a thin wick: a filled body (and its halo) would hide the orders inside it. Outline
     // candles are outlines always; OHLC bars and the line are drawn their own way (chart-type.ts).
-    const type = this.previewChartType ?? state.chartType, hollow = type === 'outline' || this.#dustOn(state);
+    const type = this.previewChartType ?? state.chartType, hollow = type === 'outline' || (this.#dustOn(state) && !this.#dustFailed);
     // Narrower than CANDLE_LINE_PX a candle is a few overlapping marks per pixel (a 45-day view of hourly ones drew 1,100 of them, six to
     // eight drawing calls and a blurred ring each, on every pointer move: 14 frames a second, 2026-10-30): the candles are then the line
     // through their closes, as the price history beyond them is.
@@ -3758,7 +3854,7 @@ export class HeatPane {
       const beside = this.#besideAt(x), column = this.#columnAt(x);
       this.#profileHover = !this.#drag && beside && y >= 0 && y <= this.plotH ? { y, column: beside } : null;
       this.#tradedHover = !this.#drag && column && y >= 0 && y <= this.plotH ? { y, side: column.side, i: column.i } : null;
-      this.invalidate();
+      this.invalidateHover();
     });
     el.addEventListener('pointerup', e => {
       if (e.pointerType === 'touch') return;
@@ -3792,7 +3888,7 @@ export class HeatPane {
       // A drag the browser took away ends here, so the map is not left waiting on a hand that has gone.
       if (this.#drag || this.#zoomDrag || this.#scaleDrag) { this.#drag = null; this.#zoomDrag = null; this.#scaleDrag = null; this.invalidate(); }
     });
-    el.addEventListener('pointerleave', e => { if (e.pointerType === 'touch') return; if (!this.draw?.dragging) this.draw?.leave(); if (!this.#scaleDrag) el.style.cursor = ''; this.#profileHover = null; this.#tradedHover = null; if (!this.#drag && !this.#zoomDrag) { this.store.set({ hover: null }); this.invalidate(); } });
+    el.addEventListener('pointerleave', e => { if (e.pointerType === 'touch') return; if (!this.draw?.dragging) this.draw?.leave(); if (!this.#scaleDrag) el.style.cursor = ''; this.#profileHover = null; this.#tradedHover = null; if (!this.#drag && !this.#zoomDrag) { this.store.set({ hover: null }); this.invalidateHover(); } });
     // A double click recentres the map, except while a tool is armed or when it selected a drawing (its first click was the drawing tools').
     el.addEventListener('dblclick', () => { if (this.draw?.placing || performance.now() - this.#drawClickAt < 600) return; this.fit(); });
     bindTouch(el, new GestureRecognizer(this.#touchHandlers()), () => this.#left);

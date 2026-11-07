@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { createLocalServer } from '../http.mts';
 import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from './levels.mts';
@@ -9,12 +10,12 @@ import { OiSampler, oiHistoryWriter } from './oi-sampler.mts';
 import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-short.ts';
 import { SqliteLsStore } from './ls-store.mts';
 import { webGet, type Fetcher } from '../../shared/history.ts';
-import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing } from '../../shared/price-history.ts';
+import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing, priceTimeframeMs } from '../../shared/price-history.ts';
 import { BTC } from '../../shared/coins.ts';
 import type { OiEvent as OiPushItem } from '../../shared/connector.ts';
 import { TOUCH_HINT_MS } from '../../shared/levels.ts';
 import { COLUMNS_PER_REQUEST } from '../../shared/columns.ts';
-import { DepthRecorder, COLUMN_MS, HOT_MS, RETENTION_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
+import { DepthRecorder, COLUMN_MS, COLD_CACHE_BINS, HOT_MS, MERGED_CACHE_BINS, RETENTION_MS, SAMPLE_MS, STALE_MS } from './recorder.mts';
 import { SqliteColumnStore } from './store.mts';
 import { encodeColumns, encodeLevels, encodeLt, encodeTape } from './wire.mts';
 import { validHalf } from '../../shared/lt-windows.ts';
@@ -69,6 +70,15 @@ const MAX_SIZES_INSTRUMENTS = 96;
 /** The live socket says something at least this often, so a client can tell a quiet server from a dead connection. */
 const HEARTBEAT_MS = 5_000;
 /**
+ * What the server's recorder keeps for the next question, in bins (12 bytes each): the six days of every book the store holds beyond memory
+ * (a day of BTC's 25 recorded markets was 5-7M bins on 2026-11-07, some 75 MB), and a week of merged windows at one step. With three days kept,
+ * every question reaching back a week read the other days from the store again: the Depth pane's candles, asked after the map had read them,
+ * took 8-14 s cold and 0.1 s warm (Research_Findings.md). At most some 700 MB, up to ~430 MB more than the recorder's own defaults: below
+ * 15 GiB of memory (a 16 GB machine reports 15.7-15.9 GiB), or of a container's limit, the server keeps those.
+ */
+const ROOMY = Math.min(os.totalmem(), process.constrainedMemory() || Infinity) >= 15 * 2 ** 30;
+const COLD_COLUMN_BINS = ROOMY ? 42_000_000 : COLD_CACHE_BINS, MERGED_COLUMN_BINS = ROOMY ? 16_000_000 : MERGED_CACHE_BINS;
+/**
  * How long after starting the days the store holds beyond memory are read once for the Liquidity Tracker (`warmLt`): a few milliseconds at a time, so that the
  * first question a page asks is answered as fast as the next (a week of every market is some six seconds of reading, 2026-10-24).
  */
@@ -111,8 +121,8 @@ const BAD_SERIES = 'inst and a supported tf are required';
 export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, heartbeatMs = HEARTBEAT_MS, oiSampling = false, priceHistoryGet = webGet }: V2Options): V2Handle {
   let store: SqliteColumnStore | null = null;
   if (persist) { fs.mkdirSync(dataDir, { recursive: true }); store = new SqliteColumnStore(path.join(dataDir, 'depth-v2.sqlite')); }
-  // A day of columns in memory; older ones are read back from the store when a question reaches them.
-  const recorder = new DepthRecorder({ store, memoryMs: HOT_MS });
+  // A day of columns in memory; older ones are read back from the store when a question reaches them, and kept (COLD_COLUMN_BINS).
+  const recorder = new DepthRecorder({ store, memoryMs: HOT_MS, coldCacheBins: COLD_COLUMN_BINS, mergedCacheBins: MERGED_COLUMN_BINS });
   const defaults = process.env.HLM_DEFAULT_VENUES;
   // The coin list for the page's coin picker, rebuilt here daily (the server itself records BTC only).
   const coins = persist ? new CoinList(path.join(dataDir, 'coins.json'), path.join(process.cwd(), 'dist', 'coins.json')) : null;
@@ -434,12 +444,16 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     if (![from, to, stepMs].every(v => Math.abs(v) <= Number.MAX_SAFE_INTEGER)) return sendJson(res, { error: BAD_WINDOW }, 400);
     // An instrument at a time, the live loop running between them: days older than memory holds are read back from the store, which for a
     // zoomed-out week took seconds (an instrument's share of it is well under one).
+    // The loop is let run between instruments only once a turn has taken LT_TURN_MS (as the tracker's lane does): a question answered from
+    // memory goes in one turn, where letting go after each of a dozen books made it wait behind every other route's work a dozen times on
+    // a busy loop (11 s for 12 books of 24 hourly windows on 8787, 2026-10-30).
     void (async () => {
       const results: { instrumentId: string; step: number; columns: ReturnType<typeof recorder.query> }[] = [];
+      let turnStart = performance.now();
       for (const id of ids) {
         if (closed || res.destroyed) return;
         results.push({ instrumentId: id, step: recorder.steps.get(id) ?? 0, columns: recorder.query(id, from, to, stepMs, close) });
-        await new Promise<void>(resolve => setImmediate(resolve));
+        if (performance.now() - turnStart > LT_TURN_MS) { await new Promise<void>(resolve => setImmediate(resolve)); turnStart = performance.now(); }
       }
       if (!res.destroyed) sendBinary(res, encodeColumns(results, from, to, stepMs, close));
     })().catch(error => { console.error('v2 /api/v2/columns failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); else res.end(); });
@@ -501,14 +515,15 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   };
   // Long/short ratios as the venues publish them, read when asked for and kept in memory and in a file of their own (shared/long-short.ts,
   // ls-store.mts): nothing of the history store's budget, after a restart only the hours since are read, and nothing new is asked while no
-  // page shows the pane (a read already under way finishes).
+  // page shows the pane (a read already under way finishes, and so does a long window's reading back through Binance's archive).
   // A file that cannot be opened (locked, damaged) costs only the keeping: it is a cache, never a reason not to start.
   let lsStore: SqliteLsStore | null = null;
   if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
   const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore);
   const priceHistory = new PriceHistoryCache(priceHistoryGet);
   const priceHistoryRoute = (url: URL, res: ServerResponse) => {
-    const id = url.searchParams.get('inst') ?? '', tfMs = timeframeMs(url.searchParams.get('tf'));
+    // The line's intervals (`PRICE_TIMEFRAMES`: weeks too, for a window of more than 2,000 days), bounded to 2,000 bars like each of them.
+    const id = url.searchParams.get('inst') ?? '', tfMs = priceTimeframeMs(url.searchParams.get('tf'));
     const target = priceListing(BTC, id);
     if (!target || target.id !== id || !tfMs) return sendJson(res, { error: BAD_SERIES }, 400);
     const span = windowOf(url, Date.now() + 1, 500 * tfMs);
