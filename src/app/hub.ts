@@ -469,6 +469,9 @@ export class Hub {
    * The flow and candle seams stay on `recordedSince` (the archive holds depth only).
    */
   depthSince(): number {
+    // Drawn from the browser's newest recordings while the rest of its day is read: where its recording began so far (this minute) is not
+    // where the map's depth begins, and nothing is said until the day is in (`DataSource.previewing`).
+    if (this.source.previewing?.()) return 0;
     const archive = this.source.archiveFirst?.() ?? null;
     return archive !== null && archive > 0 && (this.recordedSince <= 0 || archive < this.recordedSince) ? archive : this.recordedSince;
   }
@@ -556,8 +559,12 @@ export class Hub {
       // The large orders of the stretch are in the recording now, not among the fresh ones: the window held is asked for again.
       onRecovered: (id, from, to) => { this.#printsWindow = null; this.#dropValueAreas(id, from, to); this.onRecovered(id, from, to); },
       // The browser's recordings came after its feeds: the flow held is the live seconds alone, the open interest lacks the readings kept
-      // (read whole once, then only its newest bars), and the recording begins earlier than it said.
-      onHistory: () => { this.flow.invalidate(); this.onFlowChanged(); this.#oiGen++; this.#oiHeld = null; this.#oiPool.clear(); void this.loadOi().catch(() => undefined); void this.refreshMarkets(); },
+      // (read whole once, then only its newest bars), and the recording begins earlier than it said. Columns answered from the newest
+      // recordings alone (`columnsEarly`) are asked for whole again, as when the long history's tiles come (drawn meanwhile).
+      onHistory: columnsEarly => {
+        this.flow.invalidate(); this.onFlowChanged(); this.#oiGen++; this.#oiHeld = null; this.#oiPool.clear(); void this.loadOi().catch(() => undefined); void this.refreshMarkets();
+        if (columnsEarly) { this.#columns.expireWhole(); this.#columnsStale = true; this.onColumns(); }
+      },
       onPrints: items => {
         const fresh = this.prints.add(items.flatMap(row => { const p = fromWire(row); return p ? [p] : []; }));
         if (fresh.length) { this.#whaleTake(fresh); this.onPrints(fresh); this.onPrintsChanged(); }
@@ -1409,7 +1416,8 @@ export class Hub {
       for (const ask of asks) {
         // A zoom to another step since the load began: that step's own load follows, and the rest of this one would only hold it up.
         if (stepMs !== this.#columnsWanted) break;
-        const frame = await this.source.columns(ask.ids, ask.from, ask.to, stepMs);
+        // The map's own load (`early`): a browser source may answer it from its newest recordings, and says so when its history lands.
+        const frame = await this.source.columns(ask.ids, ask.from, ask.to, stepMs, false, true);
         let whole = frame.instruments, wholeIds = ask.ids;
         if (ask.tail) {
           // A market whose price grid is not the one its columns held were recorded on (a server started again and chose another): their bins
@@ -1421,7 +1429,7 @@ export class Hub {
           if (tails.length) this.#postColumns({ type: 'columnsTail', stepMs, from: ask.from, instruments: tails }, stepMs);
           // What the other steps hold for these markets was recorded on the old grid too.
           if (other.size) this.#forgetColumns(holds.forgetElsewhere(stepMs, wholeIds));
-          if (other.size) whole = (await this.source.columns(wholeIds, reach.from, Math.min(Date.now() - this.#sourceSkew + MINUTE, reach.to), stepMs)).instruments;
+          if (other.size) whole = (await this.source.columns(wholeIds, reach.from, Math.min(Date.now() - this.#sourceSkew + MINUTE, reach.to), stepMs, false, true)).instruments;
         }
         // Every instrument asked for is held from here on, answered or not: one a source leaves out is not asked for again on every frame
         // (and has nothing in the worker: what it held for it is forgotten).

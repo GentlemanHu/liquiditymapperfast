@@ -17,7 +17,8 @@ import type { CoverageAnswer, CoverageMetric } from '../../shared/coverage.ts';
 /** What the page asks the feeds worker for; each has an answer of the type in `RpcResult`. */
 export type RpcCall =
   | { method: 'bootstrap' }
-  | { method: 'columns'; ids: string[]; from: number; to: number; stepMs: number; close?: boolean }
+  /** `early`: the map's own load, which may be answered from the newest recordings before the day is read (browser/waits.ts `waitOf`). */
+  | { method: 'columns'; ids: string[]; from: number; to: number; stepMs: number; close?: boolean; early?: boolean }
   | { method: 'footprint'; inst: string; tfMs: number; from: number; to: number; rowStep: number; cuts?: number[]; budget?: number; venues?: boolean }
   | { method: 'prints'; from: number; to: number; minUsd?: number }
   | { method: 'liquidations'; from: number; to: number; minUsd?: number }
@@ -36,7 +37,8 @@ export type RpcCall =
   | { method: 'recover'; ids: string[]; windows: { from: number; to: number }[] };
 
 export interface RpcResult {
-  bootstrap: EngineBootstrap; columns: ColumnsFrame; footprint: FootprintAnswer; prints: Print[]; liquidations: Liquidation[]; printSums: PrintSumsAnswer | null; flow: FlowFrame; sizes: SizesAnswer; profile: ProfileAnswer; oiProfile: OiProfileAnswer; range: RangeAnswer; valueAreas: ValueAreaAnswer; absorption: AbsorptionAnswer; absorptionProfile: AbsorptionProfileAnswer; candles: Candle[]; oi: OiBar[]; coverage: CoverageAnswer; recover: RecoveryReport;
+  /** `columns.preview`: answered from the newest recordings while the rest of the day is read (`Engine.preview`; the map's own load alone). */
+  bootstrap: EngineBootstrap; columns: ColumnsFrame & { preview?: boolean }; footprint: FootprintAnswer; prints: Print[]; liquidations: Liquidation[]; printSums: PrintSumsAnswer | null; flow: FlowFrame; sizes: SizesAnswer; profile: ProfileAnswer; oiProfile: OiProfileAnswer; range: RangeAnswer; valueAreas: ValueAreaAnswer; absorption: AbsorptionAnswer; absorptionProfile: AbsorptionProfileAnswer; candles: Candle[]; oi: OiBar[]; coverage: CoverageAnswer; recover: RecoveryReport;
 }
 
 export type FeedsIn =
@@ -62,8 +64,9 @@ export type FeedsOut =
    * The engine has its recordings and the recorded history (or will have none): the questions about what was recorded, held until now, are
    * answered, and the flow, answered meanwhile from the seconds since the page opened, is to be asked for again. `hourBooks`: the service's
    * hours carry the coin's book minutes (`latest.json` names book steps: BTC); false for a coin whose books it keeps as tiles alone (ETH, SOL).
+   * `columnsEarly`: the map's columns were answered meanwhile from the newest recordings alone (`Engine.preview`), to be asked again.
    */
-  | { type: 'history'; tiles?: TilesInfo | null; hourBooks?: boolean }
+  | { type: 'history'; tiles?: TilesInfo | null; hourBooks?: boolean; columnsEarly?: boolean }
   /** The engine could not be started: nothing will be answered, so the page should say so instead of waiting. */
   | { type: 'failed'; error: string }
   | { type: 'levels'; frame: LevelsFrame }

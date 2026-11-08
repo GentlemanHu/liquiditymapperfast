@@ -19,6 +19,8 @@ import { STRIDE, type TapeRing } from '../tape/ring.ts';
 import { ROW_TEXELS, TrailGL, type FlashSprite } from '../candle/trail-gl.ts';
 import { strengthGain } from '../glass/waves.ts';
 import * as M from '../candle/model.ts';
+import { liveCanvas } from '../live-canvas.ts';
+import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 
 const NUM_FONT = '10.5px ui-monospace, SFMono-Regular, Menlo, monospace', BOLD_NUM = `700 ${NUM_FONT}`;
 const SMALL_FONT = '10px ui-sans-serif, system-ui, sans-serif';
@@ -83,6 +85,7 @@ export class CandlePane {
   #reduced = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
 
   constructor(parent: HTMLElement, private store: Store, private hub: Hub, private kernels: Kernels, private markets: (state: AppState) => string[]) {
+    liveCanvas(this.#trailCanvas, () => { if (this.#trail) this.#drawTrail(); });
     let saved: unknown = null;
     try { saved = JSON.parse(window.localStorage.getItem(M.CANDLE_SETTINGS_KEY) ?? 'null'); } catch { saved = null; }
     this.#settings = M.readCandleSettings(saved);
@@ -100,6 +103,8 @@ export class CandlePane {
     parent.append(this.root);
     this.#ctx = this.#canvas.getContext('2d')!; this.#marksCtx = this.#marks.getContext('2d')!;
     new ResizeObserver(() => this.#resize()).observe(this.#body);
+    // The trail and its marks too: sizing cleared them, and their loop may wait a second (reduced motion) before it draws them.
+    sharpens({ resize: () => this.#resize(), paint: () => { if (this.#shown) { this.#paint(); this.#drawTrail(); } } });
     this.#bindGestures();
     document.addEventListener('visibilitychange', () => {
       // A phone suspends a page in the background and no orders come: the tape has a gap there, which the header owns up to (`TapeGaps`).
@@ -220,7 +225,7 @@ export class CandlePane {
     const rect = this.#body.getBoundingClientRect();
     this.#w = Math.floor(rect.width); this.#h = Math.floor(rect.height);
     // Text is crisp at two device pixels to a CSS pixel; the trail's glow gains nothing past one and a half.
-    this.#dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.#dpr = Math.min(pixelRatio(), 2);
     this.#canvas.width = Math.max(1, Math.round(this.#w * this.#dpr)); this.#canvas.height = Math.max(1, Math.round(this.#h * this.#dpr));
     this.#canvas.style.width = `${this.#w}px`; this.#canvas.style.height = `${this.#h}px`;
     this.#marks.width = this.#canvas.width; this.#marks.height = this.#canvas.height; this.#marks.style.width = this.#canvas.style.width; this.#marks.style.height = this.#canvas.style.height;

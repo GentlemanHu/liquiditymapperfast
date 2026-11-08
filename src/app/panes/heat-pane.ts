@@ -32,7 +32,7 @@ import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, t
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
 import { lineMetric, onPriceAxis, placedOn } from '../traded/profiles.ts';
 import { MAX_BANDS, arrangeProfiles, arrangeSides, columnHit, type Arranged, type ProfileRoom } from '../traded/arrange.ts';
-import { flowIds, flowLoadIds, mapVenues, oiFlowIds } from '../cvd/ids.ts';
+import { flowIds, flowLoadIds, instrumentShown, mapVenues, oiFlowIds } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
 import { iconsOf, markLines, markSize, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
@@ -84,6 +84,8 @@ import type { Projection } from '../draw/geometry.ts';
 import { wallRows, type CandleUnder } from '../draw/magnet.ts';
 import type { ChartType } from '../chart-type.ts';
 import { candleCoverage, candlePriceRange, isCovered, priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindow, uncoveredRuns, type Covered, type PricePoint, type PriceWindow } from '../price-history.ts';
+import { liveCanvas } from '../live-canvas.ts';
+import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -527,6 +529,8 @@ export class HeatPane {
     this.root.className = 'pane heat';
     this.#pulse.className = 'pulse';
     this.#dustCanvas.className = 'dust';
+    liveCanvas(this.#dustCanvas, () => { if (!this.#suspended) this.#drawDust(); });
+    sharpens({ resize: () => this.#sizeCanvases(), paint: () => { if (!this.#suspended && !this.root.hidden) this.#render(); } });
     this.#drawEdit.className = 'draw-edit'; this.#drawEdit.setAttribute('data-no-capture', '');
     this.#hoverCanvas.className = 'hover';
     this.#liveButton.hidden = true;
@@ -613,8 +617,16 @@ export class HeatPane {
   dataChanged(): void { this.#dataVersion++; this.invalidate(); }
 
   #resize(): void {
+    this.#sizeCanvases();
+    this.#rasteredKey = ''; this.onView(); this.invalidate();
+  }
+  /**
+   * The overlay's canvases, the heatmap's and the dust's, sized for the pane at `pixelRatio()`. A sharp picture sizes them alone (pixel-ratio.ts):
+   * the heatmap's raster is in CSS pixels and the view has not moved, so nothing is asked for again.
+   */
+  #sizeCanvases(): void {
     const rect = this.root.getBoundingClientRect();
-    this.#paneW = Math.max(1, Math.floor(rect.width)); this.#h = Math.max(1, Math.floor(rect.height)); this.#dpr = window.devicePixelRatio || 1;
+    this.#paneW = Math.max(1, Math.floor(rect.width)); this.#h = Math.max(1, Math.floor(rect.height)); this.#dpr = pixelRatio();
     // A narrow map (a phone, or half of a landscape one) gives the axis and the profile less room, so the plot keeps most of it.
     setCompactGutters(this.#paneW < COMPACT_PANE, this.#paneW);
     this.overlay.width = Math.round(this.#paneW * this.#dpr); this.overlay.height = Math.round(this.#h * this.#dpr);
@@ -626,7 +638,6 @@ export class HeatPane {
     this.#hoverCanvas.width = this.overlay.width; this.#hoverCanvas.height = this.overlay.height;
     this.#hoverCanvas.style.width = this.overlay.style.width; this.#hoverCanvas.style.height = this.overlay.style.height;
     this.#positionGl();
-    this.#rasteredKey = ''; this.onView(); this.invalidate();
   }
   #positionGl(): void {
     // The heatmap and the dust start where the plot does: after the columns left of the map.
@@ -697,8 +708,8 @@ export class HeatPane {
     const state = this.store.state;
     if (!this.#dustOn(state)) { this.#dust?.clear(); return; }
     const dust = this.#ensureDust(), tape = this.hub.tape; if (!dust || !tape) return;
-    const p = this.#palette, off = state.disabledVenues;
-    dust.setMask(off.length ? tape.ids.flatMap((id, i) => off.includes(id.slice(0, id.indexOf(':'))) ? [i] : []) : []);
+    const p = this.#palette, shown = instrumentShown(state);
+    dust.setMask(tape.ids.flatMap((id, i) => shown(id) ? [] : [i]));
     const style: DustStyle = { bid: rgb(p.bid), ask: rgb(p.ask), mid: rgb(p.dark ? '#d8dce4' : '#3a3f48'), rim: rgb(p.bg), floorUsd: scaledUsd(100), ceilUsd: scaledUsd(250_000), volLo: scaledUsd(100), volHi: scaledUsd(2_000_000), opacity: state.tradeBubbles.liveOpacity * (1 - 0.85 * this.#lodFrame.barAlpha) };
     const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches, now = performance.now();
     this.#dustDrawn = now;
@@ -1590,10 +1601,10 @@ export class HeatPane {
     };
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip(); ctx.lineJoin = 'round';
     if (tape.written > 0) this.#trace.update(tape, v.t0, v.t1, ms);
-    const chart = tape.ids.indexOf(state.marketId), off = state.disabledVenues;
+    const chart = tape.ids.indexOf(state.marketId);
     if (state.tradeBubbles.venueLines && tape.written > 0) {
-      const colors = curveColors(p, 8);
-      tape.ids.forEach((id, i) => { if (i !== chart && !off.includes(id.slice(0, id.indexOf(':')))) stroke(this.#trace.path(i, c0, c1, gap), colors[i % colors.length]!, 1, 0.55); });
+      const colors = curveColors(p, 8), shown = instrumentShown(state);
+      tape.ids.forEach((id, i) => { if (i !== chart && shown(id)) stroke(this.#trace.path(i, c0, c1, gap), colors[i % colors.length]!, 1, 0.55); });
     }
     // Before the orders held, the chart market's prices a second, dashed (they are averages over a second, not each order).
     const held = tape.written > 0 ? (tape.segments[0]?.from ?? v.t1) : v.t1, series = this.hub.flow.get(state.marketId);
@@ -1883,8 +1894,8 @@ export class HeatPane {
     const v = this.view, p = this.#palette, fade = 1 - 0.85 * this.#lodFrame.barAlpha;
     if (fade <= 0.02) return;
     const limit = Math.max(40, Math.min(400, Math.round(pw / 9)));
-    const s = state.tradeBubbles, off = state.disabledVenues;
-    const hidden = (print: Print): boolean => bubbleHidden(print, s) || (off.length > 0 && off.includes(print.id.slice(0, print.id.indexOf(':'))));
+    const s = state.tradeBubbles, shown = instrumentShown(state);
+    const hidden = (print: Print): boolean => bubbleHidden(print, s) || !shown(print.id);
     const visible = topPrints(this.hub.prints.items, v.t0, replaying() ? Math.min(v.t1, pageNow()) : v.t1, v.p0, v.p1, limit, hidden);
     if (!visible.length) return;
     const whale = scaledUsd(state.sounds.tiers[2]?.usd ?? 400_000);
@@ -3395,11 +3406,11 @@ export class HeatPane {
   }
 
   /**
-   * The instruments absorption is judged on (every market the page knows and everything with flow, with its chip on; executions follow the
-   * chips, not the Spot/Perp filter, as the bubbles do) and the threshold each is judged at now.
+   * The instruments absorption is judged on (every market the page knows and everything with flow, with its chip on and its book on the
+   * map: `instrumentShown`; executions follow the chips, not the Spot/Perp filter, as the bubbles do) and the threshold each is judged at now.
    */
   #absorptionContext(state: AppState): { ids: string[]; thresholds: Map<string, number | null> } {
-    const ids = flowLoadIds(state, this.hub.flow.ids).filter(id => !state.disabledVenues.includes(id.slice(0, id.indexOf(':'))));
+    const ids = flowLoadIds(state, this.hub.flow.ids).filter(instrumentShown(state));
     const s = state.absorption, minute = Math.floor(Date.now() / 60_000);
     const key = `${this.hub.absorption.version}|${minute}|${s.mode}|${s.k}|${s.sdMinutes}|${s.fixedUsd}|${ids.join(',')}`;
     if (key !== this.#absorptionKey) { this.#absorptionKey = key; this.#absorptionThresholds = this.hub.absorption.thresholds(ids, s, Date.now()); }
@@ -3480,14 +3491,15 @@ export class HeatPane {
   /**
    * Liquidations as diamonds where the market was when they came: in the sell colour where longs were closed (the exchange sold them), the
    * buy colour where shorts were, as every mark on the page; the diamond and its hard edge say forced. The area is in proportion to the USD
-   * closed, the largest in view the biggest, and only the largest few hundred in view are drawn. A venue switched off is left out, as for the
-   * bubbles; one large enough carries its exchange's mark, and with labels on the larger ones have their size beside them.
+   * closed, the largest in view the biggest, and only the largest few hundred in view are drawn. A venue switched off, or with no book on the
+   * map, is left out, as for the bubbles (`instrumentShown`); one large enough carries its exchange's mark, and with labels on the larger ones
+   * have their size beside them.
    */
   #paintLiquidations(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     this.#diamonds = [];
     const s = state.liquidations; if (!s.on) return;
-    const v = this.view, p = this.#palette, off = state.disabledVenues;
-    const hidden = (l: Liquidation): boolean => liquidationHidden(l, s) || (off.length > 0 && off.includes(l.id.slice(0, l.id.indexOf(':'))));
+    const v = this.view, p = this.#palette, shown = instrumentShown(state);
+    const hidden = (l: Liquidation): boolean => liquidationHidden(l, s) || !shown(l.id);
     const visible = topPrints(this.hub.liquidations.items, v.t0, replaying() ? Math.min(v.t1, pageNow()) : v.t1, v.p0, v.p1, Math.max(30, Math.min(300, Math.round(pw / 10))), hidden);
     if (!visible.length) return;
     const ordered = [...visible].sort((a, b) => a.usd - b.usd), largest = ordered[ordered.length - 1]!.usd, edge = p.dark ? '#ffffff' : '#14171c';

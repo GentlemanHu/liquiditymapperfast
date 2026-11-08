@@ -237,55 +237,59 @@ export async function binanceArchiveDay(symbol: string, day: number, get: Fetche
 
 /** The most readings an `ArchiveMemo` keeps: a few hundred kilobytes to a few megabytes. */
 const ARCHIVE_MEMO_POINTS = 60_000;
+/** A kept day: being read, read with a file, read with none (not yet given to other reads), or with none and judged. */
+type MemoState = 'reading' | 'file' | 'unjudged' | 'judged';
 /**
  * Archive days read lately, on the grid of the period they were read in, every series of each (one file holds all three, and the pane reads
  * the other two after the one shown, to switch at once): a read of another series finds its days here rather than fetching each file again.
- * At most `ARCHIVE_MEMO_POINTS` readings, the least recently asked day going first; a failed read is not kept. It also knows, per market,
- * when the archive was last seen to hold it and when its archive last failed.
+ * At most `ARCHIVE_MEMO_POINTS` readings, the least recently asked day going first; a failed read is not kept. A day with no file is given to
+ * other reads only once a read with it was judged (`judge`): until then it is fetched again, so an outage's 404s are never taken from here.
+ * It also knows, per market, when its archive last failed.
  */
 export class ArchiveMemo {
-  #days = new Map<string, { day: Promise<ArchiveDay | null>; size: number }>();
+  #days = new Map<string, { day: Promise<ArchiveDay | null>; size: number; state: MemoState }>();
   #size = 0;
   #failed = new Map<string, number>();
-  /** When the archive was last seen to hold each market (`binanceArchiveHolds`, the cache's clock). */
-  readonly holds = new Map<string, number>();
   constructor(private maxPoints = ARCHIVE_MEMO_POINTS) {}
-  /** The day kept under `key`, or `read` it and keep it, counted as `size` readings. */
-  day(key: string, size: number, read: () => Promise<ArchiveDay | null>): Promise<ArchiveDay | null> {
+  /**
+   * The day kept under `key`, or `read` it and keep it, counted as `size` readings. `fresh` when it is read now (by this read, or by another
+   * still under way): a file kept from earlier says nothing of the archive now.
+   */
+  day(key: string, size: number, read: () => Promise<ArchiveDay | null>): { day: Promise<ArchiveDay | null>; fresh: boolean } {
     const held = this.#days.get(key);
-    if (held) { this.#days.delete(key); this.#days.set(key, held); return held.day; }
-    const entry = { day: read(), size };
+    if (held && held.state !== 'unjudged') { this.#days.delete(key); this.#days.set(key, held); return { day: held.day, fresh: held.state === 'reading' }; }
+    if (held) { this.#days.delete(key); this.#size -= held.size; }
+    const entry = { day: read(), size, state: 'reading' as MemoState };
     this.#days.set(key, entry); this.#size += size;
-    entry.day.catch(() => { if (this.#days.get(key) === entry) { this.#days.delete(key); this.#size -= size; } });
+    entry.day.then(day => { entry.state = day ? 'file' : 'unjudged'; }, () => { if (this.#days.get(key) === entry) { this.#days.delete(key); this.#size -= size; } });
     for (const [old, e] of this.#days) { if (this.#size <= this.maxPoints || old === key) break; this.#days.delete(old); this.#size -= e.size; }
-    return entry.day;
+    return { day: entry.day, fresh: true };
   }
-  /** Let go of the days kept under `keys` (days that had no file, asked again next time). */
-  forget(keys: readonly string[]): void { for (const key of keys) { const e = this.#days.get(key); if (e) { this.#days.delete(key); this.#size -= e.size; } } }
+  /** The days under `keys` with no file are given to other reads from now on: a read with them was judged (the archive held the market). */
+  judge(keys: readonly string[]): void { for (const key of keys) { const e = this.#days.get(key); if (e?.state === 'unjudged') e.state = 'judged'; } }
   /** The market's archive failed at `now` (the cache's clock): it is left alone for a minute, while the API's readings go on. */
   fail(symbol: string, now: number): void { this.#failed.set(symbol, now); }
   cooling(symbol: string, now: number): boolean { return now - (this.#failed.get(symbol) ?? -Infinity) < MINUTE; }
 }
 
 /**
- * Whether the archive holds `symbol` now: the file of three days ago is there (out by then; a market listed since has none), looked at no more
- * than once a minute (`memo`). A file read for the market earlier is no evidence: the archive may have gone since. Throws when the file
- * cannot be read.
+ * Whether the archive holds `symbol` now: the file of three days ago is there (out by then; a market listed since has none), looked at after
+ * the read it vouches for. A look from before that read, or a file read earlier, is no evidence: the archive may have gone since. Throws when
+ * the file cannot be read.
  */
-async function binanceArchiveHolds(symbol: string, now: number, get: Fetcher, memo?: ArchiveMemo): Promise<boolean> {
-  if (now - (memo?.holds.get(symbol) ?? -Infinity) < MINUTE) return true;
-  const holds = await binanceArchiveDay(symbol, Math.floor(now / DAY) * DAY - 3 * DAY, get) !== null;
-  if (holds) memo?.holds.set(symbol, now);
-  return holds;
+async function binanceArchiveHolds(symbol: string, now: number, get: Fetcher): Promise<boolean> {
+  return await binanceArchiveDay(symbol, Math.floor(now / DAY) * DAY - 3 * DAY, get) !== null;
 }
 
 /**
  * Binance's readings older than its API's 30 days, from its daily archive: those of [lo, hi) on the period's grid, the newest `ARCHIVE_DAYS`
  * days of files at most, `ARCHIVE_PARALLEL` at a time (through `memo`, where the cache keeps one). `from` is where they reach back to: `lo`,
- * or the start of the oldest day read when there were more. A day with no file is skipped (nothing filled in); a read that found no file at all
- * (`none`) may be before the archive begins (`fetchLongShort` decides), and says the memo `keys` of its days and its `newest` day.
+ * or the start of the oldest day read when there were more (all of it when no day had a file, `none`). A day with no file is skipped (nothing
+ * filled in); a read whose days fetched now had no file (`unseen`: days kept in `memo`, files or days with none already judged, show nothing
+ * of the archive now) may be before the archive begins, or the archive gone (`fetchLongShort` decides). It says its `newest` day, the newest
+ * day it fetched with no file (`empty`), and the memo keys of its days with no file (`missing`, given to other reads once the read is judged).
  */
-async function binanceArchive(symbol: string, metric: LsMetric, periodMs: number, lo: number, hi: number, get: Fetcher, memo?: ArchiveMemo): Promise<{ points: LsPoint[]; from: number; none: boolean; newest: number; keys: string[] }> {
+async function binanceArchive(symbol: string, metric: LsMetric, periodMs: number, lo: number, hi: number, get: Fetcher, memo?: ArchiveMemo): Promise<{ points: LsPoint[]; from: number; none: boolean; unseen: boolean; newest: number; empty: number; missing: string[] }> {
   // A day's file holds the readings after its midnight up to and with the next one (each row is the API's reading five minutes on).
   const dayOf = (t: number): number => Math.floor((t - ARCHIVE_SHIFT_MS) / DAY) * DAY, first = dayOf(lo), days: number[] = [];
   for (let day = dayOf(hi - 1); day >= first && days.length < ARCHIVE_DAYS; day -= DAY) days.push(day);
@@ -293,8 +297,13 @@ async function binanceArchive(symbol: string, metric: LsMetric, periodMs: number
     const all = await binanceArchiveDay(symbol, day, get), grid = (points: LsPoint[]): LsPoint[] => points.filter(p => p.t % periodMs === 0);
     return all && { accounts: grid(all.accounts), topAccounts: grid(all.topAccounts), topPositions: grid(all.topPositions) };
   };
-  const keys = days.map(day => `${symbol}|${periodMs}|${day}`);
-  const read = (i: number): Promise<ArchiveDay | null> => memo ? memo.day(keys[i]!, 3 * Math.ceil(DAY / periodMs), () => onGrid(days[i]!)) : onGrid(days[i]!);
+  const keys = days.map(day => `${symbol}|${periodMs}|${day}`), fetched: boolean[] = days.map(() => !memo);
+  const read = (i: number): Promise<ArchiveDay | null> => {
+    if (!memo) return onGrid(days[i]!);
+    const held = memo.day(keys[i]!, 3 * Math.ceil(DAY / periodMs), () => onGrid(days[i]!));
+    fetched[i] = held.fresh;
+    return held.day;
+  };
   const got: (ArchiveDay | null)[] = new Array(days.length);
   let next = 0, failed = false;
   await Promise.all(Array.from({ length: Math.min(ARCHIVE_PARALLEL, days.length) }, async () => {
@@ -302,8 +311,10 @@ async function binanceArchive(symbol: string, metric: LsMetric, periodMs: number
     catch (error) { failed = true; throw error; }
   }));
   const points = got.flatMap(day => day?.[metric] ?? []).filter(p => p.t >= lo && p.t < hi).sort((a, b) => a.t - b.t);
-  const oldest = days[days.length - 1], none = got.every(day => day === null);
-  return { points, from: oldest === undefined || oldest <= first || none ? lo : oldest + ARCHIVE_SHIFT_MS, none, newest: days[0] ?? -Infinity, keys };
+  const oldest = days[days.length - 1], none = got.every(day => day === null), asked = got.filter((_, i) => fetched[i]);
+  const unseen = asked.length > 0 && asked.every(day => day === null), missing = keys.filter((_, i) => got[i] === null);
+  const empty = days.find((_, i) => fetched[i] && got[i] === null) ?? -Infinity;
+  return { points, from: oldest === undefined || oldest <= first || none ? lo : oldest + ARCHIVE_SHIFT_MS, none, unseen, newest: days[0] ?? -Infinity, empty, missing };
 }
 
 /**
@@ -343,24 +354,29 @@ export async function fetchLongShort(venue: string, symbol: string, metric: LsMe
       }
     })();
     const [old] = await Promise.all([archive, api]);
-    // Not one file in the read: before the archive begins only on evidence, the archive holding this market now (its file of three days ago)
-    // or the API showing it began trading after those days. Without it the archive is gone or moved: the days are not claimed, and asked
-    // again after the minute (they are let go of in the memo, so a returning archive is read).
+    // Not one file in the days the read fetched (those kept from an earlier read do not count): before the archive begins only on evidence,
+    // the API showing the market began trading after those days, or the archive holding it now (its file of three days ago, looked at
+    // after the read) and the newest of those days still without one (with a file now, the archive came back while it read: read again
+    // at once). Without it the archive is gone or moved: the days are not claimed, and asked again after the minute (a day with no file
+    // is given to other reads only once a read with it is judged, so a returning archive is read; the files kept stay).
     const read = old instanceof Error ? null : old;
-    let failed = old instanceof Error;
-    if (read?.none) {
-      const began = out.size > 0 && Math.min(...out.keys()) > read.newest + DAY;
-      failed = !began && !(await binanceArchiveHolds(symbol, now, get, memo).catch(() => false));
-      if (failed) memo?.forget(read.keys);
+    let failed = old instanceof Error, cool = failed;
+    if (read?.unseen && !(out.size > 0 && Math.min(...out.keys()) > read.newest + DAY)) {
+      const holds = await binanceArchiveHolds(symbol, now, get).catch(() => false);
+      // null: still no file; a day: back since; undefined: it could not be read.
+      const again = holds ? await binanceArchiveDay(symbol, read.empty, get).catch(() => undefined) : null;
+      failed = !holds || again !== null;
+      cool = !holds || again === undefined;
     }
-    if (failed) memo?.fail(symbol, now);
+    if (cool) memo?.fail(symbol, now);
     const unread = cooling || failed;
-    // The API's own reading where both have one (the same, to its four decimals).
-    if (!unread && read) for (const p of read.points) if (!out.has(p.t)) take(p);
+    // Judged: its days with no file go to the other series too. The API's own reading where both have one (the same, to its four decimals).
+    if (!unread && read) { memo?.judge(read.missing); for (const p of read.points) if (!out.has(p.t)) take(p); }
     const points = [...out.values()].sort((a, b) => a.t - b.t);
     // Unread, the answer reaches back to where the API's days begin, or to the window's end for a window older than them (claiming nothing of
-    // it: read again, it is read alone, not every day from it to the API's).
-    return { points, from: page >= PAGES && end > from ? end : unread ? Math.min(floor, to) : read && read.from > lo ? read.from : from };
+    // it: read again, it is read alone, not every day from it to the API's). A read short of the window holds from a period after its oldest
+    // reading: a window held from there has the reading before it, as every window must.
+    return { points, from: page >= PAGES && end > from ? end : unread ? Math.min(floor, to) : read && read.from > lo ? read.from + periodMs : from };
   } else if (venue === 'bybit') {
     for (; page < PAGES && end >= from; page++) {
       const limit = limitFor(from);
@@ -448,9 +464,11 @@ export interface LsBacking {
  * The format of what a backing keeps: a backing stores it and treats a record of another as none. Raise it whenever a change to the venues'
  * parsing or to what a stretch [from, to) claims would make kept readings or stretches wrong: before backings, a deploy read everything anew,
  * and a wrong stretch kept now would never be read again (only the hours after it are). 2 (2026-11-06): Binance's series reach back through
- * its daily archive, and a stretch kept before held its days older than 30 as read, with no readings.
+ * its daily archive, and a stretch kept before held its days older than 30 as read, with no readings. 3 (2026-11-07): a stretch read back
+ * through the archive a read short of its window held the window's start without the reading before it, and one read in an archive outage
+ * could hold its days as read with none.
  */
-export const LS_FORMAT = 2;
+export const LS_FORMAT = 3;
 /** A kept record the cache can trust: finite times, readings in range and in order, at most `maxPoints`, read no later than `now` (with a minute's slack). */
 export function validRecord(record: LsHeldRecord, now = Infinity, maxPoints = Infinity): boolean {
   if (!Number.isFinite(record.from) || !Number.isFinite(record.to) || !Number.isFinite(record.checked) || !Array.isArray(record.points)) return false;

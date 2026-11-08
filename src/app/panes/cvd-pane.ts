@@ -39,6 +39,7 @@ import type { RangeTool } from '../range/tool.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { flowEndChange, type FlowEnd } from '../cvd/flash.ts';
 import { FitGrid } from '../ui/fit-grid.ts';
+import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 
 const SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif', MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const PAD = 6, LINE_H = 12;
@@ -165,6 +166,7 @@ export class CvdPane {
     host.append(this.root);
     this.#ctx = this.#canvas.getContext('2d')!; this.#lineCtx = this.#lineCanvas.getContext('2d')!; this.#flashCtx = this.#flashCanvas.getContext('2d')!;
     new ResizeObserver(() => this.#resize()).observe(this.#wrap);
+    sharpens({ resize: () => this.#sizeCanvases(), paint: () => { if (!this.root.hidden) { this.#render(); this.#flashNow(); } } });
     this.#buildControls();
     this.#bindInput();
     // The price's marks are kept while the column is out of sight too (a phone shows it only on its own tab): minutes spent on another tab
@@ -500,17 +502,21 @@ export class CvdPane {
   }
 
   #resize(): void {
+    this.#sizeCanvases();
+    this.#flashes = [];
+    this.#modelKey = '';
+    this.invalidate();
+  }
+  /** The column's canvases sized at `pixelRatio()`; a sharp picture sizes them alone (the rows are worked out for CSS pixels, so they stand). */
+  #sizeCanvases(): void {
     const r = this.#wrap.getBoundingClientRect();
-    this.#w = Math.max(1, Math.floor(r.width)); this.#h = Math.max(1, Math.floor(r.height)); this.#dpr = window.devicePixelRatio || 1;
+    this.#w = Math.max(1, Math.floor(r.width)); this.#h = Math.max(1, Math.floor(r.height)); this.#dpr = pixelRatio();
     this.#canvas.width = Math.round(this.#w * this.#dpr); this.#canvas.height = Math.round(this.#h * this.#dpr);
     this.#canvas.style.width = `${this.#w}px`; this.#canvas.style.height = `${this.#h}px`;
     this.#flashCanvas.width = this.#canvas.width; this.#flashCanvas.height = this.#canvas.height;
     this.#flashCanvas.style.width = this.#canvas.style.width; this.#flashCanvas.style.height = this.#canvas.style.height;
     this.#lineCanvas.width = this.#canvas.width; this.#lineCanvas.height = this.#canvas.height;
     this.#lineCanvas.style.width = this.#canvas.style.width; this.#lineCanvas.style.height = this.#canvas.style.height;
-    this.#flashes = [];
-    this.#modelKey = '';
-    this.invalidate();
   }
 
   // ---- data -----------------------------------------------------------------------------------------------------------------------
@@ -757,6 +763,12 @@ export class CvdPane {
       if (this.#flashes.length && !document.hidden) this.#flashFrame = requestAnimationFrame(draw);
     };
     this.#flashFrame = requestAnimationFrame(draw);
+  }
+  /** The flashes still running, drawn as they are now (a sharp picture's sizing cleared their canvas; their own loop draws them next). */
+  #flashNow(): void {
+    const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches, now = performance.now();
+    this.#flashes = this.#flashes.filter(f => now - f.at < (reduced ? FLASH_LIFE_MS / 2 : FLASH_LIFE_MS));
+    this.#paintFlashes(now, reduced);
   }
   #paintFlashes(now: number, reduced: boolean): void {
     const ctx = this.#flashCtx;

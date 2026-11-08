@@ -127,7 +127,7 @@ test("the archive: a long window is read a stretch at a time, newest first; a fi
   const from = Date.UTC(2026, 0, 1), to = Date.UTC(2026, 6, 20), r = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, from, to, get, NOW);
   const oldest = Date.UTC(2026, 6, 19) - (ARCHIVE_DAYS - 1) * D;
   assert.equal(get.asked.length, ARCHIVE_DAYS, 'one read takes the newest days only');
-  assert.equal(r.from, oldest + 5 * M, 'and says how far back it reached: the oldest day read, from its first row');
+  assert.equal(r.from, oldest + D + 5 * M, "and says from where it holds a window: a period after the oldest day's first row, so the reading before is there");
   assert.equal(r.points[0]!.t, oldest + D, "that day's own midnight is the day before's");
   // One file failing (the other days read), a file of another form, or no zip at all: none of the window's days is claimed (a window this old
   // has no API readings, so the answer reaches back only to where the API's days begin, after the window), and nothing is drawn.
@@ -202,7 +202,7 @@ test('a window older than the API with no file in it is before the archive only 
   assert.deepEqual([early.points, early.from], [[], NOW - 900 * D]);
 });
 
-test('the archive holds a market on a look at its file of three days ago, at most a minute old: not because a file was read once', async () => {
+test('the archive holds a market on a look at its file of three days ago made after the read: not because a file was read once, nor on an earlier look', async () => {
   let gone = false, lookFails = false;
   const today = Math.floor(NOW / D) * D, archive = archiveFake(NOW - 400 * D, NOW - 400 * D);
   const get = fake({ 'https://data.binance.vision/': url => {
@@ -224,6 +224,128 @@ test('the archive holds a market on a look at its file of three days ago, at mos
   gone = false; lookFails = true;
   const failedLook = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 950 * D, NOW - 920 * D, get, NOW + 300_000, memo);
   assert.deepEqual([failedLook.points.length, failedLook.from], [0, NOW - 920 * D]);
+  // Nor a good look moments before the archive went: each read with no file looks again, after it.
+  lookFails = false;
+  const fresh = new ArchiveMemo();
+  assert.deepEqual((await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 900 * D, NOW - 850 * D, get, NOW, fresh)).from, NOW - 900 * D);
+  gone = true;
+  const soon = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 300 * D, NOW - 250 * D, get, NOW + 10_000, fresh);
+  assert.deepEqual([soon.points.length, soon.from], [0, NOW - 250 * D], 'unclaimed ten seconds after a good look');
+});
+
+test('the archive back while a read with no file looks: not taken with the outage\'s days, and read again at once, not a minute later', async () => {
+  const archive = archiveFake(NOW - 400 * D, NOW - 400 * D), today = Math.floor(NOW / D) * D, looks: (() => void)[] = [];
+  let gone = false, hold = false;
+  const get = fake({ 'https://data.binance.vision/': url => {
+    const day = archiveDate(url);
+    if (hold && day === today - 3 * D) return new Promise((resolve, reject) => looks.push(() => { try { resolve(archive(url)); } catch (error) { reject(error); } }));
+    if (gone) throw Object.assign(new Error('HTTP 404'), { status: 404 });
+    return archive(url);
+  } });
+  const memo = new ArchiveMemo();
+  await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 150 * D, NOW - 100 * D, get, NOW, memo);
+  gone = true; hold = true;
+  const during = fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 200 * D, NOW - 150 * D, get, NOW + 61_000, memo);
+  for (let i = 0; i < 100 && looks.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  gone = false; hold = false;
+  looks.splice(0).forEach(answer => answer());
+  const read = await during;
+  assert.deepEqual([read.points.length, read.from, memo.cooling('BTCUSDT', NOW + 61_000)], [0, NOW - 150 * D, false], 'unclaimed, and not left alone');
+  const again = await fetchLongShort('binance', 'BTCUSDT', 'topAccounts', D, NOW - 200 * D, NOW - 150 * D, get, NOW + 66_000, memo);
+  assert.deepEqual([again.points.length, again.from], [51, NOW - 200 * D]);
+  // Before the archive begins (it holds the market), but the day looked at again cannot be read: unclaimed, and left alone a minute.
+  const newest = today - 210 * D;
+  let asks = 0;
+  const shaky = fake({ 'https://data.binance.vision/': url => {
+    if (archiveDate(url) === newest && ++asks === 2) throw Object.assign(new Error('HTTP 503'), { status: 503 });
+    return archiveFake(NOW - 400 * D, today - 151 * D)(url);
+  } });
+  const flaky = new ArchiveMemo(), unsure = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 260 * D, NOW - 210 * D, shaky, NOW, flaky);
+  assert.deepEqual([unsure.points.length, unsure.from, flaky.cooling('BTCUSDT', NOW), asks], [0, NOW - 210 * D, true, 2]);
+});
+
+test('a window the cache reads back through the archive in more than one read holds the reading before it too', async () => {
+  const archive = () => fake({ 'https://fapi.binance.com/futures/data/': () => [], 'https://data.binance.vision/': archiveFake(NOW - 400 * D, NOW - 400 * D) });
+  const cache = new LongShortCache(archive(), true, () => NOW);
+  await cache.series('binance:BTCUSDT', 'accounts', D, NOW - 121 * D, NOW - 100 * D);
+  // Back from the held stretch to the window is 97 days of files: one read takes 96, the oldest cut is the one with the reading before it.
+  const held = await cache.series('binance:BTCUSDT', 'accounts', D, NOW - 216 * D, NOW - 190 * D);
+  const all = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 216 * D, NOW - 190 * D, archive(), NOW);
+  assert.equal(all.points.length, 27, 'the window and the reading before it');
+  assert.deepEqual([held.status, held.points.map(p => p.t)], ['ok', all.points.map(p => p.t)]);
+});
+
+test('a read next to one already read, its newest days kept from then, finds no file in the days it asks: the archive gone, or before it begins', async () => {
+  let gone = false;
+  const archive = archiveFake(NOW - 400 * D, NOW - 400 * D), get = fake({ 'https://data.binance.vision/': url => { if (gone) throw Object.assign(new Error('HTTP 404'), { status: 404 }); return archive(url); } });
+  const memo = new ArchiveMemo(), files = () => get.asked.length;
+  assert.equal((await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 150 * D, NOW - 100 * D, get, NOW, memo)).points.length, 51);
+  // Gone while the page is open: the window before it shares its two oldest days (kept, with their files), and every day it asks has none.
+  gone = true;
+  const before = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 200 * D, NOW - 150 * D, get, NOW + 61_000, memo);
+  assert.deepEqual([before.points.length, before.from, memo.cooling('BTCUSDT', NOW + 61_000)], [0, NOW - 150 * D, true], 'unclaimed, not read as fifty days without a file');
+  // The days read before stay kept: another series reads them still, and the days with no file are asked again once the archive is back.
+  const top = await fetchLongShort('binance', 'BTCUSDT', 'topPositions', D, NOW - 150 * D, NOW - 100 * D, get, NOW + 122_000, memo);
+  assert.deepEqual([top.points.length, top.from], [51, NOW - 150 * D]);
+  gone = false;
+  const asked = files(), again = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 200 * D, NOW - 150 * D, get, NOW + 183_000, memo);
+  assert.deepEqual([again.points.length, again.from, files() - asked], [51, NOW - 200 * D, 50], 'read, the fifty days with no file asked again and the two kept not');
+  // The archive beginning where the read before reached: the days before it have no file, and the archive holds the market, so they are read.
+  const first = Math.floor(NOW / D) * D - 151 * D, early = fake({ 'https://data.binance.vision/': archiveFake(NOW - 400 * D, first) }), memo2 = new ArchiveMemo();
+  await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 150 * D, NOW - 100 * D, early, NOW, memo2);
+  const start = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 200 * D, NOW - 150 * D, early, NOW, memo2);
+  assert.deepEqual([start.points.map(p => p.t), start.from, memo2.cooling('BTCUSDT', NOW)], [[first + D], NOW - 200 * D, false]);
+  // Wider than one read: the days it read are claimed, not those before them (it had files, kept ones: no sign of where the archive begins).
+  const memo3 = new ArchiveMemo();
+  await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 150 * D, NOW - 100 * D, early, NOW, memo3);
+  const wide = await fetchLongShort('binance', 'BTCUSDT', 'accounts', D, NOW - 400 * D, NOW - 150 * D, early, NOW, memo3);
+  assert.deepEqual([wide.points.map(p => p.t), wide.from], [[first + D], first - (ARCHIVE_DAYS - 3) * D + 5 * M]);
+});
+
+test("two series reading the same days during an outage: neither takes the other's days with no file, at once or while it looks; a failed read leaves none", async () => {
+  const archive = archiveFake(NOW - 400 * D, NOW - 400 * D), today = Math.floor(NOW / D) * D, looks: (() => void)[] = [];
+  const notFound = (): Error => Object.assign(new Error('HTTP 404'), { status: 404 });
+  let gone = false, hold = false, unavailable: number | undefined;
+  const get = fake({ 'https://data.binance.vision/': url => {
+    const day = archiveDate(url);
+    if (day === unavailable) throw Object.assign(new Error('HTTP 503'), { status: 503 });
+    if (!gone) return archive(url);
+    if (hold && day === today - 3 * D) return new Promise((_, reject) => looks.push(() => reject(notFound())));
+    throw notFound();
+  } });
+  const read = (memo: ArchiveMemo, metric: 'accounts' | 'topPositions', from: number, to: number, now: number) => fetchLongShort('binance', 'BTCUSDT', metric, D, from, to, get, now, memo);
+  const held = (rs: { points: unknown[]; from: number }[]) => rs.map(r => [r.points.length, r.from]);
+  // At once: the second series meets the first one's files under way, all 404.
+  const memo = new ArchiveMemo();
+  await read(memo, 'accounts', NOW - 150 * D, NOW - 100 * D, NOW);
+  gone = true;
+  const both = await Promise.all([read(memo, 'accounts', NOW - 200 * D, NOW - 150 * D, NOW + 61_000), read(memo, 'topPositions', NOW - 200 * D, NOW - 150 * D, NOW + 61_000)]);
+  assert.deepEqual(held(both), [[0, NOW - 150 * D], [0, NOW - 150 * D]]);
+  gone = false;
+  const back = await Promise.all([read(memo, 'accounts', NOW - 200 * D, NOW - 150 * D, NOW + 122_000), read(memo, 'topPositions', NOW - 200 * D, NOW - 150 * D, NOW + 122_000)]);
+  assert.deepEqual(held(back), [[51, NOW - 200 * D], [51, NOW - 200 * D]], 'both read once the archive is back');
+  // While the first looks at the file of three days ago: its days with no file are not the second's, which fetches them and looks itself.
+  const memo2 = new ArchiveMemo();
+  await read(memo2, 'accounts', NOW - 150 * D, NOW - 100 * D, NOW);
+  gone = true; hold = true;
+  const first = read(memo2, 'accounts', NOW - 200 * D, NOW - 150 * D, NOW + 61_000);
+  for (let i = 0; i < 100 && looks.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  const second = read(memo2, 'topPositions', NOW - 200 * D, NOW - 150 * D, NOW + 61_000);
+  for (let i = 0; i < 100 && looks.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(looks.length, 2, 'two looks');
+  looks.splice(0).forEach(reject => reject());
+  assert.deepEqual(held(await Promise.all([first, second])), [[0, NOW - 150 * D], [0, NOW - 150 * D]]);
+  // A read that fails (a 503 among the 404s): its days with no file are no one's, so the archive back a minute on, every day is read.
+  const memo3 = new ArchiveMemo(); hold = false; unavailable = today - 175 * D;
+  assert.deepEqual(held([await read(memo3, 'accounts', NOW - 200 * D, NOW - 150 * D, NOW)]), [[0, NOW - 150 * D]]);
+  gone = false; unavailable = undefined;
+  assert.deepEqual(held([await read(memo3, 'accounts', NOW - 200 * D, NOW - 150 * D, NOW + 61_000)]), [[51, NOW - 200 * D]]);
+  // Judged, days with no file are the other series' too: a window before the archive begins, read once, is not fetched again.
+  const memo4 = new ArchiveMemo();
+  assert.deepEqual(held([await read(memo4, 'accounts', NOW - 900 * D, NOW - 850 * D, NOW)]), [[0, NOW - 900 * D]]);
+  const asked = get.asked.length;
+  assert.deepEqual(held([await read(memo4, 'topPositions', NOW - 900 * D, NOW - 850 * D, NOW + 61_000)]), [[0, NOW - 900 * D]]);
+  assert.equal(get.asked.length, asked, 'no file fetched, and no look though the last one is over a minute old');
 });
 
 test('the archive reaches a day into the API\'s days: the day the API begins is read from both', async () => {
@@ -270,8 +392,8 @@ test('a window wider than one question reaches (twenty years) is read back to wh
   const asked = files().length;
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(files().length, asked, 'and nothing read after');
-  assert.equal(new Set(files()).size, asked, 'no day asked twice');
-  assert.ok(asked <= 5 * ARCHIVE_DAYS + 1, `${asked} files: back to the archive's first day, one read of none before it, one look at a recent day`);
+  assert.equal(new Set(files()).size, asked - 1, 'one day asked twice: the newest of the read with none, again after its look');
+  assert.ok(asked <= 5 * ARCHIVE_DAYS + 2, `${asked} files: back to the archive's first day, one read of none before it, a look at a recent day and that day again`);
   assert.equal(get.asked.filter(u => u.includes('fapi')).length, 1, 'the API asked for its own days once, not once a read');
   assert.ok(answer.points.length > 360 && answer.points[0]!.t >= NOW - 402 * D);
 });
@@ -280,9 +402,10 @@ test('a question that waits keeps its own bound (four reads): nothing reads on b
   const get = fake({ 'https://fapi.binance.com/futures/data/': () => [], 'https://data.binance.vision/': archiveFake(NOW - 800 * D, NOW - 800 * D) });
   const answer = await new LongShortCache(get, true, () => NOW).series('binance:BTCUSDT', 'accounts', D, NOW - 700 * D, NOW);
   const files = () => get.asked.filter(u => u.includes('data.binance.vision')).length;
-  assert.deepEqual([answer.status, files()], ['stale', 4 * ARCHIVE_DAYS], 'four reads of a seven-read window, said as not all read');
+  // Each read after the first begins on the oldest day of the one before (kept, not fetched again).
+  assert.deepEqual([answer.status, files()], ['stale', ARCHIVE_DAYS + 3 * (ARCHIVE_DAYS - 1)], 'four reads of a seven-read window, said as not all read');
   await new Promise(resolve => setTimeout(resolve, 50));
-  assert.equal(files(), 4 * ARCHIVE_DAYS);
+  assert.equal(files(), ARCHIVE_DAYS + 3 * (ARCHIVE_DAYS - 1));
 });
 
 test('a series let go of while its archive is read (the cache over its bound) is not read on', async () => {
