@@ -1,9 +1,11 @@
-import { Hub } from './hub.ts';
+import { Hub, PROFILE_CANDLES_BACK_MS, TIMEFRAMES } from './hub.ts';
 import { ServerSource } from './server-source.ts';
 import { BrowserSource } from './browser-source.ts';
 import { chooseCoin, currentCoin, forCoin, keepCoinRecordings, scaledUsd, type CoinChoice } from './coin.ts';
 import { instrumentIdFor } from '../shared/coins.ts';
 import { withAnchor } from './vwap/settings.ts';
+import { withProfileAnchor } from './traded/settings.ts';
+import { anchorAt } from './traded/anchor.ts';
 import type { DataSource } from './source.ts';
 import { loadKernels } from './kernels.ts';
 import { Store, autoTheme, initialState, themeChange } from './store.ts';
@@ -32,7 +34,7 @@ import { FundingPane } from './panes/funding-pane.ts';
 import { TabTitle } from './tab-title.ts';
 import { ScriptPane } from './panes/script-pane.ts';
 import { CandlePane } from './panes/candle-pane.ts';
-import { matchShortcut, togglePatch } from './shortcuts.ts';
+import { foldPatch, matchShortcut, togglePatch } from './shortcuts.ts';
 import { ReplayBar } from './replay/bar.ts';
 import { pageNow, replaying } from './replay/clock.ts';
 import { DrawController } from './draw/controller.ts';
@@ -40,6 +42,7 @@ import { DrawBar } from './draw/bar.ts';
 import { browserStore } from './draw/storage.ts';
 import { PALETTES } from './theme.ts';
 import { openedSheet } from './sheet.ts';
+import { dismissToast } from './toast.ts';
 import { topShown } from './measures/strip.ts';
 import { tableHeight } from './panes/bar-stats.ts';
 import { Layout, type LayoutPane } from './layout.ts';
@@ -143,6 +146,9 @@ async function main(): Promise<void> {
   // Scripts read the candles the chart draws, its own and the exchange's before them, and the map asks for some before its left edge while they
   // run (Karl, 2026-11-03: a script's line began wherever the 500th candle back fell).
   script.candlesOf = state => heat.scriptCandles(state);
+  script.barsState = () => heat.scriptBarsState();
+  // The scripts' candles from the exchange came in or are whole: the scripts look again, and an open Scripts panel says how they stand.
+  heat.onScriptHistory = () => { script.refresh(); script.candlesRead(); };
   heat.scriptsReading = () => script.reading;
   // The scripts placed on the map draw over it, and a script's candle colours (`$price.color`) colour its candles.
   heat.scriptLayer = (ctx, pw, ph) => script.paintOnMap(ctx, pw, ph); heat.candleColor = t => script.candleColorAt(t); script.onMapChanged = () => heat.invalidate();
@@ -206,6 +212,9 @@ async function main(): Promise<void> {
   heat.onArrangedChange = () => toolbar.refreshTradedPanel();
   // The panel says what of the profiles has no room, in the room the map had when it was last drawn.
   toolbar.profileRoom = () => heat.profileRoom();
+  toolbar.anchoredWindow = () => heat.anchoredWindow();
+  toolbar.updateAnchored = () => heat.updateAnchored();
+  heat.onAnchoredWindow = () => toolbar.refreshTradedPanel();
   // The Range tool: a drag on the map, on a pane under it or across the flow column selects, and its panel adds up what happened there.
   const range = new RangeTool(store, hub); range.anchor = toolbar.rangeButton; range.mapWindow = () => ({ t0: heat.view.t0, t1: heat.view.t1 });
   heat.range = range; cvd.range = range; for (const pane of [depth, oi, delta, ls, funding, lt, bars, script]) pane.useRange(range);
@@ -243,7 +252,7 @@ async function main(): Promise<void> {
     candleAt: x => heat.candleAt(x), closesOnly: () => store.state.chartType === 'line', wallsAt: x => heat.wallsAt(x), restingAt: price => heat.restingAt(price),
     mark: () => store.state.mark.price, coin: () => currentCoin().coin, now: pageNow, replaying, settings: () => store.state.draw,
     reveal: () => store.set({ draw: { ...store.state.draw, shown: true } }),
-    disarmOthers: () => { if (store.state.rangeTool) range.stop(); if (store.state.vwapAnchoring) store.set({ vwapAnchoring: false }); },
+    disarmOthers: () => { if (store.state.rangeTool) range.stop(); if (store.state.vwapAnchoring) store.set({ vwapAnchoring: false }); if (store.state.profileAnchoring) store.set({ profileAnchoring: false }); },
     focus: box => heat.focusOn(box),
     inspect: box => { range.begin({ t: box.t0, p: box.p0 }); range.end({ t: box.t1, p: box.p1 }, false); },
     alert: (text, key) => alerts.drawing(Date.now(), text, key),
@@ -295,8 +304,20 @@ async function main(): Promise<void> {
   toolbar.liqSource = hub.liqLevels;
   toolbar.profileHistory = barMs => hub.profileHistory(barMs);
   toolbar.whaleInfo = () => ({ since: hub.whale?.since ?? null, state: hub.whaleState, browser: source.kind === 'browser' });
+  toolbar.rollingReach = days => heat.rollingReach(days);
+  toolbar.vwapMarkets = () => heat.vwapMarketStates();
+  toolbar.tpoInfo = () => heat.tpoInfo();
+  heat.onRollingReach = () => toolbar.refreshOpenPanel();
   // A click on the map while placing a VWAP anchor: the anchor, for the coin on the page.
-  heat.onAnchor = at => { const s = store.state; store.set({ vwap: withAnchor({ ...s.vwap, on: true }, currentCoin().coin, at, Date.now()), vwapAnchoring: false }); };
+  heat.onAnchor = at => { const s = store.state; store.set({ vwap: withAnchor({ ...s.vwap, on: true }, currentCoin().coin, at, Date.now()), vwapAnchoring: false }); dismissToast(); };
+  // The columns' anchor at the start of the candle clicked (on five minutes); one older than the candle estimate reaches is not taken, and the
+  // tool stays armed for another click.
+  heat.onProfileAnchor = at => {
+    const s = store.state, start = anchorAt(at, TIMEFRAMES[s.timeframe] ?? 3_600_000);
+    if (start < Date.now() - PROFILE_CANDLES_BACK_MS || start > Date.now()) return;
+    store.set({ traded: withProfileAnchor({ ...s.traded, columns: 'anchor' }, currentCoin().coin, start), profileAnchoring: false, show: { ...s.show, traded: true } });
+    dismissToast();
+  };
   hub.onTraded = () => heat.invalidate();
   hub.onAbsorptionChanged = () => { heat.invalidate(); range.refreshHeld(); };
   toolbar.absorptionInfo = () => heat.absorptionThresholdText();
@@ -325,6 +346,7 @@ async function main(): Promise<void> {
     else if (a.kind === 'now') heat.jumpToNow();
     else if (a.kind === 'zoom') heat.zoomStep(a.dir);
     else if (a.kind === 'toggle') { store.set(togglePatch(store.state, a.feature)); toolbar.refreshOpenPanel(); }
+    else if (a.kind === 'fold') { store.set(foldPatch(store.state)); toolbar.refreshOpenPanel(); }
     else if (a.kind === 'column') layouts.toggleColumn(a.side);
     else if (a.kind === 'range') range.toggle();
     else if (a.kind === 'draw') drawBar.toggle();
@@ -387,10 +409,16 @@ async function main(): Promise<void> {
     if (changed.has('highlight')) { heat.invalidate(); oi.invalidate(); depth.invalidate(); }
     if (changed.has('depthBands') || changed.has('liqBands')) depth.settingsChanged();
     if (changed.has('depthSource')) depth.refresh();
-    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('keyLevels') || changed.has('traded') || changed.has('vwap') || changed.has('vwapAnchoring') || changed.has('footprint') || changed.has('customMarkets') || changed.has('barStatOptions')) heat.invalidate();
+    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('keyLevels') || changed.has('traded') || changed.has('vwap') || changed.has('tpo') || changed.has('vwapAnchoring') || changed.has('profileAnchoring') || changed.has('footprint') || changed.has('customMarkets') || changed.has('barStatOptions')) heat.invalidate();
     // Placing a VWAP anchor, selecting a Range and placing a drawing all take the next press on the map: arming one ends the others.
     if (changed.has('rangeTool') && state.rangeTool && state.vwapAnchoring) store.set({ vwapAnchoring: false });
-    if ((changed.has('rangeTool') && state.rangeTool) || (changed.has('vwapAnchoring') && state.vwapAnchoring)) draw.disarm();
+    // One tool takes the next press on the map at a time: arming the profile anchor ends the VWAP's, the Range tool's and a drawing's, and
+    // arming one of those ends it.
+    if (changed.has('profileAnchoring') && state.profileAnchoring) { if (state.vwapAnchoring) store.set({ vwapAnchoring: false }); if (state.rangeTool) range.stop(); }
+    // On a phone the panel and the Settings sheet cover the map: they make way for the tap that places the anchor.
+    if ((changed.has('profileAnchoring') && state.profileAnchoring) || (changed.has('vwapAnchoring') && state.vwapAnchoring)) toolbar.anchorArmed();
+    if (((changed.has('rangeTool') && state.rangeTool) || (changed.has('vwapAnchoring') && state.vwapAnchoring)) && state.profileAnchoring) store.set({ profileAnchoring: false });
+    if ((changed.has('rangeTool') && state.rangeTool) || (changed.has('vwapAnchoring') && state.vwapAnchoring) || (changed.has('profileAnchoring') && state.profileAnchoring)) draw.disarm();
     if (changed.has('draw')) draw.settingsChanged();
     if (changed.has('draw') || changed.has('theme') || changed.has('replay')) { heat.invalidate(); drawBar.sync(); }
     // A drawing half placed belongs to the chart it was begun on; a level with an alert is watched as the price moves.
@@ -439,7 +467,7 @@ async function main(): Promise<void> {
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();
     if (['show', 'candles', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'traded', 'timeZone', 'range', 'oi', 'oiInstrument', 'oiParts', 'oiFine'].some(k => changed.has(k as never))) delta.invalidate();
-    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
+    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'tpo', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
   });
 
   for (const p of themed) p.setPalette(store.state.theme);

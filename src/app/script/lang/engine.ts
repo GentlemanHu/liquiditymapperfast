@@ -2,9 +2,9 @@ import type { Expr, Stmt } from './parser.ts';
 import { ScriptSyntaxError, type ScriptError } from './lexer.ts';
 import { Interpreter, charge, type Budget, type Host } from './interpreter.ts';
 import { declaredNames, numberSites } from './walk.ts';
-import { DEPTH_FUNCTIONS, MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTable, sourceFilter, type Analysis } from './analysis.ts';
+import { DEPTH_FUNCTIONS, FULL_RUN_MS, MAX_PLOTS, PLOTS, RUN_MS, STEPS_PER_CANDLE, analyze, literal, optionTable, sourceFilter, type Analysis } from './analysis.ts';
 import { DateValue, HostObject, NativeFunction, ScriptRuntimeError, isPlain, num, own, plain, text, toData, truthy, type Value } from './values.ts';
-import { BUILTINS, makeInstance, type Candle, type Instance } from './builtins.ts';
+import { BUILTINS, MAX_WINDOW, makeInstance, type Candle, type Instance } from './builtins.ts';
 import { COLOR_NAMES, interpolateColors, rgb, safeColor } from './colors.ts';
 import { ALERT_SOUNDS, ALERT_TEXT, MARK_TEXT, MARK_TIP, MAX_ALERTS, PLOT_FIELDS, type AlertOut, type AlertSound, type PlotKind, type PlotOut, type ScriptResult } from '../protocol.ts';
 import { DEFAULT_SCRIPT_THEME, filterKey, type BarInputs, type SourceFilter, type SourceInputs } from '../inputs.ts';
@@ -49,6 +49,12 @@ function staticValue(e: Expr, opt: Readonly<Record<string, Value>>, scriptNames:
 
 /** The longest title a plot keeps, and the longest text of its style. */
 const MAX_TITLE = 120, MAX_STYLE_TEXT = 200;
+/**
+ * Where the stateful functions that count back over a window of candles take its length: a run whose longest window is longer than the
+ * candles it was given is warned of (`long-window`), since such a window never fills and holds only the candles there are, and so is one
+ * that asked a window longer than any can be (`MAX_WINDOW`, the length it then has).
+ */
+const WINDOW_ARG: Readonly<Record<string, number>> = Object.assign(Object.create(null) as Record<string, number>, { sum: 1, sma: 1, cma: 1, highest: 1, lowest: 1, linreg: 1, last: 1, stoch: 3 });
 /** A plot's style value held to short texts (a title or a colour, never a long text the page would have to carry). */
 function styleData(v: OptionValue | undefined): OptionValue | undefined {
   if (typeof v === 'string') return v.length <= MAX_STYLE_TEXT ? v : undefined;
@@ -112,10 +118,17 @@ function cloneValue(v: Value, seen = new Map<object, Value>()): Value {
   if (isPlain(v)) { const out = plain(); seen.set(v, out); for (const [k, x] of Object.entries(v)) out[k] = cloneValue(x, seen); return out; }
   return v;
 }
-/** A copy of a stateful function's state (numbers, arrays and small objects of numbers). */
+/**
+ * A copy of a stateful function's state (numbers, arrays and small objects of numbers). An array is copied whole, then each object in it:
+ * a window holds up to `MAX_WINDOW` numbers, and every live update copies them all (`restore`).
+ */
 function cloneState(v: unknown): unknown {
   if (v === null || typeof v !== 'object') return v;
-  if (Array.isArray(v)) return v.map(cloneState);
+  if (Array.isArray(v)) {
+    const out = v.slice() as unknown[];
+    for (let k = 0; k < out.length; k++) { const x = out[k]; if (x !== null && typeof x === 'object') out[k] = cloneState(x); }
+    return out;
+  }
   const out: Record<string, unknown> = {};
   for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = cloneState(x);
   return out;
@@ -148,6 +161,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   const byName = new Map<string, { get(): Value; set(v: Value): void } | null>();
 
   let i = 0;
+  /** The longest window a run asked of a function counting back over candles, the window it has (at most `MAX_WINDOW`), and the line it was asked on. */
+  let widest = { asked: 0, n: 0, line: 0 };
   const sourceStack: string[] = [''];
   const src = (): SourceInputs | undefined => inputs.sources[sourceStack[sourceStack.length - 1]!] ?? inputs.sources[''];
   const at = (arr: Float64Array | undefined): number => arr ? arr[i]! : NaN;
@@ -270,6 +285,9 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       if (plotKind) { plot(site, plotKind, args, named); return undefined; }
       const builtin = own(BUILTINS, name);
       if (builtin) {
+        const k = own(WINDOW_ARG, name);
+        // The window asked, and as the function takes it: at most MAX_WINDOW candles, and one that is not a number (Infinity too) is one candle.
+        if (k !== undefined) { const a = Math.floor(num(args[k])), asked = Number.isFinite(a) ? a : 1; if (asked > widest.asked) widest = { asked, n: Math.min(MAX_WINDOW, asked), line: node.p.line }; }
         const inst = instanceAt(site);
         if (!inst.touched) { inst.touched = true; touched.push(inst); }
         return builtin(inst, args, named, candle);
@@ -429,7 +447,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
   const interp = new Interpreter(a.program, host, budget);
 
   /** What the script held after candle `at` of `inputs` had closed, and what it had drawn by then. */
-  interface Snapshot { at: number; inputs: BarInputs; kept: Map<string, { v: Value; past: Value[] }>; states: Map<number, unknown>; fields: Map<number, Record<string, Float64Array>>; colors: Map<number, string[] | null>; texts: Map<number, [string[] | null, string[] | null]>; candleColors: string[]; styles: Map<number, { title: string; style: Record<string, OptionValue> }>; styled: Set<number> }
+  interface Snapshot { at: number; inputs: BarInputs; kept: Map<string, { v: Value; past: Value[] }>; states: Map<number, unknown>; fields: Map<number, Record<string, Float64Array>>; colors: Map<number, string[] | null>; texts: Map<number, [string[] | null, string[] | null]>; candleColors: string[]; styles: Map<number, { title: string; style: Record<string, OptionValue> }>; styled: Set<number>; widest: { asked: number; n: number; line: number } }
   let snap: Snapshot | null = null;
   /**
    * Whether what the script holds can be put back exactly: kept names holding plain values (numbers, texts, true/false, dates) and options it
@@ -454,6 +472,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     candleColors,
     styles: new Map([...plots].map(([site, p]) => [site, { title: p.title, style: JSON.parse(JSON.stringify(p.style)) as Record<string, OptionValue> }])),
     styled: new Set(styled),
+    widest: { ...widest },
   });
   /** Put back what the script held after candle `snap.at`. */
   const restore = (from: Snapshot): void => {
@@ -462,6 +481,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     // A plot first styled on a candle after the snapshot is styled again by the run that takes that candle over.
     styled.clear(); for (const site of from.styled) styled.add(site);
     for (const [site, p] of plots) { const was = from.styles.get(site); if (was) { p.title = was.title; p.style = JSON.parse(JSON.stringify(was.style)) as Record<string, OptionValue>; } }
+    // The longest window the candles taken over asked: a run of the newest candles alone warns as a run of all of them would.
+    widest = { ...from.widest };
   };
   /** Start from nothing: every kept name at 0, every function's state empty. */
   const fresh = (): void => {
@@ -475,12 +496,13 @@ export function createRunner(id: string, source: string, optionValues: Record<st
     optionsWritten = false;
     styled.clear();
     for (const [site, p] of plots) { const s0 = initialStyles.get(site)!; p.title = s0.title; p.style = { ...s0.style }; }
+    widest = { asked: 0, n: 0, line: 0 };
   };
 
   const runner = {
     startedAt: 0,
     run(next: BarInputs): ScriptResult {
-      const started = now();
+      const started = now(), before = inputs;
       inputs = next; n = next.time.length;
       // From the candle after the last one that had closed at the run before, when every candle before it is the same.
       // A closed candle whose order book changed since (a window settled, a book added) is run again with every candle after it.
@@ -488,7 +510,12 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       const from = start > 0 ? snap : null;
       if (from) restore(from); else { fresh(); snap = null; }
       runner.startedAt = start;
-      budget.steps = 0; budget.left = Math.max(200_000, STEPS_PER_CANDLE * (n - start)); budget.deadline = started + RUN_MS;
+      // A live update (the newest candles alone) has RUN_MS, and so does a run from the first candle over the candles the run before had, its
+      // newest changed or new ones after them: a script that keeps an array or writes its options cannot be put back, so it runs every candle
+      // at every update, and FULL_RUN_MS would let each update take ten seconds (Sol, 2026-11-10). Other candles (a chart opened, more history,
+      // a setting, a script changed) have FULL_RUN_MS, as the worker host allows (`host.ts`).
+      const update = start > 0 || (before.time.length >= 2 && sameCandles(before, next, before.time.length - 1));
+      budget.steps = 0; budget.left = Math.max(200_000, STEPS_PER_CANDLE * (n - start)); budget.deadline = started + (update ? RUN_MS : FULL_RUN_MS);
       const warnings = [...a.warnings];
       // The plots' numbers: those of the candles taken over, then NaN until the run gives them.
       for (const [site, p] of plots) {
@@ -526,6 +553,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       }
       // A run of the candle under way alone keeps the snapshot of the run before (its closed candles are the same); a run over no closed candle has none.
       if (n < 2 || optionsWritten) snap = null;
+      // "line|asked|window|candles": a window that never fills here, or one asked longer than any window can be (the window is then MAX_WINDOW).
+      if (n > 0 && (widest.n > n || widest.asked > widest.n)) warnings.push({ code: 'long-window', detail: `${widest.line}|${widest.asked}|${widest.n}|${n}` });
       dropZeros();
       const out: PlotOut[] = plotOrder.map(site => { const p = plots.get(site)!; return { kind: p.kind, title: p.title, style: p.style, fields: p.fields, colors: p.colors, ...(p.kind === 'mark' ? { texts: p.texts, tips: p.tips } : {}) }; });
       if (!out.length && !colored && !alertSites) warnings.push({ code: 'no-plots' });

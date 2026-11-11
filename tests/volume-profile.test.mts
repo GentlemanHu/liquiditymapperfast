@@ -6,10 +6,11 @@ import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
 import { QuotaLedger } from '../src/core/quota.mts';
 import { levelsOf, pointOfControl, valueArea } from '../src/shared/profile.ts';
+import type { CandleRow } from '../src/app/store.ts';
 import { FootprintRecorder, parseProfile, parseValueAreas } from '../src/shared/footprint.ts';
 import { dayWindows, fromWall, lastWindows, offsetMs, sessionWindows, weekWindows, type SessionDef } from '../src/app/traded/sessions.ts';
 import { TRADED_DEFAULTS, chartKinds, linesCount, linesSource, readTraded, recordedCount, resolveZone } from '../src/app/traded/settings.ts';
-import { answerLevels, candleAnswer, candleBarMs, candleLevels, linesWindows, loadedColumnWanted, mergeCandleProfiles, recordedShare, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
+import { answerLevels, candleAnswer, candleBarMs, candleLevels, candleLevelsByRow, linesWindows, loadedColumnWanted, mergeCandleProfiles, recordedShare, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../src/app/traded/levels.ts';
 import { TradeCoverage, recordedMinutes } from '../src/shared/coverage.ts';
 import { tradedRows } from '../src/app/traded.ts';
 import { initialState } from '../src/app/store.ts';
@@ -434,4 +435,41 @@ test('where the recording begins for the column does not depend on the window an
   assert.equal(recordingStart(win, asked, old, 0, ['old:BTC', 'kept:BTC']), to - 2 * DAY, 'counted again, it does');
   assert.equal(recordingStart(win, asked, old, to - 3 * DAY, ['new:BTC']), to - 3 * DAY, 'none of the answer counted: as if none were held, the hub says');
   assert.equal(recordingStart({ from: to - DAY, to }, to - DAY, [{ id: 'old:BTC', earliest: to - 2 * MIN }], 0, ['new:BTC']), null, 'and without the hub: the recording is taken to hold the day');
+});
+
+test('the estimate in flat arrays gives the row by row estimate: the same rows, the same sums, the same levels', () => {
+  let seed = 11;
+  const rnd = (): number => { seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648; return seed / 2_147_483_648; };
+  const B = 5 * MIN, T = 1_800_000_000_000 - (1_800_000_000_000 % B);
+  for (const [step, taker] of [[20, true], [5, false], [0.5, true], [0.25, true], [7.3, true]] as const) {
+    const bars: number[][] = [];
+    let p = 85_000;
+    for (let k = 0; k < 400; k++) {
+      p *= 1 + (rnd() - 0.5) * 0.004;
+      // Some bars with no range, some on row boundaries, some with no volume, and one with no taker side where the others have it.
+      const flat = rnd() < 0.08, onRow = rnd() < 0.1;
+      const low = onRow ? Math.round(p / step) * step : p * (1 - rnd() * 0.002);
+      const high = flat ? low : onRow ? low + step * Math.ceil(rnd() * 30) : p * (1 + rnd() * 0.002);
+      const volume = rnd() < 0.05 ? 0 : 1 + rnd() * 40, row = [T + k * B, p, high, low, (high + low) / 2, volume];
+      if (taker) row.push(0, k === 77 && step === 7.3 ? NaN : volume * rnd());
+      bars.push(row);
+    }
+    const rows = bars as unknown as Parameters<typeof candleLevels>[0], from = T + 3 * B, to = T + 380 * B;
+    const fast = candleLevels(rows, from, to, B, step, 0.7, to), slow = candleLevelsByRow(rows, from, to, B, step, 0.7, to);
+    assert.deepEqual([...fast.rows.keys()].sort((a, b) => a - b), [...slow.rows.keys()].sort((a, b) => a - b), `rows at $${step}`);
+    for (const [k, v] of slow.rows) assert.ok(Math.abs(fast.rows.get(k)! - v) <= 1e-9 * Math.max(1, v), `row ${k} at $${step}: ${fast.rows.get(k)} vs ${v}`);
+    assert.equal(fast.buys === null, slow.buys === null, 'buys only where every bar says them');
+    if (fast.buys && slow.buys) for (const [k, v] of slow.buys) assert.ok(Math.abs(fast.buys.get(k)! - v) <= 1e-9 * Math.max(1, v));
+    assert.deepEqual(fast.levels, slow.levels);
+    assert.equal(fast.covered, slow.covered);
+  }
+});
+
+test('the two candle estimates read the same value area on a near tie, whatever their last digits (Sol, 2026-11-10)', () => {
+  // Rows that hold the same volume to the last digit or two: compared exactly, the value area low was 105 one way and 104 the other.
+  const BAR = 300_000, tuples: [number, number, number][] = [[103, 105, 1], [105, 111, 1.8], [106, 108, 1.8], [104, 107, 0.6], [105, 109, 1.6]];
+  const bars = tuples.map(([low, high, usd], i): CandleRow => { const mid = (low + high) / 2; return [i * BAR, mid, high, low, mid, usd / mid]; });
+  const fast = candleLevels(bars, 0, 5 * BAR, BAR, 1, 0.7, 5 * BAR), slow = candleLevelsByRow(bars, 0, 5 * BAR, BAR, 1, 0.7, 5 * BAR);
+  assert.deepEqual(fast.levels, slow.levels);
+  assert.deepEqual(slow.levels, { poc: 106.5, val: 104, vah: 109 });
 });

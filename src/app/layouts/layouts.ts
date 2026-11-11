@@ -1,5 +1,6 @@
 import { LAYOUT_KEYS, readSettings, type AppState, type Settings } from '../store.ts';
 import { PANE_SHOW_KEY, legacyPlan, readPlan, samePlan, type DockPlan } from './dock-model.ts';
+import { readTpo } from '../tpo/settings.ts';
 
 /**
  * Saved layouts: a name for the panes as they are arranged (order, heights, column widths) and the settings of what the chart shows
@@ -75,13 +76,14 @@ export function paneSettings(state: AppState): Partial<Settings> {
   return { show: Object.fromEntries(PANE_SWITCHES.map(key => [key, state.show[key]])) as Settings['show'] };
 }
 
-/** The settings a layout keeps from a state: `LAYOUT_KEYS`, without the VWAP anchors and the Volume profile's zone. */
+/** The settings a layout keeps from a state: `LAYOUT_KEYS`, without the VWAP anchors, the Volume profile's zone and its anchors, and the TPO's rows, splits and merges (each of one coin). */
 export function settingsOf(state: AppState): Partial<Settings> {
   const out: Record<string, unknown> = {};
   for (const key of LAYOUT_KEYS) out[key] = state[key];
   const { anchors: _anchors, ...vwap } = state.vwap;
-  const { zone: _zone, ...traded } = state.traded;
-  return { ...out, vwap: vwap as Settings['vwap'], traded: traded as Settings['traded'] };
+  const { zone: _zone, anchors: _profileAnchors, ...traded } = state.traded;
+  const { rows: _rows, splits: _splits, merges: _merges, ...tpo } = state.tpo ?? readTpo(undefined);
+  return { ...out, vwap: vwap as Settings['vwap'], traded: traded as Settings['traded'], tpo: tpo as Settings['tpo'] };
 }
 
 /** Equal values, whatever order an object's keys are in (a setting read again lists them in its own order). */
@@ -125,7 +127,8 @@ export function undoPatch(before: Partial<Settings>, after: Partial<Settings>, n
 export function completeSettings(patch: Partial<Settings>, current: AppState): Partial<Settings> {
   const out: Partial<Settings> = { ...patch };
   if (out.vwap) out.vwap = { ...out.vwap, anchors: current.vwap.anchors };
-  if (out.traded) out.traded = { ...out.traded, zone: current.traded.zone };
+  if (out.traded) out.traded = { ...out.traded, zone: current.traded.zone, anchors: current.traded.anchors };
+  if (out.tpo && current.tpo) out.tpo = { ...out.tpo, rows: current.tpo.rows, splits: current.tpo.splits, merges: current.tpo.merges };
   return out;
 }
 
@@ -147,7 +150,8 @@ export function carriedSettings(raw: Partial<Settings>): Partial<Settings> {
   const named = (key: string): boolean => Object.hasOwn(raw, key) || (key === 'traded' && Object.hasOwn(raw, 'measureStrip'));
   for (const key of LAYOUT_KEYS) if (named(key)) out[key] = full[key];
   if (out.vwap) { const { anchors: _anchors, ...vwap } = full.vwap; out.vwap = vwap; }
-  if (out.traded) { const { zone: _zone, ...traded } = full.traded; out.traded = traded; }
+  if (out.traded) { const { zone: _zone, anchors: _profileAnchors, ...traded } = full.traded; out.traded = traded; }
+  if (out.tpo) { const { rows: _rows, splits: _splits, merges: _merges, ...tpo } = full.tpo; out.tpo = tpo; }
   if (out.show) {
     // Two switches follow from something else in a layout from before (readSettings): the Bar stats table showed with the footprint until it had its
     // own switch, and the Volume profile along the top was the measure strip.
@@ -164,7 +168,8 @@ export function carriedSettings(raw: Partial<Settings>): Partial<Settings> {
  */
 export function settingsToApply(saved: Partial<Settings>, current: AppState): Settings {
   const settings = readSettings({ ...settingsOf(current), ...saved, ...(saved.show ? { show: { ...current.show, ...saved.show } } : {}) });
-  return { ...settings, vwap: { ...settings.vwap, anchors: current.vwap.anchors }, traded: { ...settings.traded, zone: current.traded.zone } };
+  return { ...settings, vwap: { ...settings.vwap, anchors: current.vwap.anchors }, traded: { ...settings.traded, zone: current.traded.zone, anchors: current.traded.anchors },
+    tpo: { ...settings.tpo, rows: current.tpo?.rows ?? {}, splits: current.tpo?.splits ?? {}, merges: current.tpo?.merges ?? {} } };
 }
 
 /** A pane arrangement from storage or a file, or null: ids are strings, sizes are finite and within reason. */

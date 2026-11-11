@@ -9,7 +9,7 @@ import { inEnglish } from '../../i18n.ts';
 import { errorText, warningText } from '../messages.ts';
 import { PLOT_FIELDS, type PlotKind, type Warning } from '../protocol.ts';
 import { MAX_SCRIPTS, MAX_SOURCE_CHARS, SCRIPT_API } from '../records.ts';
-import { EXCHANGES, MAX_PLOTS, MAX_SOURCES, PLOTS, RUN_MS, STEPS_PER_CANDLE } from './analysis.ts';
+import { EXCHANGES, FULL_RUN_MS, MAX_PLOTS, MAX_SOURCES, PLOTS, RUN_MS, STEPS_PER_CANDLE } from './analysis.ts';
 import { BUILTINS } from './builtins.ts';
 import type { ScriptError } from './lexer.ts';
 import { MAX_ARRAY, MAX_TEXT } from './values.ts';
@@ -21,7 +21,7 @@ export const REFERENCE_URL = `${SITE}script-reference.md`, DATA_URL = `${SITE}sc
 /** What a script reads, by name. */
 export const INPUTS: readonly { name: string; is: string }[] = [
   { name: 'time', is: "The candle's start, in seconds since 1970 (UTC)." },
-  { name: 'vbuy', is: 'Dollars bought at market (taker buys) in the candle, over the markets the script reads (see source). Where the page did not record the flow (before it was opened, or in a gap) and those markets hold the chart\'s, the chart market\'s own candle says it (Binance\'s candles report who bought): one market, not all of them, so the numbers are smaller there; bar.recorded tells which. NaN where neither is known.' },
+  { name: 'vbuy', is: 'Dollars bought at market (taker buys) in the candle, over the markets the script reads (see source). Where the page did not record the flow (before it was opened, or in a gap), the candles of the Binance markets among them say it, spot and perpetual added up, as far back as the script reads (Binance\'s candles report who bought; no other exchange\'s do): those markets only, not all of them, so the numbers are smaller there; bar.recorded tells which. NaN where neither is known (a set with no Binance market, or a Binance candle not read).' },
   { name: 'vsell', is: 'Dollars sold at market (taker sells) in the candle, likewise.' },
   { name: 'lbuy', is: 'Dollars of short positions liquidated in the candle (bought back by force), over the markets the script reads.' },
   { name: 'lsell', is: 'Dollars of long positions liquidated in the candle (sold by force).' },
@@ -29,7 +29,7 @@ export const INPUTS: readonly { name: string; is: string }[] = [
   { name: 'cbuy', is: 'Trade counts are not recorded here: cbuy and csell always read NaN.' },
   { name: 'csell', is: 'See cbuy.' },
   { name: '$price', is: "The chart's candle: $price.open, .high, .low, .close, .volume (the chart market's own volume, in coins), .time (seconds). Setting $price.color = \"<colour>\" colours the map's candle." },
-  { name: 'bar', is: 'The same candle and flow as one object: bar.open, .high, .low, .close, .volume, .vbuy, .vsell, .lbuy, .lsell, .oichg, .timestamp (seconds), and .recorded: 1 where vbuy and vsell were recorded on this page, 0 where they come from the chart market\'s own candle, NaN where neither is known.' },
+  { name: 'bar', is: 'The same candle and flow as one object: bar.open, .high, .low, .close, .volume, .vbuy, .vsell, .lbuy, .lsell, .oichg, .timestamp (seconds), and .recorded: 1 where vbuy and vsell were recorded on this page, 0 where they come from the Binance markets\' own candles, NaN where neither is known.' },
   { name: 'renderer', is: 'renderer.length is the number of candles so far, this one included; renderer.timestamp the candle\'s start (seconds), renderer.timeframe its length (seconds); renderer.forming is true on the candle still under way (the newest, until it closes) and false on every closed one.' },
   { name: 'theme', is: "The page's colours, read-only: theme.dark (whether the chart's background is dark), theme.background, theme.text, theme.up and theme.down (its candles' colours), as colour texts. A script coloured from them follows the theme the person picks, and runs again when it changes." },
   { name: 'options', is: 'options.name is the value of the option called name (declared with option(...) or set in the panel).' },
@@ -117,7 +117,7 @@ export const RULES: readonly string[] = [
   "A plot's named arguments are its style, read once, at its first call: what changes from candle to candle goes in its values, by position or in a point object (a mark's text, tip and colour: mark(v, text, tip, colour) or mark({value: v, text: t, color: c}); a line's colour: line({value: x, color: c})).",
   "Plots are line, area, histogram, baseline, candlestick, plotbar, cloudarea, brokenarea, mark (each also as plotline, plothistogram, ...). Each takes title=, priceScaleId=, scaleMargins={top: 0.1, bottom: 0.1} and visible=, and the style its kind reads (see Plots: a candlestick has upColor and downColor, not color); a kind ignores the style it does not read. lineWidth is 1 to 6; lineStyle is 0 solid, 1 dotted, 2 dashed, 3 long dashes, 4 sparse dots. A point can be an object: line({time: time, value: x, color: c}) colours that candle's point.",
   "A script draws in a row of its own under the map, or on the map, where plots on the default price scale (priceScaleId right) stand at their prices and the others on scales of their own; the Draw setting in its panel chooses. $price.color colours the map's candles.",
-  'A candle whose flow is known neither from the recording nor from the chart market\'s own candle, or whose liquidations were not recorded (no candle reports them), reads NaN: the functions skip it (they do not take it as 0) and a plot draws nothing there. Use nz(x) where 0 is meant.',
+  'A candle whose flow is known neither from the recording nor from Binance\'s own candles, or whose liquidations were not recorded (no candle reports them), reads NaN: the functions skip it (they do not take it as 0) and a plot draws nothing there. Use nz(x) where 0 is meant.',
   'Each call of a function with a history (sma, ema, cum, ...) keeps its own: call them at fixed places, not in a loop over windows (a loop would share one).',
   'Lengths may be any expression (sma(x, options.length)); a window shorter than its length uses the values there are.',
 ];
@@ -125,7 +125,7 @@ export const RULES: readonly string[] = [
 /** What a script may take. */
 export const LIMITS: Readonly<Record<string, number>> = {
   scripts: MAX_SCRIPTS, characters: MAX_SOURCE_CHARS, plots: MAX_PLOTS, marketSets: MAX_SOURCES,
-  stepsPerCandle: STEPS_PER_CANDLE, runMilliseconds: RUN_MS, arrayElements: MAX_ARRAY, textCharacters: MAX_TEXT,
+  stepsPerCandle: STEPS_PER_CANDLE, runMilliseconds: RUN_MS, fullRunMilliseconds: FULL_RUN_MS, arrayElements: MAX_ARRAY, textCharacters: MAX_TEXT,
 };
 
 /** A script of `n` lines made by `line(k)`, for the examples of limits a short script cannot reach. */
@@ -174,8 +174,8 @@ export const ERRORS: readonly { code: string; wrong?: string; right?: string; sh
   { code: 'budget', when: 'running', wrong: 'while (true) {}\nline(1)', right: 'var i = 0\nwhile (i < 10) i++\nline(i)' },
   { code: 'too-large', when: 'running', wrong: 'var s = "x".padStart(20000)\nline(s.length)', right: 'var s = "x".padStart(200)\nline(s.length)' },
   {
-    code: 'too-slow', when: 'running', note: `The whole run, over every candle of the chart, took longer than ${RUN_MS / 1000} s; each candle on its own stayed within its steps. Work less a candle, or keep in a kept name what an earlier candle worked out.`,
-    wrong: 'var s = 0\nfor (var i = 0; i < 8000; i++) s = s + Math.sqrt(i)\nline(s)', right: 'var s = 0\nfor (var i = 0; i < 50; i++) s = s + Math.sqrt(i)\nline(s)',
+    code: 'too-slow', when: 'running', note: `The run took longer than its time: ${FULL_RUN_MS / 1000} s for a run from the first candle (the chart opened, the script changed), ${RUN_MS / 1000} s for a live update of the newest candles; each candle on its own stayed within its steps. Work less a candle, or keep in a kept name what an earlier candle worked out. The example below takes about 30,000 steps a candle: it meets the limit on a chart of 2,000 candles.`,
+    wrong: 'var s = 0\nfor (var i = 0; i < 10000; i++) s = s + Math.sqrt(i)\nline(s)', right: 'var s = 0\nfor (var i = 0; i < 50; i++) s = s + Math.sqrt(i)\nline(s)',
   },
   { code: 'timeout', when: 'page' },
   { code: 'worker-failed', when: 'page' },
@@ -185,11 +185,11 @@ export const ERRORS: readonly { code: string; wrong?: string; right?: string; sh
 ];
 
 /** The warnings, which do not stop a script. */
-export const WARNINGS: readonly string[] = ['no-counts', 'unknown-reference', 'unsupported-member', 'no-plots', 'no-markets', 'unset-option', 'unread-source', 'liquidations-cut'];
+export const WARNINGS: readonly string[] = ['no-counts', 'unknown-reference', 'unsupported-member', 'no-plots', 'no-markets', 'unset-option', 'unread-source', 'liquidations-cut', 'long-window'];
 
 /** What an error or a warning says, in English, as the panel says it (X standing for the name or the text it is about). */
 export const errorSentence = (code: string, detail = 'X'): string => inEnglish(() => errorText({ code, line: 0, col: 0, detail } as ScriptError));
-export const warningSentence = (code: string, detail = 'X'): string => inEnglish(() => warningText({ code, detail }));
+export const warningSentence = (code: string, detail = 'X', reads?: number): string => inEnglish(() => warningText({ code, detail }, reads));
 
 const ERROR_WHEN: Readonly<Record<string, string>> = {
   reading: 'Met while the script is read, before it runs: nothing is drawn.',
@@ -215,7 +215,7 @@ export function referenceMarkdown(): string {
   for (const p of PLOT_KINDS) out.push(`| ${p.kind} | ${callsOf(p.kind).map(c => `\`${c}\``).join(', ')} | ${PLOT_FIELDS[p.kind].join(', ')} | ${p.style} | ${cell(p.is)} |`);
   out.push('', '## Markets', '', `source(x, exchange=...) takes these exchange names: ${Object.keys(EXCHANGES).join(', ')}. type= is spot or perp; quote= is the quote currency (USDT, USDC, USD, ...). A filter can also be an option: exchange=options.venue.`, '');
   out.push('## Not supported', '', ...NOT_SUPPORTED.map(n => `- ${n}`), '');
-  out.push('## Limits', '', `At most ${MAX_SCRIPTS} scripts of ${MAX_SOURCE_CHARS.toLocaleString('en')} characters, ${MAX_PLOTS} plots and ${MAX_SOURCES} different sets of markets a script (the unfiltered one counted); about ${STEPS_PER_CANDLE.toLocaleString('en')} steps a candle and ${RUN_MS / 1000} s a run; arrays of ${MAX_ARRAY.toLocaleString('en')} elements and texts of ${MAX_TEXT.toLocaleString('en')} characters. A run that passes them stops with its line and column.`, '');
+  out.push('## Limits', '', `At most ${MAX_SCRIPTS} scripts of ${MAX_SOURCE_CHARS.toLocaleString('en')} characters, ${MAX_PLOTS} plots and ${MAX_SOURCES} different sets of markets a script (the unfiltered one counted); about ${STEPS_PER_CANDLE.toLocaleString('en')} steps a candle; ${FULL_RUN_MS / 1000} s a run from the first candle and ${RUN_MS / 1000} s a live update of the newest candles; arrays of ${MAX_ARRAY.toLocaleString('en')} elements and texts of ${MAX_TEXT.toLocaleString('en')} characters. A run that passes them stops with its line and column.`, '');
   out.push('## Errors', '', 'An error stops the script and says its line and column. Each code below is what Copy for AI and the panel report; X stands for the name or the text the error is about.', '');
   for (const e of ERRORS) {
     out.push(`### ${e.code}`, '', `${errorSentence(e.code)} ${ERROR_WHEN[e.when]}${e.note ? ` ${e.note}` : ''}`, '');

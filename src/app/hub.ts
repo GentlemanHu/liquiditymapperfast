@@ -26,12 +26,23 @@ import { NO_FLAGS, type Thresholds } from './measures/measure.ts';
 import { PRINTS_PER_ANSWER } from '../shared/prints.ts';
 import { webGet } from '../shared/history.ts';
 import { KeyLevelHistory } from './keylevels/history.ts';
+import { pacedFetcher } from './paced-get.ts';
+import { scriptChunk } from './script/bars.ts';
+import { ROLLING_MAX_BARS } from './vwap/vwap.ts';
 import { LiqLevelsSource } from './liq-levels.ts';
 import { TapeRing, tapeCapacity } from './tape/ring.ts';
 import { isPhone } from './device.ts';
 import type { SumRow } from '../shared/print-sums.ts';
 import { ChartPriceHistory } from './price-history.ts';
 import { ColumnHolds, columnReach, columnStepFor, settledBefore, type ColumnDrop } from './column-holds.ts';
+/** How many VWAP histories are kept before those not asked for in five minutes are let go (one market's lines use up to nine). */
+const VWAP_HISTORIES = 16;
+/** The TPO's histories held at once: the chart market's and its daily candles, and ten other markets'. */
+const TPO_HISTORIES = 16;
+/** The scripts' candle histories kept (`scriptHistory`): a perpetual's and a spot market's, at this timeframe and the one before. */
+const SCRIPT_HISTORIES = 4;
+/** The candle histories' requests: a queue per exchange host, which waits after a venue says it was asked too often (`pacedFetcher`). */
+const historyGet = pacedFetcher(webGet);
 
 export const TIMEFRAMES: Readonly<Record<string, number>> = { '1m': 60_000, '5m': 300_000, '15m': 900_000, '30m': 1_800_000, '1h': 3_600_000, '4h': 14_400_000, '1d': 86_400_000 };
 const MINUTE = 60_000;
@@ -253,6 +264,12 @@ export class Hub {
   mapCovered = false;
   /** Whether history reads still wait for the map's first columns (`MAP_FIRST_MS`): the server's page only, its first seconds only. */
   mapFirst(): boolean { return this.#paced && this.source.kind === 'server' && !this.mapCovered && !this.#mapWaited && this.columnsVersion === 0 && performance.now() - this.#bornAt < MAP_FIRST_MS; }
+  /**
+   * Whether the map's first columns are not drawn yet (for `MAP_FIRST_MS` at most), whatever the source: reads only scripts want (their
+   * candles from the exchange, `scriptHistory`) wait for it, on a page reading the exchanges itself too. Not while the map is covered (a
+   * phone's Tape or Flow tab: it draws no columns to wait for), nor on a hub that paces nothing (Sol, code review 2026-11-10, round 3).
+   */
+  firstColumnsPending(): boolean { return this.#paced && !this.mapCovered && !this.#mapWaited && this.columnsVersion === 0 && performance.now() - this.#bornAt < MAP_FIRST_MS; }
   #tapeOn = false;
   /** Ask the source for every order (the trade dust) or stop it; what is held stays until the page goes. */
   setTape(on: boolean): void {
@@ -268,10 +285,15 @@ export class Hub {
   /** Liquidations held for the map (the venues that publish them), and a call when they change. */
   readonly liquidations = new LiquidationBook();
   /** The hourly candles the key levels are read from, straight from the exchange (keylevels/history.ts). */
-  readonly keyHistory = new KeyLevelHistory(webGet);
+  readonly keyHistory = new KeyLevelHistory(historyGet);
   /** The Liquidation levels layer's file and the candles that take its levels away. */
   readonly liqLevels = new LiqLevelsSource(webGet);
-  readonly #vwapHistories = new Map<number, KeyLevelHistory>();
+  /** The scripts' candles from the exchange (`scriptHistory`), by market, timeframe and count, the last `SCRIPT_HISTORIES` asked for. */
+  readonly #scriptHistories = new Map<string, KeyLevelHistory>();
+  /** The VWAP lines' candles, one history per kind, market and bar size (`vwapHistory`), and when each was last asked for. */
+  readonly #vwapHistories = new Map<string, { h: KeyLevelHistory; used: number }>();
+  /** The TPO's candles, one history per kind, market and bar size (`tpoHistory`), and when each was last asked for. */
+  readonly #tpoHistories = new Map<string, { h: KeyLevelHistory; used: number }>();
   readonly #profileHistories = new Map<string, KeyLevelHistory>();
   /**
    * The whale VWAP's sums: the whole minutes answered (`rows`, before `to`) and since then the minutes added from the orders pushed live
@@ -314,15 +336,54 @@ export class Hub {
       if (p.side === 'buy') { row[1] += p.usd; row[2] += p.usd / p.price; } else { row[3] += p.usd; row[4] += p.usd / p.price; }
     }
   }
-  /** The VWAP's candles of one bar size (a minute for a day's session, coarser for longer ones and old anchors), asked again every minute. */
-  vwapHistory(barMs: number): KeyLevelHistory {
-    let h = this.#vwapHistories.get(barMs);
-    if (!h) {
-      // At most a few sizes are in use at once; the one not asked for longest goes first.
-      if (this.#vwapHistories.size >= 4) this.#vwapHistories.delete(this.#vwapHistories.keys().next().value!);
-      h = new KeyLevelHistory(webGet, Date.now, 60_000);
-    } else this.#vwapHistories.delete(barMs);
-    this.#vwapHistories.set(barMs, h);
+  /**
+   * One market's candles the scripts read (`script/bars.ts`): the chart market's (`HeatPane.scriptCandles`), and those of the Binance markets
+   * in the sets a script reads the flow of (`ScriptData`: their taker buys say who bought where the page recorded nothing). One history of
+   * the chart's timeframe a market, with its taker buys where the exchange reports them (Binance's), kept back a chunk and two days past the
+   * count asked, so the scripts' first candle (`scriptStart`) stays in it until it moves on by a chunk. Another market, timeframe or count is
+   * another history; the four last asked for are kept (a perpetual's and a spot market's at this timeframe and the one before), so a
+   * timeframe switched to and back is not read again.
+   */
+  scriptHistory(tfMs: number, bars: number, id: string): KeyLevelHistory {
+    const key = `${id}|${tfMs}|${bars}`;
+    let h = this.#scriptHistories.get(key);
+    if (h) this.#scriptHistories.delete(key);
+    else {
+      h = new KeyLevelHistory(historyGet, Date.now, 60_000, (bars + scriptChunk(bars)) * tfMs + 2 * 86_400_000);
+      h.withBuy = true;
+      if (this.#scriptHistories.size >= SCRIPT_HISTORIES) this.#scriptHistories.delete(this.#scriptHistories.keys().next().value!);
+    }
+    this.#scriptHistories.set(key, h);
+    return h;
+  }
+  /**
+   * The VWAP's candles of one market and bar size, asked again every minute: the session's and the anchors' (a minute for a day's session,
+   * coarser for longer ones and old anchors; kept as far back as the key levels reach), or with `rolling` the rolling VWAPs' (kept
+   * `ROLLING_MAX_BARS` bars back, since two months do not hold a year's window). One history per kind, market and size, so lines of several
+   * markets and sizes never take turns at one (each turn read it again). The lines shown ask for theirs at every frame; a history not asked
+   * for in five minutes (another coin's, a size no line uses now) is let go when another is made and there are `VWAP_HISTORIES` or more.
+   */
+  vwapHistory(id: string, barMs: number, rolling = false): KeyLevelHistory {
+    const key = `${rolling ? 'rolling' : 'vwap'}|${id}|${barMs}`, now = Date.now(), held = this.#vwapHistories.get(key);
+    if (held) { held.used = now; return held.h; }
+    if (this.#vwapHistories.size >= VWAP_HISTORIES) for (const [k, x] of this.#vwapHistories) if (now - x.used > 300_000) this.#vwapHistories.delete(k);
+    const h = rolling ? new KeyLevelHistory(historyGet, Date.now, 60_000, barMs * ROLLING_MAX_BARS) : new KeyLevelHistory(historyGet, Date.now, 60_000);
+    this.#vwapHistories.set(key, { h, used: now });
+    return h;
+  }
+  /**
+   * The TPO's candles of one market and bar size (tpo/layer.ts): the chart market's (`main`), the other markets' that judge which blocks
+   * stood alone (`peer`), and the daily ones its Auto rows are read from (`days`). Asked again every minute, kept as far back as the key
+   * levels reach; one history per kind, market and size, the same five-minute letting-go as the VWAP's (their own map, so neither feature
+   * pushes the other's out).
+   */
+  tpoHistory(id: string, barMs: number, kind: 'main' | 'peer' | 'days'): KeyLevelHistory {
+    const key = `${kind}|${id}|${barMs}`, now = Date.now(), held = this.#tpoHistories.get(key);
+    if (held) { held.used = now; return held.h; }
+    if (this.#tpoHistories.size >= TPO_HISTORIES) for (const [k, x] of this.#tpoHistories) if (now - x.used > 300_000) this.#tpoHistories.delete(k);
+    // The other markets judge only blocks that are over (a block lasts half an hour), so their candles are read again every five minutes.
+    const h = new KeyLevelHistory(historyGet, Date.now, kind === 'days' ? 30 * 60_000 : kind === 'peer' ? 5 * 60_000 : 60_000, kind === 'days' ? 80 * 86_400_000 : undefined);
+    this.#tpoHistories.set(key, { h, used: now });
     return h;
   }
   /**
@@ -333,7 +394,7 @@ export class Hub {
   profileHistory(barMs: number, market: 'main' | 'spot' = 'main'): KeyLevelHistory {
     const key = `${barMs}|${market}`;
     let h = this.#profileHistories.get(key);
-    if (!h) { h = new KeyLevelHistory(webGet, Date.now, 60_000, PROFILE_CANDLES_BACK_MS); h.withBuy = true; this.#profileHistories.set(key, h); }
+    if (!h) { h = new KeyLevelHistory(historyGet, Date.now, 60_000, PROFILE_CANDLES_BACK_MS); h.withBuy = true; this.#profileHistories.set(key, h); }
     return h;
   }
   /**
@@ -343,7 +404,7 @@ export class Hub {
   candleTaker(tfMs: number): KeyLevelHistory {
     const key = `taker|${tfMs}`;
     let h = this.#profileHistories.get(key);
-    if (!h) { h = new KeyLevelHistory(webGet, Date.now, 60_000, 3 * 365 * 86_400_000); h.withBuy = true; this.#profileHistories.set(key, h); }
+    if (!h) { h = new KeyLevelHistory(historyGet, Date.now, 60_000, 3 * 365 * 86_400_000); h.withBuy = true; this.#profileHistories.set(key, h); }
     return h;
   }
   onLiquidationsChanged: () => void = () => {};

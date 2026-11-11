@@ -7,44 +7,65 @@ import type { KeyTag } from '../keylevels/paint.ts';
 import type { VwapPoint } from './vwap.ts';
 import type { VwapSettings } from './settings.ts';
 
-/** One VWAP to draw: the session's (one line per session), an anchor's, or a session's whale buys or sells; its points, and its name. */
+/** One VWAP to draw: the session's (one line per session), a rolling one's, an anchor's, or a session's whale buys or sells; its points, and its name. */
 export interface VwapLine {
-  kind: 'session' | 'anchor' | 'whaleBuy' | 'whaleSell';
-  /** The anchor's number (1 to 4), or 0 for a session. */
+  kind: 'session' | 'rolling' | 'anchor' | 'whaleBuy' | 'whaleSell';
+  /** The anchor's number (1 to 4), the rolling window's days, or 0 for a session. */
   n: number;
   points: readonly VwapPoint[];
   /** Whether it runs to now (the session under way, an anchor): its last value gets a tag on the price axis. */
   live: boolean;
   key: string;
-  /** The history's bar (ms), for a session or an anchor: in replay a point counts once its bar is over. */
+  /** The history's bar (ms), for a session or an anchor (points at bar starts): in replay a point counts once its bar is over. A rolling line's points are at bar ends already. */
   bar?: number;
   /** Where the chart's own candles take over from the history (already cut to a replay's moment); Infinity when they do not. */
   liveFrom?: number;
 }
 
-/** Tag and label order against the key levels' (0 to 11, earlier periods' from 20): the session VWAP with the previous day's levels, anchors after the opens. */
-const RANK = { session: 1.5, anchor: 6.5, whaleBuy: 9, whaleSell: 9 } as const;
+/**
+ * Tag and label order against the key levels' (0 to 11, earlier periods' from 20): the session VWAP with the previous day's levels, anchors
+ * after the opens, rolling VWAPs after the day's levels (there can be six of them; the shorter window first), before earlier periods' levels.
+ */
+const RANK = { session: 1.5, anchor: 6.5, rolling: 11.5, whaleBuy: 9, whaleSell: 9 } as const;
+const rankOf = (line: Pick<VwapLine, 'kind' | 'n'>): number => line.kind === 'rolling' ? RANK.rolling + line.n / 1_000 : RANK[line.kind];
 
-export const vwapCode = (line: Pick<VwapLine, 'kind' | 'n'>): string => line.kind === 'session' ? t('VWAP') : line.kind === 'anchor' ? `${t('AVWAP')} ${line.n}` : line.kind === 'whaleBuy' ? t('Whale buys') : t('Whale sells');
+export const vwapCode = (line: Pick<VwapLine, 'kind' | 'n'>): string => line.kind === 'session' ? t('VWAP') : line.kind === 'anchor' ? `${t('AVWAP')} ${line.n}`
+  : line.kind === 'rolling' ? `${t('RVWAP')} ${line.n}D` : line.kind === 'whaleBuy' ? t('Whale buys') : t('Whale sells');
 const whale = (line: Pick<VwapLine, 'kind'>): boolean => line.kind === 'whaleBuy' || line.kind === 'whaleSell';
 
 /**
  * Draw each VWAP as a line in the palette's VWAP colour over a halo: the session's solid, with its bands (±1 and ±2 standard deviations,
- * short dashes, fainter), an anchor's dash-dotted with a small triangle where it starts, the whale buys and sells thin and solid in the buy and
- * sell colours (no axis tags: the axis is full enough); the name and price at the right end of the ones running to now. Returns the
- * tags wanted on the price axis (placed with the key levels' tags).
+ * short dashes, fainter), a rolling one's in long dashes, an anchor's dash-dotted with a small triangle where it starts, the whale buys and
+ * sells thin and solid in the buy and sell colours (no axis tags: the axis is full enough); the name and price at the right end of the ones
+ * running to now. Returns the tags wanted on the price axis (placed with the key levels' tags).
  */
 export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLine[], v: View, pw: number, ph: number, p: Palette, s: VwapSettings, board: LabelBoard = new LabelBoard()): KeyTag[] {
   const tags: KeyTag[] = [];
   if (!lines.length) return tags;
   const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.75)';
+  // At most four points a pixel column (where it enters, its lowest and highest, where it leaves): zoomed out, a rolling line can have
+  // thousands of points to a column (six windows over months), which cost the stroke and draw nothing more.
   const path = (pts: readonly VwapPoint[], value: (q: VwapPoint) => number): void => {
     ctx.beginPath();
-    let started = false;
+    let started = false, col = NaN, x0 = 0, yIn = 0, yLo = 0, yHi = 0, yOut = 0;
+    const put = (x: number, y: number): void => { if (started) ctx.lineTo(x, y); else { ctx.moveTo(x, y); started = true; } };
+    const flush = (): void => {
+      if (Number.isNaN(col)) return;
+      // The column ends where its last point is, whatever it passed on the way (an excursion that came back to where it entered included).
+      let last = yIn;
+      put(x0, yIn);
+      if (yLo < Math.min(yIn, yOut)) { put(x0, yLo); last = yLo; }
+      if (yHi > Math.max(yIn, yOut)) { put(x0, yHi); last = yHi; }
+      if (yOut !== last) put(x0, yOut);
+    };
     for (const q of pts) {
-      const x = v.xOf(q.t, pw), y = v.yOf(value(q), ph);
-      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      const x = v.xOf(q.t, pw), y = v.yOf(value(q), ph), c = Math.floor(x);
+      if (c !== col) { flush(); col = c; x0 = x; yIn = yLo = yHi = yOut = y; continue; }
+      if (y < yLo) yLo = y;
+      if (y > yHi) yHi = y;
+      yOut = y;
     }
+    flush();
   };
   const stroke = (pts: readonly VwapPoint[], value: (q: VwapPoint) => number, width: number, dash: number[], alpha: number, color: string = p.vwap): void => {
     ctx.globalAlpha = alpha; ctx.setLineDash(dash);
@@ -63,7 +84,7 @@ export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLin
     }
     const color = line.kind === 'whaleBuy' ? p.bid : line.kind === 'whaleSell' ? p.ask : p.vwap;
     if (whale(line)) stroke(pts, q => q.vwap, 1.3, [], 0.95, color);
-    else stroke(pts, q => q.vwap, line.kind === 'session' ? 1.8 : 1.5, line.kind === 'session' ? [] : [9, 3, 2, 3], 1);
+    else stroke(pts, q => q.vwap, line.kind === 'session' ? 1.8 : 1.5, line.kind === 'session' ? [] : line.kind === 'rolling' ? [10, 5] : [9, 3, 2, 3], 1);
     const first = line.points[0]!;
     if (line.kind === 'anchor' && first.t >= v.t0 && first.t <= v.t1) { // where it starts: a small triangle under the line
       const x = v.xOf(first.t, pw), y = v.yOf(first.vwap, ph) + 7;
@@ -71,7 +92,7 @@ export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLin
       ctx.fillStyle = p.vwap; ctx.fill(); ctx.strokeStyle = halo; ctx.lineWidth = 1; ctx.stroke();
     }
     if (!line.live) continue;
-    const last = line.points[line.points.length - 1]!, y = v.yOf(last.vwap, ph), code = vwapCode(line), rank = RANK[line.kind];
+    const last = line.points[line.points.length - 1]!, y = v.yOf(last.vwap, ph), code = vwapCode(line), rank = rankOf(line);
     if (s.labels && v.xOf(last.t, pw) <= pw + 4 && v.xOf(last.t, pw) > 40) labels.push({ text: `${code} ${fmtPrice(last.vwap)}`, y, rank, color });
     if (s.tags && !whale(line)) tags.push({ key: `vwap|${line.key}`, y, rank, text: code, older: false, color: p.vwap });
   }
@@ -86,6 +107,17 @@ export function paintVwap(ctx: CanvasRenderingContext2D, lines: readonly VwapLin
   }
   ctx.restore();
   return tags;
+}
+
+/**
+ * In a replay (`replay`), each line up to what was known at `at` (so its tag is the VWAP then); live, the lines as they are. A session's or an
+ * anchor's history point stands at its bar's start and counts once the bar is over, the chart's own candles (from `liveFrom`) and the whale
+ * lines are cut to the moment already, and a rolling line's points stand at their bars' ends.
+ */
+export function cutForReplay(lines: VwapLine[], at: number, replay: boolean): VwapLine[] {
+  if (!replay) return lines;
+  return lines.map(l => l.kind === 'rolling' ? { ...l, points: l.points.filter(q => q.t <= at) }
+    : l.bar === undefined ? l : { ...l, points: l.points.filter(q => q.t >= (l.liveFrom ?? Infinity) || q.t + l.bar! <= at) });
 }
 
 /** The points inside [t0, t1] and the one just outside each end, so the line runs to the chart's edges. `points` sorted by time. */

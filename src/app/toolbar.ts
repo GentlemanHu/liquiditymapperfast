@@ -32,7 +32,9 @@ import { buildKeyLevelPanel } from './keylevels/panel.ts';
 import { buildLiqLevelPanel } from './liq-panel.ts';
 import type { LiqLevelsSource } from './liq-levels.ts';
 import { liqLevelsUrl } from './liq-url.ts';
-import { buildVwapPanel, type WhaleInfo } from './vwap/panel.ts';
+import type { AnchorSnapshot } from './traded/anchor.ts';
+import { buildVwapPanel, type RollingReach, type VwapMarkets, type WhaleInfo } from './vwap/panel.ts';
+import { buildTpoPanel, type TpoInfo } from './tpo/panel.ts';
 import { buildFootprintPanel } from './footprint/panel.ts';
 import type { FlowBook } from './flow-book.ts';
 import type { KeyLevelHistory } from './keylevels/history.ts';
@@ -47,7 +49,8 @@ import { CONTRAST } from './heatmap/window.ts';
 import { CHART_TYPES, chartTypeGlyph, chartTypeName, chartTypeTip, type ChartType } from './chart-type.ts';
 import { compactBar, isCoarse, isPhone, onLayoutMode } from './device.ts';
 import { effectiveChoice, isHandheldPhone, savesData, type PhoneHistory } from './history-window.ts';
-import { openSheet, type Sheet } from './sheet.ts';
+import { closeSheet, openSheet, type Sheet } from './sheet.ts';
+import { toast } from './toast.ts';
 import { wakeLockSupported } from './wake.ts';
 import { LANGUAGES, language, pickLanguage, saveLanguage, savedLanguage } from './i18n.ts';
 import { t, tn } from './i18n.ts';
@@ -153,6 +156,7 @@ export class Toolbar {
   #settingsKeys: Record<Exclude<Feature, 'highlights'>, HTMLButtonElement> = {
     trades: settingsKey(t('Trades')), footprint: settingsKey(t('Footprint')), vwap: settingsKey(t('VWAP')), keyLevels: settingsKey(t('Key levels')),
     liquidations: settingsKey(t('Liquidations')), liqLevels: settingsKey(t('Liquidation levels')), traded: settingsKey(t('Volume profile')), absorption: settingsKey(t('Absorption')),
+    tpo: settingsKey(t('TPO')),
   };
   /** The Alerts deck's settings keys: Highlights, Sound and Waves are switched and set the same way. */
   #alertKeys = { highlights: settingsKey(t('Highlights')), sound: settingsKey(t('Sounds')), waves: settingsKey(t('Waves')) };
@@ -189,14 +193,26 @@ export class Toolbar {
   get scriptsAnchor(): HTMLElement { return this.#scriptsKey; }
   onOpenScripts: (anchor: HTMLElement) => void = () => {};
   #vwapPanel: Panel | null = null;
+  /** The TPO (tpo/), set in its panel. */
+  #tpo = el('button', { class: 'led-btn', textContent: t('TPO'), tip: HELP.tpo.tip });
+  #tpoPanel: Panel | null = null;
+  /** The Auto row size and whose candles the TPO reads (set by the page), for its panel. */
+  tpoInfo: () => TpoInfo = () => ({ auto: 0, market: null, minutes: 30 });
   /** What the page knows of the whale sums (set by the page), for the VWAP panel. */
   whaleInfo: () => WhaleInfo | null = () => null;
+  /** Whether each rolling VWAP's history holds a whole window (set by the page), for the VWAP panel to say which have no line. */
+  rollingReach: RollingReach = () => 'coming';
+  /** The markets the VWAP lines read and how each stands (`HeatPane.vwapMarketStates`), for the VWAP panel. */
+  vwapMarkets: VwapMarkets = () => [];
   /** The key levels' candles (set by the page), for the panel to say whose they are and whether they could be read. */
   keyHistory: KeyLevelHistory | null = null;
   /** The volume profile's candles of one bar size (set by the page), for its panel to say whether they could be read. */
   profileHistory: ((barMs: number) => KeyLevelHistory) | null = null;
   /** The room the map's profiles have (heat-pane.ts `profileRoom`), for the Volume profile panel to say what has none; set by the page. */
   profileRoom: (() => ProfileRoom) | null = null;
+  /** The columns' anchored window and taking it again now (heat-pane.ts `anchoredWindow`, `updateAnchored`), for the Volume profile panel; set by the page. */
+  anchoredWindow: (() => AnchorSnapshot | null) | null = null;
+  updateAnchored: (() => void) | null = null;
   /** Where the page's data comes from (set by the page): a page reading the exchanges itself keeps liquidations only while it is open. */
   sourceKind: 'server' | 'browser' = 'server';
   #highlights = el('button', { class: 'led-btn', textContent: t('Highlights'), tip: t('What stands out: unusual volume, open-interest changes and depth imbalance') });
@@ -371,10 +387,15 @@ export class Toolbar {
     };
     this.#footprint.onclick = () => this.store.set(togglePatch(this.store.state, 'footprint'));
     this.#settingsKeys.vwap.onclick = () => {
-      const build = (tools: HTMLElement, body: HTMLElement): void => buildVwapPanel(this.store, tools, body, () => this.#vwapPanel?.render(build), this.whaleInfo);
-      this.#vwapPanel = this.#track(togglePanel(this.#settingsKeys.vwap, { title: t('VWAP'), width: 420, align: 'left', stays: true, onClose: () => { this.#vwapPanel = null; if (this.store.state.vwapAnchoring) this.store.set({ vwapAnchoring: false }); } }, build), build);
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildVwapPanel(this.store, tools, body, () => this.#vwapPanel?.render(build), this.whaleInfo, this.rollingReach, this.vwapMarkets);
+      this.#vwapPanel = this.#track(togglePanel(this.#settingsKeys.vwap, { title: t('VWAP'), width: 420, align: 'left', stays: true, onClose: () => { this.#vwapPanel = null; if (this.store.state.vwapAnchoring && !this.#placing) this.store.set({ vwapAnchoring: false }); } }, build), build);
     };
     this.#vwap.onclick = () => this.store.set(togglePatch(this.store.state, 'vwap'));
+    this.#settingsKeys.tpo.onclick = () => {
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildTpoPanel(this.store, tools, body, () => this.#tpoPanel?.render(build), this.tpoInfo);
+      this.#tpoPanel = this.#track(togglePanel(this.#settingsKeys.tpo, { title: t('TPO'), width: 440, align: 'left', onClose: () => { this.#tpoPanel = null; } }, build), build);
+    };
+    this.#tpo.onclick = () => this.store.set(togglePatch(this.store.state, 'tpo'));
     this.#scripts.onclick = () => this.store.set({ show: { ...this.store.state.show, script: !this.store.state.show.script } });
     this.#scriptsKey.onclick = () => this.onOpenScripts(this.#scriptsKey);
     this.#settingsKeys.keyLevels.onclick = () => {
@@ -397,7 +418,7 @@ export class Toolbar {
     this.#splits = {
       trades: splitButton(this.#trades, k.trades), footprint: splitButton(this.#footprint, k.footprint), vwap: splitButton(this.#vwap, k.vwap),
       keyLevels: splitButton(this.#keyLevels, k.keyLevels), liquidations: splitButton(this.#liquidations, k.liquidations), liqLevels: splitButton(this.#liqLevels, k.liqLevels),
-      traded: splitButton(this.#traded, k.traded), absorption: splitButton(this.#absorption, k.absorption),
+      traded: splitButton(this.#traded, k.traded), absorption: splitButton(this.#absorption, k.absorption), tpo: splitButton(this.#tpo, k.tpo),
     };
     for (const [value, label] of SCOPE_OPTIONS) this.#scope.append(el('button', { textContent: label, onclick: () => this.store.set({ scope: value }) }));
     this.#alertKeys.sound.onclick = () => {
@@ -421,8 +442,11 @@ export class Toolbar {
       this.#track(togglePanel(this.#alertKeys.waves, { title: t('Waves'), width: 400, align: 'left' }, build), build);
     };
     this.#settingsKeys.traded.onclick = () => {
-      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null });
-      this.#tradedPanel = this.#track(togglePanel(this.#settingsKeys.traded, { title: t('Volume profile'), width: 520, align: 'left', onClose: () => { this.#tradedPanel = null; } }, build), build);
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null, anchored: () => this.anchoredWindow?.() ?? null, updateNow: () => this.updateAnchored?.() });
+      // While Place the anchor is armed the panel stays open over a click on the map (that click places it, Sol: closing it first disarmed
+      // it); otherwise a press outside closes it as before.
+      const store = this.store;
+      this.#tradedPanel = this.#track(togglePanel(this.#settingsKeys.traded, { title: t('Volume profile'), width: 520, align: 'left', get stays(): boolean { return store.state.profileAnchoring; }, onClose: () => { this.#tradedPanel = null; if (this.store.state.profileAnchoring && !this.#placing) this.store.set({ profileAnchoring: false }); } }, build), build);
     };
     this.#traded.onclick = () => this.store.set(togglePatch(this.store.state, 'traded'));
     this.#settingsKeys.absorption.onclick = () => {
@@ -503,6 +527,19 @@ export class Toolbar {
   refreshOpenPanel(): void { if (this.#open && openedPanel() === this.#open.panel) this.#open.redraw(); }
   /** Redraw the Volume profile panel if it is the one open: what of the profiles has no room changed (a resize), and its sketch and note say so. */
   refreshTradedPanel(): void { if (this.#tradedPanel && this.#open?.panel === this.#tradedPanel) this.refreshOpenPanel(); }
+  /** Set while the panels close for an anchor to be placed on a phone, so their closing does not disarm it. */
+  #placing = false;
+  /**
+   * An anchor (the VWAP's or the profile's) was armed: on a phone or a touch tablet its panel and the Settings sheet cover the map, so they
+   * close, the placement staying armed, and a note says to tap the candle, with Cancel (Sol, code review 2026-11-10: the sheet's scrim took
+   * the tap and its closing disarmed the placement). On a desktop the panel stays open over the map and nothing changes.
+   */
+  anchorArmed(): void {
+    if (!compactBar()) return;
+    this.#placing = true;
+    try { this.#vwapPanel?.close(); this.#tradedPanel?.close(); closeSheet(); } finally { this.#placing = false; }
+    toast(t('Tap the candle on the map where the anchor goes.'), { ms: 30_000, action: { label: t('Cancel'), run: () => this.store.set({ vwapAnchoring: false, profileAnchoring: false }) } });
+  }
 
   /**
    * The Go to panel: a date and time on the page's clock, the map centred on it at its zoom. It says how far back the depth and the candles
@@ -663,7 +700,7 @@ export class Toolbar {
         deck('heat', t('Heatmap'), [this.#source, this.#layer, this.#heat.style], [this.#heatScale, this.#heat.auto, this.#heat.smooth]),
         deck('panels', t('Panels'), [this.#toggles]),
         // The Range tool is the map corner's Select when the map holds its tools (Karl, 2026-10-27: the deck's Range was the same button twice).
-        deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, ...(liqLevelsUrl() ? [sp.liqLevels] : []), sp.absorption], [sp.traded, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
+        deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, ...(liqLevelsUrl() ? [sp.liqLevels] : []), sp.absorption], [sp.traded, sp.tpo, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
         // Waves beside Sounds (Karl, 2026-10-30, from the status bar's corner): with Highlights, the three ways the page says that something large
         // happened, marked, heard and seen across the screen.
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound, this.#alertSplits!.waves]),
@@ -802,7 +839,7 @@ export class Toolbar {
         section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S and Stats each add a tab to the bar under the map.') })]),
         // A phone arranges its panes by tab; a touch tablet that keeps the desktop's arrangement has the layouts here, its map's corner being clear of buttons.
         ...(isPhone() ? [] : [section(t('Layouts'), [el('div', { class: 'sheet-tiles' }, button(t('Layouts'), () => { this.#sheet?.close(); this.#openLayouts(this.#more); }, t('Layouts: choose a ready-made arrangement of the panels, or save your own')))])]),
-        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', ...(liqLevelsUrl() ? ['liqLevels'] as const : []), 'absorption', 'traded', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#scriptsSplit)]),
+        section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', ...(liqLevelsUrl() ? ['liqLevels'] as const : []), 'absorption', 'traded', 'tpo', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#scriptsSplit)]),
         // Only a phone has the Tape tab; a touch tablet keeps the desktop's panes and gets this sheet without it.
         ...(this.tapeFields && isPhone() ? [section(t('Tape'), this.tapeFields().map(([label, control]) => field(label, control)), helpButton('candlePane'))] : []),
         section(t('Heatmap'), [
@@ -849,7 +886,7 @@ export class Toolbar {
     }
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
-    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#liqLevels, state.liqLevels.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#scripts, state.show.script); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
+    lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#liqLevels, state.liqLevels.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#tpo, state.tpo.on); lamp(this.#scripts, state.show.script); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
     if (this.#awake.checked !== state.keepAwake) this.#awake.checked = state.keepAwake;
     if (this.#tabPrice.checked !== state.tabPrice) this.#tabPrice.checked = state.tabPrice;
     if (this.#tabIcon.checked !== state.tabIcon) this.#tabIcon.checked = state.tabIcon;

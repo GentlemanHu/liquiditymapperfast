@@ -14,12 +14,14 @@ import { readBubbles, type BubbleSettings } from './prints.ts';
 import { readLiquidations, type LiquidationSettings } from './liquidations.ts';
 import { readKeyLevels, type KeyLevelSettings } from './keylevels/settings.ts';
 import { readVwap, type VwapSettings } from './vwap/settings.ts';
+import { readTpo, type TpoSettings } from './tpo/settings.ts';
 import { readDrawSettings, type DrawSettings } from './draw/settings.ts';
 import { readChartType, type ChartType } from './chart-type.ts';
 import { readFootprint, type FootprintSettings } from './footprint/settings.ts';
 import { readDelta, type DeltaSettings } from './delta/settings.ts';
 import { isCoarse, isPhone } from './device.ts';
-import { readPhoneHistory, type PhoneHistory } from './history-window.ts';
+import { isHandheldPhone, readPhoneHistory, type PhoneHistory } from './history-window.ts';
+import { readScriptBars } from './script/bars.ts';
 import { LS_METRICS, type LsMetric } from '../shared/long-short.ts';
 import { readCustomMarkets, type CustomMarkets } from './market-choice.ts';
 import { readPullWindow, type PullWindow } from './panes/pull-stack.ts';
@@ -140,8 +142,12 @@ export interface AppState {
   liqLevels: LiqLevelSettings;
   /** The VWAP lines: the session's, its bands and the anchored ones (vwap/). */
   vwap: VwapSettings;
+  /** The TPO (Market Profile) drawn on the map (tpo/). */
+  tpo: TpoSettings;
   /** The next click on the map places a VWAP anchor (not saved; arming the Range tool ends it). */
   vwapAnchoring: boolean;
+  /** The Volume profile panel's Place anchor is armed: the next click on the map sets the columns' anchor (not saved). */
+  profileAnchoring: boolean;
   /** How the drawing tools behave: the magnet, walls, keeping a tool, showing and locking (draw/settings.ts; the drawings are kept apart, draw/storage.ts). */
   draw: DrawSettings;
   /** How the map draws its price (chart-type.ts). */
@@ -211,6 +217,8 @@ export interface AppState {
   tabPrice: boolean; tabIcon: boolean;
   /** How much recorded history a phone reads when the page opens (app/history-window.ts); read once, at the start. */
   phoneHistory: PhoneHistory;
+  /** How many of the chart's candles scripts read (`script/bars.ts`): the person's own, not a layout's. */
+  scriptBars: number;
   /**
    * The top bar folded away, the chart taking its room, as a browser's full screen does (a tablet's screen is short); a tab at the top
    * brings it back. Kept in this browser, never in a layout: it is about the screen, not about what the chart shows.
@@ -237,7 +245,7 @@ export interface AppState {
 
 type Listener = (state: AppState, changed: ReadonlySet<keyof AppState>) => void;
 
-const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory','barCollapsed', 'material', 'waveStrength', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'draw', 'chartType'];
+const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'draw', 'chartType'];
 function readSaved(): Partial<AppState> {
   try { const raw = window.localStorage.getItem('hlm-app-v2'); return raw ? JSON.parse(raw) as Partial<AppState> : {}; } catch { return {}; }
 }
@@ -247,7 +255,7 @@ export const LADDER_CURVES = [0, 3, 5, 8] as const;
 export type LadderCurves = (typeof LADDER_CURVES)[number];
 
 /** The settings a saved layout holds: what the chart shows and how, never the coin, the venues, the theme, the time zone or the sounds. */
-export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'footprint', 'delta',
+export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta',
   'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'chartType'] as const satisfies readonly (keyof AppState)[];
 export type Settings = Pick<AppState, (typeof LAYOUT_KEYS)[number]>;
 
@@ -286,7 +294,7 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
     layer: AVAILABLE_LAYERS.includes(saved.layer as Layer) ? saved.layer as Layer : 'liquidity',
     show: strip?.on ? { ...show, traded: true } : show,
     cvd: readCvd(saved.cvd), highlight: readHighlight(saved.highlight), absorption: readAbsorption(saved.absorption), tradeBubbles: readBubbles(saved.tradeBubbles),
-    liquidations: readLiquidations(saved.liquidations), keyLevels: readKeyLevels(saved.keyLevels), liqLevels: readLiqLevels(saved.liqLevels), vwap: readVwap(saved.vwap), footprint: readFootprint(saved.footprint),
+    liquidations: readLiquidations(saved.liquidations), keyLevels: readKeyLevels(saved.keyLevels), liqLevels: readLiqLevels(saved.liqLevels), vwap: readVwap(saved.vwap), tpo: readTpo(saved.tpo), footprint: readFootprint(saved.footprint),
     delta: readDelta(saved.delta), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts', pullStack: readPullWindow(saved.pullStack),
     ladderCues: readLadderCues(saved.ladderCues),
     depthBands: readDepthSettings(saved.depthBands),
@@ -371,8 +379,8 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   const saved = readSaved();
   const state: AppState = {
     connected: false, status: t('connecting'), markets: [], marketId: '', seriesInstrument: '', mark: { price: 0, asOf: 0 }, levels: null, bookGone: {},
-    layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
-    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', barCollapsed: false, timeZone: 'local', hover: null, bookHover: null, range: null, rangeTool: false,
+    layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, profileAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
+    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', hover: null, bookHover: null, range: null, rangeTool: false,
     ...saved, ...readSettings(saved),
   };
   // A save's measure strip was read into the profile along the top (`readSettings`): it is no setting of its own any more.
@@ -423,6 +431,7 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   // New on 2026-11-07, both on: a save from before holds neither, so no revision of the defaults is needed.
   state.tabPrice = saved.tabPrice !== false; state.tabIcon = saved.tabIcon !== false;
   state.phoneHistory = readPhoneHistory(saved.phoneHistory);
+  state.scriptBars = readScriptBars(saved.scriptBars, typeof window !== 'undefined' && isHandheldPhone());
   state.replay = null;
   return state;
 }
