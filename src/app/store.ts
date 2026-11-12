@@ -17,6 +17,7 @@ import { readVwap, type VwapSettings } from './vwap/settings.ts';
 import { readTpo, type TpoSettings } from './tpo/settings.ts';
 import { readDrawSettings, type DrawSettings } from './draw/settings.ts';
 import { readChartType, type ChartType } from './chart-type.ts';
+import { readCandleColors, type CandleColors } from './candle-colours.ts';
 import { readFootprint, type FootprintSettings } from './footprint/settings.ts';
 import { readDelta, type DeltaSettings } from './delta/settings.ts';
 import { isCoarse, isPhone } from './device.ts';
@@ -113,7 +114,7 @@ export interface AppState {
   oiReading: boolean;
   /**
    * The minute readings of the markets counted (`oi`/`oiParts`), each its own bars a minute apart where it was read that often, over the last
-   * `OI_FINE_MS` (an inverse market's at the one price its bars on screen are at): NL/NS works a candle out minute by minute where they cover it
+   * `fineSpanMs` (a day; on a server a week of Hyperliquid's while the Funding pane shows it; an inverse market's at the one price its bars on screen are at): NL/NS works a candle out minute by minute where they cover it
    * (delta/nlns.ts). Empty on a one-minute chart (the candle is the minute) and while nothing that uses NL/NS is shown (`Hub.loadOiFine`).
    */
   oiFine: OiPart[];
@@ -148,10 +149,16 @@ export interface AppState {
   vwapAnchoring: boolean;
   /** The Volume profile panel's Place anchor is armed: the next click on the map sets the columns' anchor (not saved). */
   profileAnchoring: boolean;
+  /** The VWAP anchor being moved by the next click on the map (its id; null: the click adds one). Not saved. */
+  anchorMove: string | null;
+  /** Where an anchor being placed would go before it is placed: a tap on a touch screen, or the arrow keys (a candle's start). Not saved. */
+  anchorPreview: number | null;
   /** How the drawing tools behave: the magnet, walls, keeping a tool, showing and locking (draw/settings.ts; the drawings are kept apart, draw/storage.ts). */
   draw: DrawSettings;
   /** How the map draws its price (chart-type.ts). */
   chartType: ChartType;
+  /** The candles' own colours, rising and falling, body, border and wick; the theme's where none is chosen (candle-colours.ts). */
+  candleColors: CandleColors;
   /** The footprint's own settings (whether it shows is `show.footprint`; its imbalance options are `barStatOptions`). */
   footprint: FootprintSettings;
   /** The Delta pane's settings: bars or CVD candles, where the CVD restarts, divergences. */
@@ -245,7 +252,7 @@ export interface AppState {
 
 type Listener = (state: AppState, changed: ReadonlySet<keyof AppState>) => void;
 
-const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'draw', 'chartType'];
+const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'draw', 'chartType', 'candleColors'];
 function readSaved(): Partial<AppState> {
   try { const raw = window.localStorage.getItem('hlm-app-v2'); return raw ? JSON.parse(raw) as Partial<AppState> : {}; } catch { return {}; }
 }
@@ -256,7 +263,7 @@ export type LadderCurves = (typeof LADDER_CURVES)[number];
 
 /** The settings a saved layout holds: what the chart shows and how, never the coin, the venues, the theme, the time zone or the sounds. */
 export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta',
-  'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'chartType'] as const satisfies readonly (keyof AppState)[];
+  'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'lsMetric', 'customMarkets', 'chartType', 'candleColors'] as const satisfies readonly (keyof AppState)[];
 export type Settings = Pick<AppState, (typeof LAYOUT_KEYS)[number]>;
 
 /** The timeframes (hub.ts TIMEFRAMES; a test keeps the two the same). */
@@ -321,6 +328,7 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
     lsTable: saved.lsTable !== false,
     customMarkets: readCustomMarkets(saved.customMarkets),
     chartType: readChartType(saved.chartType),
+    candleColors: readCandleColors(saved.candleColors),
   };
 }
 
@@ -379,7 +387,7 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   const saved = readSaved();
   const state: AppState = {
     connected: false, status: t('connecting'), markets: [], marketId: '', seriesInstrument: '', mark: { price: 0, asOf: 0 }, levels: null, bookGone: {},
-    layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, profileAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
+    layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, anchorMove: null, anchorPreview: null, profileAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
     ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', hover: null, bookHover: null, range: null, rangeTool: false,
     ...saved, ...readSettings(saved),
   };

@@ -17,7 +17,7 @@ import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, rgb, textOn, type Palette } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
-import { clock, price as fmtPrice, startOfDay, usd, zoneName } from '../format.ts';
+import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, usd, zoneName } from '../format.ts';
 import { timeAxis } from '../time-axis.ts';
 export { timeTicks } from '../time-axis.ts';
 import type { Store, AppState, CandleRow } from '../store.ts';
@@ -54,7 +54,7 @@ import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
 import { linesToAsk } from '../sizes.ts';
 import { MAX_COUNT, chartKinds, linesCount, linesSource, profileAnchorOf, resolveZone, type LineKind, type TradedSettings } from '../traded/settings.ts';
-import { ANCHOR_BAR_MS, anchorSnapshot, anchorTag, answerFits, snapshotDue, type AnchorSnapshot } from '../traded/anchor.ts';
+import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt, anchorSnapshot, anchorTag, answerFits, snapshotDue, type AnchorSnapshot, type ProfileAnchorStart } from '../traded/anchor.ts';
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
 import { dayStartOf } from './bar-stats.ts';
 import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
@@ -64,9 +64,10 @@ import { anyLine } from '../keylevels/settings.ts';
 import { historyTarget, profileCompanion, profileTarget, type HistoryTarget, type KeyLevelHistory } from '../keylevels/history.ts';
 import { TakerRows } from '../measures/taker-rows.ts';
 import { paintKeyLevels, paintKeyTags, periodDate, placeKeyTags, underTag, type KeyTag } from '../keylevels/paint.ts';
-import { mergeVwapBars, rollingBarMs, rollingFrom, rollingSeries, sessionsOf, vwapBarMs, vwapBarsOf, vwapSeries, whaleSeries, type RollingState, type VwapBar, type VwapPoint } from '../vwap/vwap.ts';
+import { ANCHOR_REACH_MS, anchorBars, candleStartAt, mergeVwapBars, rollingBarMs, rollingFrom, rollingSeries, sessionsOf, vwapBarMs, vwapBarsOf, vwapSeries, whaleSeries, type RollingState, type VwapBar, type VwapPoint } from '../vwap/vwap.ts';
 import { vwapTargets, type VwapMarketState } from '../vwap/markets.ts';
 import { anchorsOf } from '../vwap/settings.ts';
+import { resolveRule, ruleCode, ruleKey, ruleSpan, searchBarMs, type Anchor, type AnchorRule, type Resolved } from '../anchors/anchors.ts';
 import { FootprintMarks } from '../footprint/marks.ts';
 import { FootprintRuns, paintRuns } from '../footprint/runs.ts';
 import { cutForReplay, paintVwap, type VwapLine } from '../vwap/paint.ts';
@@ -78,6 +79,8 @@ import { paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { TopBands, topMarks, type TopProfile } from '../measures/strip.ts';
 import { BAND_GAP, flowRows, volumeBand, type TimeRows } from '../measures/model.ts';
 import { CANDLE_LINE_PX, LINE_POINT_PX, countdown, lineSide, thinLine, type LinePoint } from '../price-line.ts';
+import { candleInk, candleTone } from '../candle-colours.ts';
+import { candleHolding, newestCandle, sameButLast, zoomedCandles } from '../zoomed-candles.ts';
 import { candlesAt, formingCandle, pageNow, replaying, replayView } from '../replay/clock.ts';
 import { TapeGL, type DustStyle } from '../tape/gl.ts';
 import { TraceIndex, gapMarks, secondsPath, traceGapColumns } from '../tape/trace.ts';
@@ -92,6 +95,7 @@ import { candleCoverage, candlePriceRange, isCovered, priceBounds, priceOverview
 import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { TpoLayer, type TpoFrame } from '../tpo/layer.ts';
+import type { TpoInfo } from '../tpo/panel.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -147,8 +151,14 @@ const carried = (points: VwapPoint[], to: number): VwapPoint[] => { const last =
  * and for several markets when those were last read (the lines are carried on to it; -Infinity for one market, whose bar under way is drawn).
  */
 interface VwapBars { rows: readonly VwapBar[]; liveFrom: number; from: number; readTo: number }
+/**
+ * An anchored VWAP as the plan has it: the anchor's id, its number in the coin's list, where it starts now (a live one where its rule
+ * resolves), its bars (`anchorBars`: the body's, and the head's for the stretch to its first whole bar), its colour slot and own colour, and
+ * a live one's rule name for its label.
+ */
+interface PlannedAnchor { id: string; n: number; at: number; bar: number; head: number; slot: number; name?: string; tag?: string }
 interface VwapPlan {
-  sessions: ProfileWindow[]; sessionBar: number; anchors: { at: number; bar: number }[]; reach: Map<number, number>;
+  sessions: ProfileWindow[]; sessionBar: number; anchors: PlannedAnchor[]; reach: Map<number, number>;
   rolling: { days: number; ms: number; bar: number }[]; rollingReach: Map<number, number>;
 }
 
@@ -237,6 +247,9 @@ function withHistory(history: readonly CandleRow[], candles: readonly CandleRow[
   const before = !candles.length || history[history.length - 1]![0] < candles[0]![0];
   return before ? [...history, ...candles] : [...history, ...candles].sort((a, b) => a[0] - b[0]);
 }
+
+/** A candle length's name ("4h", "1d", "1w"), as the price history names its intervals. */
+const priceTimeframeName = (ms: number): string => Object.entries(PRICE_TIMEFRAMES).find(([, v]) => v === ms)?.[0] ?? '';
 
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
 const NARROW_PLOT = 420;
@@ -423,6 +436,20 @@ export class HeatPane {
   /** Back to the live candle at the zoom the map has, shown while the map stays where it was left in time or a hand holds the price (`jumpToNow`). */
   readonly #liveButton = el('button', { class: 'map-live', type: 'button', tip: t('Back to the live candle at this zoom (keyboard: End). While the live candle is on screen the chart follows it.') }, t('Live'));
   #palette = PALETTES.light!;
+  /** The palette the volume profile is drawn in (`#tradedPalette`), kept while neither the theme nor the colours chosen change. */
+  #tradedPal: { key: string; base: Palette; p: Palette } | null = null;
+  /**
+   * The palette the volume profile is drawn in, wherever (its columns, its bands along the top, its profiles and lines on the chart, the volume
+   * strip, the line where an anchored window begins): the theme's, with the buy, sell and level colours chosen in its panel (`traded.colors`).
+   * One object while they stay the same, so what is worked out from a palette once (`emphasisRamps`) is not worked out again every frame.
+   */
+  #tradedPalette(state: AppState): Palette {
+    const c = state.traded.colors, base = this.#palette;
+    if (!c.buy && !c.sell && !c.levels) return base;
+    const key = `${c.buy ?? ''}|${c.sell ?? ''}|${c.levels ?? ''}`;
+    if (this.#tradedPal?.key !== key || this.#tradedPal.base !== base) this.#tradedPal = { key, base, p: { ...base, bid: c.buy ?? base.bid, ask: c.sell ?? base.ask, poc: c.levels ?? base.poc } };
+    return this.#tradedPal.p;
+  }
   /** The frame's corner radius (CSS `--radius`, read when the palette changes): the legend plate has the corners the page's boxes have. */
   #radius = 3;
   /** Colour window from the raster's percentiles (nextBaseline): new for a new view, then held, or blended toward the cells every 10 s in Auto. */
@@ -467,6 +494,8 @@ export class HeatPane {
   readonly #coarseTaker = new TakerRows();
   /** The strip's candles of its longer timeframe (`coarseCandles`), kept while what they come from is the same. */
   #coarseCandles: { drawn: readonly CandleRow[]; exchange: ReadonlyMap<number, CandleRow> | null; tf: number; rows: readonly CandleRow[]; own: ReadonlyMap<number, CandleRow> } | null = null;
+  /** The candles drawn while zoomed out (`zoomedRows`), and what they were made from. */
+  #zoomed: { drawn: readonly CandleRow[]; chart: number; answer: PriceHistoryAnswer | null; tf: number; cut: number; forming: number; rows: CandleRow[] } | null = null;
   #strip: StripState | null = null;
   /** The market orders of the strip's candles pointed at (the footprint's statistics of the strip's markets, read on hover). */
   #orders = new StripOrderCache();
@@ -479,7 +508,7 @@ export class HeatPane {
   get #tpo(): TpoLayer { return this.#tpoLayer ??= new TpoLayer(this.hub, () => this.invalidate()); }
   /** What the TPO is given each frame. */
   #tpoFrame(state: AppState): TpoFrame {
-    return { state, view: this.view, pw: this.plotW, ph: this.plotH, now: pageNow(), replay: replaying(), peerIds: state.tpo.hollow ? flowIds(state, this.hub.flow.ids) : [], nameOf: w => this.#windowName(state, w) };
+    return { state, view: this.view, pw: this.plotW, ph: this.plotH, now: pageNow(), replay: replaying(), peerIds: state.tpo.hollow && state.tpo.source === 'chart' ? flowIds(state, this.hub.flow.ids) : [], nameOf: w => this.#windowName(state, w) };
   }
   #tpoAnchor: HTMLElement | null = null;
   /** A TPO block's menu: split its window there, merge the window with the one before or after, fold or lay out, undo this coin's edits. */
@@ -491,7 +520,7 @@ export class HeatPane {
     const before = range ? undefined : windows.find(x => x !== w && x.base !== 'range' && x.to === w!.from);
     const after = range ? undefined : windows.find(x => x !== w && x.base !== 'range' && x.from === w!.to);
     const items: MenuItem[] = [
-      { id: 'split', label: b && !hit.outline ? t('Split the window at {time}', { time: clock(b.t) }) : t('Split the window here'), disabled: range || hit.outline || !b || b.t <= prof.from },
+      { id: 'split', label: b && !hit.compact ? t('Split the window at {time}', { time: clock(b.t) }) : t('Split the window here'), disabled: range || hit.compact || !b || b.t <= prof.from },
       { id: 'prev', label: t('Merge with the window before'), disabled: !before },
       { id: 'next', label: t('Merge with the window after'), disabled: !after },
       { id: 'fold', label: s.unfold ? t('Fold into profiles') : t('Lay out in time') },
@@ -520,7 +549,7 @@ export class HeatPane {
     } }, 'left', { title: t('TPO') });
   }
   /** For the TPO panel: Auto's row size, whose candles, the block's minutes. */
-  tpoInfo(): { auto: number; market: string | null; minutes: number } { return this.#tpo.info(this.#tpoFrame(this.store.state)); }
+  tpoInfo(): TpoInfo { return this.#tpo.info(this.#tpoFrame(this.store.state)); }
   /** Whether the Volume profile draws lines of the TPO's windows, which then follow the TPO's levels (one set of lines, never two). */
   #tpoLinesElsewhere(state: AppState): boolean {
     const s = state.traded;
@@ -545,6 +574,8 @@ export class HeatPane {
   onAnchor: ((t: number) => void) | null = null;
   /** A click on the map while the profile anchor is being placed (set by the page): the time clicked. */
   onProfileAnchor: ((t: number) => void) | null = null;
+  /** A tap on a touch screen while an anchor is being placed (set by the page): where it would go, shown before it is put there. */
+  onAnchorPreview: ((t: number) => void) | null = null;
   /** Told when the anchored window is taken again, so an open Volume profile panel says when (set by the page). */
   onAnchoredWindow: () => void = () => {};
   /** The anchored window held between its updates, a request to take it again now, and the timer that redraws when it is due. */
@@ -1199,13 +1230,13 @@ export class HeatPane {
     this.mirror = null;
     this.#paintHistoryStart(ctx, pw, ph, p);
     this.#paintTapeStart(ctx, state, pw, ph, p);
-    this.#paintProfileAnchor(ctx, pw, ph, p);
+    this.#paintProfileAnchor(ctx, pw, ph, this.#tradedPalette(state));
     this.#paintLayers(ctx, state, pw, ph);
     if (state.liqLevels.on) this.#paintLiquidationLevels(ctx, state, pw, ph);
     this.#paintVolume(ctx, state, pw, ph, this.#lodFrame.narrowing);
     // Under the candles as the volume bars are, and under the legend and the corner buttons, whose bottoms it is placed by; over what the
     // columns add up, with the marks' absorption thresholds; what it asked for redraws the map when it comes.
-    this.#bands.paint(ctx, state, this.hub, { view: v, pw, ph, palette: p, legendBottom: this.#legendBox.bottom, window: this.#tradedWindow(), absorption: () => this.#absorptionContext(state), loaded: () => this.invalidate() }, this.#arranged.top);
+    this.#bands.paint(ctx, state, this.hub, { view: v, pw, ph, palette: this.#tradedPalette(state), legendBottom: this.#legendBox.bottom, window: this.#tradedWindow(), absorption: () => this.#absorptionContext(state), loaded: () => this.invalidate() }, this.#arranged.top);
     this.#pulseRects = [];
     if (state.show.footprint) {
       const marks = this.#footprintMarks.get(this.#footprint, state.barStatOptions), fp = state.footprint;
@@ -1236,7 +1267,7 @@ export class HeatPane {
     // The Volume profile's, the key levels' and the VWAP's names at the lines' right ends share one board, so none is printed over another.
     this.#valueTags = this.#paintValueLines(ctx, state, pw, ph);
     this.#keyTags = state.keyLevels.on ? paintKeyLevels(ctx, this.#keyLevelLines(state), v, pw, ph, p, state.keyLevels, pageNow(), this.#keyLevelContext(state).zone, this.#labels) : [];
-    this.#vwapTags = state.vwap.on ? paintVwap(ctx, this.#vwapLines(state), v, pw, ph, p, state.vwap, this.#labels) : [];
+    this.#vwapTags = state.vwap.on ? paintVwap(ctx, this.#vwapLines(state), v, pw, ph, p, state.vwap, this.#labels, state.vwap.anchors[currentCoin().coin] ?? []) : [];
     this.scriptLayer?.(ctx, pw, ph);
     this.#drawTags = this.draw ? paintDrawings(ctx, this.draw, this.drawProjection(), p) : [];
     // Replay: nothing after its moment is shown (the heatmap under this canvas included), and a line marks it.
@@ -1247,7 +1278,7 @@ export class HeatPane {
     }
     // The price line, in the colour of the candle under way (rising or falling), as is its tag on the axis.
     const mark = state.mark.price, side = lineSide(state.candles, state.seriesInstrument, state.marketId);
-    const markColor = side === 'up' ? p.candleUp : side === 'down' ? p.candleDown : p.ask;
+    const markColor = side ? candleTone(state.candleColors, side, p) : p.ask;
     if (mark > 0) {
       const y = v.yOf(mark, ph);
       if (y >= 0 && y <= ph) { ctx.strokeStyle = markColor; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(pw, y + 0.5); ctx.stroke(); ctx.setLineDash([]); }
@@ -1321,6 +1352,41 @@ export class HeatPane {
     this.#paintRange(ctx, state, pw, ph);
     this.#paintBookRow(ctx, state, pw, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
+    this.#paintAnchorPreview(ctx, state, pw, ph);
+  }
+
+  /**
+   * While an anchor is being placed with a mouse: where a click would put it, before it is put there. A dashed line at the start of the candle
+   * under the pointer (the anchor snaps to it) and its date and time; over the empty future, or further back than the anchor can reach, what
+   * a click would say instead. A touch screen has no pointer to follow: its note says to tap the candle.
+   */
+  #paintAnchorPreview(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    const vwap = state.vwapAnchoring, chosen = state.anchorPreview, hover = state.hover?.source === 'heat' ? state.hover : null;
+    if ((!vwap && !state.profileAnchoring) || (chosen === null && !hover)) return;
+    // The candle drawn (a longer one zoomed out, `drawnTf`): a click puts the anchor at its start (main.ts `anchorSpot`).
+    const tf = this.drawnTf(state), now = Date.now(), p = this.#palette;
+    const at = chosen ?? (vwap ? candleStartAt(hover!.t, tf) : this.profileAnchorAt(hover!.t, state)), x = Math.round(this.view.xOf(at, pw)) + 0.5;
+    const tooOld = at < now - (vwap ? ANCHOR_REACH_MS : PROFILE_ANCHOR_REACH_MS), future = at > now;
+    const text = future ? t('No candle there yet') : tooOld ? (vwap ? t('Too far back: an anchor reaches ten years.') : t('Too far back: the columns reach two years.'))
+      : chosen !== null ? clockYear(at, now) : `${clockYear(at, now)} · ${t('click to place')}`;   // its year when not this year's (an anchor reaches ten years)
+    const color = future || tooOld ? p.muted : vwap ? p.vwap : p.poc;
+    ctx.save();
+    if (!future && !tooOld && x >= 0 && x <= pw) {
+      // The candle itself, faintly, and the line where it opens.
+      const x2 = this.view.xOf(at + (vwap ? tf : Math.max(tf, ANCHOR_BAR_MS)), pw);
+      ctx.fillStyle = color; ctx.globalAlpha = 0.1; ctx.fillRect(x, 0, Math.max(2, x2 - x), ph);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.globalAlpha = 0.95; ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    // Beside the pointer; a tap's or the keys' preview (no pointer) mid-height, clear of the legend and its buttons at the top.
+    const w = ctx.measureText(text).width + 14, h = 20, y = Math.max(14, Math.min(ph - h - 4, (hover?.y ?? ph * 0.45) - h - 14));
+    // Beside the line, on whichever side has room.
+    const base = (future || tooOld) && hover ? this.view.xOf(hover.t, pw) : x, left = base + 8 + w > pw ? base - 8 - w : base + 8;
+    ctx.globalAlpha = 0.94; ctx.fillStyle = p.panel; ctx.fillRect(left, y, w, h);
+    ctx.globalAlpha = 1; ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(Math.round(left) + 0.5, Math.round(y) + 0.5, Math.round(w) - 1, h - 1);
+    ctx.fillStyle = future || tooOld ? p.muted : p.text; ctx.fillText(text, left + 7, y + h / 2);
+    ctx.restore();
   }
 
   /** What belongs to editing the drawings, on its own canvas over the map, in the plot's coordinates as the overlay draws. */
@@ -1346,10 +1412,13 @@ export class HeatPane {
    * caught on it lands on the body seen.
    */
   candleAt(x: number): CandleUnder | null {
-    const state = this.store.state; if (!state.show.candles) return null;
-    const candles = this.candlesDrawn(state), tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, v = this.view, pw = this.plotW, ph = this.plotH;
+    // The candles as the map draws them: in a replay, cut to its moment (`#displayState`), so the magnet never catches one from after it.
+    const state = this.#displayState(); if (!state.show.candles) return null;
+    // Zoomed out, the longer candles drawn (`zoomedRows`), whole and in the middle of their slots.
+    const zoom = this.#zoomedShown(state) ? this.drawnTf(state) : 0;
+    const candles = zoom ? this.zoomedRows(state, zoom) : this.candlesDrawn(state), tf = zoom || (TIMEFRAMES[state.timeframe] ?? 3_600_000), v = this.view, pw = this.plotW, ph = this.plotH;
     if (!candles.length || !(pw > 0)) return null;
-    const bar = Math.max(1, pw * tf / (v.t1 - v.t0)), layout = footprintLayout(bar), narrowing = this.#lodFrame.narrowing;
+    const bar = Math.max(1, pw * tf / (v.t1 - v.t0)), layout = footprintLayout(bar), narrowing = zoom ? 0 : this.#lodFrame.narrowing;
     const at = v.tOf(x, pw);
     // The candles are in time order: the one whose slot holds the pointer, and its neighbours (a narrowed body sits left of its slot's middle).
     let lo = 0, hi = candles.length - 1;
@@ -1462,11 +1531,14 @@ export class HeatPane {
   #paintLegend(ctx: CanvasRenderingContext2D, state: AppState): void {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, p = this.#palette;
     const under = (c: CandleRow): boolean => state.hover!.t >= c[0] && state.hover!.t < c[0] + tf;
-    const hovered = state.hover ? state.candles.find(under) ?? this.historyCandles(state).find(under) : undefined;
-    const c = hovered ?? state.candles[state.candles.length - 1];
+    // Zoomed out, the candle drawn under the pointer (a longer one, made of the chart's), and the title says how long the drawn ones are.
+    const zoom = this.#zoomedShown(state) ? this.drawnTf(state) : 0, rows = zoom ? this.zoomedRows(state, zoom) : null;
+    const hovered = rows ? (state.hover ? candleHolding(rows, zoom, state.hover.t) : undefined) : state.hover ? state.candles.find(under) ?? this.historyCandles(state).find(under) : undefined;
+    const c = hovered ?? (rows ? rows[rows.length - 1] : state.candles[state.candles.length - 1]);
     const name = state.marketId.replace(':', ' · ');
     const borrowed = state.seriesInstrument && state.seriesInstrument !== state.marketId ? `  ·  ${t('candles from {instrument}', { instrument: state.seriesInstrument.replace(':', ' · ') })}` : '';
-    const title = `${name}  ${state.timeframe}${borrowed}`;
+    const zoomed = zoom ? `  ·  ${t('zoomed out: {timeframe} candles', { timeframe: priceTimeframeName(zoom) })}` : '';
+    const title = `${name}  ${state.timeframe}${borrowed}${zoomed}`;
     // On a phone the plate has to fit the plot beside a narrow profile: whole prices, and the volume on the title's line.
     const phone = this.plotW < NARROW_PLOT, px = (value: number): string => phone && value >= 1000 ? fmtPrice(value, 1) : fmtPrice(value);
     let detail = '', tail = '', up = true;
@@ -1524,7 +1596,7 @@ export class HeatPane {
     ctx.fillText(shownTitle, 12, 16);
     ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     if (tail) { ctx.fillStyle = p.muted; ctx.fillText(tail, 12 + titleW + 10, 16); }
-    if (detail) { ctx.fillStyle = up ? p.candleUp : p.candleDown; ctx.fillText(detail, 12, 32); if (detail2) ctx.fillText(detail2, 12, 46); }
+    if (detail) { ctx.fillStyle = candleTone(state.candleColors, up ? 'up' : 'down', p); ctx.fillText(detail, 12, 32); if (detail2) ctx.fillText(detail2, 12, 46); }
     // The note stands under the prices, or under the title where there are none (it stood below the plate then, over what follows).
     if (note) { ctx.fillStyle = p.muted; ctx.fillText(note, 12, detail ? (detail2 ? 60 : 46) : 32); }
     const places: { id: string; x: number; y: number }[] = [];
@@ -1552,14 +1624,17 @@ export class HeatPane {
     // While scripts run they read the candles drawn (`candlesDrawn`) and some before the left edge, so a line is already worked out where the view
     // begins (Karl, 2026-11-03: the VWAP script began at the 500th candle back, wherever that fell): those are asked for too.
     const warm = this.scriptsReading() ? SCRIPT_WARM_BARS : 0;
-    const key = `${state.marketId}|${state.seriesInstrument}|${tf}|${Math.floor(v.t0 / 60_000)}|${Math.ceil(v.t1 / 60_000)}|${Math.floor(now / 60_000)}|${this.plotW}|${history.answer?.tfMs ?? 0}|${warm}`;
+    // Candles longer than the chart's while zoomed out (`drawnTf`): their length, so the exchange's candles before the chart's own are as long. Not
+    // for a line, which keeps its own resolution, nor for a type only previewed in the menu.
+    const wide = state.chartType === 'line' ? tf : stripTimeframe(tf, v.t1 - v.t0, this.plotW).ms;
+    const key = `${state.marketId}|${state.seriesInstrument}|${tf}|${Math.floor(v.t0 / 60_000)}|${Math.ceil(v.t1 / 60_000)}|${Math.floor(now / 60_000)}|${this.plotW}|${history.answer?.tfMs ?? 0}|${warm}|${wide}`;
     let context = this.#overviewContext;
     if (!context || context.key !== key || context.candles !== state.candles) {
       // The candles that are drawn, whichever market they are of: the line is cut on exactly these, so a line is planned only where it will show
       // (and, for the scripts, where their warm-up before the view lies: drawn there, it is off the screen).
       const wanted = priceOverviewNeeded(state.candles, tf, { t0: v.t0 - warm * tf, t1: v.t1 }, this.plotW, now);
       this.#overviewTarget = wanted ? priceTarget(currentCoin(), state.marketId, kindOf(state.markets, state.marketId) ?? 'perp') : null;
-      const window = wanted && this.#overviewTarget ? priceWindow(v, this.plotW, now, history.answer?.tfMs, tf, warm) : null;
+      const window = wanted && this.#overviewTarget ? priceWindow(v, this.plotW, now, history.answer?.tfMs, tf, warm, wide > tf ? wide : 0) : null;
       // Shown (its legend, its line) only where the view itself needs it, not for the scripts' warm-up alone, which lies off the screen (Sol).
       const shown = warm > 0 ? priceOverviewNeeded(state.candles, tf, v, this.plotW, now) : wanted;
       context = this.#overviewContext = { key, candles: state.candles, window, shown };
@@ -1616,6 +1691,106 @@ export class HeatPane {
     if (!history.length) return candles;
     if (this.#allCandles?.history !== history || this.#allCandles.candles !== candles) this.#allCandles = { history, candles, rows: withHistory(history, candles) };
     return this.#allCandles.rows;
+  }
+
+  /**
+   * The price history's answer where its bars are the candles before the chart's own while zoomed out: coarser than the chart's candles, of the
+   * market they are of, and needed for the view (`#overviewShown`). Null otherwise (another market's history is the dashed line).
+   */
+  #coarseAnswer(state: AppState): PriceHistoryAnswer | null {
+    const a = this.hub.priceHistory.answer, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    return this.#overviewShown && a !== null && a.candles.length > 0 && a.tfMs > tf && a.instrumentId === priceInstrument(state.seriesInstrument || state.marketId) ? a : null;
+  }
+
+  /**
+   * How long the candles drawn are: the chart's own; zoomed out until those would be narrower than CANDLE_LINE_PX, the shortest longer
+   * timeframe whose candles are not (the Volume bars' rule, `stripTimeframe`), or the price history's bars before the chart's candles where
+   * they are longer still. The chart's own for a line, which runs through the closes at any zoom.
+   */
+  drawnTf(state: AppState = this.store.state): number {
+    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    if ((this.previewChartType ?? state.chartType) === 'line' || !(this.plotW > 0)) return tf;
+    const v = this.view, wide = stripTimeframe(tf, v.t1 - v.t0, this.plotW).ms;
+    return wide > tf ? Math.max(wide, this.#coarseAnswer(state)?.tfMs ?? 0) : tf;
+  }
+  /** Whether the candles drawn are longer ones (`drawnTf`), at least CANDLE_LINE_PX wide. */
+  #zoomedShown(state: AppState): boolean {
+    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, zoom = this.drawnTf(state), v = this.view;
+    return zoom > tf && this.plotW * zoom / (v.t1 - v.t0) >= CANDLE_LINE_PX;
+  }
+
+  /**
+   * The candles drawn while zoomed out (`zoomed-candles.ts`): the chart's added up into candles of `tf`, the price history's before them. Made
+   * again when either changes; a live update of the candle under way (the chart's candles the same but for their last) only makes the newest
+   * longer candle again. In a replay, made again as the moment shown passes the end of a price-history bar.
+   */
+  zoomedRows(state: AppState, tf: number): readonly CandleRow[] {
+    const drawn = this.candlesDrawn(state), answer = this.#coarseAnswer(state), held = this.#zoomed, chart = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    // The longer candle under way, by the page's clock: when it closes they are made again (a quiet market makes no new chart candle then).
+    const now = pageNow(), forming = Math.floor(now / tf) * tf, cut = replaying() ? Math.floor(now / (answer?.tfMs ?? tf)) : 0;
+    if (held && held.answer === answer && held.tf === tf && held.chart === chart && held.cut === cut && held.forming === forming) {
+      if (held.drawn === drawn) return held.rows;
+      // A live update of the candle under way (every other row the very same one: a refresh that put new rows at the same times is not one,
+      // Sol, review 2026-11-11): only the newest longer candle again, while the chart's candles begin before it (so it is theirs).
+      const newest = drawn[drawn.length - 1], last = held.rows[held.rows.length - 1];
+      if (newest && last && sameButLast(held.drawn, drawn) && last[0] === forming && Math.floor(newest[0] / tf) * tf === forming && drawn[0]![0] < last[0]) {
+        const rows = held.rows.slice(0, -1); rows.push(newestCandle(drawn, tf));
+        this.#zoomed = { ...held, drawn, rows };
+        return rows;
+      }
+    }
+    const rows = zoomedCandles(drawn, chart, tf, answer ? { rows: answer.candles, ms: answer.tfMs } : null, now, replaying() ? now : Infinity);
+    this.#zoomed = { drawn, chart, answer, tf, cut, forming, rows };
+    return rows;
+  }
+
+  /**
+   * The longer candles drawn while zoomed out, all of them in a few drawing calls (a path a colour: the halos, the wicks, the bodies, the
+   * borders), in the candles' own colours or the theme's (`candleInk`). No Highlights rings (the Volume bars still mark the candles) and no
+   * script colours, which are a chart candle's each. A body under 3 px has its wick in its own colour, not the theme's edge, so the direction
+   * still shows; the halo is one shape under them all, so it does not darken where neighbours meet.
+   */
+  #paintZoomed(ctx: CanvasRenderingContext2D, state: AppState, rows: readonly CandleRow[], tf: number, pw: number, ph: number, kind: 'filled' | 'outline' | 'dust' | 'bars'): void {
+    const v = this.view, p = this.#palette, slot = Math.max(1, pw * tf / (v.t1 - v.t0)), body = candleBody(slot);
+    const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)';
+    const filled = kind === 'filled', ink = { up: candleInk(state.candleColors, 'up', p, filled), down: candleInk(state.candleColors, 'down', p, filled) };
+    const small = body < 3, wickW = small ? 1 : 1.6;
+    const wickInk = (d: 'up' | 'down'): string => filled && small ? state.candleColors[d].wick ?? ink[d].body : ink[d].wick;
+    const shade = new Path2D(), wicks = { up: new Path2D(), down: new Path2D() }, bodies = { up: new Path2D(), down: new Path2D() }, borders = { up: new Path2D(), down: new Path2D() };
+    const tick = slot < 4 ? 0 : Math.min(8, slot / 2 - 1);
+    for (const c of rows) {
+      if (c[0] + tf < v.t0 || c[0] > v.t1) continue;
+      const x = v.xOf(c[0] + tf / 2, pw), cx = Math.round(x) + 0.5, d = c[4] >= c[1] ? 'up' : 'down';
+      const yh = v.yOf(c[2], ph), yl = v.yOf(c[3], ph), yo = v.yOf(c[1], ph), yc = v.yOf(c[4], ph), top = Math.min(yo, yc), height = Math.max(1.5, Math.abs(yc - yo));
+      if (kind === 'bars') {
+        const line = (path: Path2D): void => { path.moveTo(cx, yh); path.lineTo(cx, yl); if (tick > 0) { const o = Math.round(yo) + 0.5, k = Math.round(yc) + 0.5; path.moveTo(cx - tick, o); path.lineTo(cx, o); path.moveTo(cx, k); path.lineTo(cx + tick, k); } };
+        line(shade); line(bodies[d]);
+        continue;
+      }
+      shade.rect(cx - 1.75, yh, 3.5, Math.max(0, yl - yh)); shade.rect(x - body / 2 - 1.5, top - 1.5, body + 3, height + 3);
+      if (filled) {
+        wicks[d].rect(cx - wickW / 2, yh, wickW, Math.max(0, yl - yh));
+        bodies[d].rect(x - body / 2, top, body, height);
+        if (body >= 3) borders[d].rect(x - body / 2 + 0.5, top + 0.5, body - 1, Math.max(0.5, height - 1));
+      } else {
+        if (top > yh) wicks[d].rect(cx - 0.7, yh, 1.4, top - yh);
+        if (yl > top + height) wicks[d].rect(cx - 0.7, top + height, 1.4, yl - top - height);
+        borders[d].rect(Math.round(x - body / 2) + 0.75, Math.round(top) + 0.75, Math.max(1, Math.round(body) - 1.5), Math.max(1, Math.round(height) - 1.5));
+      }
+    }
+    ctx.save();
+    if (kind === 'bars') {
+      ctx.lineWidth = 3.6; ctx.strokeStyle = halo; ctx.stroke(shade);
+      ctx.lineWidth = 1.6; for (const d of ['up', 'down'] as const) { ctx.strokeStyle = ink[d].body; ctx.stroke(bodies[d]); }
+      ctx.restore(); return;
+    }
+    // Outline candles chosen as the type stand on the halo as filled ones do; under the trade dust the outline stays bare.
+    if (kind !== 'dust') { ctx.fillStyle = halo; ctx.fill(shade); }
+    for (const d of ['up', 'down'] as const) { ctx.fillStyle = wickInk(d); ctx.fill(wicks[d]); }
+    if (filled) for (const d of ['up', 'down'] as const) { ctx.fillStyle = ink[d].body; ctx.fill(bodies[d]); }
+    ctx.lineWidth = filled ? 1 : 1.5;
+    for (const d of ['up', 'down'] as const) { ctx.strokeStyle = ink[d].border; ctx.stroke(borders[d]); }
+    ctx.restore();
   }
 
   /**
@@ -1726,7 +1901,7 @@ export class HeatPane {
       // The price only where the line is drawn: over a candle the candle says it, and the line's close would be one nothing on the chart shows.
       this.#overviewLine(state);
       const at = state.hover?.t ?? Math.min(pageNow(), this.view.t1);
-      const point = this.#historyAsCandles(state, a) || isCovered(this.#overviewDrawn?.covered ?? [], at) ? null : pricePointAt(this.#overviewRuns(), at, a.tfMs);
+      const point = this.#historyAsCandles(state, a) || isCovered(this.#overviewDrawn?.covered ?? [], at) || (this.#zoomedShown(state) && this.#coarseAnswer(state) === a) ? null : pricePointAt(this.#overviewRuns(), at, a.tfMs);
       if (point) text += `  ${fmtPrice(point.price)}`;
     }
     const status = h.status === 'stale' ? t('Price history is stale; trying again in a minute.') : h.status === 'failed' ? t('Price history could not be loaded; trying again in a minute.') : h.status === 'empty' ? t('No price history for this time.') : !a?.candles.length ? t('Reading price history…') : '';
@@ -1736,6 +1911,8 @@ export class HeatPane {
   /** A true price series; separate paths preserve exchange gaps and never splice a reference market into the selected market's live trades. */
   #paintOverview(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const answer = this.hub.priceHistory.answer; if (!this.#overviewShown || !answer || this.#historyAsCandles(state, answer)) return;
+    // Zoomed out, the chart market's history is drawn as candles (`zoomedRows`); another market's stays the dashed line.
+    if (this.#zoomedShown(state) && this.#coarseAnswer(state) === answer) return;
     const runs = this.#overviewLine(state), v = this.view, p = this.#palette;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip(); ctx.lineJoin = 'round';
     ctx.globalAlpha = 0.9 * (1 - 0.85 * this.#lodFrame.barAlpha);
@@ -1799,7 +1976,7 @@ export class HeatPane {
   /** Where the anchored columns begin: a dashed line in the profile colour, named with when the window was taken. */
   #paintProfileAnchor(ctx: CanvasRenderingContext2D, pw: number, ph: number, p: Palette): void {
     const a = this.store.state.show.traded ? this.anchoredWindow() : null, v = this.view;
-    if (!a || !(a.from > v.t0 && a.from < v.t1)) return;
+    if (!a || a.state || !(a.from > v.t0 && a.from < v.t1)) return;
     const x = Math.round(v.xOf(a.from, pw)) + 0.5;
     ctx.save(); ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
     ctx.strokeStyle = p.poc; ctx.globalAlpha = 0.7; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke(); ctx.setLineDash([]);
@@ -2038,7 +2215,7 @@ export class HeatPane {
     const hovered = hy >= top && hy <= ph ? bars.findIndex(b => Math.abs(hx - b.x) <= Math.max(b.w, slot) / 2) : -1;
     // The candles' part named ≈ while any of its bars is an estimate (its volume at its typical price), plainly where all are as reported.
     const estimated = bars.some(b => b.source === 'candle' && !b.exact);
-    paintVolumeStrip(ctx, bars, { pw, ph, height, palette: p, bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
+    paintVolumeStrip(ctx, bars, { pw, ph, height, palette: this.#tradedPalette(state), bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
       recorded: `${t('Volume')} · ${tfName}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: tfName }) : t('{market} {tf} candles', { market, tf: tfName }), hovered });
     this.#strip = { bars, rows, ids, tf, top, market, tfName, reports: binance, total };
   }
@@ -2146,13 +2323,15 @@ export class HeatPane {
     const body = normal + (Math.max(1, layout.body) - normal) * narrowing;
     const volume = this.#volumeAnalysis(state), hot = (i: number) => state.highlight.on && volume.found.flag[i] === 1;
     // A contrasting halo/outline keeps candles legible over both pink and green heat; it fades out over the dimmed footprint view.
-    const edge = p.dark ? 'rgba(255,255,255,0.92)' : 'rgba(18,20,24,0.92)', halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)', outline = 1 - 0.85 * narrowing;
+    const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)', outline = 1 - 0.85 * narrowing;
     // While the trade dust shows, a candle is its outline and a thin wick: a filled body (and its halo) would hide the orders inside it. Outline
     // candles are outlines always; OHLC bars and the line are drawn their own way (chart-type.ts).
     const type = this.previewChartType ?? state.chartType, hollow = type === 'outline' || (this.#dustOn(state) && !this.#dustFailed);
     // Narrower than CANDLE_LINE_PX a candle is a few overlapping marks per pixel (a 45-day view of hourly ones drew 1,100 of them, six to
-    // eight drawing calls and a blurred ring each, on every pointer move: 14 frames a second, 2026-10-30): the candles are then the line
-    // through their closes, as the price history beyond them is.
+    // eight drawing calls and a blurred ring each, on every pointer move: 14 frames a second, 2026-10-30): the candles drawn are then longer
+    // ones made of them (`drawnTf`, `zoomedRows`; a user, 2026-11-11: "need to be able to see candles on higher zoom outs"), a few drawing
+    // calls for all of them. Only where even those would be too narrow (a view of years with no price history) is it the line through the closes.
+    if (type !== 'line' && this.#zoomedShown(state)) { const zoom = this.drawnTf(state); this.#paintZoomed(ctx, state, this.zoomedRows(state, zoom), zoom, pw, ph, type === 'bars' ? 'bars' : type === 'outline' ? 'outline' : hollow ? 'dust' : 'filled'); return; }
     const thin = bar < CANDLE_LINE_PX;
     if (type === 'line' || thin) { this.#paintCloseLine(ctx, state, pw, ph, tf, layout, narrowing, hot, thin); return; }
     const history = this.historyCandles(state), count = history.length + state.candles.length;
@@ -2162,7 +2341,8 @@ export class HeatPane {
       if (c[0] + tf < v.t0 || c[0] > v.t1) continue;
       // Every candle, the one still forming too, has the same body and stands in the middle of its slot, so the spacing is the same all along.
       const xClassic = v.xOf(c[0] + tf / 2, pw), x = xClassic + (v.xOf(c[0], pw) + layout.candleCenter - xClassic) * narrowing, up = c[4] >= c[1];
-      const color = this.candleColor(c[0]) || (up ? p.candleUp : p.candleDown);
+      // Its own colours or the theme's (candle-colours.ts); a script's colour for the candle comes first.
+      const dir = up ? 'up' : 'down', ink = candleInk(state.candleColors, dir, p, type !== 'bars' && !hollow, this.candleColor(c[0])), color = ink.body;
       const yh = v.yOf(c[2], ph), yl = v.yOf(c[3], ph), yo = v.yOf(c[1], ph), yc = v.yOf(c[4], ph), cx = Math.round(x) + 0.5;
       const top = Math.min(yo, yc), height = Math.max(1.5, Math.abs(yc - yo));
       // A wick is a rectangle filled, not a line stroked: the same pixels (butt ends), and a canvas strokes even a straight line as a path,
@@ -2172,7 +2352,7 @@ export class HeatPane {
         // A line from the low to the high, the open a tick to the left and the close a tick to the right, over the same halo as a candle.
         const tick = bar < 4 ? 0 : Math.min(8, bar / 2 - 1), path = (): void => { ctx.beginPath(); ctx.moveTo(cx, yh); ctx.lineTo(cx, yl); if (tick > 0) { ctx.moveTo(cx - tick, Math.round(yo) + 0.5); ctx.lineTo(cx, Math.round(yo) + 0.5); ctx.moveTo(cx, Math.round(yc) + 0.5); ctx.lineTo(cx + tick, Math.round(yc) + 0.5); } };
         ctx.globalAlpha = outline; ctx.lineWidth = 3.6; ctx.strokeStyle = halo; path(); ctx.stroke();
-        ctx.globalAlpha = 1; ctx.lineWidth = 1.6; ctx.strokeStyle = color; path(); ctx.stroke();
+        ctx.globalAlpha = 1; ctx.lineWidth = 1.6; ctx.strokeStyle = ink.body; path(); ctx.stroke();
         ctx.lineWidth = 1;
       } else if (hollow) {
         const rect = [Math.round(x - body / 2) + 0.75, Math.round(top) + 0.75, Math.max(1, Math.round(body) - 1.5), Math.max(1, Math.round(height) - 1.5)] as const;
@@ -2183,18 +2363,19 @@ export class HeatPane {
           wick(3.5, yh, top); wick(3.5, top + height, yl); ctx.strokeRect(...rect);
         }
         const thinWick = type === 'outline' ? 1.4 : 1;
-        ctx.globalAlpha = type === 'outline' ? 1 : 0.9; ctx.strokeStyle = ctx.fillStyle = color;
+        ctx.globalAlpha = type === 'outline' ? 1 : 0.9; ctx.fillStyle = ink.wick;
         wick(thinWick, yh, top); wick(thinWick, top + height, yl);
-        ctx.lineWidth = 1.5; ctx.strokeRect(...rect);
+        ctx.strokeStyle = ink.border; ctx.lineWidth = 1.5; ctx.strokeRect(...rect);
       } else {
         ctx.globalAlpha = outline;
         ctx.fillStyle = halo; wick(3.5, yh, yl);
-        ctx.fillStyle = edge; wick(1.6, yh, yl);
-        if (narrowing > 0.01) { ctx.globalAlpha = Math.min(1, narrowing * 1.5); ctx.fillStyle = color; wick(1.4, yh, yl); }
+        ctx.fillStyle = ink.wick; wick(1.6, yh, yl);
+        // Beside the footprint's rows the wick takes the body's colour (its own, where it has one), the edge fading under it.
+        if (narrowing > 0.01) { ctx.globalAlpha = Math.min(1, narrowing * 1.5); ctx.fillStyle = state.candleColors[dir].wick ?? color; wick(1.4, yh, yl); }
         ctx.lineWidth = 1;
         ctx.globalAlpha = outline; ctx.fillStyle = halo; ctx.fillRect(x - body / 2 - 1.5, top - 1.5, body + 3, height + 3);
         ctx.globalAlpha = 1; ctx.fillStyle = color; ctx.fillRect(x - body / 2, top, body, height);
-        if (body >= 3) { ctx.globalAlpha = outline; ctx.strokeStyle = edge; ctx.strokeRect(x - body / 2 + 0.5, top + 0.5, body - 1, Math.max(0.5, height - 1)); }
+        if (body >= 3) { ctx.globalAlpha = outline; ctx.strokeStyle = ink.border; ctx.strokeRect(x - body / 2 + 0.5, top + 0.5, body - 1, Math.max(0.5, height - 1)); }
       }
       // Hollow, filled or a bar, a candle of unusual volume keeps its ring (Highlights), while it is wide enough to be told from its
       // neighbours: narrower, the ring (a blur each) covers the candles beside it, and the volume strip marks the candle as well. Its width
@@ -2288,13 +2469,22 @@ export class HeatPane {
   anchoredWindow(): AnchorSnapshot | null {
     const s = this.store.state.traded;
     if (s.columns !== 'anchor') return null;
-    const coin = currentCoin().coin, anchor = profileAnchorOf(s, coin, Date.now(), PROFILE_CANDLES_BACK_MS);
-    if (anchor === null) return null;
+    const coin = currentCoin().coin, mine = profileAnchorOf(s, coin);
+    if (!mine) return null;
+    // A live anchor whose candle is still being found, whose period has none yet, or an anchor further back than the columns reach: the
+    // window holds nothing and the columns say why (Sol and the advisor, 2026-11-11: never the chart's totals under an anchor).
+    const start = this.profileAnchorStart(mine);
+    if (start.state !== 'ready') {
+      const to = Math.floor(Date.now() / ANCHOR_BAR_MS) * ANCHOR_BAR_MS;
+      if (start.state === 'coming' && !this.#anchorTimer) this.#anchorTimer = window.setTimeout(() => { this.#anchorTimer = 0; this.invalidate(); }, 2_000);
+      return { key: `${coin}|${start.state}`, from: to, to, at: Date.now(), state: start.state };
+    }
+    const anchor = start.at, bar = this.#anchorBar(anchor);
     // In a replay whose moment is not five minutes past the anchor yet (or is before it), the window holds nothing yet, as a live one in its
     // first five minutes: the columns stay empty (nothing is asked of an empty window), never the chart's totals under the anchor (Sol, code
     // review 2026-11-10, round 3).
-    if (replaying()) { const at = pageNow(), to = Math.floor(at / ANCHOR_BAR_MS) * ANCHOR_BAR_MS; return { key: 'replay', from: anchor, to, at, rev: this.#replayRev }; }
-    const held = this.#anchorSnap, now = Date.now(), snap = anchorSnapshot(held, `${coin}|${anchor}|${s.every}`, anchor, s.every, now, this.#anchorForce);
+    if (replaying()) { const at = pageNow(), to = Math.floor(at / bar) * bar; return { key: 'replay', from: anchor, to, at, rev: this.#replayRev }; }
+    const held = this.#anchorSnap, now = Date.now(), snap = anchorSnapshot(held, `${coin}|${anchor}|${s.every}`, anchor, s.every, now, this.#anchorForce, bar);
     this.#anchorForce = false;
     if (snap !== held) {
       this.#anchorSnap = snap;
@@ -2303,6 +2493,32 @@ export class HeatPane {
       queueMicrotask(() => this.onAnchoredWindow());
     }
     return snap;
+  }
+  /**
+   * Where the profile's anchor starts now: a fixed one at its moment, a live one where its rule lands (`ruleStart`), on the five minutes the
+   * columns' window is on; 'far' when further back than the columns reach (`PROFILE_ANCHOR_REACH_MS`), 'none' when not begun.
+   */
+  profileAnchorStart(a: Anchor): ProfileAnchorStart {
+    let at: number, approx = false;
+    if (a.rule) { const r = this.ruleStart(a.rule); if (r.state !== 'ready') return r; at = r.at; approx = !!r.approx; } else at = a.at!;
+    at = Math.floor(at / ANCHOR_BAR_MS) * ANCHOR_BAR_MS;
+    // Older than the five-minute candles reach: on the bar of the coarser ones the window is worked out from (said as its start).
+    const bar = this.#anchorBar(at); at = Math.floor(at / bar) * bar;
+    const now = Date.now();
+    if (at > now) return { state: 'none' };
+    return at < now - PROFILE_ANCHOR_REACH_MS ? { state: 'far', at } : { state: 'ready', at, ...(approx ? { approx } : {}) };
+  }
+  /**
+   * The bars an anchored window from `at` is worked out on: five minutes while they reach it (`PROFILE_FINE_REACH_MS`, 21 weeks), else the
+   * zone's own bar (an hour, or half an hour in a zone off the hour), so every period's start falls on one; reaching two years.
+   */
+  #anchorBar(at: number): number {
+    return at < Date.now() - PROFILE_FINE_REACH_MS ? this.#keyLevelContext(this.store.state).barMs : ANCHOR_BAR_MS;
+  }
+  /** The candle size the traded-volume column's estimate is read from: the anchored window's bars (`#anchorBar`), else the profile's own. */
+  #columnBar(state: AppState): number {
+    const a = this.anchoredWindow();
+    return a && !a.state ? Math.max(this.#anchorBar(a.from), this.#profileCandles(state, 'day').barMs) : this.#profileCandles(state, 'day').barMs;
   }
   /** Take the anchored window again now (the panel's Update now). */
   updateAnchored(): void { this.#anchorForce = true; this.#replayRev++; this.invalidate(); }
@@ -2366,7 +2582,7 @@ export class HeatPane {
    * none are asked for beyond it), and a market of the column's own is there to read (`#columnMarkets`).
    */
   #loadedWanted(state: AppState, win: { from: number; to: number } = this.#columnWindow()): boolean {
-    if (replaying() || !state.show.traded || !(win.to > win.from) || win.from < Date.now() - PROFILE_CANDLES_BACK_MS) return false;
+    if (replaying() || !state.show.traded || !(win.to > win.from) || win.from < Date.now() - (this.anchoredWindow() ? PROFILE_ANCHOR_REACH_MS : PROFILE_CANDLES_BACK_MS)) return false;
     const mine = this.#columnMarkets(state);
     if (!mine.main && !mine.spot) return false;
     const ids = flowIds(state, this.hub.flow.ids);
@@ -2384,7 +2600,7 @@ export class HeatPane {
     if (!this.#loadedWanted(state, win)) return false;
     const mine = this.#columnMarkets(state), spotOnly = !mine.main, primary = spotOnly ? mine.spot : mine.main;
     if (!primary) return false;
-    const h = this.hub.profileHistory(this.#profileCandles(state, 'day').barMs, spotOnly ? 'spot' : 'main');
+    const h = this.hub.profileHistory(this.#columnBar(state), spotOnly ? 'spot' : 'main');
     return h.id !== primary.id || h.reach(win.from) === 'coming';
   }
   /**
@@ -2423,7 +2639,7 @@ export class HeatPane {
   #ensureLoadedColumn(state: AppState): void {
     const win = this.#columnWindow();
     if (!this.#loadedWanted(state, win)) return;
-    const mine = this.#columnMarkets(state), { barMs } = this.#profileCandles(state, 'day'), at = Math.floor(win.from / barMs) * barMs;
+    const mine = this.#columnMarkets(state), barMs = this.#columnBar(state), at = Math.floor(win.from / barMs) * barMs;
     if (mine.main) this.hub.profileHistory(barMs, 'main').ensure(mine.main, at, barMs, () => this.invalidate());
     if (mine.spot) this.hub.profileHistory(barMs, 'spot').ensure(mine.spot, at, barMs, () => this.invalidate());
   }
@@ -2488,16 +2704,19 @@ export class HeatPane {
    */
   #vwapPlan(state: AppState): VwapPlan {
     const s = state.vwap, v = this.view, now = pageNow(), MIN = 60_000, HOUR = 3_600_000, DAY = 86_400_000, { zone, barMs } = this.#keyLevelContext(state), coin = currentCoin().coin;
-    const key = `${JSON.stringify(s)}|${zone}|${barMs}|${coin}|${Math.floor(v.t0 / HOUR)}|${Math.ceil(v.t1 / HOUR)}|${Math.floor(now / MIN)}`;
+    // Where each anchor stands now (a live one moves with its rule), before the key: an anchor that moves is another plan. The colours are
+    // not part of it: a colour chosen repaints the lines, it does not work them out again (Sol, 2026-11-11).
+    const anchors = this.#planAnchors(state, coin, zone, barMs, now), { colors: _colors, anchors: _anchors, ...rest } = s;
+    const key = `${JSON.stringify(rest)}|${anchors.map(a => `${a.id}:${a.at}:${a.slot}:${a.name ?? ''}`).join(',')}|${zone}|${barMs}|${coin}|${Math.floor(v.t0 / HOUR)}|${Math.ceil(v.t1 / HOUR)}|${Math.floor(now / MIN)}`;
     if (this.#vwapPlanned?.key === key) return this.#vwapPlanned.plan;
     // The whale VWAP follows the same sessions, so they are worked out for either.
     const sessions = s.session || s.whale ? sessionsOf(s.period, zone, Math.max(v.t0, now - MAX_BACK_MS), v.t1, now, s.startMinute) : [];
     const sessionBar = vwapBarMs(sessions.length ? now - sessions[0]!.from : 0, barMs);
-    const anchors = anchorsOf(s, coin, now).map(at => ({ at, bar: vwapBarMs(now - at, barMs) }));
     const reach = new Map<number, number>();
     const need = (bar: number, from: number): void => { reach.set(bar, Math.min(reach.get(bar) ?? Infinity, Math.floor(from / bar) * bar)); };
     if (sessions.length && s.session) need(sessionBar, sessions[0]!.from);
-    for (const a of anchors) need(a.bar, a.at);
+    // The body from the first whole bar after the anchor; the stretch before it is the head's, read on its own.
+    for (const a of anchors) need(a.bar, Math.ceil(a.at / a.bar) * a.bar);
     // A whole window before the view, no further back than the history keeps (`rollingFrom`); windows of one bar size share one history.
     const rolling = s.rolling.map(days => ({ days, ms: days * DAY, bar: rollingBarMs(days) })), rollingReach = new Map<number, number>(), real = Date.now();
     for (const r of rolling) rollingReach.set(r.bar, Math.min(rollingReach.get(r.bar) ?? Infinity, rollingFrom(r.days, v.t0, v.t1, now, real)));
@@ -2505,6 +2724,100 @@ export class HeatPane {
     this.#vwapPlanned = { key, plan };
     return plan;
   }
+  /**
+   * The coin's anchors drawn (not hidden), each where it stands now: a fixed one at its moment, a live one where its rule resolves
+   * (`#resolveRule`). One whose candles are still on their way, or that nothing resolves (no candle in its stretch), is left out until it does.
+   */
+  #planAnchors(state: AppState, coin: string, zone: string, zoneBar: number, now: number): PlannedAnchor[] {
+    const out: PlannedAnchor[] = [];
+    // A live anchor is named by its rule's code (AVWAP PWH), a fixed one by its date (AVWAP Nov 9 06:00): a name that says where it starts and
+    // stays when another is removed (Sol, review 2026-11-11: "AVWAP 1" said nothing and changed number).
+    let fixed = 0;
+    for (const a of anchorsOf(state.vwap, coin, now)) {
+      const n = a.rule ? 0 : ++fixed;
+      if (a.hidden) continue;
+      const r = a.rule ? this.#resolveRule(a.rule, state, zone, zoneBar, now) : null;
+      const at = a.rule ? (r?.state === 'ready' ? r.at : undefined) : a.at;
+      if (at === undefined || at > now) continue;
+      out.push({ id: a.id, n, at, ...anchorBars(at, now), slot: a.slot, name: `${t('AVWAP')} ${a.rule ? ruleCode(a.rule) : anchorDate(at)}`, ...(a.rule ? {} : { tag: `${t('AVWAP')} ${anchorDay(at)}` }) });
+    }
+    return out;
+  }
+  /** Where each anchored VWAP's line was last drawn from, by the anchor's id and where it starts (`anchorDrawnFrom`). */
+  readonly #anchorDrawn = new Map<string, number | null>();
+  /** Where an anchored VWAP's line is drawn from (its first point), null when it has none: later than its anchor where no finer candles reach it. */
+  anchorDrawnFrom(id: string, at: number): number | null { return this.#anchorDrawn.get(`${id}|${at}`) ?? null; }
+  /** The bar a profile anchor at `at` is worked out on (`#anchorBar`), for its panel's date field. */
+  profileAnchorBar(at: number): number { return this.#anchorBar(at); }
+  /**
+   * Where a profile anchor placed at `t` goes (a click, the arrow keys, the preview of either): the start of the candle drawn there, on the bar
+   * its columns are worked out on (five minutes, hours past 21 weeks; `#anchorBar`), so the moment previewed is the moment added up from (Sol,
+   * review 2026-11-11: 13:35 shown and kept, 13:00 used).
+   */
+  profileAnchorAt(t: number, state: AppState = this.store.state): number { const at = anchorAt(t, this.drawnTf(state)), bar = this.#anchorBar(at); return Math.floor(at / bar) * bar; }
+  /** Where a live anchor's rule lands now, for the panels (the VWAP's rows, the profile's): the reading the lines use. */
+  ruleStart(rule: AnchorRule): Resolved {
+    const state = this.store.state, { zone, barMs } = this.#keyLevelContext(state);
+    return this.#resolveRule(rule, state, zone, barMs, pageNow());
+  }
+  /** Where each live anchor resolved, by rule, zone and market, and what it was read from (a minute, the candles, the spans landed). */
+  readonly #ruleMemo = new Map<string, { key: string; out: Resolved }>();
+  /** Counts the short spans of candles that landed (`Hub.spanBars`): a line or a rule waiting for one is worked out again. */
+  #spanVersion = 0;
+  #spanLanded = (): void => { this.#spanVersion++; this.invalidate(); };
+  /**
+   * Where a live anchor's rule resolves now (`anchors/anchors.ts resolveRule`), on the chart market's own candles (the key levels' market:
+   * the one standing in for it where its history cannot be read): its period's bars of `searchBarMs`, asked for back to the start of the
+   * stretch it searches, then the minutes inside the bar that won. In a replay, at its moment, with the bar under way left out.
+   */
+  #resolveRule(rule: AnchorRule, state: AppState, zone: string, zoneBar: number, now: number): Resolved {
+    const target = this.#keyLevelContext(state).target;
+    if (!target) return { state: 'none' };
+    // The memo first: this runs dozens of times a frame (the anchored window is asked for by every column), and the period's bounds take the
+    // zone's clock arithmetic (code review 2026-11-11, about 0.1 ms each). Worked out again each minute or when what it reads changes.
+    const barMs = searchBarMs(rule.period, this.#ruleZoneBar(rule, zone, zoneBar, now)), replay = replaying();
+    const h = rule.point === 'start' ? null : this.hub.vwapHistory(target.id, barMs);
+    const memoKey = `${ruleKey(rule)}|${zone}|${target.id}|${barMs}`;
+    // The real clock's minute too: a history that failed is asked again within a minute even while a replay is paused (its `now` stands
+    // still; Sol, review round 3), and a read that settled (`settled`, a failure included) is worked out again at once.
+    const key = `${Math.floor(now / 60_000)}|${Math.floor(Date.now() / 60_000)}|${h ? `${h.id}:${h.version}:${h.settled}:${h.knownFrom}:${h.exhausted}:${h.limited}:${h.state}` : ''}|${replay}|${this.#spanVersion}`;
+    const held = this.#ruleMemo.get(memoKey);
+    if (held?.key === key) return held.out;
+    const span = ruleSpan(rule, zone, now);
+    if (h) h.ensure(target, span.from, barMs, () => this.invalidate());
+    // A market listed after the stretch began (its history begins later) is read from its first candle: nothing traded before it.
+    // A history that could not be read, or whose exchange serves no further back, says so (Sol, review 2026-11-11: "finding it" forever).
+    const mine = !!h && h.id === target.id && h.barMs === barMs;
+    // Failed: nothing could be read, or the read further back failed and waits its minute (it still holds newer bars; Sol, review round 2).
+    const failed = mine && (h.state === 'unavailable' || (h.knownFrom > span.from && !h.exhausted && !h.limited && h.reach(span.from) === 'never'));
+    const coarse = mine && h.bars.length ? { bars: h.bars, barMs, knownFrom: h.exhausted ? Math.min(h.knownFrom, span.from) : h.knownFrom, failed, limited: h.limited }
+      : mine && (failed || h.exhausted) ? { bars: [], barMs, knownFrom: failed ? Infinity : span.from, failed } : null;
+    const out = resolveRule(rule, zone, now, replay, coarse, (from, to) => this.hub.spanRead(target, 60_000, from, to, this.#spanLanded));
+    this.#ruleMemo.set(memoKey, { key, out });
+    if (this.#ruleMemo.size > 64) this.#ruleMemo.delete(this.#ruleMemo.keys().next().value!);
+    return out;
+  }
+  /**
+   * The bars a rule may be searched on without one crossing its period's bounds: the key levels' (their zone's offset over the last 62 days),
+   * or finer where the offset over the rule's whole stretch needs it (a previous quarter or year begun under another offset: Lord Howe moves by
+   * half an hour for daylight saving; Sol, review 2026-11-11). Worked out once a day for each period and zone.
+   */
+  readonly #ruleZoneBars = new Map<string, number>();
+  #ruleZoneBar(rule: AnchorRule, zone: string, zoneBar: number, now: number): number {
+    if (rule.point === 'start' || (rule.period !== 'quarter' && rule.period !== 'year')) return zoneBar;
+    // Over a window that holds every such stretch searched from any moment of this day (a previous year begins under two years back, a
+    // previous quarter under seven months), so a replay that crosses a period's start within the day is not given the wrong bars (Sol, round 5).
+    const DAY = 86_400_000, day = Math.floor(now / DAY) * DAY, back = rule.period === 'year' ? 2 * 366 * DAY : 214 * DAY;
+    const key = `${rule.period}|${zone}|${zoneBar}|${day}`;
+    let bar = this.#ruleZoneBars.get(key);
+    if (bar === undefined) {
+      bar = Math.min(zoneBar, barMsFor(zone, day - back, day + DAY));
+      this.#ruleZoneBars.set(key, bar);
+      if (this.#ruleZoneBars.size > 64) this.#ruleZoneBars.delete(this.#ruleZoneBars.keys().next().value!);
+    }
+    return bar;
+  }
+
   /**
    * Whether the rolling VWAP over `days` can be drawn: its histories hold a whole window up to now ('yes'), may still ('coming'), will not
    * because the history of a market is shorter than the window ('short'; with several markets every one must reach), or one could not be
@@ -2623,7 +2936,7 @@ export class HeatPane {
     // The chart's own candles only for one market's lines (several markets' are their histories' closed bars alone): a trade would otherwise
     // add up every market's bars again (Sol, code review 2026-11-10).
     const chartKey = targets.length > 1 ? '' : `${state.candles.length}|${tail ? `${tail[0]}|${tail[2]}|${tail[3]}|${tail[5]}` : ''}`;
-    const key = `${this.#vwapPlanned?.key}|${versions}|${rolling.key}|${chartKey}|${whaleKey}${replaying() ? `|r${Math.floor(pageNow() / 60_000)}` : ''}`;
+    const key = `${this.#vwapPlanned?.key}|${versions}|${rolling.key}|${chartKey}|${whaleKey}|${this.#spanVersion}${replaying() ? `|r${Math.floor(pageNow() / 60_000)}` : ''}`;
     if (this.#vwapDrawn?.key === key) return replayCut(this.#vwapDrawn.lines, pageNow());
     const lines: VwapLine[] = [], now = pageNow();
     // Each bar size's bars once, for the session and the anchors that share it (several markets are added up once).
@@ -2654,13 +2967,25 @@ export class HeatPane {
         if (sells.length) lines.push({ kind: 'whaleSell', n: 0, points: sells, live, key: `whale-sell|${w.key}` });
       }
     }
-    plan.anchors.forEach((a, i) => {
-      // From the first whole bar after the anchor: a bar begun before it would carry volume from before the moment chosen.
-      const bars = barsFor(a.bar), start = Math.ceil(a.at / a.bar) * a.bar;
-      if (!bars || bars.from > start) return;
-      const points = carried(vwapSeries(bars.rows, start, Infinity), bars.readTo);
-      if (points.length) lines.push({ kind: 'anchor', n: i + 1, points, live: true, key: `anchor|${a.at}`, bar: a.bar, liveFrom: bars.liveFrom });
-    });
+    for (const a of plan.anchors) {
+      // The body's bars from the first whole one after the anchor (a bar begun before it would carry volume from before the moment chosen),
+      // and before them the head: the anchor's own stretch to that bar, read at the finest size that starts at it. A head still on its way
+      // keeps the line back rather than start it late.
+      const body = barsFor(a.bar), boundary = Math.ceil(a.at / a.bar) * a.bar;
+      if (!body || body.from > boundary) continue;
+      let head: VwapBar[] = [];
+      if (a.head && boundary > a.at) {
+        const spans = targets.map(target => this.hub.spanBars(target, a.head, a.at, boundary, this.#spanLanded));
+        if (spans.some(x => x === null)) continue;
+        head = spans.length === 1 ? vwapBarsOf(spans[0]!) : mergeVwapBars(spans as (readonly CandleRow[])[], a.head, boundary);
+      }
+      const rows = head.length ? [...head, ...body.rows.filter(b => b[0] >= boundary)] : body.rows;
+      const points = carried(vwapSeries(rows, a.at, Infinity), body.readTo);
+      if (points.length) lines.push({ kind: 'anchor', n: a.n, id: a.id, slot: a.slot, ...(a.name ? { name: a.name } : {}), ...(a.tag ? { tag: a.tag } : {}), points, live: true, key: `anchor|${a.id}|${a.at}`, bar: a.bar, liveFrom: body.liveFrom, ...(head.length ? { head: { bar: a.head, to: boundary } } : {}) });
+      // Where the line is drawn from: later than the anchor where no finer candles reach it on this market (the panel says so).
+      this.#anchorDrawn.set(`${a.id}|${a.at}`, points[0]?.t ?? null);
+      if (this.#anchorDrawn.size > 32) this.#anchorDrawn.delete(this.#anchorDrawn.keys().next().value!);
+    }
     this.#vwapDrawn = { key, lines };
     return replayCut(lines, now);
   }
@@ -2833,7 +3158,7 @@ export class HeatPane {
    * The spot market's candles join once they reach the window as the perpetual's do (`spot`); until then the perpetual's draw alone.
    */
   #windowFromCandles(state: AppState, w: ProfileWindow, step: number, share: number, now: number, column = false): { levels: ValueLevels; upTo: number; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean; markets: string } | null {
-    const { target, spot, barMs } = this.#profileCandles(state, windowKind(w));
+    const { target, spot, barMs: own } = this.#profileCandles(state, windowKind(w)), barMs = column ? this.#columnBar(state) : own;
     // The traded-volume column counts the markets the chips and the Spot / Perp filter leave on (`#columnMarkets`), and may be the spot market's
     // alone; the days, weeks and sessions on the chart are the coin's usual market with its spot market, whatever is on. `lag`: how far behind a
     // window that has ended the candles known may be (a column follows a pan off the live edge; a period's lines are drawn only once final).
@@ -2941,7 +3266,7 @@ export class HeatPane {
   #paintPastProfiles(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     this.#profileHits = [];
     const kind = this.#profilesKind(state); if (!kind) return;
-    const v = this.view, p = this.#palette, now = pageNow(), step = this.#levelStep(), share = state.traded.share / 100, ids = this.#recordedIds(state);
+    const v = this.view, p = this.#tradedPalette(state), now = pageNow(), step = this.#levelStep(), share = state.traded.share / 100, ids = this.#recordedIds(state);
     const row = Math.max(step, this.#tradedStep()), fromCandles = linesSource({ period: kind, source: state.traded.source }) === 'candles';
     const halo = p.dark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.7)', ages = this.#ageRanks(state);
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
@@ -3056,7 +3381,7 @@ export class HeatPane {
   #paintValueLines(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): KeyTag[] {
     const s = state.traded;
     if (!state.show.traded || (!s.poc && !s.va)) return [];
-    const v = this.view, p = this.#palette, now = pageNow(), step = this.#levelStep();
+    const v = this.view, p = this.#tradedPalette(state), now = pageNow(), step = this.#levelStep();
     // `live`: the window under way (or what is on the chart), whose lines end at the right edge. `kind`: whose they are.
     // `rank`: how many windows of its series come after it among those shown, for the fading.
     const segments: { x0: number; x1: number; levels: ValueLevels; name: string; naked: number | null; live: boolean; key: string; kind: LineKind | 'view'; estimate?: boolean; rank: number }[] = [];
@@ -3211,7 +3536,7 @@ export class HeatPane {
    * price tags stand at its outer edge, so both sides face the chart; its header reads as the others do.
    */
   #paintColumn(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, metric: ProfileMetric, side: Side, i: number, x0: number): ColumnBox | null {
-    const p = this.#palette, v = this.view, W = TRADED_W, answer = this.#columnAnswer(metric), left = side === 'left';
+    const p = this.#tradedPalette(state), v = this.view, W = TRADED_W, answer = this.#columnAnswer(metric), left = side === 'left';
     // Where a bar of `length` starting `from` px off the map-side edge lies: rightward from the left edge on the right, leftward on the left.
     const bar = (from: number, length: number): [number, number] => left ? [x0 + W - 1 - from - length, length] : [x0 + 1 + from, length];
     // The column's inside, off the edge line on the map's side.
@@ -3295,7 +3620,7 @@ export class HeatPane {
     const measured = measureDef(metric).header(rows, flags);
     let { head, sub } = measured;
     // An estimate from the candles says so, in the profile colour, where a recording's window says "since" in amber.
-    const anchored = this.anchoredWindow(), fromText = anchored ? clock(anchored.from, anchored.from < startOfDay(Date.now())) : '';
+    const anchored = this.anchoredWindow(), fromText = anchored ? (anchored.from < startOfDay(Date.now()) ? clockYear(anchored.from) : clock(anchored.from)) : '';
     if (loaded) { head = `≈ ${head}`; sub = anchored ? t('≈ from {time}', { time: fromText }) : t('≈ from candles'); }
     if (this.hub.profileState(metric) === 'unavailable' && !rows) sub = t('not on this server');
     ctx.fillText(head, x0 + 4, 4);
@@ -3309,7 +3634,9 @@ export class HeatPane {
     // with no trades recorded at all, a venue whose book alone is read, has none and adds nothing), and never over a warning.
     else if (anchored && !loaded && !measured.warn && !!answer?.instruments.some(inst => inst.earliest !== null) && answer.instruments.every(inst => inst.earliest !== null || !inst.rows.length)) sub = t('from {time}', { time: fromText });
     const warn = !loaded && (covers !== null || measured.warn);
-    if (sub) { if (warn) ctx.fillStyle = '#e6a700'; else if (loaded) ctx.fillStyle = p.poc; ctx.fillText(sub, x0 + 4, lineY); }
+    if (anchored?.state) sub = anchored.state === 'coming' ? t('finding the anchor…') : anchored.state === 'far' ? t('anchor too far back') : anchored.state === 'failed' ? t('anchor: candles not read, retrying')
+      : anchored.state === 'short' ? t('anchor: history too short') : t('anchor not begun yet');
+    if (sub) { if (warn || (anchored?.state && anchored.state !== 'coming')) ctx.fillStyle = '#e6a700'; else if (loaded) ctx.fillStyle = p.poc; ctx.fillText(sub, x0 + 4, lineY); }
     if (rows && rows.total > 0 && !unsplit) { const net = tradedNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + 4, lineY + 12, W - 8); }
     ctx.restore(); ctx.textBaseline = 'middle';
     // The edge line on the map's side: a right column's left edge, a left column's right edge.
@@ -3318,8 +3645,9 @@ export class HeatPane {
     // The box stands beside the columns, over the map, like the profile's comparison.
     // It opens downward from under the chart's corner buttons, which would otherwise cover its first lines.
     // Where the estimate comes from, and, where its candles do not say who bought, that its column has one volume and no sides.
-    const note = loaded ? [t('An estimate from the candles of {market}, the volume of each spread over its range: not the recording.', { market: loaded.markets }), ...(unsplit ? [t('{market} candles do not say who bought: the total only.', { market: loaded.markets })] : [])].join(' ') : null;
-    const windowWords = anchored ? t('From {from} to {to}', { from: clock(anchored.from, true), to: clock(anchored.to, true) }) : t('What is on the chart');
+    const coarse = this.#columnBar(state), note = loaded ? [t('An estimate from the candles of {market}, the volume of each spread over its range: not the recording.', { market: loaded.markets }),
+      ...(coarse > ANCHOR_BAR_MS ? [t('The anchor is older than the five-minute candles reach (21 weeks), so these are {minutes}-minute ones.', { minutes: String(Math.round(coarse / 60_000)) })] : []), ...(unsplit ? [t('{market} candles do not say who bought: the total only.', { market: loaded.markets })] : [])].join(' ') : null;
+    const windowWords = anchored ? t('From {from} to {to}', { from: clockYear(anchored.from), to: clock(anchored.to, true) }) : t('What is on the chart');
     if (rows && hover && onHead) return { lines: tradedFigures(rows, levels, state.mark.price, windowWords, metricWords(metric), note, !unsplit), y: 34, placement: 'down' };
     return rows && hover && hoverRow >= 0 ? { lines: tradedLines(rows, hoverRow, levels, metricWords(metric), note, !unsplit), y: hover.y } : null;
   }
@@ -3974,13 +4302,13 @@ export class HeatPane {
       // a pan's not yet settled is counted into the gesture the finger starts.
       down: () => { this.#stopFling(); if (this.#settlePending && !this.#followHeld()) this.#settleFollow(); },
       tap: p => {
-        if (this.store.state.vwapAnchoring && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.onAnchor?.(this.view.tOf(p.x, this.plotW)); return; }
-        if (this.store.state.profileAnchoring && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.onProfileAnchor?.(this.view.tOf(p.x, this.plotW)); return; }
+        // Placing an anchor: a tap shows where it would go, and Place here puts it there (a finger covers the candle it lands on).
+        if ((this.store.state.vwapAnchoring || this.store.state.profileAnchoring) && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.onAnchorPreview?.(this.view.tOf(p.x, this.plotW)); return; }
         if (this.#bands.onHeader(p.x, p.y) || this.#onHiddenTag(p.x, p.y)) { this.onTopProfile(); return; }
         if (p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH && this.draw?.click(p, false, true)) { this.#drawClickAt = performance.now(); this.#unpin(); return; }
         if (this.#pinActive() && Math.hypot(this.#pin!.x - p.x, this.#pin!.y - p.y) < 28) this.#unpin(); else this.#pinAt(p);
       },
-      doubleTap: () => { if (this.draw?.placing || performance.now() - this.#drawClickAt < 600) return; this.#unpin(); this.fit(); },
+      doubleTap: () => { if (this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return; this.#unpin(); this.fit(); },
       // A short tick under the finger says the hold registered (where the browser allows it: it wants the page to have been used first).
       hold: p => { if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8); this.#pinAt(p); },
       holdMove: p => this.#pinAt(p),
@@ -4162,11 +4490,10 @@ export class HeatPane {
     el.addEventListener('pointerdown', e => {
       if (e.pointerType === 'touch') return;
       const { x, y } = local(e);
-      // Placing a VWAP anchor: the click is the anchor, nothing else.
-      // The plot is from 0 to plotW: the columns left of the map are at negative x and take their own presses.
+      // The plot is from 0 to plotW: the columns left of the map are at negative x and take their own presses. Placing an anchor, a press is
+      // a press like any other (a drag pans, a wheel zooms): the anchor is placed by a click, on the release (`pointerup`). Placed on the
+      // press, a drag meant to bring older candles into view put the anchor where it began, on today's (a user, 2026-11-10).
       const onPlot = x >= 0 && x <= this.plotW && y <= this.plotH;
-      if (this.store.state.vwapAnchoring && e.button === 0 && onPlot) { this.onAnchor?.(this.view.tOf(x, this.plotW)); return; }
-      if (this.store.state.profileAnchoring && e.button === 0 && onPlot) { this.onProfileAnchor?.(this.view.tOf(x, this.plotW)); return; }
       if (e.button === 0 && (this.#bands.onHeader(x, y) || this.#onHiddenTag(x, y))) { this.onTopProfile(); return; }
       if (this.range && selects(this.range.armed, e) && onPlot) {
         this.#selecting = { x, y }; this.range.begin(this.#rangePoint(x, y)); el.setPointerCapture(e.pointerId); return;
@@ -4199,6 +4526,9 @@ export class HeatPane {
     el.addEventListener('pointermove', e => {
       if (e.pointerType === 'touch') return;
       const { x, y } = local(e);
+      // A mouse moved while the keys had chosen where an anchor goes takes the choice back: the preview follows it again, and a click places
+      // where it shows (Sol, review 2026-11-11: the line drawn was the keys' while a click placed at the mouse).
+      if (this.store.state.anchorPreview !== null && (this.store.state.vwapAnchoring || this.store.state.profileAnchoring) && (e.movementX || e.movementY)) this.store.set({ anchorPreview: null });
       if (this.#scaleDrag) { this.#dragScale(y); return; }
       if (this.draw?.dragging) { this.draw.move({ x, y }, e.altKey, false); const axis = this.draw.dragAxis; el.style.cursor = axis === 'p' ? 'ns-resize' : axis === 't' ? 'ew-resize' : 'grabbing'; return; }
       const press = this.#press;
@@ -4258,9 +4588,15 @@ export class HeatPane {
         if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
         return;
       }
-      // A press that did not move is a click: the drawing tools place a point, or select (or let go of) a drawing.
+      // A press that did not move is a click: it places the anchor being placed; else the drawing tools place a point, or select (or let go
+      // of) a drawing.
       const press = this.#press; this.#press = null;
-      if (press && !press.moved && e.button === 0 && this.draw) { const at = local(e); if (this.draw.click(at, e.altKey, false)) this.#drawClickAt = performance.now(); }
+      const anchoring = this.store.state.vwapAnchoring || this.store.state.profileAnchoring;
+      if (press && !press.moved && e.button === 0 && anchoring) {
+        const at = this.view.tOf(local(e).x, this.plotW);
+        this.#drawClickAt = performance.now();   // the double click this may begin does not refit the chart (Sol, review round 2)
+        if (this.store.state.vwapAnchoring) this.onAnchor?.(at); else this.onProfileAnchor?.(at);
+      } else if (press && !press.moved && e.button === 0 && this.draw) { const at = local(e); if (this.draw.click(at, e.altKey, false)) this.#drawClickAt = performance.now(); }
       // A right click that did not travel, on a TPO block: its menu (split, merge), the view put back from any pixel the press zoomed.
       const zd = this.#zoomDrag;
       if (zd && e.button === 2 && this.store.state.tpo.on) {
@@ -4284,7 +4620,7 @@ export class HeatPane {
     });
     el.addEventListener('pointerleave', e => { if (e.pointerType === 'touch') return; if (!this.draw?.dragging) this.draw?.leave(); if (!this.#scaleDrag) el.style.cursor = ''; this.#profileHover = null; this.#tradedHover = null; if (!this.#drag && !this.#zoomDrag) { this.store.set({ hover: null }); this.invalidateHover(); } });
     // A double click recentres the map, except while a tool is armed or when it selected a drawing (its first click was the drawing tools').
-    el.addEventListener('dblclick', () => { if (this.draw?.placing || performance.now() - this.#drawClickAt < 600) return; this.fit(); });
+    el.addEventListener('dblclick', () => { if (this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return; this.fit(); });
     bindTouch(el, new GestureRecognizer(this.#touchHandlers()), () => this.#left);
   }
 }

@@ -92,6 +92,8 @@ export class KeyLevelHistory {
   #retryAt = 0;
   /** Bumped whenever the bars change, for the pane's cache. */
   version = 0;
+  /** Counts the reads that have settled, answered or failed: what is worked out from `reach` (a failed walk back, a minute's wait) is asked again. */
+  settled = 0;
   /** Whether the bars carry their taker buys where the venue reports them (the volume profile's, for its split). */
   withBuy = false;
   state: 'idle' | 'loading' | 'ready' | 'unavailable' = 'idle';
@@ -120,6 +122,8 @@ export class KeyLevelHistory {
   get listedFrom(): number | null { return this.#exhausted ? this.#listedFrom : null; }
   /** Whether the venue serves no older bars to a page: the history cannot be read further back, though the market traded before. */
   get limited(): boolean { return this.#limited; }
+  /** The oldest time this history keeps bars of: nothing before it is ever held. */
+  get keptFrom(): number { return this.#keptFrom(); }
   /**
    * Where the bars are known from: the first bar, or before it as far back as the reads answered for time nobody traded in (Infinity while
    * nothing is held). A line that starts at or after it is worked out over every bar there was.
@@ -180,10 +184,11 @@ export class KeyLevelHistory {
       if (!forward && !(this.knownFrom < before) && !this.#exhausted && !this.#limited) this.#retryAt = this.now() + RETRY_MS;
       this.state = this.#bars.length ? 'ready' : 'unavailable';
       // Settled before it is said: what `onLoad` reads (`reach`) is then the answer's, not "a request is out".
-      this.#pending = false;
+      this.#pending = false; this.settled++;
       onLoad();
     }, () => {
       if (asked !== this.#key) return;
+      this.settled++;
       this.#retryAt = this.now() + RETRY_MS;
       this.state = this.#bars.length ? 'ready' : 'unavailable';
       this.#pending = false;

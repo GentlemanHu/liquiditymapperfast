@@ -5,16 +5,18 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { decodeColumns, decodeLevels, frameType } from '../src/app/wire.ts';
 import { encodeColumns, encodeLevels } from '../src/server/v2/wire.mts';
+import { frameOf } from '../src/app/browser/levels-frame.ts';
 import { DepthRecorder, accumulateSide, COLUMN_MS } from '../src/server/v2/recorder.mts';
 import { View, niceStep } from '../src/app/view.ts';
 import { mergeLive } from '../src/app/hub.ts';
+import { KERNEL_FROM, mergeByDistance, useMergeKernel } from '../src/shared/merge.ts';
 import { cumulative, groupLevels } from '../src/app/panes/levels-data.ts';
 import { timeTicks } from '../src/app/panes/heat-pane.ts';
 import { aggregateCandles } from '../src/server/v2/series.mts';
 import type { Kernels } from '../src/app/kernels.ts';
 import type { ValuedBook } from '../src/server/v2/levels.mts';
 
-interface Glue { default(options: { module_or_path: Uint8Array }): Promise<unknown>; spread_levels: (...a: unknown[]) => Float32Array; raster_columns: (...a: unknown[]) => Float32Array; blur_rows: (data: Float32Array, w: number, h: number, sigma: number) => Float32Array }
+interface Glue { default(options: { module_or_path: Uint8Array }): Promise<unknown>; spread_levels: (...a: unknown[]) => Float32Array; raster_columns: (...a: unknown[]) => Float32Array; blur_rows: (data: Float32Array, w: number, h: number, sigma: number) => Float32Array; merge_by_distance: (lo: Float64Array, usd: Float64Array, mid: number, step: number, isBid: boolean) => Float64Array }
 /** Load the committed wasm build exactly as shipped, from the repository root regardless of where tests are emitted. */
 async function loadWasm(): Promise<Kernels> {
   const root = path.resolve(import.meta.dirname, '..', '..', '..');
@@ -24,6 +26,7 @@ async function loadWasm(): Promise<Kernels> {
     spreadLevels: (lo, hi, usd, inst, nInst, step, bin0, nBins) => glue.spread_levels(lo, hi, usd, inst, nInst, step, bin0, nBins),
     blurRows: (data, w, h, sigma) => glue.blur_rows(data, w, h, sigma),
     rasterColumns: a => glue.raster_columns(a.steps, a.colInst, a.colTime, a.colCount, a.bins, a.bid, a.ask, a.stepMs, a.t0, a.t1, a.p0, a.p1, a.w, a.h, a.sigma),
+    mergeByDistance: (lo, usd, mid, step, isBid) => glue.merge_by_distance(lo, usd, mid, step, isBid),
   };
 }
 const side = (rows: [number, number, number][]) => ({ lo: Float64Array.from(rows.map(r => r[0])), hi: Float64Array.from(rows.map(r => r[1])), usd: Float64Array.from(rows.map(r => r[2])) });
@@ -86,6 +89,58 @@ test('levels frames carry the step a book was merged on, and a page takes only a
   }
   const older = decodeLevels(exactBuffer(withHeader(wire, text => text.replace(',"step":20', ''))));
   assert.equal(older.books[0]!.step, undefined, 'an older server\'s frame has no step at all');
+});
+
+test('levels frames carry the coverage epoch of a book that has one, from the server and from the feeds worker alike', () => {
+  const full: ValuedBook = { instrumentId: 'bybit:BTCUSDT', venue: 'bybit', timestamp: T0, coarse: false, bids: side([[100, 100, 5]]), asks: side([[101, 101, 7]]), step: 20, epoch: 7 };
+  const plain: ValuedBook = { ...full, instrumentId: 'okx:BTC-USDT-SWAP', venue: 'okx', epoch: undefined };
+  const wire = encodeLevels([full, plain], T0), header = headerOf(wire);
+  assert.equal(header.instruments[0]!.epoch, 7); assert.ok(!('epoch' in header.instruments[1]!));
+  const levels = decodeLevels(exactBuffer(wire));
+  assert.deepEqual(levels.books.map(b => b.epoch), [7, undefined]); assert.ok(!('epoch' in levels.books[1]!));
+  assert.deepEqual(frameOf([full, plain], T0).books.map(b => b.epoch), [7, undefined], 'the frame of the feeds worker says the same');
+  for (const unusable of [0, -1, 1.5, NaN]) assert.ok(!('epoch' in headerOf(encodeLevels([{ ...full, epoch: unusable }], T0)).instruments[0]!), `epoch ${unusable} is not sent`);
+  for (const literal of ['null', '0', '-3', '"7"', '1.5', '1e999']) {
+    const bad = decodeLevels(exactBuffer(withHeader(wire, text => text.replace('"epoch":7', `"epoch":${literal}`))));
+    assert.ok(!('epoch' in bad.books[0]!), `epoch ${literal} is left out`); assert.equal(bad.books[0]!.step, 20, 'the rest is read as before');
+  }
+});
+
+test('wasm merge_by_distance equals mergeByDistance to the last bit, on random and real sides, both ways, and is what the merge uses once installed', async () => {
+  const kernels = await loadWasm();
+  let seed = 4242; const rand = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+  const same = (a: { lo: Float64Array; usd: Float64Array }, b: { lo: Float64Array; usd: Float64Array }, what: string): void => {
+    assert.equal(a.lo.length, b.lo.length, `${what}: bucket count`);
+    for (let i = 0; i < a.lo.length; i++) { assert.ok(Object.is(a.lo[i], b.lo[i]), `${what}: price ${i}`); assert.ok(Object.is(a.usd[i], b.usd[i]), `${what}: usd ${i}`); }
+  };
+  const viaKernel = (lo: Float64Array, usd: Float64Array, mid: number, step: number, isBid: boolean) => { const p = kernels.mergeByDistance(lo, usd, mid, step, isBid), m = p.length >> 1; return { lo: p.subarray(0, m), usd: p.subarray(m) }; };
+  // Random point sides, nearest first, out past half the mid (dropped), dense near the touch and sparse far, on several grids.
+  for (let round = 0; round < 60; round++) {
+    const mid = 10 ** (rand() * 6 - 1), step = mid * 0.0002 * (0.5 + rand() * 2), isBid = round % 2 === 0, n = 50 + Math.floor(rand() * 20_000);
+    const prices = new Set<number>();
+    while (prices.size < n) { const d = mid * 0.7 * rand() ** 3, p = Number((isBid ? mid - d : mid + d).toPrecision(8)); if (p > 0 && (isBid ? p < mid : p > mid)) prices.add(p); }
+    const lo = Float64Array.from([...prices].sort((a, b) => isBid ? b - a : a - b)), usd = Float64Array.from(lo, p => p * rand() * 3);
+    same(viaKernel(lo, usd, mid, step, isBid), mergeByDistance({ lo, hi: lo, usd }, mid, step, isBid), `round ${round}`);
+  }
+  // A real book: the recorded Bybit session's snapshot, both sides.
+  const session = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, '..', '..', '..', 'tests', 'fixtures', 'bybit-full-session.json'), 'utf8')) as { snapshots: { body: string }[] };
+  const r = (JSON.parse(session.snapshots[0]!.body) as { result: { b: string[][]; a: string[][] } }).result;
+  const mid = (Number(r.b[0]![0]) + Number(r.a[0]![0])) / 2;
+  for (const [rows, isBid] of [[r.b, true], [r.a, false]] as const) {
+    const lo = Float64Array.from(rows, x => Number(x[0])), usd = Float64Array.from(rows, x => Number(x[0]) * Number(x[1]));
+    for (const step of [0.0001, 0.0002, 0.001]) same(viaKernel(lo, usd, mid, step, isBid), mergeByDistance({ lo, hi: lo, usd }, mid, step, isBid), `real ${isBid ? 'bids' : 'asks'} step ${step}`);
+  }
+  // Installed, the merge hands long point sides to the kernel and gets the same answer; bands and short sides stay in JavaScript.
+  const lo = Float64Array.from({ length: KERNEL_FROM + 100 }, (_, i) => 100 + i * 0.01), usd = Float64Array.from(lo, () => 1);
+  const plain = mergeByDistance({ lo, hi: lo, usd }, 99.99, 0.02, false);
+  let calls = 0;
+  useMergeKernel((a, b, c, d, e) => { calls++; return kernels.mergeByDistance(a, b, c, d, e); });
+  try {
+    same(mergeByDistance({ lo, hi: lo, usd }, 99.99, 0.02, false), plain, 'installed');
+    assert.equal(calls, 1);
+    mergeByDistance({ lo: lo.subarray(0, 10), hi: lo.subarray(0, 10), usd: usd.subarray(0, 10) }, 99.99, 0.02, false);
+    assert.equal(calls, 1, 'a short side stays in JavaScript');
+  } finally { useMergeKernel(null); }
 });
 
 test('wasm spread_levels agrees with the server recorder on random banded books', async () => {

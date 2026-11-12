@@ -30,12 +30,21 @@ export interface ValuedBook {
    * representative price crossed a row's edge as liquidity leaving one row and arriving in the next, with nothing changed at the venue.
    */
   step?: number;
+  /**
+   * What the book covers, as a number that changes when that changes (`BookConnector.bookEpoch`): a book that synchronises from a separate
+   * snapshot (Bybit's full depth) was seeded again, or its coverage grew past where it stopped. Absent for a book that is whole as it comes.
+   * A reader that compares the book over time (a wall, a cue) starts again when it changes: more of the book became visible, nothing was
+   * placed or pulled.
+   */
+  epoch?: number;
 }
 /**
  * Whether a merge step (`ValuedBook.step`) is one a reader may divide by: a finite number above zero. Anything else is left off the wire and
  * off the frame, so the one rule is the same where a step is sent, posted and read.
  */
 export const usableStep = (step: unknown): step is number => typeof step === 'number' && Number.isFinite(step) && step > 0;
+/** Whether a coverage epoch (`ValuedBook.epoch`) is one to carry: a whole number above zero. Anything else is left off the wire and off the frame. */
+export const usableEpoch = (epoch: unknown): epoch is number => typeof epoch === 'number' && Number.isSafeInteger(epoch) && epoch > 0;
 /** A single venue's book crossed by more than this many basis points is a feed fault, not a market state. */
 export const MAX_CROSSED_BP = 5;
 

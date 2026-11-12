@@ -33,13 +33,16 @@ import { buildLiqLevelPanel } from './liq-panel.ts';
 import type { LiqLevelsSource } from './liq-levels.ts';
 import { liqLevelsUrl } from './liq-url.ts';
 import type { AnchorSnapshot } from './traded/anchor.ts';
-import { buildVwapPanel, type RollingReach, type VwapMarkets, type WhaleInfo } from './vwap/panel.ts';
+import type { Anchor } from './anchors/anchors.ts';
+import type { ProfileAnchorStart } from './traded/anchor.ts';
+import { buildVwapPanel, type DrawnFrom, type RollingReach, type RuleStart, type VwapMarkets, type WhaleInfo } from './vwap/panel.ts';
 import { buildTpoPanel, type TpoInfo } from './tpo/panel.ts';
 import { buildFootprintPanel } from './footprint/panel.ts';
 import type { FlowBook } from './flow-book.ts';
 import type { KeyLevelHistory } from './keylevels/history.ts';
 import { INLINE_CHIPS, chipPlan, exchangeGroups } from './chips.ts';
-import { openMenu } from './menu.ts';
+import { openMenu, type MenuItem } from './menu.ts';
+import { buildCandleColorsPanel } from './candle-colours-panel.ts';
 import { buildSoundPanel } from './sound/panel.ts';
 import type { Sounds } from './sound/sounds.ts';
 import type { Alerts } from './sound/alerts.ts';
@@ -80,6 +83,9 @@ const IDLE_GRACE_MS = 20_000;
 const UPCOMING = 'upcoming';
 
 /** The pane switches in the top bar, in order: the two side columns first (they vanish and return at once), then what the map shows. */
+/** The Chart type menu's row that opens the Candle colours panel (not a chart type). */
+const CANDLE_COLOURS_ITEM = 'candle-colours';
+
 const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['delta', t('Delta')], ['ls', t('L/S')], ['funding', t('Funding')], ['candles', t('Candles')], ['lt', 'LT'], ['mirror', t('Mirror')], ['volume', t('Volume')], ['stats', t('Stats')]];
 
 /** Assign a form control's value only when it differs: assigning to an open select closes its popup. */
@@ -204,6 +210,10 @@ export class Toolbar {
   rollingReach: RollingReach = () => 'coming';
   /** The markets the VWAP lines read and how each stands (`HeatPane.vwapMarketStates`), for the VWAP panel. */
   vwapMarkets: VwapMarkets = () => [];
+  /** Where a live anchor's rule lands now (`HeatPane.ruleStart`), for the VWAP and Volume profile panels' anchor rows. */
+  ruleStart: RuleStart = () => ({ state: 'coming' });
+  /** Where each anchored VWAP's line is drawn from (`HeatPane.anchorDrawnFrom`), for the VWAP panel's rows. */
+  anchorDrawnFrom: DrawnFrom = () => null;
   /** The key levels' candles (set by the page), for the panel to say whose they are and whether they could be read. */
   keyHistory: KeyLevelHistory | null = null;
   /** The volume profile's candles of one bar size (set by the page), for its panel to say whether they could be read. */
@@ -213,6 +223,10 @@ export class Toolbar {
   /** The columns' anchored window and taking it again now (heat-pane.ts `anchoredWindow`, `updateAnchored`), for the Volume profile panel; set by the page. */
   anchoredWindow: (() => AnchorSnapshot | null) | null = null;
   updateAnchored: (() => void) | null = null;
+  /** Where the profile's anchor starts now (`HeatPane.profileAnchorStart`), for its row in the Volume profile panel; set by the page. */
+  profileAnchorStart: ((a: Anchor) => ProfileAnchorStart) | null = null;
+  /** The bar a profile anchor at a moment is worked out on (`HeatPane.profileAnchorBar`), for the panel's date field. */
+  profileAnchorBar: ((at: number) => number) | null = null;
   /** Where the page's data comes from (set by the page): a page reading the exchanges itself keeps liquidations only while it is open. */
   sourceKind: 'server' | 'browser' = 'server';
   #highlights = el('button', { class: 'led-btn', textContent: t('Highlights'), tip: t('What stands out: unusual volume, open-interest changes and depth imbalance') });
@@ -328,6 +342,7 @@ export class Toolbar {
   onPreviewChartType: (id: ChartType | null) => void = () => {};
   /** How the map draws its price (chart-type.ts): a cell of the Time deck, beside the timeframes, as a chart's type usually sits. */
   #chartType = el('button', { type: 'button', class: 'chart-type', ariaLabel: t('Chart type') });
+  #candlePanel: Panel | null = null;
   /** The drawing tools' button (draw/bar.ts, set by the page), in the map's corner beside Select. */
   #drawCorner: HTMLElement | null = null;
   setDrawButton(button: HTMLElement): void { this.#drawCorner = button; this.#arrange(); }
@@ -345,6 +360,9 @@ export class Toolbar {
   }
 
   constructor(private store: Store, private venueControl: VenueControl) {
+    // Whether a press is under way, for a refresh of the open panel that waits for one to end (`refreshOpenPanel`).
+    window.addEventListener('pointerdown', () => { this.#pressing = true; }, true);
+    for (const end of ['pointerup', 'pointercancel'] as const) window.addEventListener(end, () => { this.#pressing = false; }, true);
     // The Guide's link to the tour starts it as the Tour button does (the bar unfolded for it).
     setTourStarter(() => this.startTour());
     // A notice that comes, goes, or wraps differently moves the ones under it.
@@ -360,8 +378,14 @@ export class Toolbar {
     }
     this.#market.onchange = () => this.onSelectMarket(this.#market.value);
     this.#chartType.onclick = () => {
-      const items = CHART_TYPES.map(id => ({ id, label: chartTypeName(id) }));
-      openMenu(this.#chartType, items, this.store.state.chartType, { onPreview: id => this.onPreviewChartType(id as ChartType | null), onSelect: id => { this.onPreviewChartType(null); this.store.set({ chartType: id as ChartType }); } }, 'left', { title: t('Chart type') });
+      // The four types, previewed on the map while the pointer or the keys are on one, and after a line the candles' colours (a panel).
+      const items: MenuItem[] = [...CHART_TYPES.map(id => ({ id, label: chartTypeName(id) })), { id: CANDLE_COLOURS_ITEM, label: t('Candle colours…'), action: true }];
+      const type = (id: string | null): ChartType | null => id !== null && (CHART_TYPES as readonly string[]).includes(id) ? id as ChartType : null;
+      openMenu(this.#chartType, items, this.store.state.chartType, { onPreview: id => this.onPreviewChartType(type(id)), onSelect: id => {
+        this.onPreviewChartType(null);
+        const chosen = type(id);
+        if (chosen) this.store.set({ chartType: chosen }); else if (id === CANDLE_COLOURS_ITEM) this.#openCandleColours();
+      } }, 'left', { title: t('Chart type') });
     };
     for (const tf of Object.keys(TIMEFRAMES)) this.#timeframes.append(el('button', { textContent: tf, tip: t('{timeframe} candles. The footprint, the bar stats and the open-interest bars follow this too.', { timeframe: TIMEFRAME_NAMES[tf] ?? tf }), onclick: () => this.store.set({ timeframe: tf }) }));
     this.#timeframes.append(this.#chartType);
@@ -387,7 +411,7 @@ export class Toolbar {
     };
     this.#footprint.onclick = () => this.store.set(togglePatch(this.store.state, 'footprint'));
     this.#settingsKeys.vwap.onclick = () => {
-      const build = (tools: HTMLElement, body: HTMLElement): void => buildVwapPanel(this.store, tools, body, () => this.#vwapPanel?.render(build), this.whaleInfo, this.rollingReach, this.vwapMarkets);
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildVwapPanel(this.store, tools, body, () => this.#vwapPanel?.render(build), this.whaleInfo, this.rollingReach, this.vwapMarkets, this.ruleStart, this.anchorDrawnFrom);
       this.#vwapPanel = this.#track(togglePanel(this.#settingsKeys.vwap, { title: t('VWAP'), width: 420, align: 'left', stays: true, onClose: () => { this.#vwapPanel = null; if (this.store.state.vwapAnchoring && !this.#placing) this.store.set({ vwapAnchoring: false }); } }, build), build);
     };
     this.#vwap.onclick = () => this.store.set(togglePatch(this.store.state, 'vwap'));
@@ -442,7 +466,7 @@ export class Toolbar {
       this.#track(togglePanel(this.#alertKeys.waves, { title: t('Waves'), width: 400, align: 'left' }, build), build);
     };
     this.#settingsKeys.traded.onclick = () => {
-      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null, anchored: () => this.anchoredWindow?.() ?? null, updateNow: () => this.updateAnchored?.() });
+      const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null, anchored: () => this.anchoredWindow?.() ?? null, updateNow: () => this.updateAnchored?.(), anchorStart: a => this.profileAnchorStart?.(a) ?? { state: 'coming' }, anchorBar: at => this.profileAnchorBar?.(at) ?? 5 * 60_000 });
       // While Place the anchor is armed the panel stays open over a click on the map (that click places it, Sol: closing it first disarmed
       // it); otherwise a press outside closes it as before.
       const store = this.store;
@@ -518,13 +542,39 @@ export class Toolbar {
 
   /** The desktop status bar takes the language and theme buttons (and the connection text) from the top bar. */
   /** Remember the lamp panel just opened (or none) and how to redraw it. */
+  /** The Candle colours panel (the Chart type menu's last row), under the chart type's button. */
+  #openCandleColours(): void {
+    const build = (tools: HTMLElement, body: HTMLElement): void => buildCandleColorsPanel(this.store, tools, body, () => this.#candlePanel?.render(build));
+    this.#candlePanel = this.#track(togglePanel(this.#chartType, { title: t('Candle colours'), width: 380, align: 'left', onClose: () => { this.#candlePanel = null; } }, build), build);
+  }
+
   #track(panel: Panel | null, build: (tools: HTMLElement, body: HTMLElement) => void): Panel | null {
     this.#open = panel ? { panel, redraw: () => panel.render(build) } : null;
     return panel;
   }
 
   /** Redraw the lamp panel that is open, after its feature was switched from the keyboard, so its switch says what the lamp does. */
-  refreshOpenPanel(): void { if (this.#open && openedPanel() === this.#open.panel) this.#open.redraw(); }
+  refreshOpenPanel(): void {
+    if (!this.#open || openedPanel() !== this.#open.panel) return;
+    // A field being worked in the panel (a date half typed, a colour picker open) is not pulled away by a refresh from the page (history
+    // that landed, a profile taken again): the refresh waits until the field is left (Sol, review 2026-11-11).
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && this.#open.panel.body.contains(active) && active.matches('input:not([type=checkbox]):not([type=radio]), select, textarea')) {
+      if (this.#refreshWaits !== active) {
+        this.#refreshWaits = active;
+        // Not inside the blur: a press on the panel's Move or Add blurs the field first, and a redraw then would remove the button before its
+        // click (Sol, review round 2). After the press is over (its click dispatched), and only for the panel still open.
+        const panel = this.#open.panel, later = (): void => { window.setTimeout(() => { if (this.#refreshWaits === active) this.#refreshWaits = null; if (this.#open?.panel === panel) this.refreshOpenPanel(); }, 0); };
+        active.addEventListener('blur', () => { if (this.#pressing) window.addEventListener('pointerup', later, { once: true, capture: true }); else later(); }, { once: true });
+      }
+      return;
+    }
+    this.#open.redraw();
+  }
+  /** The field of the open panel a refresh waits to be left (`refreshOpenPanel`), if any. */
+  #refreshWaits: HTMLElement | null = null;
+  /** A pointer is down somewhere on the page (a press under way; `refreshOpenPanel` waits for it to end). Kept by the constructor's listeners. */
+  #pressing = false;
   /** Redraw the Volume profile panel if it is the one open: what of the profiles has no room changed (a resize), and its sketch and note say so. */
   refreshTradedPanel(): void { if (this.#tradedPanel && this.#open?.panel === this.#tradedPanel) this.refreshOpenPanel(); }
   /** Set while the panels close for an anchor to be placed on a phone, so their closing does not disarm it. */
@@ -539,6 +589,14 @@ export class Toolbar {
     this.#placing = true;
     try { this.#vwapPanel?.close(); this.#tradedPanel?.close(); closeSheet(); } finally { this.#placing = false; }
     toast(t('Tap the candle on the map where the anchor goes.'), { ms: 30_000, action: { label: t('Cancel'), run: () => this.store.set({ vwapAnchoring: false, profileAnchoring: false }) } });
+  }
+  /**
+   * A word while an anchor is being placed and a click placed nothing (the empty future, too far back): the tool stays armed, with Cancel. On
+   * a phone it says again to tap a candle, and stays as long as the first note did, since it took that note's place.
+   */
+  anchorHint(message: string): void {
+    const phone = compactBar(), text = phone ? `${message} ${t('Tap the candle on the map where the anchor goes.')}` : message;
+    toast(text, { ms: phone ? 30_000 : 4_000, action: { label: t('Cancel'), run: () => this.store.set({ vwapAnchoring: false, profileAnchoring: false }) } });
   }
 
   /**

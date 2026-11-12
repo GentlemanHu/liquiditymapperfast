@@ -1,3 +1,4 @@
+import { PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS } from './traded/anchor.ts';
 import { connectionStatus } from './net.ts';
 import type { BootstrapState, DataSource, FootprintResponse, TickMessage } from './source.ts';
 import { PrintBook, fromWire, type Print } from './prints.ts';
@@ -14,7 +15,7 @@ import { pickOi, weakOi, type OiCandidate } from './oi-source.ts';
 import { takeOiPushes, withOiPushes, type OiPush } from './oi-push.ts';
 import { replaying } from './replay/clock.ts';
 import { atOnePrice, inverseOi, oiSumOf, oiTail, type OiPart } from './oi-change.ts';
-import { OI_FINE_MS, OI_FINE_TAIL_MS, fineKept, fineKey, fineTargets, fineWant } from './oi-fine.ts';
+import { OI_FINE_TAIL_MS, fineKept, fineKey, fineSpanMs, fineTargets, fineWant } from './oi-fine.ts';
 import { oiMarketIds } from './market-choice.ts';
 import { nextBookGone } from './cvd/ids.ts';
 import { t } from './i18n.ts';
@@ -24,11 +25,12 @@ import { ABSORPTION_RETENTION_MS, MAX_ABSORPTION_INSTRUMENTS } from '../shared/a
 import { measureDef, type MetricFlags, type ProfileMetric } from './measures/registry.ts';
 import { NO_FLAGS, type Thresholds } from './measures/measure.ts';
 import { PRINTS_PER_ANSWER } from '../shared/prints.ts';
-import { webGet } from '../shared/history.ts';
-import { KeyLevelHistory } from './keylevels/history.ts';
+import { readCandles, webGet } from '../shared/history.ts';
+import { KeyLevelHistory, type HistoryTarget } from './keylevels/history.ts';
+import { TPO_DAYS_REACH_MS, TPO_MAX_BARS, TPO_REACH_MS } from './tpo/settings.ts';
 import { pacedFetcher } from './paced-get.ts';
 import { scriptChunk } from './script/bars.ts';
-import { ROLLING_MAX_BARS } from './vwap/vwap.ts';
+import { ANCHOR_REACH_MS, ROLLING_MAX_BARS } from './vwap/vwap.ts';
 import { LiqLevelsSource } from './liq-levels.ts';
 import { TapeRing, tapeCapacity } from './tape/ring.ts';
 import { isPhone } from './device.ts';
@@ -41,6 +43,8 @@ const VWAP_HISTORIES = 16;
 const TPO_HISTORIES = 16;
 /** The scripts' candle histories kept (`scriptHistory`): a perpetual's and a spot market's, at this timeframe and the one before. */
 const SCRIPT_HISTORIES = 4;
+/** Short spans of candles kept (`spanBars`): an anchored VWAP's first stretch and a rule's minutes, a few each. */
+const SPANS = 64;
 /** The candle histories' requests: a queue per exchange host, which waits after a venue says it was asked too often (`pacedFetcher`). */
 const historyGet = pacedFetcher(webGet);
 
@@ -99,7 +103,7 @@ export interface RasterResult { id: number; w: number; h: number; data: Float32A
  */
 export const VALUE_AREA_SETTLE_MS = 60 * MINUTE;
 /** How far back the volume profile's candles reach: twenty weeks of lines and the week before the first. */
-export const PROFILE_CANDLES_BACK_MS = 21 * 7 * 86_400_000;
+export const PROFILE_CANDLES_BACK_MS = PROFILE_FINE_REACH_MS;
 /** A value area's key: the instruments, the row step and share it was read with, and its window. */
 export const valueAreaKey = (ids: readonly string[], step: number, share: number, w: { from: number; to: number }): string => `${ids.join(',')}|${step}|${share}|${w.from}-${w.to}`;
 /** The key a past window's traded volume by price is held by (`Hub.windowProfiles`): the instruments first, as `valueAreaKey`'s. */
@@ -367,22 +371,25 @@ export class Hub {
     const key = `${rolling ? 'rolling' : 'vwap'}|${id}|${barMs}`, now = Date.now(), held = this.#vwapHistories.get(key);
     if (held) { held.used = now; return held.h; }
     if (this.#vwapHistories.size >= VWAP_HISTORIES) for (const [k, x] of this.#vwapHistories) if (now - x.used > 300_000) this.#vwapHistories.delete(k);
-    const h = rolling ? new KeyLevelHistory(historyGet, Date.now, 60_000, barMs * ROLLING_MAX_BARS) : new KeyLevelHistory(historyGet, Date.now, 60_000);
+    // A session's or an anchor's: kept back as far as an anchor reaches (only what a line asks for is read; this is how long it is kept).
+    const h = rolling ? new KeyLevelHistory(historyGet, Date.now, 60_000, barMs * ROLLING_MAX_BARS) : new KeyLevelHistory(historyGet, Date.now, 60_000, ANCHOR_REACH_MS);
     this.#vwapHistories.set(key, { h, used: now });
     return h;
   }
   /**
-   * The TPO's candles of one market and bar size (tpo/layer.ts): the chart market's (`main`), the other markets' that judge which blocks
-   * stood alone (`peer`), and the daily ones its Auto rows are read from (`days`). Asked again every minute, kept as far back as the key
-   * levels reach; one history per kind, market and size, the same five-minute letting-go as the VWAP's (their own map, so neither feature
-   * pushes the other's out).
+   * The TPO's candles of one market and bar size (tpo/layer.ts): the blocks' (`main`: the chart market's and the chosen markets', asked again
+   * every minute and kept about thirteen months back, `TPO_REACH_MS`, no more than `TPO_MAX_BARS` of them: a session that starts off the
+   * quarter hour reads minutes, four weeks of them), the other venues' that judge which blocks stood alone (`peer`: every
+   * five minutes, kept as far back as the key levels reach), and the daily ones its Auto rows are read from (`days`, `TPO_DAYS_REACH_MS`).
+   * One history per kind, market and size, the same five-minute letting-go as the VWAP's (their own map, so neither feature pushes the
+   * other's out).
    */
   tpoHistory(id: string, barMs: number, kind: 'main' | 'peer' | 'days'): KeyLevelHistory {
     const key = `${kind}|${id}|${barMs}`, now = Date.now(), held = this.#tpoHistories.get(key);
     if (held) { held.used = now; return held.h; }
     if (this.#tpoHistories.size >= TPO_HISTORIES) for (const [k, x] of this.#tpoHistories) if (now - x.used > 300_000) this.#tpoHistories.delete(k);
     // The other markets judge only blocks that are over (a block lasts half an hour), so their candles are read again every five minutes.
-    const h = new KeyLevelHistory(historyGet, Date.now, kind === 'days' ? 30 * 60_000 : kind === 'peer' ? 5 * 60_000 : 60_000, kind === 'days' ? 80 * 86_400_000 : undefined);
+    const h = new KeyLevelHistory(historyGet, Date.now, kind === 'days' ? 30 * 60_000 : kind === 'peer' ? 5 * 60_000 : 60_000, kind === 'days' ? TPO_DAYS_REACH_MS : kind === 'main' ? Math.min(TPO_REACH_MS, barMs * TPO_MAX_BARS) : undefined);
     this.#tpoHistories.set(key, { h, used: now });
     return h;
   }
@@ -394,7 +401,9 @@ export class Hub {
   profileHistory(barMs: number, market: 'main' | 'spot' = 'main'): KeyLevelHistory {
     const key = `${barMs}|${market}`;
     let h = this.#profileHistories.get(key);
-    if (!h) { h = new KeyLevelHistory(historyGet, Date.now, 60_000, PROFILE_CANDLES_BACK_MS); h.withBuy = true; this.#profileHistories.set(key, h); }
+    // Bars coarser than the estimate's five minutes (an hour, or the half or quarter hour of a zone off the hour) are an anchored column's older
+    // than the five-minute ones reach: they reach as far as such an anchor can be.
+    if (!h) { h = new KeyLevelHistory(historyGet, Date.now, 60_000, barMs > 5 * 60_000 ? PROFILE_ANCHOR_REACH_MS : PROFILE_CANDLES_BACK_MS); h.withBuy = true; this.#profileHistories.set(key, h); }
     return h;
   }
   /**
@@ -407,6 +416,43 @@ export class Hub {
     if (!h) { h = new KeyLevelHistory(historyGet, Date.now, 60_000, 3 * 365 * 86_400_000); h.withBuy = true; this.#profileHistories.set(key, h); }
     return h;
   }
+  /** Short spans of candles read once (`spanBars`), the last `SPANS` asked for. */
+  readonly #spans = new Map<string, { rows: CandleRow[] | null; at: number; failed?: boolean }>();
+  /**
+   * One market's candles of `barMs` over [from, to), read once through the venue's queue: an anchored VWAP's first stretch, from the anchor
+   * to its first whole coarse bar (a minute anchor a year back is not read as a year of minutes), and the minutes inside the bar that holds a
+   * rule's high or low. Null while it is read, or for a minute after it failed; one that reaches the last two minutes is read again each
+   * minute (it is still being traded). `onLoad` when it lands.
+   */
+  spanBars(target: HistoryTarget, barMs: number, from: number, to: number, onLoad: () => void): readonly CandleRow[] | null {
+    const got = this.spanRead(target, barMs, from, to, onLoad);
+    return got === false ? null : got;
+  }
+  /** `spanBars`, telling a read that failed (false, until it is asked again a minute later) from one on its way (null). */
+  spanRead(target: HistoryTarget, barMs: number, from: number, to: number, onLoad: () => void): readonly CandleRow[] | null | false {
+    const now = Date.now(), live = to > now - 120_000, base = `${target.id}|${barMs}|${from}|${to}`, key = `${base}${live ? `|${Math.floor(now / 60_000)}` : ''}`;
+    const held = this.#spans.get(key);
+    if (held) {
+      this.#spans.delete(key); this.#spans.set(key, held);
+      if (held.rows) { if (live) this.#spanLast.set(base, held.rows); return held.rows; }
+      // A live span read again for the new minute keeps the last minute's rows while that read is out: an anchor at the extreme in the bar
+      // under way would otherwise vanish for a moment every minute (code review 2026-11-11).
+      if (now - held.at < 60_000) return held.failed ? false : (live ? this.#spanLast.get(base) ?? null : null);
+    }
+    const entry: { rows: CandleRow[] | null; at: number; failed?: boolean } = { rows: null, at: now };
+    this.#spans.set(key, entry);
+    while (this.#spans.size > SPANS) this.#spans.delete(this.#spans.keys().next().value!);
+    // As many pages as the span needs where an exchange serves 300 bars a page (a head can be a day of minutes, 1,439 bars), four at least.
+    const pages = Math.min(8, Math.max(4, Math.ceil((to - from) / barMs / 300) + 1));
+    void readCandles(target.id, barMs, from, Math.min(to, now) - 1, historyGet, target.listing, pages, { pageSize: 1500, strict: 'drop', now }).then(read => {
+      entry.rows = (read.rows as CandleRow[]).filter(b => b[0] >= from && b[0] < to); entry.at = Date.now();
+      if (live) { this.#spanLast.set(base, entry.rows); while (this.#spanLast.size > SPANS) this.#spanLast.delete(this.#spanLast.keys().next().value!); }
+      onLoad();
+    }, () => { entry.at = Date.now(); entry.failed = true; onLoad(); });
+    return live ? this.#spanLast.get(base) ?? null : null;
+  }
+  /** A live span's last rows, by the span without its minute: what stands while the next minute's read is out (`spanRead`). */
+  readonly #spanLast = new Map<string, CandleRow[]>();
   onLiquidationsChanged: () => void = () => {};
   /** A series whose answer came back empty has candles now (the reference market's, read once it was known, or a later reload): the page frames them. */
   onSeriesRefilled: () => void = () => {};
@@ -967,7 +1013,8 @@ export class Hub {
 
   /**
    * The minute readings of the markets that need them (store `oiFine`, `fineTargets`), for NL/NS to work candles out minute by minute where they
-   * reach (delta/nlns.ts): read whole over the last OI_FINE_MS when those markets change and every OI_WHOLE_MS, else each one's newest minutes
+   * reach (delta/nlns.ts): read whole over each one's span (`fineSpanMs`: a day; on a server a week for the Funding pane's Hyperliquid) when
+   * those markets change and every OI_WHOLE_MS, else each one's newest minutes
    * again at most every OI_FINE_TAIL_MS (the pushes keep the newest minute current, `#oiPush`, and those pushed during a read are put on its
    * answer). They do not depend on the chart's timeframe, so a switch keeps them. A market with no minute reading yet is kept, empty, so the
    * pushes build it up. Nothing is read on a one-minute chart or while nothing that works NL/NS out is shown, and what was read is let go then;
@@ -982,7 +1029,7 @@ export class Hub {
     const parts = fineTargets(state, tf), keep = fineKept(state, tf, parts);
     if (keep && state.oiFine.some(part => !keep.has(part.id))) this.store.set({ oiFine: state.oiFine.filter(part => keep.has(part.id)) });
     if (!parts.length) return Promise.resolve();
-    const key = fineKey(parts), now = Date.now(), held = this.#fineHeld;
+    const key = fineKey(parts, this.#fineSpan(state)), now = Date.now(), held = this.#fineHeld;
     if (this.#fineInflight?.key === key) return this.#fineInflight.promise;
     const whole = !held || held.key !== key || now - held.at >= OI_WHOLE_MS;
     if (!whole && now - held.tailAt < OI_FINE_TAIL_MS) return Promise.resolve();
@@ -997,25 +1044,29 @@ export class Hub {
   /** The markets whose minute readings were read whole last, when, and when their newest minutes were read again. */
   #fineHeld: { key: string; at: number; tailAt: number } | null = null;
   /** Whether the markets wanting minute readings are still those of `key` (an answer for others is dropped). */
-  #fineStill(key: string): boolean { return fineKey(fineTargets(this.store.state, TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000)) === key; }
+  #fineStill(key: string): boolean { const state = this.store.state; return fineKey(fineTargets(state, TIMEFRAMES[state.timeframe] ?? 3_600_000), this.#fineSpan(state)) === key; }
+  /** How far back each market's minute readings are read (`fineSpanMs`). */
+  #fineSpan(state: AppState): (id: string) => number { return id => fineSpanMs(state, this.source.kind, id); }
   async #readFineWhole(key: string, parts: readonly OiPart[], now: number): Promise<void> {
     // An inverse market's minutes at the one price the bars on screen are at now: a whole read replaces them all, so they stay one price
     // within themselves, and close to the bars' (kept at their first price, they drifted from them with the price all session).
-    const read = await Promise.all(parts.map(async part => ({ id: part.id, ...(part.usdAt ? { usdAt: part.usdAt } : {}), bars: await this.oiBars(part.id, '1m', now - OI_FINE_MS, now + MINUTE, part.usdAt).catch((): OiBar[] => []) })));
+    const span = this.#fineSpan(this.store.state);
+    const read = await Promise.all(parts.map(async part => ({ id: part.id, ...(part.usdAt ? { usdAt: part.usdAt } : {}), bars: await this.oiBars(part.id, '1m', now - span(part.id), now + MINUTE, part.usdAt).catch((): OiBar[] => []) })));
     if (!this.#fineStill(key)) return;
     const pushed = this.#fineDuring;
     this.store.set({ oiFine: read.map(part => withPushed(part, pushed, MINUTE)) });
     this.#fineHeld = { key, at: now, tailAt: now };
   }
   async #readFineTail(key: string, now: number): Promise<void> {
-    // A market with no reading held (none yet, or none in the last OI_FINE_MS) is left to its pushes and the next whole read: asking it for the
+    // A market with no reading held (none yet, or none in the source's reach) is left to its pushes and the next whole read: asking it for the
     // whole window each minute asked a venue that answers nothing 25 times in 25 minutes.
-    const held = this.store.state.oiFine, froms = held.map(part => { const last = part.bars[part.bars.length - 1]; return last ? Math.max(now - OI_FINE_MS, last[0] - MINUTE) : now; });
+    const span = this.#fineSpan(this.store.state), held = this.store.state.oiFine, reach = held.map(part => now - span(part.id));
+    const froms = held.map((part, i) => { const last = part.bars[part.bars.length - 1]; return last ? Math.max(reach[i]!, last[0] - MINUTE) : now; });
     const tails = await Promise.all(held.map((part, i) => part.bars.length ? this.oiBars(part.id, '1m', froms[i]!, now + MINUTE, part.usdAt).catch((): OiBar[] => []) : Promise.resolve<OiBar[]>([])));
     // On the readings held now: pushes may have moved them while the tails were read, and those are put on the answer again.
     const current = this.store.state.oiFine, pushed = this.#fineDuring;
     if (!this.#fineStill(key) || current.length !== held.length || current.some((part, i) => part.id !== held[i]!.id)) return;
-    this.store.set({ oiFine: current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, now - OI_FINE_MS) }, pushed, MINUTE)) });
+    this.store.set({ oiFine: current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, reach[i]!) }, pushed, MINUTE)) });
     if (this.#fineHeld) this.#fineHeld = { ...this.#fineHeld, tailAt: now };
   }
   /** The key of the open interest in the store (`#loadOi`): '' while none, or after a series change cleared it. */

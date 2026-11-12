@@ -8,7 +8,7 @@ import { PullHistory, binsPerRow, pullBase, pullRows, readPullWindow, snapshot }
 import type { Kernels } from '../src/app/kernels.ts';
 import type { LevelsFrame, LiveBook } from '../src/app/wire.ts';
 
-interface Glue { default(options: { module_or_path: Uint8Array }): Promise<unknown>; spread_levels: (...a: unknown[]) => Float32Array; raster_columns: (...a: unknown[]) => Float32Array; blur_rows: (data: Float32Array, w: number, h: number, sigma: number) => Float32Array }
+interface Glue { default(options: { module_or_path: Uint8Array }): Promise<unknown>; spread_levels: (...a: unknown[]) => Float32Array; raster_columns: (...a: unknown[]) => Float32Array; blur_rows: (data: Float32Array, w: number, h: number, sigma: number) => Float32Array; merge_by_distance: (lo: Float64Array, usd: Float64Array, mid: number, step: number, isBid: boolean) => Float64Array }
 async function loadWasm(): Promise<Kernels> {
   const root = path.resolve(import.meta.dirname, '..', '..', '..');
   const glue = await import(pathToFileURL(path.join(root, 'src', 'app', 'wasm', 'hlm_kernels.js')).href) as Glue;
@@ -17,6 +17,7 @@ async function loadWasm(): Promise<Kernels> {
     spreadLevels: (lo, hi, usd, inst, nInst, step, bin0, nBins) => glue.spread_levels(lo, hi, usd, inst, nInst, step, bin0, nBins),
     blurRows: (data, w, h, sigma) => glue.blur_rows(data, w, h, sigma),
     rasterColumns: a => glue.raster_columns(a.steps, a.colInst, a.colTime, a.colCount, a.bins, a.bid, a.ask, a.stepMs, a.t0, a.t1, a.p0, a.p1, a.w, a.h, a.sigma),
+    mergeByDistance: (lo, usd, mid, step, isBid) => glue.merge_by_distance(lo, usd, mid, step, isBid),
   };
 }
 
@@ -69,6 +70,16 @@ test('a row gains what was stacked and loses what was pulled, a venue counting o
   assert.ok(Number.isNaN(pullRows(then, now, [now], ['b:BTC'], step, bin0, n)!.bid[at(81_900)]!), 'b alone: no venue covers the row at both ends');
   assert.equal(pullRows(then, now, [now], ['b:BTC'], step, bin0, n)!.bid[at(81_950)], 50, 'b alone: its 50 stacked at 81,955');
   assert.equal(pullRows(then, now, [now], ['a:BTC'], 0.2, Math.floor(81_990 / 0.2), 10), null, 'a step finer than the base');
+});
+
+test('a venue whose coverage epoch changed between the snapshots is not compared: a book seeded again is no stack or pull', async () => {
+  const kernels = await loadWasm();
+  const before = { ...wide('a:BTC', [[81_950, 81_950, 100_000]]), epoch: 3 }, after = { ...wide('a:BTC', [[81_950, 81_950, 1_000_000]]), epoch: 4 };
+  const then = snapshot(kernels, frame(before), BASE, MARK, 0, 1), now = snapshot(kernels, frame(after), BASE, MARK, 60_000, 2);
+  const step = 10, bin0 = 8_188, n = 30, at = (price: number) => Math.floor(price / step) - bin0;
+  assert.ok(Number.isNaN(pullRows(then, now, [now], ['a:BTC'], step, bin0, n)!.bid[at(81_950)]!), 'not +900,000: unknown');
+  const same = snapshot(kernels, frame({ ...after, epoch: 3 }), BASE, MARK, 60_000, 2);
+  assert.equal(pullRows(then, same, [same], ['a:BTC'], step, bin0, n)!.bid[at(81_950)], 900_000, 'within one epoch the change counts');
 });
 
 test('rows the price reached between the snapshots are marked: the inside market and the trades seen', async () => {

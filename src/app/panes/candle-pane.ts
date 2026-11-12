@@ -21,6 +21,7 @@ import { strengthGain } from '../glass/waves.ts';
 import * as M from '../candle/model.ts';
 import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
+import { candleTone } from '../candle-colours.ts';
 
 const NUM_FONT = '10.5px ui-monospace, SFMono-Regular, Menlo, monospace', BOLD_NUM = `700 ${NUM_FONT}`;
 const SMALL_FONT = '10px ui-sans-serif, system-ui, sans-serif';
@@ -321,7 +322,7 @@ export class CandlePane {
    * matching trade of the view's markets reached in the last window (a buy reaches the asks it walked, a sell the bids) and the rows the
    * price passed in it. A new row step starts the tracker again. Returns the pulses as they stand.
    */
-  #trackPulses(g: Grouped, step: number, mark: number, markBin: number, asOf: number): ReadonlyMap<string, M.Pulse> {
+  #trackPulses(g: Grouped, step: number, mark: number, markBin: number, asOf: number, books: string): ReadonlyMap<string, M.Pulse> {
     if (this.#settings.glass === 'off' || this.#settings.pulse === 'off') return this.#pulses.pulses;
     const now = performance.now();
     // The shader's times count from this clock; moved up while no pulse is out, so a page open for days keeps them exact in a float.
@@ -331,8 +332,8 @@ export class CandlePane {
     if (step !== this.#pulseStep) { this.#pulses.reset(); this.#pulseStep = step; }
     if (asOf === this.#pulseAsOf) return this.#pulses.pulses;
     this.#pulseAsOf = asOf;
-    // Other books in the totals (a venue switched on or off, the Spot / Perp filter) change every row at once: that is not liquidity moving.
-    const books = g.ids.join(',');
+    // Other books in the totals (a venue switched on or off, the Spot / Perp filter, a book whose coverage changed: `books` names each with
+    // its coverage epoch) change every row at once: that is not liquidity moving.
     if (books !== this.#pulseBooks) { this.#pulses.reset(); this.#pulseBooks = books; }
     const rows = new Map<string, { side: 'bid' | 'ask'; usd: number }>();
     for (let i = 0; i < g.nBins; i++) {
@@ -390,7 +391,7 @@ export class CandlePane {
     const sideW = l.bidX1 - l.bidX0, rowPx = step * (s.y1 - s.y0) / (s.p1 - s.p0), bricks = this.#settings.glass === 'bricks';
     const trail = this.#trail, tdpr = trail?.dpr ?? 1, H = this.#trailCanvas.height, glassRows = this.#settings.glass !== 'off' && trail !== null && this.#trailBuilt;
     if (glassRows) { if (this.#brickRows.length !== H * 4 * ROW_TEXELS) this.#brickRows = new Float32Array(H * 4 * ROW_TEXELS); else this.#brickRows.fill(0); }
-    const pulses = this.#trackPulses(g, step, mark, markBin, frame.asOf);
+    const pulses = this.#trackPulses(g, step, mark, markBin, frame.asOf, g.ids.map(id => { const e = frame.books.find(b => b.id === id)?.epoch; return e ? `${id}#${e}` : id; }).join(','));
     for (const side of ['ask', 'bid'] as const) {
       const color = side === 'ask' ? p.ask : p.bid, edge: { y0: number; y1: number; w: number }[] = [];
       for (let i = 0; i < g.nBins; i++) {
@@ -549,7 +550,7 @@ export class CandlePane {
       ctx.fillText(fmtPrice(q, pStep), l.axisX1 - 4, y);
     }
     if (!(mark > 0)) return;
-    const col = bar.c >= bar.o ? p.candleUp : p.candleDown;
+    const col = candleTone(this.store.state.candleColors, bar.c >= bar.o ? 'up' : 'down', p);
     ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([2, 3]); ctx.globalAlpha = 0.85;
     ctx.beginPath(); ctx.moveTo(0, Math.round(markY) + 0.5); ctx.lineTo(l.axisX0, Math.round(markY) + 0.5); ctx.stroke();
     ctx.setLineDash([]); ctx.globalAlpha = 1;

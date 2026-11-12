@@ -203,6 +203,8 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       case 'type': return 'time';
       case 'lastTradeTimestamp': return i === n - 1 && inputs.forming ? now() / 1000 : (inputs.time[i]! + inputs.tf) / 1000;
       case 'forming': return i === n - 1 && inputs.forming;
+      // The newest candle the script reads, under way or closed (a replay, a market quiet since its last candle): where a label of the newest value goes.
+      case 'last': return i === n - 1;
       default: return undefined;
     }
   });
@@ -506,7 +508,7 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       inputs = next; n = next.time.length;
       // From the candle after the last one that had closed at the run before, when every candle before it is the same.
       // A closed candle whose order book changed since (a window settled, a book added) is run again with every candle after it.
-      const start = snap && snap.at === snap.inputs.time.length - 2 && snap.at + 1 <= n && sameCandles(snap.inputs, next, snap.at + 1) && (!readsDepth || sameDepth(snap.inputs, next, snap.at + 1)) ? snap.at + 1 : 0;
+      const start = snap && snap.at === snap.inputs.time.length - 2 && snap.at + 1 < n && sameCandles(snap.inputs, next, snap.at + 1) && (!readsDepth || sameDepth(snap.inputs, next, snap.at + 1)) ? snap.at + 1 : 0;
       const from = start > 0 ? snap : null;
       if (from) restore(from); else { fresh(); snap = null; }
       runner.startedAt = start;
@@ -514,7 +516,9 @@ export function createRunner(id: string, source: string, optionValues: Record<st
       // newest changed or new ones after them: a script that keeps an array or writes its options cannot be put back, so it runs every candle
       // at every update, and FULL_RUN_MS would let each update take ten seconds (Sol, 2026-11-10). Other candles (a chart opened, more history,
       // a setting, a script changed) have FULL_RUN_MS, as the worker host allows (`host.ts`).
-      const update = start > 0 || (before.time.length >= 2 && sameCandles(before, next, before.time.length - 1));
+      // Fewer candles than the run before (a replay stepped back) is not one, nor are closed candles whose order book changed (a window settled):
+      // those run from the first candle with the long time (Sol, rounds 5 and 6).
+      const update = start > 0 || (before.time.length >= 2 && n >= before.time.length && sameCandles(before, next, before.time.length - 1) && (!readsDepth || sameDepth(before, next, before.time.length - 1)));
       budget.steps = 0; budget.left = Math.max(200_000, STEPS_PER_CANDLE * (n - start)); budget.deadline = started + (update ? RUN_MS : FULL_RUN_MS);
       const warnings = [...a.warnings];
       // The plots' numbers: those of the candles taken over, then NaN until the run gives them.
