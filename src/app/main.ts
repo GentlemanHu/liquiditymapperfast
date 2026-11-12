@@ -23,15 +23,16 @@ import { anchorDate, clock, clockYear, setTimeZone, zoneName } from './format.ts
 import { installTips } from './tip.ts';
 import { installClassicSelects, installTouchSelects } from './touch-select.ts';
 import { lazy, preload } from './lazy.ts';
+import { watchBuild } from './update-check.ts';
 import { ScreenWake } from './wake.ts';
 import { HeatPane, gutter, gutterAt, leftGutter } from './panes/heat-pane.ts';
 import { LadderPane } from './panes/ladder-pane.ts';
 import { CvdPane } from './panes/cvd-pane.ts';
-import { BarStatsPane, DepthPane, LtPane, OiPane } from './panes/lower-panes.ts';
+import { BarStatsPane, DepthPane, LtPane, OiPane, oiHeldKey } from './panes/lower-panes.ts';
 import { LiqPane } from './panes/liq-pane.ts';
 import { setTourDemo } from './tour/demo.ts';
 import { liqLevelsUrl } from './liq-url.ts';
-import { DeltaPane } from './panes/delta-pane.ts';
+import { DeltaPane, deltaHeldKey } from './panes/delta-pane.ts';
 import { NlnsSource } from './delta/nlns-source.ts';
 import { LsPane } from './panes/ls-pane.ts';
 import { FundingPane } from './panes/funding-pane.ts';
@@ -54,6 +55,9 @@ import { LayoutActions } from './layouts/actions.ts';
 import { PANE_SHOW_KEY } from './layouts/dock-model.ts';
 import { Dock, axisOf, fillsArea } from './dock.ts';
 import { RangeTool } from './range/tool.ts';
+import { OiRangeSummary } from './range/oi-lines.ts';
+import { DeltaRangeSummary } from './range/delta-lines.ts';
+import { deltaIds } from './delta/flows.ts';
 import { startDevice, onLayoutMode, isCoarse, isPhone, layoutMode, compactBar } from './device.ts';
 import './styles.css';
 import './mobile.css';
@@ -125,7 +129,7 @@ async function main(): Promise<void> {
   // The bar along the bottom (desktop only): connection, venues live, price age, recording, data source, language and theme.
   const statusbar = new StatusBar(source.kind);
   app.append(toolbar.root, main, dock.root, statusbar.root);
-  toolbar.hostStatusControls(statusbar.controls);
+  toolbar.hostStatusControls(statusbar.controls, statusbar.notices);
   toolbar.setCollapsed(store.state.barCollapsed);
   source.venues.watch?.(entries => statusbar.setVenues(entries));
   const showStatus = (): void => statusbar.update(store.state, hub.recordedSince, source.kind === 'server' ? 'server' : source.saving?.(Date.now()) ?? 'starting');
@@ -190,7 +194,7 @@ async function main(): Promise<void> {
     { id: 'script', root: script.root, height: 220, min: 60, head: script.header, closable: false },
   ];
   const arrange = new Layout(main, chart, { left: flowCol, right: side }, strip, [
-    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow') },
+    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow'), views: [{ id: 'flow', title: t('Flow') }, { id: 'tns', title: t('Time & sales') }] },
     { id: 'book', root: ladder.root, head: ladder.controls, title: t('Order Book') },
   ]);
   // What the person does to the layout (layouts/actions.ts): the layouts panel, a pane's close button and the edge tab of a closed side pane (the Panels row in the top bar flips the same switches).
@@ -199,6 +203,10 @@ async function main(): Promise<void> {
     env: () => ({ width: window.innerWidth, height: chart.clientHeight || Math.max(400, window.innerHeight - 200), held: scriptRows(store.state) ? ['script' as const] : [] }),
   });
   arrange.onClose = id => layouts.hide(id, arrange.title(id)); arrange.onOpen = id => layouts.setPane(id, true);
+  arrange.onView = (id, view) => { if (id === 'cvd' && (view === 'flow' || view === 'tns') && store.state.flowView !== view) store.set({ flowView: view }); };
+  // Time & sales takes every order the live stream sends (it asks for nothing); a click on a row takes the map to the order.
+  hub.onLivePrints = live => cvd.tns.take(live);
+  cvd.tns.onGoTo = (at, price) => heat.focusOn({ t0: at, t1: at, p0: price, p1: price });
   // A desktop folds its side columns to their edge tabs when the map would be left too little plot (layouts/dock-model.ts `chooseFold`).
   arrange.plotAt = paneW => paneW - gutterAt(paneW, store.state);
   toolbar.layouts = layouts;
@@ -225,6 +233,18 @@ async function main(): Promise<void> {
   const range = new RangeTool(store, hub); range.anchor = toolbar.rangeButton; range.mapWindow = () => ({ t0: heat.view.t0, t1: heat.view.t1 });
   heat.range = range; cvd.range = range; for (const pane of [depth, oi, delta, ls, funding, lt, bars, script]) pane.useRange(range);
   toolbar.onRange = () => range.toggle();
+  // A drag in the Delta pane sums up its own candles (range/delta-lines.ts): what it drew, in its own terms.
+  const deltaSummary = new DeltaRangeSummary();
+  range.useProvider({
+    pane: 'delta', title: () => t('Delta'), shown: () => store.state.show.delta, barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
+    lines: (sel, shown) => deltaSummary.lines(sel, delta.rangeHeld, shown, deltaHeldKey(store.state, deltaIds(store.state, hub.flow)), pageNow(), store.state.timeZone),
+  });
+  // A drag in the OI pane sums up its own bars (range/oi-lines.ts): what it drew, and the liquidations the map holds on its markets.
+  const oiSummary = new OiRangeSummary();
+  range.useProvider({
+    pane: 'oi', title: () => t('Open interest'), shown: () => store.state.show.oi, barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
+    lines: (sel, shown) => oiSummary.lines(sel, oi.rangeHeld, shown, store.state.liquidations.on ? { items: hub.liquidations.items, version: hub.liquidations.version, min: scaledUsd(store.state.liquidations.minUsd), held: hub.liquidationsHeld } : null, oiHeldKey(store.state), pageNow(), store.state.timeZone),
+  });
   toolbar.onRecenter = () => { heat.fit(); ladder.recenter(); };
   // The countdown under the price tag: a redraw a second when nothing else draws the map.
   window.setInterval(() => heat.tick(), 1_000);
@@ -393,6 +413,9 @@ async function main(): Promise<void> {
 
   // The screenshot tool is fetched a few seconds in, so a deploy while the page is open cannot leave it asking for a file that is gone.
   window.setTimeout(() => preload(() => import('./screenshot/editor.ts')), 5_000);
+  // A tab goes on with the build it was opened with: when the site serves a newer one, the page says so, and only the person reloads
+  // (update-check.ts, update-notice.ts).
+  const update = watchBuild(meaning => toolbar.answerBuild(meaning));
 
   // The keyboard shortcuts (shortcuts.ts: the table, and when a key is left alone).
   // Placing an anchor (the VWAP's or the profile's), from the keyboard: Esc stops, the arrows step the candle it would take (from the one under
@@ -473,6 +496,11 @@ async function main(): Promise<void> {
     // The page's glass draws its next frame with the new strength; the Tape's reads it with each frame it draws.
     if (changed.has('waveStrength')) { glass.setStrength(state.waveStrength); candle.invalidate(); }
     if (changed.has('cvd')) cvd.settingsChanged();
+    if (changed.has('flowView')) cvd.viewChanged();
+    // A venue switched on or off filters the list as its own settings do: drawn again from the top.
+    if (changed.has('tns') || changed.has('disabledVenues')) cvd.tns.refresh();
+    else if (changed.has('sounds') || changed.has('replay') || changed.has('timeZone')) cvd.tns.redraw();
+    if (changed.has('connected') && !state.connected) cvd.tns.streamBroke();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
     if (changed.has('show') || changed.has('liqLevels')) layout(); else if (changed.has('traded')) { gutters(); arrange.refit(); }
     // The map's own columns change with the market too (the liquidation column is BTC's, the price axis as wide as its prices).
@@ -517,7 +545,7 @@ async function main(): Promise<void> {
     if (changed.has('chartType')) heat.invalidate();
     // The candles' own colours: the map, the book's price row and the Tape view's mark are drawn in them (Sol: nothing else asked for a frame).
     if (changed.has('candleColors')) { heat.invalidate(); ladder.invalidate(); candle.invalidate(); }
-    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show')) range.refreshHeld();
+    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show') || changed.has('timeZone')) range.refreshHeld();
     if (changed.has('tradeBubbles') || changed.has('show')) hub.setTape(tapeWanted());
     if (changed.has('sounds')) heat.invalidate();
     if (changed.has('mark') && state.show.book) ladder.markMoved();
@@ -586,7 +614,7 @@ async function main(): Promise<void> {
     const offer = (): void => { if (!toolbar.inviteToTour() && ++asked < 12) window.setTimeout(offer, 5_000); };
     window.setTimeout(offer, 2500);
   }
-  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script };
+  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update };
 }
 
 main().catch(error => {

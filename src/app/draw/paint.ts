@@ -2,8 +2,8 @@ import { t } from '../i18n.ts';
 import { price as fmtPrice, usd } from '../format.ts';
 import type { Palette } from '../theme.ts';
 import type { KeyTag } from '../keylevels/paint.ts';
-import { ANCHORS, newDrawing, type DrawColor, type Drawing } from './model.ts';
-import { channelLines, extendSegment, fibLevels, handlesOf, noteBox, strokesOf, type Projection, type Segment } from './geometry.ts';
+import { ANCHORS, newDrawing, positionFigures, type DrawColor, type Drawing } from './model.ts';
+import { channelLines, extendSegment, fibLevels, handlesOf, noteBox, positionBox, strokesOf, type Projection, type Segment } from './geometry.ts';
 import type { DrawController } from './controller.ts';
 import type { SnapField } from './magnet.ts';
 
@@ -37,6 +37,8 @@ const halo = (p: Palette): string => p.dark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,
 let plotBox = { x0: -CUT_FAR, y0: -CUT_FAR, x1: CUT_FAR, y1: CUT_FAR };
 const cutToPlot = (s: Segment): Segment | null => extendSegment(s.a, s.b, false, false, plotBox);
 
+/** How tall (px) a position's side must be for its label to stand inside it: 10 px in from the edge, clear of the entry's label (16 px plates). */
+const INSIDE_PX = 30;
 /** Far past the plot's edges, where a stroke is cut. */
 const CUT = 24;
 function strokeSegments(ctx: CanvasRenderingContext2D, all: readonly Segment[], color: string, width: number, dashed: boolean, p: Palette, alpha = 1): void {
@@ -162,6 +164,40 @@ export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Proj
       if (d.text && base) label(ctx, d.text, (base.a.x + base.b.x) / 2, (base.a.y + base.b.y) / 2 - 12, color, p, 'center', alpha);
       return;
     }
+    case 'position': {
+      // The target's side in the rising colour and the stop's in the falling one (what is won and what is lost, whichever way it trades),
+      // the entry across them in the text's; each edge says its price and how far it is, the entry the side and the risk/reward.
+      const b = positionBox(d, pr), f = positionFigures(d), x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), win = p.candleUp, loss = p.candleDown;
+      // Stronger than a zone's fill (0.13): its two sides must read apart over the heat map's own colours.
+      ctx.save(); ctx.globalAlpha = 0.22 * alpha;
+      ctx.fillStyle = win; ctx.fillRect(x0, Math.min(b.entry, b.target), x1 - x0, Math.abs(b.target - b.entry));
+      ctx.fillStyle = loss; ctx.fillRect(x0, Math.min(b.entry, b.stop), x1 - x0, Math.abs(b.stop - b.entry));
+      ctx.restore();
+      const across = (y: number): Segment[] => [{ a: { x: x0, y }, b: { x: x1, y } }];
+      strokeSegments(ctx, [...across(b.target), { a: { x: x0, y: b.entry }, b: { x: x0, y: b.target } }, { a: { x: x1, y: b.entry }, b: { x: x1, y: b.target } }], win, 1, false, p, alpha * 0.9);
+      strokeSegments(ctx, [...across(b.stop), { a: { x: x0, y: b.entry }, b: { x: x0, y: b.stop } }, { a: { x: x1, y: b.entry }, b: { x: x1, y: b.stop } }], loss, 1, false, p, alpha * 0.9);
+      strokeSegments(ctx, across(b.entry), p.text, 1.5, false, p, alpha);
+      const pctOf = (x: number): string => `${x < 1 ? x.toFixed(2) : x.toFixed(1)}%`, ratio = Number.isFinite(f.ratio) ? f.ratio.toFixed(2) : '–';
+      const texts = [t('Target {price} ({pct})', { price: fmtPrice(f.target), pct: pctOf(f.rewardPct) }), t('Stop {price} ({pct})', { price: fmtPrice(f.stop), pct: pctOf(f.riskPct) }),
+        f.side === 'long' ? t('Long · risk/reward {ratio}', { ratio }) : t('Short · risk/reward {ratio}', { ratio })];
+      // Centred on the part in view when they fit inside it, else beside the box on whichever side has room (a phone's narrow box), else
+      // centred and kept on the plot; each edge's inside the edge when its side is tall enough, else outside it.
+      ctx.save(); ctx.font = FONT; const need = Math.max(...texts.map(s => ctx.measureText(s).width)) + 6; ctx.restore();
+      const vx0 = Math.max(x0, 0), vx1 = Math.min(x1, pr.w);
+      const [lx, align]: [number, CanvasTextAlign] = vx1 - vx0 >= need + 12 ? [(vx0 + vx1) / 2, 'center'] : x1 + 6 + need <= pr.w ? [x1 + 6, 'left']
+        : x0 - 6 - need >= 0 ? [x0 - 6, 'right'] : [Math.min(pr.w - need / 2 - 2, Math.max(need / 2 + 2, (vx0 + vx1) / 2)), 'center'];
+      const edgeLabel = (y: number, toward: number, text: string, color: string): void => {
+        const inside = Math.abs(toward - y) >= INSIDE_PX, dir = Math.sign(toward - y) || 1;
+        label(ctx, text, lx, y + dir * (inside ? 10 : -10), color, p, align, alpha);
+      };
+      edgeLabel(b.target, b.entry, texts[0]!, win);
+      edgeLabel(b.stop, b.entry, texts[1]!, loss);
+      label(ctx, texts[2]!, lx, b.entry, p.text, p, align, alpha);
+      // Its own label above the box, over the top edge's when that one stands outside.
+      const top = Math.min(b.stop, b.target);
+      if (d.text) label(ctx, d.text, vx0 + 4, top - (Math.abs(top - b.entry) >= INSIDE_PX ? 10 : 30), p.text, p, 'left', alpha);
+      return;
+    }
     case 'note': {
       const x = pr.x(d.points[0]!.t), y = pr.y(d.points[0]!.p), layout = noteLayout(ctx, d.text), box = noteBox(d, pr, layout.size);
       if (d.leader) strokeSegments(ctx, strokesOf(d, pr), color, 1, false, p, alpha);
@@ -181,6 +217,8 @@ export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Proj
 function inView(d: Drawing, pr: Projection): boolean {
   if (d.kind === 'level') return pr.y(d.points[0]!.p) >= -2 && pr.y(d.points[0]!.p) <= pr.h + 2 && (d.extendLeft || pr.x(d.points[0]!.t) <= pr.w);
   if (d.kind === 'vline') { const x = pr.x(d.points[0]!.t); return x >= -2 && x <= pr.w + 2; }
+  // A position wholly left or right of the plot is not drawn: its labels, placed beside it, would stand alone at the plot's edge.
+  if (d.kind === 'position') { const x0 = pr.x(d.points[0]!.t), x1 = pr.x(d.points[1]!.t); return x1 >= 0 && x0 <= pr.w; }
   return true;
 }
 
@@ -231,8 +269,12 @@ export function paintEditing(ctx: CanvasRenderingContext2D, draw: DrawController
   const draft = draw.draft, cursor = draw.cursor;
   if (draw.tool) {
     const kind = draw.tool, points = [...(draft?.points ?? []), ...(cursor ? [cursor.at] : [])];
+    // A position as it would be with the next point where the pointer is (a target twice as far as the stop while only that is placed);
+    // none while the pointer is on the wrong side of the entry.
+    const shaped = kind === 'position' && points.length > 1 ? draw.shapePosition(points) : null;
+    if (shaped) paintDrawing(ctx, newDrawing(kind, shaped, 0), pr, p, 0.75);
     // The drawing as it would be with the next point where the pointer is: the missing points sit on the pointer too.
-    if (points.length && (points.length > 1 || ANCHORS[kind] === 1)) {
+    else if (kind !== 'position' && points.length && (points.length > 1 || ANCHORS[kind] === 1)) {
       while (points.length < ANCHORS[kind]) points.push(points[points.length - 1]!);
       paintDrawing(ctx, newDrawing(kind, points, 0), pr, p, 0.75);
     }

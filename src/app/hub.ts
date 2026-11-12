@@ -284,6 +284,8 @@ export class Hub {
   readonly prints = new PrintBook();
   /** Called with each batch of new large trades from the live stream (for sounds). */
   onPrints: (fresh: Print[]) => void = () => {};
+  /** Called with every large trade the live stream sent, new to the book or not (Time & sales: it lists what arrives, and asks for nothing). */
+  onLivePrints: (live: Print[]) => void = () => {};
   /** Called when the print book changed, so the chart can redraw its bubbles. */
   onPrintsChanged: () => void = () => {};
   /** Liquidations held for the map (the venues that publish them), and a call when they change. */
@@ -459,6 +461,8 @@ export class Hub {
   /** 'unavailable': the source has no liquidations (a server from before them); asked again a minute later. */
   liquidationsState: 'ready' | 'unavailable' = 'ready';
   #liquidationsWindow: { t0: number; t1: number; min: number; cut: boolean; live: boolean } | null = null;
+  /** The window the liquidation book was read for (from, to, from what size, cut at the answer's limit, open on the live stream); null before one. */
+  get liquidationsHeld(): { t0: number; t1: number; min: number; cut: boolean; live: boolean } | null { return this.#liquidationsWindow; }
   #liquidationsLoading = false; #liquidationsRetryAt = 0;
   /** Taker flow per second for every instrument that has traded: the CVD column reads it, and sounds read what it just got. */
   readonly flow = new FlowBook();
@@ -673,8 +677,11 @@ export class Hub {
         if (columnsEarly) { this.#columns.expireWhole(); this.#columnsStale = true; this.onColumns(); }
       },
       onPrints: items => {
-        const fresh = this.prints.add(items.flatMap(row => { const p = fromWire(row); return p ? [p] : []; }));
+        const live = items.flatMap(row => { const p = fromWire(row); return p ? [p] : []; });
+        const fresh = this.prints.add(live);
         if (fresh.length) { this.#whaleTake(fresh); this.onPrints(fresh); this.onPrintsChanged(); }
+        // Every order the stream sent, also those the book dropped because a history answer brought them first (Time & sales lists what arrives).
+        if (live.length) this.onLivePrints(live);
       },
       onLiquidations: items => {
         const fresh = this.liquidations.add(items.flatMap(row => { const l = liquidationFromWire(row); return l ? [l] : []; }));

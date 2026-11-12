@@ -10,7 +10,7 @@ import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/st
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
 import type { ValueLevels } from '../../shared/profile.ts';
-import { DRAWN_SHARE, answerLevels, candleAnswer, candleBarMs, candleLevels, gatedCarries, linesWindows, loadedColumnWanted, mergeCandleProfiles, periodWindows, recordedWindowLevels, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../traded/levels.ts';
+import { DRAWN_SHARE, answerLevels, candleAnswer, candleBarMs, candleLevels, gatedCarries, LinesCalendar, loadedColumnWanted, mergeCandleProfiles, periodWindows, recordedWindowLevels, recordedWindows, recordingStart, requestStep, touchedAt, windowKind, windowLabel, windowZone } from '../traded/levels.ts';
 import { LABEL_FLOOR, ageAlpha, ageRanks, carriedLines, runPieces, type CarriedLine, type Carry } from '../traded/carry.ts';
 import { LabelBoard } from '../labels.ts';
 import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
@@ -26,7 +26,7 @@ import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText } from '../text-fit.ts';
 import { distanceText } from './ladder-info.ts';
-import { binsPerRow, dollarPriceOf, liqProfile, seamStats, liqRows, paintLiqStripe, standingBelow, standingHeat, type LiqLevels, type LiqRow, type LiqStanding } from '../liq-levels.ts';
+import { binsPerRow, dollarPriceOf, liqCurves, liqProfile, onTheWay, seamStats, liqRows, paintLiqStripe, standingBelow, standingHeat, type CurvePoint, type LiqLevels, type LiqRow, type LiqStanding } from '../liq-levels.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
 import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
@@ -42,7 +42,7 @@ import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
 import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
-import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine } from '../infobox.ts';
+import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, fitPrices, followPrice, holdPixel, limitFactor, liveEdgeShown, priceAtEdge, priceHeldAfter, priceRef, regionAt, wheelZoom, zoomedView } from './heat-zoom.ts';
@@ -90,7 +90,7 @@ import type { DrawController } from '../draw/controller.ts';
 import { paintDrawings, paintEditing } from '../draw/paint.ts';
 import type { Projection } from '../draw/geometry.ts';
 import { wallRows, type CandleUnder } from '../draw/magnet.ts';
-import type { ChartType } from '../chart-type.ts';
+import { CHART_HIDDEN, type ChartChoice, type ChartType } from '../chart-type.ts';
 import { candleCoverage, candlePriceRange, isCovered, priceBounds, priceOverviewNeeded, pricePointAt, pricePoints, priceWindow, uncoveredRuns, type Covered, type PricePoint, type PriceWindow } from '../price-history.ts';
 import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
@@ -179,6 +179,17 @@ type ColumnBox = { lines: InfoLine[]; y: number; placement?: 'center' | 'down' }
 type ProfileHit = { x0: number; room: number; row: number; max: number; rows: Map<number, [number, number]>; total: number; split: boolean; name: string; levels: ValueLevels; source: string | null };
 /** The row of a period profile under the pointer. */
 type ProfileRowHit = { hit: ProfileHit; k: number; buy: number; sell: number };
+/**
+ * Keep the click a browser makes of a tap (after the finger lifts) from landing on what the tap just opened under the finger: a menu's row
+ * would be chosen, a sheet's scrim would close it. The first click within `ms` is dropped, wherever it lands.
+ */
+function swallowClick(ms = 400): void {
+  const drop = (e: MouseEvent): void => { e.preventDefault(); e.stopPropagation(); stop(); };
+  const stop = (): void => { clearTimeout(timer); document.removeEventListener('click', drop, true); };
+  document.addEventListener('click', drop, true);
+  const timer = setTimeout(stop, ms);
+}
+
 /** The width the price labels need for the coin on screen: BTC's fit the usual width, a coin priced in millionths needs about eleven characters. */
 function axisNeed(): number {
   const price = currentCoin().price;
@@ -253,6 +264,8 @@ const priceTimeframeName = (ms: number): string => Object.entries(PRICE_TIMEFRAM
 
 /** A plot narrower than this (a phone, a split screen) gets the compact legend, whole-dollar prices and a shorter history note. */
 const NARROW_PLOT = 420;
+/** The wide liquidation column's heading band (LIQ LEVELS, LEVEL MAX, CUM MAX), drawn over its rows. */
+const LIQ_HEAD_H = 40;
 /** The most room the legend's title and prices ask beside the map's corner tools before these drop their names (px): about a candle's line of figures. */
 const LEGEND_NEED_PX = 272;
 /** The least room beside the corner tools the legend takes (px): with less (a narrow map) it stands under them, as wide as the plot. */
@@ -334,6 +347,8 @@ export class HeatPane {
   #historyNote: { x0: number; x1: number; top: number } | null = null;
   /** Liquidation levels' rows in view and what they were grouped for (#liqRowsInView). */
   #liqRows: { key: string; rows: LiqRow[]; heat: (usd: number) => number } | null = null;
+  /** The wide liquidation column as last drawn with its curves (its left and width, the curves' width, their dollars at full width), for `#paintLiqReadout`. */
+  #liqScale: { x0: number; W: number; width: number; maxCum: number } | null = null;
   /** The pointer over a volume profile column (its y, and which column: its side and its place there, nearest the map first), or null. */
   #tradedHover: { y: number; side: Side; i: number } | null = null;
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
@@ -359,8 +374,16 @@ export class HeatPane {
   draw: DrawController | null = null;
   /** Each frame, where the drawing tools' controls go: the plot's left edge in the pane, its projection and the legend's foot (set by the page). */
   onDrawFrame: ((f: { left: number; pr: Projection; legendBottom: number }) => void) | null = null;
-  /** A chart type pointed at in its menu, drawn without being kept (null: the one kept, `state.chartType`). */
-  previewChartType: ChartType | null = null;
+  /**
+   * A row of the Chart type menu pointed at, drawn without being kept: a type (the price drawn that way, even while it is hidden) or Hidden
+   * (the map without the price); null: as kept, `state.chartType` and `state.show.candles`. What is drawn follows it, and so does the drawn
+   * candles' length (`drawnTf`); the price history and the countdown go by what is kept (while a preview lasts the pointer is on the menu).
+   */
+  previewChartType: ChartChoice | null = null;
+  /** The type the candles are drawn in this frame (the one pointed at in the menu, else the one kept). */
+  #drawnType(state: AppState): ChartType { const p = this.previewChartType; return p !== null && p !== CHART_HIDDEN ? p : state.chartType; }
+  /** Whether the price is painted this frame: as kept (`show.candles`) unless a row of the Chart type menu is pointed at. */
+  #pricePainted(state: AppState): boolean { const p = this.previewChartType; return p === null ? state.show.candles : p !== CHART_HIDDEN; }
   readonly #drawEdit = document.createElement('canvas');
   #drawEditCtx: CanvasRenderingContext2D;
   /** The levels' tags on the price axis this frame, placed with the key levels'. */
@@ -471,7 +494,9 @@ export class HeatPane {
   /** What the column's window was worked out from the candles as, by what it depends on: one slot that replaces itself, so a drag cannot fill `#candleLevels` with windows nobody asks for twice. */
   #columnSlot: { key: string; value: { levels: ValueLevels; rows: Map<number, number>; buys: Map<number, number> | null; spot: boolean } | null } | null = null;
   /** The days, weeks or sessions the lines are drawn for, and what they were worked out for. */
-  #vaWindows: { key: string; windows: ProfileWindow[] } | null = null;
+  #vaWindows: { key: string; picks: ProfileWindow[][]; windows: ProfileWindow[] } | null = null;
+  /** Each kind's calendar of windows for the lines, laid out once and picked from as the chart pans (`#linesWindows`). */
+  readonly #linesCalendars = new Map<LineKind, LinesCalendar>();
   /** How old each window is among its own series by the calendar up to now (`#ageRanks`), for the fading of the lines and profiles, and the carries (`#carries`): each by what it was worked out for. */
   #aged: { lines: LineKind[]; profiles: LineKind | null; sessions: SessionDef[]; zone: string; tz: string; minute: number; ranks: Map<string, number> } | null = null;
   #carried: { lines: LineKind[]; sessions: SessionDef[]; source: string; keeps: number; zone: string; tz: string; minute: number; real: number; carries: Carry[] } | null = null;
@@ -511,8 +536,17 @@ export class HeatPane {
     return { state, view: this.view, pw: this.plotW, ph: this.plotH, now: pageNow(), replay: replaying(), peerIds: state.tpo.hollow && state.tpo.source === 'chart' ? flowIds(state, this.hub.flow.ids) : [], nameOf: w => this.#windowName(state, w) };
   }
   #tpoAnchor: HTMLElement | null = null;
-  /** A TPO block's menu: split its window there, merge the window with the one before or after, fold or lay out, undo this coin's edits. */
-  #tpoMenu(hit: NonNullable<ReturnType<TpoLayer['hit']>>, cx: number, cy: number): void {
+  /**
+   * The TPO block's box last drawn for a finger's pinned crosshair, where it stands (plot coordinates) and the block it is for: a tap on it
+   * opens the block's menu, a touch screen's right click. Worked out again each time the pointer's layer is drawn, so it is never older than
+   * the box on the screen.
+   */
+  #tpoCard: { rect: InfoRect; hit: NonNullable<ReturnType<TpoLayer['hit']>> } | null = null;
+  /**
+   * A TPO block's menu: split its window there, merge the window with the one before or after, fold or lay out, undo this coin's edits.
+   * `done` runs after a choice (a finger's pinned box is put away: what it said is about the windows before the edit).
+   */
+  #tpoMenu(hit: NonNullable<ReturnType<TpoLayer['hit']>>, cx: number, cy: number, done?: () => void): void {
     const state = this.store.state, s = state.tpo, prof = hit.profile, b = prof.blocks.find(x => x.k === hit.k);
     const scope = editScope(currentCoin().coin, s.period, blockMsOf(s)), windows = this.#tpo.windows(this.#tpoFrame(state));
     const w = windows.find(x => x.key === prof.key), range = !w || w.base === 'range';
@@ -535,6 +569,9 @@ export class HeatPane {
     };
     openMenu(anchor, items, '', { onPreview: () => {}, onSelect: id => {
       const now = this.store.state.tpo;
+      // The coin, kind of window or block length changed while the menu was open: its choices were about windows no longer drawn.
+      if (editScope(currentCoin().coin, now.period, blockMsOf(now)) !== scope) return;
+      done?.();
       if (id === 'split' && b && w && !range) {
         // The calendar window the moment falls in (a merged window holds several): a cut at one's start takes that merge back.
         const member = w.spans.find(x => b.t >= x.from && b.t < x.to);
@@ -1257,9 +1294,10 @@ export class HeatPane {
       this.#tpo.paint(ctx, this.#tpoFrame(state), p, this.#labels, key => !!lined?.has(key) && this.#tpo.plain(key)); // under the candles, as the period profiles
     }
     this.#paintPastProfiles(ctx, state, pw, ph); // under the candles: the shape of each past window behind its own bars
-    if (state.show.candles) this.#paintOverview(ctx, state, pw, ph);
-    if (state.show.candles) this.#paintCandles(ctx, state, pw, ph, this.#lodFrame.narrowing);
-    if (state.show.candles) this.#paintDivergences(ctx, state, pw, ph); // joined swings need the candles they join
+    const pricePainted = this.#pricePainted(state);
+    if (pricePainted) this.#paintOverview(ctx, state, pw, ph);
+    if (pricePainted) this.#paintCandles(ctx, state, pw, ph, this.#lodFrame.narrowing);
+    if (pricePainted) this.#paintDivergences(ctx, state, pw, ph); // joined swings need the candles they join
     this.#paintTrace(ctx, state, pw, ph); // over the candles (hollow while the dust shows), under the bubbles
     this.#paintBubbles(ctx, state, pw, ph); // above the candles, so a large trade is never hidden behind one
     this.#paintLiquidations(ctx, state, pw, ph); // above the bubbles: a forced order is one of the market orders, marked as forced
@@ -1285,7 +1323,7 @@ export class HeatPane {
     }
     // profile column, traded-volume column and price axis
     // The liquidation column, then the profile column: the book as it is now, not shown in replay, which has no book of its moment.
-    if (liqColumnShown(state)) this.#paintLiqColumn(ctx, state, pw, ph);
+    if (liqColumnShown(state)) this.#paintLiqColumn(ctx, state, pw, ph); else this.#liqScale = null;
     if (state.show.profile && !replaying()) this.#paintProfile(ctx, state, pw, ph);
     if (this.#profileHover?.column === 'seam' && !replaying()) this.#paintSeam(ctx, state, pw, ph);
     if (tradedShown(state)) this.#paintTraded(ctx, state, pw, ph);
@@ -1296,7 +1334,7 @@ export class HeatPane {
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     // The countdown to the candle's close sits under the price tag (above it at the foot of the axis), inside the band kept clear of other tags.
     const markY = Math.min(ph - 8, Math.max(8, v.yOf(mark, ph))), tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const clockText = mark > 0 && state.show.candles && !isPhone() ? countdown(pageNow(), tf) : null, clockBelow = markY + 9 + COUNTDOWN_H <= ph;
+    const clockText = mark > 0 && this.#pricePainted(state) && !isPhone() ? countdown(pageNow(), tf) : null, clockBelow = markY + 9 + COUNTDOWN_H <= ph;
     const band = { y0: markY - 9 - (clockText && !clockBelow ? COUNTDOWN_H : 0), y1: markY + 9 + (clockText && clockBelow ? COUNTDOWN_H : 0) };
     const keyTags = placeKeyTags([...this.#drawTags, ...this.#valueTags, ...this.#keyTags, ...this.#vwapTags], mark > 0 ? [band] : [], ph);
     for (let q = Math.ceil(v.p0 / pStep) * pStep; q <= v.p1; q += pStep) { const y = v.yOf(q, ph); if (y > 6 && y < ph - 6 && !underTag(keyTags, y) && !(mark > 0 && y > band.y0 && y < band.y1)) ctx.fillText(fmtPrice(q, pStep), axisX + 6, y); }
@@ -1351,8 +1389,42 @@ export class HeatPane {
     }
     this.#paintRange(ctx, state, pw, ph);
     this.#paintBookRow(ctx, state, pw, ph);
+    this.#paintLiqReadout(ctx, state, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
     this.#paintAnchorPreview(ctx, state, pw, ph);
+  }
+
+  /**
+   * The liquidation column's cumulative curve read at the pointer's price (an X request of 2026-11-12: "can I see cumulative levels at each
+   * price point?"): wherever the map's crosshair is, or the pointer on the column itself while Mirror is off (with it on, its band says the
+   * same), a dashed line across the column, a dot on the curve, and what would be liquidated if price got there, with how far that is. The
+   * column's strip (a compact map) has no curve and no room: nothing there.
+   */
+  #paintLiqReadout(ctx: CanvasRenderingContext2D, state: AppState, ph: number): void {
+    const scale = this.#liqScale, src = this.hub.liqLevels, hv = state.hover, col = this.#profileHover;
+    if (!scale || !liqColumnShown(state) || replaying() || src.state !== 'ready') return;
+    const y = hv?.source === 'heat' && hv.price !== null ? this.view.yOf(hv.price, ph) : col?.column === 'liq' && !state.show.mirror ? col.y : NaN;
+    if (!(y >= 0 && y <= ph)) return;
+    const s = src.standing(), price = this.#liqPrice(state), at = this.view.pOf(y, ph), way = s ? onTheWay(s, price, at) : null;
+    if (!way) return;
+    const p = this.#palette, color = way.side === 'long' ? p.candleDown : p.candleUp, { x0, W } = scale, line = Math.round(y) + 0.5;
+    // The dot on the curve, whole even where nothing goes yet (the curve then runs along the column's left edge), and on the dashed line.
+    const x = Math.min(x0 + W - 4, Math.max(x0 + 4, x0 + Math.min(1, way.usd / scale.maxCum) * scale.width));
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
+    ctx.strokeStyle = color; ctx.globalAlpha = 0.75; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x0, line); ctx.lineTo(x0 + W, line); ctx.stroke(); ctx.setLineDash([]);
+    ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(x, line, 3.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = p.panel; ctx.stroke();
+    // How far (in the precision the stripe's box and Mirror use), and what goes on the way: the distance is dropped where both do not fit.
+    const pct = Math.abs(at - price) / price * 100, arrow = way.side === 'long' ? '▼' : '▲', money = `$${usd(way.usd)}`;
+    ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+    const full = `${arrow} ${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}% · ${money}`, text = ctx.measureText(full).width <= W - 14 ? full : `${arrow} ${money}`;
+    // Above the line, or below it near the top, and never on the column's heading (its 40 px band hides the curve there anyway).
+    const tw = ctx.measureText(text).width, right = x0 + W - 4, ty = y - 12 < LIQ_HEAD_H + 8 ? Math.max(y + 12, LIQ_HEAD_H + 8) : y - 12;
+    ctx.globalAlpha = 0.94; ctx.fillStyle = p.panel; ctx.fillRect(right - tw - 5, ty - 7, tw + 9, 14);
+    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.strokeStyle = color; ctx.strokeRect(right - tw - 4.5, ty - 6.5, tw + 8, 13);
+    ctx.fillStyle = p.text; ctx.fillText(text, right, ty);
+    ctx.restore();
   }
 
   /**
@@ -1709,7 +1781,7 @@ export class HeatPane {
    */
   drawnTf(state: AppState = this.store.state): number {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    if ((this.previewChartType ?? state.chartType) === 'line' || !(this.plotW > 0)) return tf;
+    if (this.#drawnType(state) === 'line' || !(this.plotW > 0)) return tf;
     const v = this.view, wide = stripTimeframe(tf, v.t1 - v.t0, this.plotW).ms;
     return wide > tf ? Math.max(wide, this.#coarseAnswer(state)?.tfMs ?? 0) : tf;
   }
@@ -2086,7 +2158,7 @@ export class HeatPane {
   /**
    * What a liquidation level under the pointer holds, for the hover box: only on the stripe, on a row strong enough to be drawn there. It
    * says what would be liquidated at that level (and how much of it still stands), how far it is from the price and how much would be
-   * liquidated on the way there (the profile column's faint bar, as a number), how many positions make it up and how big the largest is, and
+   * liquidated on the way there (the liquidation column's cumulative curve at the level's far edge, as a number), how many positions make it up and how big the largest is, and
    * how much is isolated (a fixed price) or cross margin (a price that moves with the account).
    */
   #liquidationLines(state: AppState, x: number, y: number, pw: number, ph: number, touch: boolean): InfoLine[] {
@@ -2112,8 +2184,9 @@ export class HeatPane {
       const edge = side === 'long' ? row.p1 : row.p0;
       if (price > 0) lines.push({ label: t('Distance'), text: distanceText(edge, price) });
       if (price > 0 && standing) {
-        const way = side === 'long' ? standingBelow(standing, 'long', price) - standingBelow(standing, 'long', row.p0) : standingBelow(standing, 'short', row.p1) - standingBelow(standing, 'short', price);
-        lines.push({ label: t('If price gets here'), text: `$${usd(Math.max(0, way))}` });
+        // To the edge price reaches last, so the level itself counts; the column's curve and its reading at the pointer use the same sum.
+        const way = onTheWay(standing, price, side === 'long' ? row.p0 : row.p1);
+        lines.push({ label: t('If price gets here'), text: `$${usd(way?.side === side ? way.usd : 0)}` });
       }
       lines.push({ label: t('Positions'), text: String(row[`${side}Wallets`]) });
       if (top > 0) lines.push({ label: t('Largest position'), text: `$${usd(top)} (${Math.round(top / total * 100)}%)` });
@@ -2326,7 +2399,7 @@ export class HeatPane {
     const halo = p.dark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.7)', outline = 1 - 0.85 * narrowing;
     // While the trade dust shows, a candle is its outline and a thin wick: a filled body (and its halo) would hide the orders inside it. Outline
     // candles are outlines always; OHLC bars and the line are drawn their own way (chart-type.ts).
-    const type = this.previewChartType ?? state.chartType, hollow = type === 'outline' || (this.#dustOn(state) && !this.#dustFailed);
+    const type = this.#drawnType(state), hollow = type === 'outline' || (this.#dustOn(state) && !this.#dustFailed);
     // Narrower than CANDLE_LINE_PX a candle is a few overlapping marks per pixel (a 45-day view of hourly ones drew 1,100 of them, six to
     // eight drawing calls and a blurred ring each, on every pointer move: 14 frames a second, 2026-10-30): the candles drawn are then longer
     // ones made of them (`drawnTf`, `zoomedRows`; a user, 2026-11-11: "need to be able to see candles on higher zoom outs"), a few drawing
@@ -3025,29 +3098,29 @@ export class HeatPane {
   /** How much of its trades the page's data source keeps (a server a week, a page reading the exchanges itself a day). */
   #recordingKeeps(): number { return this.hub.source.kind === 'browser' ? BROWSER_RETENTION_MS : RETENTION_MS; }
   /**
-   * The days, weeks or sessions the lines are drawn for (worked out again when the settings, the view's minutes or the clock's minute
-   * change): from the recording, only as many as it can still work out and only those that began inside what it keeps. They are the last
-   * ones up to the chart's right edge, whether or not they reach its left one: zoomed in on the last hours, last month's untouched point of
-   * control still runs on across the chart, and says whose it is. Each kind drawn on the chart (`chartKinds`: those whose lines are on, and
-   * the profiles' kind) gives its own, in turn.
+   * The days, weeks or sessions the lines are drawn for: from the recording, only as many as it can still work out and only those that
+   * began inside what it keeps. They are the last ones up to the chart's right edge, whether or not they reach its left one: zoomed in on
+   * the last hours, last month's untouched point of control still runs on across the chart, and says whose it is; zoomed in or out, the same
+   * number (a weekday session's too, which used to get fewer zoomed in). Each kind drawn on the chart (`chartKinds`: those whose lines are on,
+   * and the profiles' kind) gives its own, in turn.
    */
   #linesWindows(state: AppState): ProfileWindow[] {
-    const v = this.view, MIN = 60_000, s = state.traded, now = pageNow(), real = Date.now(), keeps = this.#recordingKeeps();
+    const MIN = 60_000, s = state.traded, now = pageNow(), real = Date.now(), keeps = this.#recordingKeeps(), end = Math.min(this.view.t1, now);
     const kinds = chartKinds(s);
-    const key = `${kinds.join(',')}|${s.source}|${keeps}|${s.zone}|${s.count}|${JSON.stringify(s.sessions)}|${state.timeZone}|${Math.floor(v.t0 / MIN)}|${Math.ceil(v.t1 / MIN)}|${Math.floor(now / MIN)}|${Math.floor(real / MIN)}`;
-    if (this.#vaWindows?.key !== key) {
+    // Each kind's last `count` up to the edge, from its calendar laid out once (`LinesCalendar`): the same array while the edge pans inside one
+    // window, so the list is put together again only when one of them changes (or the settings, or the real clock's minute).
+    const picks = kinds.map(period => {
+      const k = { ...s, period }, calendar = this.#linesCalendars.get(period) ?? new LinesCalendar();
+      this.#linesCalendars.set(period, calendar);
+      return calendar.windows(k, state.timeZone, end, linesCount(k, keeps));
+    });
+    const key = `${kinds.join(',')}|${s.source}|${keeps}|${Math.floor(real / MIN)}`, held = this.#vaWindows;
+    if (held?.key !== key || held.picks.length !== picks.length || picks.some((p, i) => p !== held.picks[i])) {
       const out: ProfileWindow[] = [];
-      for (const period of kinds) {
-        const k = { ...s, period };
-        // Far enough back to hold `count` of them (a weekday session skips a weekend): the last `count` are kept of what is found.
-        const DAY_MS = 86_400_000, count = linesCount(k, keeps), span = period === 'month' ? 31 * DAY_MS : period === 'week' ? 7 * DAY_MS : DAY_MS;
-        const back = Math.min(v.t0, Math.min(v.t1, now) - count * span - 3 * DAY_MS);
-        const windows = linesWindows(k, state.timeZone, back, v.t1, now, count);
-        out.push(...(linesSource(k) === 'recorded' ? recordedWindows(windows, real, keeps) : windows));
-      }
-      this.#vaWindows = { key, windows: out };
+      kinds.forEach((period, i) => out.push(...(linesSource({ ...s, period }) === 'recorded' ? recordedWindows(picks[i], real, keeps) : picks[i])));
+      this.#vaWindows = { key, picks, windows: out };
     }
-    return this.#vaWindows.windows;
+    return this.#vaWindows!.windows;
   }
   /**
    * How old each window is: the number of windows of its own series that have begun after it by now (0: the one under way, or the last of a
@@ -3772,10 +3845,12 @@ export class HeatPane {
 
   /**
    * The liquidation column (Liquidation levels' own, between the map and the profile column): in each row what still stands of them (longs
-   * in the falling colour, shorts in the rising one) and, faint behind it, everything from the price out to that row, so a faint bar reads
-   * "this much goes if price gets here". Until the levels are there, or in a replay, it says why it is empty.
+   * in the falling colour, shorts in the rising one) and a curve of everything from the price out to each price, lightly filled behind the
+   * bars, which reads "this much goes if price gets here" (and the pointer reads it at its price: `#paintLiqReadout`). Until the levels are
+   * there, or in a replay, it says why it is empty.
    */
   #paintLiqColumn(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    this.#liqScale = null;
     const p = this.#palette, v = this.view, src = this.hub.liqLevels, x0 = pw, W = liqColumnW(state), strip = W < PROFILE_W;
     const s = src.levels && src.state === 'ready' && !replaying() ? src.standing() : null;
     ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
@@ -3803,10 +3878,20 @@ export class HeatPane {
     const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);
     const prof = liqProfile(s, step, v.p0, v.p1, price);
     const maxLevel = Math.max(prof.maxLevel, 1), maxCum = Math.max(prof.maxCum, 1), width = W - 6;
+    // The cumulative curves (the wide column only: the strip has no room for one), as CoinMarketCap's liquidation map draws them turned
+    // upright: lightly filled behind the rows' bars, their edge drawn over them, so "this much goes if price gets here" reads at every price.
+    const curves = strip ? null : liqCurves(prof, price), xOf = (q: CurvePoint): number => x0 + Math.min(1, q.usd / maxCum) * width;
+    const sides = curves ? ([[curves.long, p.candleDown], [curves.short, p.candleUp]] as const).filter(([pts]) => pts.length > 1) : [];
+    for (const [pts, color] of sides) {
+      ctx.beginPath(); ctx.moveTo(x0, v.yOf(pts[0]!.p, ph));
+      for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
+      ctx.lineTo(x0, v.yOf(pts[pts.length - 1]!.p, ph)); ctx.closePath();
+      ctx.globalAlpha = 0.16; ctx.fillStyle = color; ctx.fill();
+    }
     for (let r = 0; r < prof.long.length; r++) {
       const lo = (prof.row0 + r) * step, y1 = v.yOf(lo, ph), y0 = v.yOf(lo + step, ph);
       if (y1 < 0 || y0 > ph) continue;
-      const hgt = Math.max(1, y1 - y0 - 0.5), long = prof.long[r]!, short = prof.short[r]!, cumLong = prof.cumLong[r]!, cumShort = prof.cumShort[r]!;
+      const hgt = Math.max(1, y1 - y0 - 0.5), long = prof.long[r]!, short = prof.short[r]!;
       if (strip) {
         // The strip, as the book's: each row's levels as the strength of their side's colour, the largest the boldest; longs below the price,
         // shorts above, in the candles' colours as in the column. By the logarithm, not the book's square root: the levels are a few spikes
@@ -3815,14 +3900,20 @@ export class HeatPane {
         if (level > 0) { ctx.globalAlpha = 0.22 + 0.78 * Math.log1p(level / (maxLevel / 1000)) / Math.log1p(1000); ctx.fillStyle = long >= short ? p.candleDown : p.candleUp; ctx.fillRect(x0 + 1, y0, W - 1, hgt); }
         continue;
       }
-      if (cumLong > 0) { ctx.globalAlpha = 0.16; ctx.fillStyle = p.candleDown; ctx.fillRect(x0, y0, cumLong / maxCum * width, hgt); }
-      if (cumShort > 0) { ctx.globalAlpha = 0.16; ctx.fillStyle = p.candleUp; ctx.fillRect(x0, y0, cumShort / maxCum * width, hgt); }
       if (long > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleDown; ctx.fillRect(x0, y0, Math.max(1, long / maxLevel * width), hgt); }
       if (short > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleUp; ctx.fillRect(x0, y0, Math.max(1, short / maxLevel * width), hgt); }
     }
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.95; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    for (const [pts, color] of sides) {
+      ctx.beginPath(); ctx.moveTo(xOf(pts[0]!), v.yOf(pts[0]!.p, ph));
+      for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
+      ctx.strokeStyle = color; ctx.stroke();
+    }
+    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.lineJoin = 'miter';
+    // The pointer's layer reads the curve where the pointer is (`#paintLiqReadout`), on this scale.
+    this.#liqScale = curves ? { x0, width, maxCum, W } : null;
     if (!strip) {
-      ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, 40); ctx.globalAlpha = 1;
+      ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, LIQ_HEAD_H); ctx.globalAlpha = 1;
       ctx.fillStyle = p.text; ctx.fillText(fitText(wide, t('LIQ LEVELS'), W - 8), x0 + 4, 4);
       ctx.fillStyle = p.muted; ctx.fillText(t('LEVEL MAX {value}', { value: usd(maxLevel) }), x0 + 4, 16); ctx.fillText(t('CUM MAX {value}', { value: usd(maxCum) }), x0 + 4, 28);
     }
@@ -3938,6 +4029,7 @@ export class HeatPane {
   }
 
   #paintCrosshair(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    this.#tpoCard = null;
     const hv = state.hover; if (!hv) { this.#orders.rest(); return; }
     const p = this.#palette, v = this.view;
     const x = v.xOf(hv.t, pw), inX = x >= 0 && x <= pw, ownY = hv.source === 'heat' && hv.price !== null;
@@ -3986,7 +4078,10 @@ export class HeatPane {
       paintInfoBox(ctx, lines, x, touch ? y - hit.r - 8 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { edge: buy ? p.candleUp : p.candleDown, gap: hit.r + 10, placement: touch ? 'up' : 'center' });
     } else if (ownY && here && state.tpo.on && (tpoHit = this.#tpo.hit(x, y, v, ph))) { // a block of the TPO: its half hour, its row and what they say
       this.#tpo.paintHit(ctx, tpoHit, v, pw, ph, p);
-      paintInfoBox(ctx, this.#tpo.lines(this.#tpoFrame(state), tpoHit), x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
+      // A finger has no right click: its box ends by saying a tap on it opens the block's menu (`#openTpoCard`).
+      const lines = this.#tpo.lines(this.#tpoFrame(state), tpoHit);
+      const rect = paintInfoBox(ctx, touch ? [...lines, { text: t('Tap this box for the TPO menu'), color: 'muted' }] : lines, x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
+      if (touch && rect) this.#tpoCard = { rect, hit: tpoHit };
     } else if (ownY && here && (profiled = this.#periodProfileAt(x, y, ph))) { // a row of a day's, week's, month's or session's profile, painted over the rest
       const { hit, k, buy, sell } = profiled, step = hit.row;
       const lines = periodRowLines({ name: hit.name, low: k * step, high: (k + 1) * step, step, buy, sell, total: hit.total, split: hit.split, levels: hit.levels, source: hit.source });
@@ -4306,9 +4401,12 @@ export class HeatPane {
         if ((this.store.state.vwapAnchoring || this.store.state.profileAnchoring) && p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH) { this.onAnchorPreview?.(this.view.tOf(p.x, this.plotW)); return; }
         if (this.#bands.onHeader(p.x, p.y) || this.#onHiddenTag(p.x, p.y)) { this.onTopProfile(); return; }
         if (p.x >= 0 && p.x <= this.plotW && p.y <= this.plotH && this.draw?.click(p, false, true)) { this.#drawClickAt = performance.now(); this.#unpin(); return; }
+        // A tap on a TPO block's box opens its menu (before the pin's own rule: a box kept inside the map can stand over the pin).
+        if (this.#openTpoCard(p)) return;
         if (this.#pinActive() && Math.hypot(this.#pin!.x - p.x, this.#pin!.y - p.y) < 28) this.#unpin(); else this.#pinAt(p);
       },
-      doubleTap: () => { if (this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return; this.#unpin(); this.fit(); },
+      // A tap on the box soon after the tap that pinned it, near it, is a double tap to the recogniser: still the box's, not a refit.
+      doubleTap: p => { if (this.#openTpoCard(p)) return; if (this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return; this.#unpin(); this.fit(); },
       // A short tick under the finger says the hold registered (where the browser allows it: it wants the page to have been used first).
       hold: p => { if (navigator.userActivation?.hasBeenActive) navigator.vibrate?.(8); this.#pinAt(p); },
       holdMove: p => this.#pinAt(p),
@@ -4367,6 +4465,24 @@ export class HeatPane {
   }
 
   /** Whether a finger's pin is what is on show now (a tap on a pane under the map replaces it with its own). */
+  /**
+   * A tap at `p` on the TPO block's box drawn for the pinned crosshair: open the block's menu there. Only while that box is the one on the
+   * screen and the block under the pin is still the one it names (a box drawn before the map moved is not acted on); after a choice the pin
+   * is put away. The tap the browser turns into a click after it is kept from landing on the menu just opened under the finger.
+   */
+  #openTpoCard(p: Pt): boolean {
+    const card = this.#tpoCard, hv = this.store.state.hover, state = this.store.state;
+    if (!card || !hv?.touch || hv.price === null || !state.tpo.on || state.vwapAnchoring || state.profileAnchoring || this.draw?.placing) return false;
+    const { rect } = card;
+    if (p.x < rect.x || p.x > rect.x + rect.w || p.y < rect.y || p.y > rect.y + rect.h) return false;
+    const pw = this.plotW, ph = this.plotH, now = this.#tpo.hit(this.view.xOf(hv.t, pw), this.view.yOf(hv.price, ph), this.view, ph);
+    if (!now || now.profile.key !== card.hit.profile.key || now.k !== card.hit.k) { this.#tpoCard = null; return false; }
+    const r = this.overlay.getBoundingClientRect();
+    swallowClick();
+    this.#tpoMenu(now, r.left + this.#left + p.x, r.top + p.y, () => this.#unpin());
+    this.invalidate();
+    return true;
+  }
   #pinActive(): boolean { const hv = this.store.state.hover; return this.#pin !== null && (this.#profileHover !== null || this.#tradedHover !== null || (hv?.touch === true && hv.source === 'heat')); }
   /** Drop the pinned crosshair (and the profile comparison), if any. */
   #unpin(): void {

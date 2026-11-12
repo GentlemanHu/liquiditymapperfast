@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'tns' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
 
 export interface HelpTopic {
   title: string;
@@ -28,7 +28,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     title: t('Profile'), guide: 'profile',
     tip: t('The column at the right edge of the chart: how much liquidity is resting at each price right now, added up over the enabled venues. Pink are asks (sellers waiting above), green are bids (buyers waiting below).'),
     body: [t('The profile is the heatmap collapsed into one moment: for every price, the total size of the orders waiting there right now, summed over the enabled venues. Long bars are walls.'),
-      t('Hover it and the Mirror comparison appears (switch that off with the Mirror button).')],
+      t('Hover it and the Mirror comparison appears (switch that off with Mirror in the order book\'s Cues panel).')],
   },
   traded: {
     title: t('Volume profile'), guide: 'volume-profile',
@@ -64,12 +64,12 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('The whale VWAP averages only the large market orders that are recorded (the same orders as the trade bubbles, from the size you choose), buys and sells apart, on the exchanges switched on, since the session began or since the recording did.')],
   },
   tpo: {
-    title: t('TPO'), guide: 'profile',
+    title: t('TPO'), guide: 'tpo',
     tip: t('TPO (Market Profile): each half hour of a day stacked as a block at every price it traded at, so the day folds into the shape of where the market spent its time.'),
     body: [t('Each day, week or session (in the zone the Volume profile uses) is cut into blocks, half an hour each by default, lettered A to Z and then a to z. A block stands at every row its half hour traded at, and the rows are stacked from the window\'s start: the longest row is where price spent the most time, its point of control, and the value area holds 70 % of the blocks around it. The blocks of the first hour make the initial balance (IBH, IBL; the first block, where blocks are an hour or longer); the arrows mark the window\'s first price and its last.'),
       t('At the top and bottom, two or more rows of a single block are a tail: price was there briefly and left. A top or bottom row of two or more blocks is poor: price kept returning without going further. These calls depend on where the row edges fall, so each one is worked out on four row grids, each moved by part of a row, and says how many of the four agree (4/4 is steady, 2/4 could go either way). Single prints are rows of one block between the tails.'),
       t('A block drawn as an outline is one where this market\'s wick went at least a row and 3 bp past the point most of the market\'s volume reached, from the other venues switched on, each moved by its usual gap to this market first: a price that venue printed alone. Rare on the largest markets.'),
-      t('U lays the blocks out in time, each half hour in its own column behind its own candles, and folds them back. Right-click a block to split its window there or merge it with the window before or after (kept per coin, kind of window and block length). The candles are the chart market\'s, read from the exchange; the block under way follows the chart\'s own price. While the TPO shows, the Volume profile\'s lines of the same windows follow the TPO\'s levels.'),
+      t('U lays the blocks out in time, each half hour in its own column behind its own candles, and folds them back. Right-click a block (on a touch screen, tap it, then tap its box) to split its window there or merge it with the window before or after (kept per coin, kind of window and block length). The candles are the chart market\'s, read from the exchange; the block under way follows the chart\'s own price. While the TPO shows, the Volume profile\'s lines of the same windows follow the TPO\'s levels.'),
       t('Every window in view is drawn (or, under How many, the latest few), back about thirteen months: scroll the chart back to see older days. Zoomed out, each row is one bar as long as its blocks, in the colour of when the market was at that price. Candles from can take markets you tick instead of the chart market: each block then spans where most of their volume traded, and a row only one of them reached is drawn hollow.')],
   },
   delta: {
@@ -88,7 +88,8 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('With the OI pane\'s Venues on All perpetuals (the default), each venue\'s change of open interest is given to the side that traded at market on that venue, and the venues are then added up: one venue\'s buyers say nothing about who opened positions on another.'),
       t('A market\'s change is measured between its own readings and shown in the candle of its new one, given to its takers over the whole stretch since the reading before: a venue read only hourly (older history) changes once an hour, and the popup says so. A candle can hold new longs on one venue and new shorts on another; the popup lists the four parts and reads it as both ways. Deribit counts its open interest in dollars, so it is put in coins at one price, the newest close: a move of the price alone opens and closes nothing.'),
       t('As (with NL/NS shown): Four parts draws each candle\'s bar with all four parts; the running net is in the readout. Longs and shorts draws two lines instead: the running sum of the longs (new longs less longs closed) and of the shorts (new shorts less shorts closed). A rising line is that side adding positions, a falling one that side closing them.'),
-      t('Where a venue\'s minute readings and flow cover a candle (the last day, on the venues read every minute or every five), NL/NS works it out minute by minute: each minute\'s change given to that minute\'s takers, added up into the candle. Inside a long candle, longs opened at market early on and shorts closed later are then both seen, where the candle\'s one delta would name only one side. Measured against every Hyperliquid trade on two coins, this named the side that opened more for about 94 % of the rise per 15-minute candle, the candle\'s delta for about 90 %. The popup says how each candle was read.')],
+      t('Where a venue\'s minute readings and flow cover a candle (the last day, on the venues read every minute or every five), NL/NS works it out minute by minute: each minute\'s change given to that minute\'s takers, added up into the candle. Inside a long candle, longs opened at market early on and shorts closed later are then both seen, where the candle\'s one delta would name only one side. Measured against every Hyperliquid trade on two coins, this named the side that opened more for about 94 % of the rise per 15-minute candle, the candle\'s delta for about 90 %. The popup says how each candle was read.'),
+      t('Drag across the pane with Select armed, or Ctrl+drag (Cmd on a Mac), to sum up a stretch of its candles in the Range panel: the recorded delta and its share of the volume, bought and sold, the price over the same candles, how the delta was spread over them, and with NL/NS the same estimated added and reduced as the OI pane.')],
   },
   ls: {
     title: t('Long/Short'), guide: 'ls',
@@ -134,9 +135,9 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     body: [],
   },
   candles: {
-    title: t('Candles'), guide: 'chart',
-    tip: t('Draw the price candles. Turn them off to see the heatmap and the trade bubbles without anything on top.'),
-    body: [t('The Chart type menu, after the timeframes, draws the price as candles, outline candles, OHLC bars or a line of closes. Its last row, Candle colours, gives rising and falling candles a body, border and wick colour of your own; a part left at the theme\'s colour follows the theme.'),
+    title: t('Chart type'), guide: 'chart',
+    tip: t('How the map draws the price: candles, outline candles, OHLC bars or a line, from the Chart type button after the timeframes, lit while the price is drawn. Hidden takes the price off the map, so the heatmap and the trade bubbles show with nothing on top.'),
+    body: [t('Pointing at a row of the Chart type menu shows it on the map before it is chosen, and Hidden keeps the type for when the price comes back. The menu\'s last row, Candle colours, gives rising and falling candles a body, border and wick colour of your own; a part left at the theme\'s colour follows the theme.'),
       t('Zoomed out until the candles would be thinner than two pixels, the chart draws longer ones (4h, 1d, up to a week) made of the same candles and the exchange\'s history, and the legend names their length; a candle clicked to place an anchor is the one drawn. A line chart stays a line.')],
   },
   footprint: {
@@ -154,7 +155,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   mirror: {
     title: t('Mirror'), guide: 'mirror',
-    tip: t('Hover comparison. With it on, pointing at the profile column or the order book compares the liquidity between the price and your pointer with the equal stretch on the other side, and says which side has more. Nothing changes until you hover; that is how it works.'),
+    tip: t('Hover comparison: pointing at the order book, the profile column or the liquidation column compares what stands between the price and your pointer with the equal stretch on the other side, and says which side has more. Nothing changes until you hover.'),
     body: [],
   },
   volume: {
@@ -180,7 +181,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     tip: t('Where Hyperliquid\'s open BTC positions would be liquidated, from HyperTracker\'s snapshots: longs below the price in the falling colour, shorts above it in the rising one. A level goes once price trades through it.'),
     body: [t('Each row adds up the positions whose liquidation price lies in it, in $10 steps, from HyperTracker\'s snapshots of every open Hyperliquid BTC position, about one every half hour (Powered by HyperTracker). A darker row holds more; a crisp edge marks the strongest, and a diamond a row where one position holds at least half.'),
       t('A snapshot describes the positions about 40 minutes before it can be read, and every level price has traded through since then is gone, even if that happened before the page was opened. Positions opened since come with the next snapshot.'),
-      t('They are drawn as a stripe right of the newest candle, so the heatmap keeps its own colours, and their own column beside the profile column adds them up: in each row what still stands, and faint behind it everything from the price out to that row, the dollars that go if price gets there. Hover the column to compare the longs below with the shorts as far above.'),
+      t('They are drawn as a stripe right of the newest candle, so the heatmap keeps its own colours, and their own column beside the profile column adds them up: in each row what still stands, and a curve of everything from the price out to each price, the dollars that go if price gets there. On a computer, point anywhere on the map and the column reads the curve at that price; hover the column itself to compare the longs below with the shorts as far above.'),
       t('Only Hyperliquid\'s positions are known, and only for BTC. A trade can reach a level a few basis points before the mark price that liquidates it, and a position can be closed or topped up before price gets there, so a level is where forced orders could start, not a promise that they will.'),
       t('Point at the line between the liquidation column and the profile column to weigh the book against the liquidations: what rests against what would be liquidated on each side, how level size and book size rank together, and whether the book stands as a wall or thins to a void at the largest levels.')],
   },
@@ -200,7 +201,9 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     body: [t('Drag across the map for a box (a stretch of time and a band of prices), or across a pane under the map or the flow column for a stretch of time at every price. A selection covers the whole minutes it touches; one that reaches the present stays live and is added up again every few seconds.'),
       t('Everything is about the exchanges switched on inside the Spot / Perp filter, except open interest, which only perpetuals have: it is the OI pane\'s, whatever the filter says. An order is counted at the price it started at, in the minutes recorded since orders were counted by price; the average order is the volume of those minutes over their orders.'),
       t('Every market order fills resting orders on its own exchange, so the prices that took the most are where the resting orders were that absorbed them. The absorption marks and the resting orders are the ones the map draws.'),
-      t('On a narrow band the average order leans: a sweep that began inside the band and ran out of it counts here with only part of its volume, one that began outside counts its volume here without the order.')],
+      t('On a narrow band the average order leans: a sweep that began inside the band and ran out of it counts here with only part of its volume, one that began outside counts its volume here without the order.'),
+      t('A drag across the Open Interest pane holds whole candles and sums up that pane in its own terms: the known change and the line\'s level, what NL/NS estimates was added and reduced, each venue\'s part, and how the stretch compares with the ones held. Show at the top of the panel switches between the map\'s summary and the pane\'s for the same stretch.'),
+      t('A drag across the Delta pane does the same in its terms: the recorded taker flow (bought, sold, the delta and its share of the volume), the price over the same candles, the CVD inside a daily or weekly run, how the delta was spread, and with NL/NS the estimated added and reduced.')],
   },
   heatmap: {
     title: t('The heatmap'), guide: 'heatmap',
@@ -226,7 +229,8 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('Zoomed out further back than the readings held (the chart\'s last 500 candles), the line goes on faint and dashed from Bybit\'s own history, which reaches back years, scaled to meet the line where it starts. Bybit is one venue of several, so this part is an estimate of the total (≈), drawn without change bars. It is there while Bybit\'s perpetual is among the markets added together.'),
       t('Venues can also be Chosen markets: the perpetuals ticked in its panel (Choose…, or Markets… in the Delta pane with NL/NS shown), added together whatever the venue chips and the Spot / Perp filter say. NL/NS and the Long/Short pane count the same markets. With none ticked, nothing is counted.'),
       t('Bars on NL/NS (the default) splits each change bar by who made it: a rise into the new longs (buy colour) and new shorts (sell colour) it held, a fall into the shorts closed (buy colour) and longs closed (sell colour), lighter because closed; each part takes as much of the bar as its share of what opened or closed, and grey is what went to no side. It is the Delta pane\'s NL/NS, worked out minute by minute where the minute readings reach, and an estimate: tested against the moves that followed, it is context, not a signal (the Delta pane\'s Four parts shows every part of each candle at full height). Net colours the bars by whether open interest rose or fell. The few changes much larger than all the others are cut at the band\'s edge with a gap across them, so the rest keep their proportions, and each one\'s popup gives its size.'),
-      t('The table reads every venue at the pointer\'s time, else the newest: beside the chart where there is room, else over its left end while you point at the pane.')],
+      t('The table reads every venue at the pointer\'s time, else the newest: beside the chart where there is room, else over its left end while you point at the pane.'),
+      t('In each NL/NS bar the side that made the change is drawn stronger and the other fainter, the more one-sided the more. Drag across the pane with Select armed, or Ctrl+drag (Cmd on a Mac), to sum up a stretch of its candles in the Range panel.')],
   },
   ltPane: {
     title: t('Liquidity Tracker'), guide: 'lt',
@@ -251,6 +255,13 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     body: [t('Passive liquidity (the heatmap and the book) is what traders have placed and may pull; flow is what they have actually done. A line rising means buyers are lifting offers faster than sellers are hitting bids.'),
       t('Rows are ranked by volume over the window you choose and re-ranked now and then. Every line has its own scale, so compare shapes, not heights. The labels are on the left so that the ends of the lines stay clear. Hover a row for its numbers; the gear sets how many exchanges, how tall each row is and when the order changes.'),
       t('A small triangle on a line marks a burst: in ten seconds that exchange bought (up) or sold (down) far more at market than it usually does, judged against its last half hour, and at least the smallest burst. Only bursts seen while the page is open are marked, so a reload clears them. The marks are off until switched on in the gear, which also sets how big and how unusual a burst must be.')],
+  },
+  tns: {
+    title: t('Time & sales'), guide: 'tns',
+    tip: t('The flow column\'s second view: every large market order as it arrives, newest on top, with its time, exchange, side, price and size. Nothing is fetched, so the list starts when the page opens.'),
+    body: [t('The tabs in the column\'s title switch between the flow lines and this list; with the column closed, the strip along the edge has a tab for each. The orders are the ones the trade bubbles draw, from the exchanges switched on, so a row on the list is a bubble on the map.'),
+      t('From $100,000 by default (the menu above the list, or the settings key): a busy minute of BTC orders from $25,000 is too many rows to read. A burst of orders on one exchange and side is one row, ×16 saying how many, its size added up and its price their average weighted by size. Bold rows are whale size, as the bubbles\' glow; the bar behind a size grows with it on a log scale.'),
+      t('Pointing at the list holds it still: new rows are counted on a button that brings them in. The order pointed at is marked on the map and the panes at its moment, and a click takes the map there. A line says where orders may be missing: the stream dropped, or the page was in the background.')],
   },
   book: {
     title: t('Order book'), guide: 'order-book',

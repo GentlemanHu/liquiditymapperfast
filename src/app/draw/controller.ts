@@ -2,7 +2,7 @@ import { t, tn } from '../i18n.ts';
 import { price as fmtPrice } from '../format.ts';
 import type { View } from '../view.ts';
 import { isCoarse } from '../device.ts';
-import { ANCHORS, MAX_PER_COIN, MAX_TOTAL, capReached, duplicate as copyOf, exportText, fits, importInto, moved, newDrawing, totalOf, type Anchor, type DrawDoc, type DrawKind, type Drawing } from './model.ts';
+import { ANCHORS, MAX_PER_COIN, MAX_TOTAL, capReached, versionOf, duplicate as copyOf, exportText, fits, flipped, importInto, moved, newDrawing, positionFromClicks, totalOf, type Anchor, type DrawDoc, type DrawKind, type Drawing } from './model.ts';
 import { axisOf, deltaOf, edgeMinFor, handlesOf, hitDrawing, sameHit, withHandleAt, type Handle, type HandleAxis, type Hit, type Projection, type Pt } from './geometry.ts';
 import { candleTargets, snapPoint, snapTime, wallTargets, type CandleUnder, type SnapTarget } from './magnet.ts';
 import { History } from './history.ts';
@@ -60,6 +60,9 @@ export interface Cursor { at: Anchor; snap: SnapTarget | null; x: number; y: num
  * is higher or further left now, so a top edge pulled under the bottom one is still the same point), or of a whole drawing.
  */
 type Drag = { mode: 'handle'; id: string; handle: Pick<Handle, 't' | 'p' | 'after'>; before: readonly Drawing[]; original: Drawing } | { mode: 'move'; id: string; from: Pt; away: boolean; before: readonly Drawing[]; original: Drawing };
+
+/** What the bar says when a position's stop or target is clicked on the wrong side of its entry. */
+const POSITION_SIDES = (): { text: string; warn: boolean } => ({ text: t('A position needs its stop above or below the entry and its target on the other side.'), warn: true });
 
 /** How near a stroke the pointer must be to be on it (px), with a mouse and with a finger. */
 const TOL = { mouse: 6, touch: 12 };
@@ -132,7 +135,7 @@ export class DrawController {
   contextChanged(): void {
     this.#lastMark = 0;
     if (this.#drag) this.#abortDrag();
-    if (this.draft) { this.draft = null; this.cursor = null; this.#changed(); }
+    if (this.draft) { this.draft = null; this.cursor = null; this.#dropPositionWarning(); this.#changed(); }
   }
 
   #history(): History {
@@ -158,7 +161,7 @@ export class DrawController {
     this.#sync();
     const coins = { ...this.#doc.coins };
     if (next.length) coins[this.#coin] = [...next]; else delete coins[this.#coin];
-    this.#doc = { version: 1, coins };
+    this.#doc = { version: versionOf(coins), coins };
     if (!step) return;
     this.#history().push(step.before, next);
     this.#save();
@@ -180,7 +183,7 @@ export class DrawController {
       this.#changed(); return;
     }
     if (this.#newer) { this.#newer = false; if (this.message?.warn) this.message = null; }
-    this.#doc = doc; this.#histories.clear(); this.draft = null; this.cursor = null; this.#drag = null;
+    this.#doc = doc; this.#histories.clear(); this.draft = null; this.cursor = null; this.#drag = null; this.#dropPositionWarning();
     if (this.selected && !this.get(this.selected)) this.selected = null;
     this.#changed();
   }
@@ -200,9 +203,12 @@ export class DrawController {
 
   disarm(): void {
     if (!this.tool && !this.draft) return;
-    this.tool = null; this.draft = null; this.cursor = null; this.#held = null;
+    this.tool = null; this.draft = null; this.cursor = null; this.#held = null; this.#dropPositionWarning();
     this.#changed();
   }
+
+  /** A position's wrong-side warning belongs to the drawing being placed: it goes with it. */
+  #dropPositionWarning(): void { if (this.message?.text === POSITION_SIDES().text) this.message = null; }
 
   /** What the next press does, said in the bar: the step of placing, in the words of a mouse or of a finger. */
   hint(touch: boolean): string | null {
@@ -210,13 +216,34 @@ export class DrawController {
     const n = this.draft?.points.length ?? 0;
     if (n === 0) {
       if (kind === 'level') return touch ? t('Tap where the level goes.') : t('Click where the level goes.');
+      if (kind === 'position') return touch ? t('Tap the entry: its price, and where the position starts.') : t('Click the entry: its price, and where the position starts.');
       if (kind === 'vline') return touch ? t('Tap the moment to mark.') : t('Click the moment to mark.');
       if (kind === 'note') return touch ? t('Tap the point the note is about.') : t('Click the point the note is about.');
       return touch ? t('Tap the first point.') : t('Click the first point.');
     }
     if (kind === 'zone') return touch ? t('Tap the opposite corner.') : t('Click the opposite corner.');
     if (kind === 'channel' && n === 2) return touch ? t('Tap a point the parallel line passes through.') : t('Click a point the parallel line passes through.');
+    if (kind === 'position') return n === 1 ? (touch ? t('Tap the stop: below the entry for a long, above it for a short.') : t('Click the stop: below the entry for a long, above it for a short.'))
+      : touch ? t('Tap the target, on the other side of the entry. Where you tap is also where the position ends.') : t('Click the target, on the other side of the entry. Where you click is also where the position ends.');
     return touch ? t('Tap the second point.') : t('Click the second point.');
+  }
+
+  /**
+   * A position from the points clicked so far (`positionFromClicks`): it lasts an eighth of the time on the map when its target is clicked
+   * at, before or within 24 px after its entry (a box too narrow to take hold of).
+   */
+  shapePosition(points: readonly Anchor[]): Anchor[] | null {
+    const v = this.host.view, span = v.t1 - v.t0;
+    return positionFromClicks(points, Math.max(60_000, span / 8), span / Math.max(1, this.host.plotW()) * 24);
+  }
+
+  /** A long turned into a short or back, as one step: its stop and target as far from the entry on the other side. */
+  flip(id: string): void {
+    const d = this.get(id);
+    if (!d || d.kind !== 'position' || d.locked || this.readOnly) return;
+    const next = flipped(d);
+    if (!fits(next)) { this.message = { text: t('Turned the other way, this position would need a price below zero.'), warn: true }; this.onChange(); return; }
+    this.update(id, { points: next.points });
   }
 
   /**
@@ -328,6 +355,13 @@ export class DrawController {
         const pr = this.#proj(), prev = points[points.length - 2]!;
         if (Math.hypot(pr.x(prev.t) - c.x, (kind === 'vline' ? c.y : pr.y(prev.p)) - c.y) < 4) return true;
       }
+      if (kind === 'position') {
+        // The stop and the target go on opposite sides of the entry: a click that does not is not taken, and the bar says why.
+        const shaped = points.length > 1 ? this.shapePosition(points) : null;
+        if (points.length > 1 && !shaped) { this.message = POSITION_SIDES(); this.#held = null; this.#changed(); return true; }
+        if (this.message?.text === POSITION_SIDES().text) this.message = null;
+        if (shaped && points.length === ANCHORS[kind]) { this.#commit(newDrawing(kind, shaped)); return true; }
+      }
       if (points.length < ANCHORS[kind]) { this.draft = { kind, points }; this.#held = null; this.#changed(); return true; }
       this.#commit(newDrawing(kind, points));
       return true;
@@ -357,7 +391,7 @@ export class DrawController {
   /** The drawings were switched off (or other settings changed): what cannot be seen is not selected, hovered or being placed. */
   settingsChanged(): void {
     if (this.host.settings().shown) return;
-    if (this.selected || this.hover || this.tool) { this.selected = null; this.hover = null; this.tool = null; this.draft = null; this.cursor = null; this.#changed(); }
+    if (this.selected || this.hover || this.tool) { this.selected = null; this.hover = null; this.tool = null; this.draft = null; this.cursor = null; this.#dropPositionWarning(); this.#changed(); }
   }
 
   /** Change a drawing (its look, its options, its text, a point typed in), as one step; a locked drawing is only unlocked, hidden or shown. */
@@ -479,7 +513,7 @@ export class DrawController {
   /** Esc: a drag goes back, a drawing half placed is dropped, an armed tool is put away, the selection is let go (true when one of them was). */
   cancel(): boolean {
     if (this.#drag) { this.#abortDrag(); return true; }
-    if (this.draft) { this.draft = null; this.cursor = null; this.#held = null; this.#changed(); return true; }
+    if (this.draft) { this.draft = null; this.cursor = null; this.#held = null; this.#dropPositionWarning(); this.#changed(); return true; }
     if (this.tool) { this.disarm(); return true; }
     if (this.selected) { this.selected = null; this.#changed(); return true; }
     return false;

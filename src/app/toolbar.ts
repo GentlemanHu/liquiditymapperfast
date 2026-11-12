@@ -24,6 +24,8 @@ import { GROUP_TITLES, SHORTCUTS, togglePatch, type Feature, type ShortcutGroup 
 import { buildGallery, newGalleryState } from './layouts/gallery.ts';
 import type { LayoutActions } from './layouts/actions.ts';
 import { TourInvite } from './tour/invite.ts';
+import { UpdateNotice } from './update-notice.ts';
+import type { BuildAnswer } from './update-check.ts';
 import { clampGoTo, formatDateTime, parseDateTime } from './price-line.ts';
 import { ABSORPTION_LIMITS, type AbsorptionSettings } from './absorption.ts';
 import { BUBBLE_LIMITS, BUBBLE_MINIMUMS, type BubbleSettings } from './prints.ts';
@@ -49,7 +51,7 @@ import type { Alerts } from './sound/alerts.ts';
 import type { Panel } from './ui.ts';
 import { HEAT_STYLES, legendBackground, type HeatStyleId } from './heatmap/lut.ts';
 import { CONTRAST } from './heatmap/window.ts';
-import { CHART_TYPES, chartTypeGlyph, chartTypeName, chartTypeTip, type ChartType } from './chart-type.ts';
+import { CHART_HIDDEN, CHART_TYPES, chartChoiceName, chartChoiceOf, chartChoicePatch, chartTypeGlyph, chartTypeName, chartTypeTip, readChartChoice, type ChartChoice } from './chart-type.ts';
 import { compactBar, isCoarse, isPhone, onLayoutMode } from './device.ts';
 import { effectiveChoice, isHandheldPhone, savesData, type PhoneHistory } from './history-window.ts';
 import { closeSheet, openSheet, type Sheet } from './sheet.ts';
@@ -81,12 +83,25 @@ const WAVE_STRENGTH_TIP = t('How strongly the waves are drawn, from barely there
 const IDLE_GRACE_MS = 20_000;
 /** What the dropdown says next to a layer that cannot be chosen yet. */
 const UPCOMING = 'upcoming';
+/**
+ * Whether there is a layer to choose (Karl, 2026-11-12: each button in the bar a precious resource): the Layer menu stands in the Heatmap deck
+ * and in Settings only once a second layer can be drawn; while Liquidity is the only one it is left out.
+ */
+const LAYER_CHOICE = AVAILABLE_LAYERS.length > 1;
+/** The heatmap's colour range and smoothing, said alike by Settings' rows and the Heatmap key's panel. */
+const COLOUR_RANGE_TIP = t('Auto: the colour window follows the data (recomputed on recenter, market change, zoom and every 10 s). Off: it stays where it is.');
+const SMOOTHING_TIP = t('Vertical smoothing when price rows get thin (zoomed out): Auto smooths with a ~5 px Gaussian below 15 px per row, so far walls stay visible; Off draws every row exactly.');
 
-/** The pane switches in the top bar, in order: the two side columns first (they vanish and return at once), then what the map shows. */
 /** The Chart type menu's row that opens the Candle colours panel (not a chart type). */
 const CANDLE_COLOURS_ITEM = 'candle-colours';
 
-const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['delta', t('Delta')], ['ls', t('L/S')], ['funding', t('Funding')], ['candles', t('Candles')], ['lt', 'LT'], ['mirror', t('Mirror')], ['volume', t('Volume')], ['stats', t('Stats')]];
+/**
+ * The pane switches in the top bar, in order: the two side columns first (they vanish and return at once), then what the map shows. The
+ * candles have no switch here since 2026-11-12: the Chart type button takes them off the map (Hidden) and is lit while they are drawn. Nor
+ * has Mirror (the same day, Karl: each button a precious resource): it is no pane but what hovering the profile column or the book shows, and
+ * its switch is in the order book's Cues panel.
+ */
+const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['delta', t('Delta')], ['ls', t('L/S')], ['funding', t('Funding')], ['lt', 'LT'], ['volume', t('Volume')], ['stats', t('Stats')]];
 
 /** Assign a form control's value only when it differs: assigning to an open select closes its popup. */
 function setValue(control: HTMLSelectElement | HTMLInputElement, value: string): void { if (control.value !== value) control.value = value; }
@@ -142,6 +157,8 @@ export class Toolbar {
   #tour = el('button', { type: 'button', class: 'tour-btn', textContent: t('Tour'), tip: t('A one-minute tour of the page: what the map shows and where everything is. The Guide goes deeper.'), onclick: () => { this.#sheet?.close(); this.startTour(); } });
   /** Offers the tour once to a visitor who has never been offered it (a notice under the bar). */
   readonly #invite = new TourInvite(() => this.startTour(), () => compactBar() ? t('You can take the tour any time from Settings.') : t('You can take the tour any time with the Tour button at the top right.'));
+  /** Says when the site serves a newer build than this tab runs (update-notice.ts): in the status bar on a computer, under the bar otherwise. */
+  readonly #update = new UpdateNotice();
   #shot = el('button', { type: 'button', class: 'icon-btn', ariaLabel: t('Screenshot'), tip: t('Take a picture of the chart (keyboard: S): select an area or click a pane, draw on it, hide anything private with pixelate or blur, then copy or save it.'), onclick: () => { void lazy(() => import('./screenshot/editor.ts')).then(m => m?.startScreenshot()); } });
   #author = el('button', { type: 'button', textContent: t('Author'), tip: t('Who made this, and where to find the code. Free, no sign-ups, open source.') });
   #scope = el('div', { class: 'seg scope', tip: t('Which markets the liquidity views draw. A filter on the enabled venues: it never switches a venue on or off.') });
@@ -150,6 +167,8 @@ export class Toolbar {
   #sounds: Sounds | null = null;
   /** Where the language and theme buttons live on a desktop screen (the status bar), or null. */
   #statusHost: HTMLElement | null = null;
+  /** Where the update notice lives on a desktop screen (its slot in the status bar), or null. */
+  #statusNotices: HTMLElement | null = null;
   #venueMenu: Panel | null = null;
   #alerts: Alerts | null = null;
   /**
@@ -260,8 +279,8 @@ export class Toolbar {
     style: el('select', { ariaLabel: t('Colours'), tip: `${t('Heatmap colouring.')} ${HEAT_STYLES.map(s => `${s.label}: ${s.title}.`).join(' ')}` }),
     lo: el('i'), hi: el('i'), legend: el('span', { class: 'legend' }),
     contrast: el('input', { type: 'range', min: String(CONTRAST.min), max: String(CONTRAST.max), step: '1', tip: t('Contrast: right reveals thinner liquidity, left keeps only the biggest walls, and the far left tones even those down. Double-click to reset.') }),
-    smooth: el('select', { ariaLabel: t('Smoothing'), tip: t('Vertical smoothing when price rows get thin (zoomed out): Auto smooths with a ~5 px Gaussian below 15 px per row, so far walls stay visible; Off draws every row exactly.') }),
-    auto: el('button', { class: 'led-btn', textContent: t('Auto'), tip: t('Auto: the colour window follows the data (recomputed on recenter, market change, zoom and every 10 s). Off: it stays where it is.') }),
+    smooth: el('select', { ariaLabel: t('Smoothing'), tip: SMOOTHING_TIP }),
+    auto: el('button', { class: 'led-btn', textContent: t('Auto'), tip: COLOUR_RANGE_TIP }),
   };
   #source = el('select', { class: 'heat-source', ariaLabel: t('Source'), tip: t('Heatmap source') });
   #theme = el('button', { class: 'theme-btn', tip: t('Theme: hover to preview, click to keep') });
@@ -313,6 +332,12 @@ export class Toolbar {
   #heatctl = el('span', { class: 'heatctl' });
   /** The colour ramp and the contrast slider under it: one unit, so the Settings sheet can give it a row of its own. */
   #heatScale = el('span', { class: 'scale' });
+  /**
+   * The full bar's key to the heatmap's colour range and smoothing (Karl, 2026-11-12: each button a precious resource), joined to the end of
+   * the colour scale as one unit; a phone's Settings keeps them as rows of their own.
+   */
+  #heatKey = settingsKey(t('Heatmap'));
+  #heatSplit = el('span', { class: 'split heat-split' });
   #spacer = el('span', { class: 'spacer' });
   /** Phone only: the button that opens Settings, where every control that does not fit the top bar lives. */
   #more = el('button', { type: 'button', class: 'more-btn', ariaLabel: t('Settings'), tip: t('Settings: panels, heatmap colouring, venues, sound, theme and the guide.') });
@@ -338,9 +363,12 @@ export class Toolbar {
   onRecenter: () => void = () => {};
   /** Preview a theme without keeping it (`null` puts the saved one back). */
   onPreviewTheme: (id: string | null) => void = () => {};
-  /** Hovering a chart type in its menu draws the map with it without keeping it; leaving the menu puts the kept one back (null). */
-  onPreviewChartType: (id: ChartType | null) => void = () => {};
-  /** How the map draws its price (chart-type.ts): a cell of the Time deck, beside the timeframes, as a chart's type usually sits. */
+  /** Hovering a row of the Chart type menu draws the map with it without keeping it (Hidden: without the price); leaving the menu puts the kept one back (null). */
+  onPreviewChartType: (id: ChartChoice | null) => void = () => {};
+  /**
+   * How the map draws its price (chart-type.ts): a cell of the Time deck, beside the timeframes, as a chart's type usually sits. Its menu also
+   * takes the price off the map (Hidden), and the button is lit while the price is drawn, as the timeframe in use is.
+   */
   #chartType = el('button', { type: 'button', class: 'chart-type', ariaLabel: t('Chart type') });
   #candlePanel: Panel | null = null;
   /** The drawing tools' button (draw/bar.ts, set by the page), in the map's corner beside Select. */
@@ -368,7 +396,7 @@ export class Toolbar {
     // A notice that comes, goes, or wraps differently moves the ones under it.
     if (typeof ResizeObserver === 'function') {
       const stack = new ResizeObserver(() => this.#stackNotices());
-      for (const notice of [this.#notice.root, this.#coinNotice, this.#invite.root]) stack.observe(notice);
+      for (const notice of this.#notices()) stack.observe(notice);
     }
     const missing = coinChoice().notice;
     if (missing) {
@@ -378,13 +406,14 @@ export class Toolbar {
     }
     this.#market.onchange = () => this.onSelectMarket(this.#market.value);
     this.#chartType.onclick = () => {
-      // The four types, previewed on the map while the pointer or the keys are on one, and after a line the candles' colours (a panel).
-      const items: MenuItem[] = [...CHART_TYPES.map(id => ({ id, label: chartTypeName(id) })), { id: CANDLE_COLOURS_ITEM, label: t('Candle colours…'), action: true }];
-      const type = (id: string | null): ChartType | null => id !== null && (CHART_TYPES as readonly string[]).includes(id) ? id as ChartType : null;
-      openMenu(this.#chartType, items, this.store.state.chartType, { onPreview: id => this.onPreviewChartType(type(id)), onSelect: id => {
+      // The four types and Hidden (no price), each previewed on the map while the pointer or the keys are on it, and after a line the candles'
+      // colours (a panel). A type draws the price that way, Hidden takes it away and keeps the type (chartChoicePatch).
+      const items: MenuItem[] = [...CHART_TYPES.map(id => ({ id, label: chartTypeName(id) })), { id: CHART_HIDDEN, label: chartChoiceName(CHART_HIDDEN) }, { id: CANDLE_COLOURS_ITEM, label: t('Candle colours…'), action: true }];
+      const state = this.store.state;
+      openMenu(this.#chartType, items, chartChoiceOf(state.chartType, state.show.candles), { onPreview: id => this.onPreviewChartType(readChartChoice(id)), onSelect: id => {
         this.onPreviewChartType(null);
-        const chosen = type(id);
-        if (chosen) this.store.set({ chartType: chosen }); else if (id === CANDLE_COLOURS_ITEM) this.#openCandleColours();
+        const chosen = readChartChoice(id);
+        if (chosen) this.store.set(chartChoicePatch(chosen, this.store.state.show)); else if (id === CANDLE_COLOURS_ITEM) this.#openCandleColours();
       } }, 'left', { title: t('Chart type') });
     };
     for (const tf of Object.keys(TIMEFRAMES)) this.#timeframes.append(el('button', { textContent: tf, tip: t('{timeframe} candles. The footprint, the bar stats and the open-interest bars follow this too.', { timeframe: TIMEFRAME_NAMES[tf] ?? tf }), onclick: () => this.store.set({ timeframe: tf }) }));
@@ -465,6 +494,10 @@ export class Toolbar {
       const build = (tools: HTMLElement, body: HTMLElement): void => this.#buildWaves(tools, body);
       this.#track(togglePanel(this.#alertKeys.waves, { title: t('Waves'), width: 400, align: 'left' }, build), build);
     };
+    this.#heatKey.onclick = () => {
+      const build = (tools: HTMLElement, body: HTMLElement): void => this.#buildHeat(tools, body);
+      this.#track(togglePanel(this.#heatKey, { title: t('Heatmap'), width: 380, align: 'left' }, build), build);
+    };
     this.#settingsKeys.traded.onclick = () => {
       const build = (tools: HTMLElement, body: HTMLElement): void => buildTradedPanel(this.store, tools, body, () => this.#tradedPanel?.render(build), () => gridStepFor(this.store.state.mark.price > 0 ? this.store.state.mark.price : 1), { browser: this.sourceKind === 'browser', candles: this.profileHistory, room: () => this.profileRoom?.() ?? null, anchored: () => this.anchoredWindow?.() ?? null, updateNow: () => this.updateAnchored?.(), anchorStart: a => this.profileAnchorStart?.(a) ?? { state: 'coming' }, anchorBar: at => this.profileAnchorBar?.(at) ?? 5 * 60_000 });
       // While Place the anchor is armed the panel stays open over a click on the map (that click places it, Sol: closing it first disarmed
@@ -537,7 +570,7 @@ export class Toolbar {
    * the Settings sheet, grouped by purpose. The same elements move in both directions, so their handlers and state survive a rotation
    * or a window resize.
    */
-  /** The heatmap colour controls as the desktop toolbar has them, in one group. */
+  /** The heatmap's colour controls gathered in one holding place, from which the full bar's Heatmap deck and a phone's Settings take them. */
   #fillHeatControls(): void { this.#heatctl.replaceChildren(this.#heat.style, this.#heatScale, this.#heat.auto, this.#heat.smooth); }
 
   /** The desktop status bar takes the language and theme buttons (and the connection text) from the top bar. */
@@ -664,7 +697,10 @@ export class Toolbar {
     });
   }
 
-  hostStatusControls(host: HTMLElement): void { this.#statusHost = host; this.#arrange(); }
+  hostStatusControls(host: HTMLElement, notices: HTMLElement | null = null): void { this.#statusHost = host; this.#statusNotices = notices; this.#arrange(); }
+
+  /** What the site's answer about the build it serves means (update-check.ts `watchBuild`): offer the newer one, take the offer back, or nothing. */
+  answerBuild(meaning: BuildAnswer): void { this.#update.answer(meaning); }
 
   /** The browser tab's two switches, from the status bar's Tab key. */
   #openTab(): void {
@@ -699,12 +735,16 @@ export class Toolbar {
    */
   #stackNotices(): void {
     let top = 4;
-    for (const notice of [this.#notice.root, this.#coinNotice, this.#invite.root]) {
-      if (notice.hidden) { notice.style.top = ''; continue; }
+    for (const notice of this.#notices()) {
+      // One that lies elsewhere (the update notice in the status bar) is not stacked.
+      if (notice.hidden || notice.parentElement !== this.root) { notice.style.top = ''; continue; }
       notice.style.top = `calc(100% + ${top}px)`;
       top += notice.offsetHeight + 4;
     }
   }
+
+  /** The notices that can lie under the bar, top first (the update notice is a line of the status bar on a computer). */
+  #notices(): HTMLElement[] { return [this.#notice.root, this.#coinNotice, this.#invite.root, this.#update.root]; }
 
   /** Fold the bar away or bring it back (`state.barCollapsed`): folded, only its strip (`#expand`) and its notices show. */
   setCollapsed(collapsed: boolean): void {
@@ -735,6 +775,8 @@ export class Toolbar {
     if (!compactBar()) {
       this.#sheet?.close();
       this.#fillHeatControls();
+      // The colour scale with the Heatmap key at its end (the scale may come back from a phone's Settings row).
+      this.#heatSplit.replaceChildren(this.#heatScale, this.#heatKey);
       const inCorner = this.#mapHost !== null;
       if (inCorner) { this.#mapTools.replaceChildren(this.#layoutCorner, this.#goto, this.#rangeCorner, ...(this.#drawCorner ? [this.#drawCorner] : []), this.#recenter); this.#mapHost!.prepend(this.#mapTools); }
       const host = this.#statusHost;
@@ -755,7 +797,7 @@ export class Toolbar {
       this.#decks = [
         deck('market', t('Market'), [this.#coin, this.#market], [this.#scope, this.#venuesButton!]),
         deck('time', t('Time'), [this.#timeframes], inCorner ? [] : [this.#recenter]),
-        deck('heat', t('Heatmap'), [this.#source, this.#layer, this.#heat.style], [this.#heatScale, this.#heat.auto, this.#heat.smooth]),
+        deck('heat', t('Heatmap'), [this.#source, ...(LAYER_CHOICE ? [this.#layer] : []), this.#heat.style], [this.#heatSplit]),
         deck('panels', t('Panels'), [this.#toggles]),
         // The Range tool is the map corner's Select when the map holds its tools (Karl, 2026-10-27: the deck's Range was the same button twice).
         deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, ...(liqLevelsUrl() ? [sp.liqLevels] : []), sp.absorption], [sp.traded, sp.tpo, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
@@ -763,7 +805,11 @@ export class Toolbar {
         // happened, marked, heard and seen across the screen.
         deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound, this.#alertSplits!.waves]),
         tools];
-      this.root.replaceChildren(...this.#decks, this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root);
+      // The update notice is a line of the status bar, where it covers nothing (under the bar it would lie over the map's own buttons);
+      // without a status bar it waits under the bar with the others.
+      const notices = host ? this.#statusNotices : null;
+      notices?.replaceChildren(this.#update.root);
+      this.root.replaceChildren(...this.#decks, this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root, ...(notices ? [] : [this.#update.root]));
       this.#fit();
       return;
     }
@@ -777,7 +823,7 @@ export class Toolbar {
         // The coin alone (Karl, 2026-10-17): the market is chosen in Settings, where the venues are.
         el('div', { class: 'tb-row tb-main' }, this.#brand, this.#coin, this.#spacer, this.#status, this.#flip, this.#more, this.#collapse),
         el('div', { class: 'tb-row tb-time' }, this.#timeframes, this.#recenter)),
-      this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root);
+      this.#expand, this.#notice.root, this.#coinNotice, this.#invite.root, this.#update.root);
   }
 
   /**
@@ -901,7 +947,7 @@ export class Toolbar {
         // Only a phone has the Tape tab; a touch tablet keeps the desktop's panes and gets this sheet without it.
         ...(this.tapeFields && isPhone() ? [section(t('Tape'), this.tapeFields().map(([label, control]) => field(label, control)), helpButton('candlePane'))] : []),
         section(t('Heatmap'), [
-          field(t('Layer'), this.#layer), field(t('Source'), this.#source), field(t('Colours'), this.#heat.style),
+          ...(LAYER_CHOICE ? [field(t('Layer'), this.#layer)] : []), field(t('Source'), this.#source), field(t('Colours'), this.#heat.style),
           field(t('Contrast'), this.#heatScale, true), field(t('Colour range'), this.#heat.auto), field(t('Smoothing'), this.#heat.smooth)], helpButton('heatmap')),
         section(t('Venues'), [field(t('Market'), this.#market, true), field(t('Markets'), this.#scope, true), el('div', { class: 'sheet-chips' }, this.#chips, this.#blocked)], this.#venuesButton!),
         section(t('Alerts'), [el('div', { class: 'sheet-tiles' }, this.#alertSplits!.highlights, this.#alertSplits!.sound),
@@ -937,10 +983,15 @@ export class Toolbar {
     }
     setValue(this.#market, state.marketId);
     [...this.#timeframes.children].forEach(b => { if (b !== this.#chartType) b.classList.toggle('on', b.textContent === state.timeframe); });
-    if (this.#chartType.dataset.type !== state.chartType) {
-      this.#chartType.dataset.type = state.chartType;
-      this.#chartType.replaceChildren(chartTypeGlyph(state.chartType));
-      setTip(this.#chartType, `${chartTypeTip(state.chartType)} ${t('Click for the other ways to draw the price.')}`);
+    // Lit while the price is drawn, as the timeframe in use is; its drawing is the type's, kept while the price is hidden.
+    const priceShown = state.show.candles, look = `${state.chartType}|${priceShown}`;
+    if (this.#chartType.dataset.look !== look) {
+      this.#chartType.dataset.look = look;
+      if (this.#chartType.dataset.type !== state.chartType) { this.#chartType.dataset.type = state.chartType; this.#chartType.replaceChildren(chartTypeGlyph(state.chartType)); }
+      this.#chartType.classList.toggle('on', priceShown);
+      this.#chartType.setAttribute('aria-label', `${t('Chart type')}: ${chartChoiceName(chartChoiceOf(state.chartType, priceShown))}`);
+      setTip(this.#chartType, priceShown ? `${chartTypeTip(state.chartType)} ${t('Click for the other ways to draw the price, or Hidden to take it off the map.')}`
+        : t('The price is hidden, so the heatmap and the trade bubbles show with nothing on top. Click to draw it again as candles, outline candles, OHLC bars or a line.'));
     }
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
@@ -1125,6 +1176,20 @@ export class Toolbar {
       rangeRow(t('Sensitivity'), t('How far above its recent average something must be: lower flags more, higher flags only the extremes.'), { ...HIGHLIGHT_LIMITS.mult, value: h.mult, format: v => `${v}σ` }, mult => set({ mult })),
       rangeRow(t('Baseline'), t('How many preceding bars the average and spread are taken from.'), { ...HIGHLIGHT_LIMITS.length, value: h.length, format: v => tn(v, '{n} bar', '{n} bars') }, length => set({ length })),
       note(t('A bar is flagged when its value exceeds the mean plus the sensitivity times the standard deviation of the bars before it. The bar itself never raises its own threshold, and nothing is flagged until a dozen bars exist.')),
+    );
+  }
+
+  /**
+   * The Heatmap key's panel: the colour range (the window the colours span follows the data, or stays) and the vertical smoothing, the two
+   * that left the bar (Karl, 2026-11-12). Both are choices of Auto or Off, as the tips say; a phone's Settings has them as rows.
+   */
+  #buildHeat(tools: HTMLElement, body: HTMLElement): void {
+    const set = (change: Partial<AppState['heat']>): void => { this.store.set({ heat: { ...this.store.state.heat, ...change } }); };
+    const h = this.store.state.heat, choices: [string, string][] = [['auto', t('Auto')], ['off', t('Off')]];
+    tools.append(helpButton('heatmap'));
+    body.append(
+      selectRow(t('Colour range'), COLOUR_RANGE_TIP, choices, h.auto ? 'auto' : 'off', v => set({ auto: v === 'auto' })),
+      selectRow(t('Smoothing'), SMOOTHING_TIP, choices, h.smooth, v => set({ smooth: v === 'off' ? 'off' : 'auto' })),
     );
   }
 

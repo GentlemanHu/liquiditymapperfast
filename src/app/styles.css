@@ -49,7 +49,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .toolbar.cockpit.wrapped:not(.fitting) .seg:not(.toggles) > button { flex: 1 1 0; }
 /* Grids share the room evenly, each column never narrower than what it holds: a deck is never wider than its row gives it. */
 .toolbar.cockpit.wrapped:not(.fitting) .deck-time .seg { grid-template-columns: repeat(4, minmax(max-content, 1fr)); }
-.toolbar.cockpit.wrapped:not(.fitting) .deck-panels .seg.toggles { grid-template-columns: repeat(7, minmax(max-content, 1fr)); }
+.toolbar.cockpit.wrapped:not(.fitting) .deck-panels .seg.toggles { grid-template-columns: repeat(6, minmax(max-content, 1fr)); }
 /* The Chart, Heatmap and Alerts decks: their rows one grid of aligned columns (toolbar.ts #alignDecks writes the columns and the spans), at the
    deck's own width or, grown with its row, sharing the room by the columns' own proportions. Each control fills its column. */
 .toolbar .deck.deck-grid { display: grid; grid-template-columns: var(--deck-cols-px); align-content: center; gap: 4px; }
@@ -61,9 +61,6 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .toolbar .deck.deck-flush > .deck-row > :is(button, select, .seg, .split, .scale):not(.coin-btn) { flex: 1 1 auto; }
 .toolbar .deck.deck-flush .split > button:first-child { flex: 1 1 auto; }
 .toolbar .deck.deck-flush .seg:not(.toggles) > button { flex: 1 1 0; }
-/* The heatmap's three menus of one width once its deck has grown with its row (their own cap is for the bar at its own size); its colour scale the widest of the row under them. */
-.toolbar.cockpit.wrapped:not(.fitting) .deck-heat.deck-flush .deck-row:first-of-type > select { flex: 1 1 0; min-width: 0; max-width: none; }
-.toolbar.cockpit.wrapped:not(.fitting) .deck-heat.deck-flush .scale { flex: 2 1 120px; }
 .toolbar.cockpit.fitting { zoom: var(--fit-zoom, 1); flex-wrap: nowrap; }
 .toolbar.cockpit.fitting > .deck { flex: none; }
 .toolbar.cockpit > .deck-break { flex: 0 0 100%; height: 0; margin-top: -4px; }
@@ -78,11 +75,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 .toolbar .deck-time .seg button:nth-child(4n + 1) { margin-left: 0; }
 .toolbar .deck-time .seg button:nth-child(-n + 4) { margin-top: 0; }
 .toolbar .deck-heat select { max-width: 104px; }
-/* The last row's select (Smoothing) is as wide as its longest choice in every language: "Glättung: auto" and "Сглаживание: авто" were cut at
-   104 px, and the word that changes is the one after the colon. A held width for each language, so the bar still never moves. */
-.toolbar .deck-heat .deck-row:last-child select { max-width: none; }
-/* The source's choices grow as the venues connect: a held width, so the selects beside it never move. */
-.toolbar .deck-heat select.heat-source { width: 96px; }
+/* The source's choices grow as the venues connect: a held width, so the selects beside it never move. The Heatmap deck is a grid of its menus
+   over the colour scale and its key, and the grid's rule gives every control the width of what it holds: with the scale spanning the menus,
+   nothing else in Source's column holds it, so the held width is kept there too (review, 2026-11-12). In a deck grown with its row Source
+   fills its column (`min-width: 100%`, which the grid's sizing of its columns does not count), while the column is still sized from 96 px. */
+.toolbar .deck-heat select.heat-source, .toolbar .deck.deck-grid.deck-heat > .deck-row > select.heat-source { width: 96px; }
+.toolbar.cockpit.wrapped:not(.fitting) .deck.deck-grid.deck-heat > .deck-row > select.heat-source { min-width: 100%; }
 .toolbar.cockpit select.market { width: 172px; }
 /* A notice lies over the top of the chart, not in the bar's flow: the bar keeps its height when one comes or goes. */
 .toolbar.cockpit { position: relative; z-index: 30; }
@@ -112,11 +110,11 @@ html[data-frame="textmode"] .toolbar.cockpit :is(button, select) { padding: 2px 
 html[data-frame="textmode"] .toolbar.cockpit .led-btn { padding-left: 17px; }
 html[data-frame="textmode"] .toolbar.cockpit .led-btn::before { left: 5px; }
 .toolbar .deck .chips:empty { display: none; }
-/* Thirteen pane switches in two rows of a grid (seven and six); the overlap of their outlines kept across the rows too. */
-.toolbar .deck-panels .seg.toggles { display: grid; grid-template-columns: repeat(7, auto); }
+/* Eleven pane switches in rows of six and five (2026-11-12: the candles left them for the Chart type button, Mirror for the order book's Cues panel); the overlap of their outlines kept across the rows too. */
+.toolbar .deck-panels .seg.toggles { display: grid; grid-template-columns: repeat(6, auto); }
 .toolbar .deck-panels .seg.toggles button { margin-left: -1px; margin-top: -1px; border-radius: 0; }
 .toolbar.cockpit .deck-panels .seg.toggles button { padding-left: 4px; padding-right: 4px; }
-.toolbar .deck-panels .seg.toggles button:nth-child(7n + 1) { margin-left: 0; }
+.toolbar .deck-panels .seg.toggles button:nth-child(6n + 1) { margin-left: 0; }
 /* The top bar folded away (toolbar.ts setCollapsed, state.barCollapsed), as a browser's full screen hides its own: folded, it is a thin
    strip across the top (the whole strip brings it back) and its notices, and the chart takes the rest of its room. The arrow that folds it
    sits on the right-hand deck's bottom edge (the compact bar: after Settings): its top edge holds the page's name, as wide as the deck, and
@@ -138,7 +136,7 @@ html[data-frame="textmode"] .toolbar.cockpit .led-btn::before { left: 5px; }
 .toolbar.cockpit .deck-tools > .bar-collapse::before { width: 12px; height: 12px; }
 /* A finger needs a taller strip. */
 @media (pointer: coarse) { .toolbar.collapsed > .bar-expand { height: 22px; } .toolbar.collapsed > .bar-expand::before { width: 16px; height: 16px; } }
-.toolbar .deck-panels .seg.toggles button:nth-child(-n + 7) { margin-top: 0; }
+.toolbar .deck-panels .seg.toggles button:nth-child(-n + 6) { margin-top: 0; }
 /* The count holds its width whatever it says (11/11, 10/11), so the bar never moves when a venue drops or returns (Karl, 2026-10-17). */
 /* The count holds its room from the first frame (empty until the venues report) and never changes the button's size: the bar must not move
    when a venue drops or comes back (Karl, 2026-10-17). */
@@ -211,6 +209,23 @@ button.on { background: var(--text); color: var(--bg); border-color: var(--text)
 /* A notice that only informs (the coin is not on the list) takes the theme's accent; one that reports a fault keeps the warning colour. */
 .notice.info { border-color: color-mix(in srgb, var(--ui) 45%, var(--line)); background: color-mix(in srgb, var(--ui) 12%, var(--panel)); }
 .toolbar .notice-close { margin-left: auto; width: 24px; height: 22px; --cross: 9px; }
+/* The notice that a newer version of the page is out (update-notice.ts). Under the bar (a phone): its words in balanced lines (two lines on a
+   phone, never one word alone on the second), then Reload and a ✕ that keeps its width: a thinner ✕ beside Reload invited the wrong tap. */
+.toolbar .update-notice .update-text { flex: 1 1 auto; min-width: 0; text-wrap: balance; }
+.toolbar .update-notice button.update-reload { flex: none; height: 24px; padding: 0 12px; }
+.toolbar .update-notice button.notice-close { flex: none; width: 32px; margin-left: 0; }
+/* On a computer a line of the status bar, where it covers nothing, as tall as the bar's buttons. Where the bar is short it gives way first: its
+   words are cut before any of the bar's own (they are its tip too), down to its mark, Reload and ✕, which a grid keeps whole (its words' column
+   alone can shrink, to nothing). Kept whole itself it cut the venues and saving words to nothing at 800 px and pushed the theme button out of the
+   window below about 790 px; shrinking as a flex box with no floor, it cut its own Reload at 1,100 px in French. Its floor is not nothing: below
+   about 800 px a long language's Reload still pushes the bar's end out while it shows (Russian at 768 px by about 20 px), its ✕ in reach. */
+.statusbar .status-notices { display: contents; }
+.statusbar .update-notice { flex: 0 20 auto; display: inline-grid; grid-template-columns: auto minmax(0, max-content) auto auto; align-items: center; column-gap: 6px; min-height: 20px; padding: 0 2px 0 6px; border: 1px solid color-mix(in srgb, var(--ui) 45%, var(--line)); border-radius: var(--radius); background: color-mix(in srgb, var(--ui) 12%, var(--panel)); color: var(--text); white-space: nowrap; }
+.statusbar .update-notice[hidden] { display: none; }
+.statusbar .update-notice .update-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.statusbar .update-notice .notice-mark { width: 12px; height: 12px; }
+.statusbar .update-notice button.update-reload { min-height: 16px; height: 16px; padding: 0 6px; font-size: 11px; }
+.statusbar .update-notice button.notice-close { width: 18px; height: 16px; --cross: 8px; }
 .venue-list .blocked { color: var(--ask); }
 .seg.scope.inert { opacity: .6; }
 .seg:is(.scope, .zone-seg) button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
@@ -364,7 +379,40 @@ html[data-layout="desktop"] .pane.heat .map-tools.compact :is(.map-select, .map-
 .cvd-notice-btn { flex: 0 0 auto; white-space: nowrap; }
 .cvd-wrap canvas { position: absolute; left: 0; top: 0; display: block; }
 .cvd-wrap canvas.cvd-flash, .cvd-wrap canvas.cvd-line { pointer-events: none; }
-.pane.cvd .cvd-span-select { display: none; }
+.pane.cvd .cvd-span-select, .pane.cvd .cvd-seg[hidden] { display: none; }
+/* The flow column's views (panes/cvd-pane.ts): the name is a tab for each, lit like the chosen timeframe; a narrow column writes T&S. */
+.pane-head strong.cvd-views { display: inline-flex; font-size: 11.5px; }
+.cvd-views .cvd-view { padding: 1px 7px; font-weight: 650; white-space: nowrap; }
+.cvd-views .cvd-view .short, .pane.cvd.narrow .cvd-views .cvd-view[data-view="tns"] .long { display: none; }
+.pane.cvd.narrow .cvd-views .cvd-view[data-view="tns"] .short { display: inline; }
+html[data-layout="desktop"] .side-head > strong.cvd-views { max-width: none; overflow: visible; flex: 0 0 auto; }
+/* Time & sales (panes/tns-view.ts): a bar with the smallest order and since when, the rows, and the button that brings in what came while held. */
+.tns { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.tns[hidden] { display: none; }
+.tns-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.tns-floor { padding: 1px 4px; font-size: 11px; }
+.tns-since { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.tns-empty { padding: 10px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.tns-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; font: 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.tns-row { --c: var(--candle-up); position: relative; display: grid; grid-template-columns: 8ch 16px 1.2ch minmax(0, 1fr) auto; align-items: center; gap: 5px; height: 20px; padding: 0 8px; cursor: pointer;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); background: linear-gradient(90deg, color-mix(in srgb, var(--c) 9%, transparent), transparent 75%); }
+.tns-row.sell { --c: var(--candle-down); }
+.tns.replaying .tns-row { cursor: default; }
+.tns-row:hover { background: color-mix(in srgb, var(--c) 18%, var(--panel)); }
+.tns-t { color: var(--muted); }
+.tns-sd { color: var(--c); font-size: 10px; }
+.tns-p { position: relative; text-align: right; overflow: hidden; color: var(--text); }
+.tns-t, .tns-sd, .tns-row > .venue-mark { position: relative; }
+/* Up to half the row from its right edge: $100K a sliver, ten times it half the bar, a hundred times it all of it (log). */
+.tns-size { position: absolute; right: 6px; top: 3px; bottom: 3px; width: calc((100% - 12px) * var(--w) * 0.5); background: color-mix(in srgb, var(--c) 22%, transparent); border-radius: 2px; }
+.tns-u { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 9.5ch; color: var(--c); }
+.tns-u > em, .tns-u > b { font-style: normal; font-weight: 500; }
+.tns-u > em { color: var(--muted); font-size: 11px; }
+.tns-row.whale .tns-u > b { font-weight: 750; color: var(--text); }
+.tns.narrow .tns-row { grid-template-columns: 16px 1.2ch minmax(0, 1fr) auto; }
+.tns.narrow .tns-t { display: none; }
+.tns-gap { padding: 4px 8px; border-bottom: 1px dashed var(--line); color: var(--muted); font: italic 11px/1.35 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.tns-pill { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); padding: 2px 12px; border-radius: 999px; font-size: 11px; box-shadow: 0 2px 6px rgb(0 0 0 / .25); z-index: 2; }
 /* The fit grid (ui/fit-grid.ts): a header's controls, laid out by one rule rather than by breakpoints. On the desktop the choices are tiles of one width under
    the first line, their captions above them, as many to a row as fit and filling it; or on the first line itself when all of them fit there (the header's
    fit-inline class), or the line's own ones there (data-fit="lead") and the others under it. Keys (data-fit="key") sit at the first line's right end, beside
@@ -834,6 +882,34 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 .range-prof-row .bars { display: flex; height: 8px; }
 .range-prof-row .bars .buy { flex: 0 0 var(--b); background: var(--bid); }
 .range-prof-row .bars .sell { flex: 0 0 var(--s); background: var(--ask); }
+/* Estimated added and reduced: a label, the parts end to end on the section's scale, the total (opened solid, closed lighter and outlined). */
+/* Fixed label and total tracks, so the two rows' bars start at the same place and share one scale in pixels. */
+.range-stack { display: grid; grid-template-columns: 6.5em minmax(0, 1fr) 7.5em; gap: 6px; align-items: center; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.range-stack .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.range-stack .label { color: var(--muted); }
+.range-stack .total { text-align: right; font-weight: 600; white-space: nowrap; }
+.range-stack .bars { display: flex; height: 10px; }
+.range-stack .bars i { flex: 0 0 var(--w); box-sizing: border-box; }
+.range-stack .bars i.up { background: var(--candle-up); }
+.range-stack .bars i.down { background: var(--candle-down); }
+.range-stack .bars i.none { background: var(--muted); opacity: .45; }
+.range-stack .bars i.closed.up { background: color-mix(in srgb, var(--candle-up) 45%, transparent); box-shadow: inset 0 0 0 1px var(--candle-up); }
+.range-stack .bars i.closed.down { background: color-mix(in srgb, var(--candle-down) 45%, transparent); box-shadow: inset 0 0 0 1px var(--candle-down); }
+/* Each venue's part: out of a zero line in the middle, right for more, left for less. */
+/* The same three columns in every row (no track grows with its text), so every bar's zero line is the section's. */
+.range-signed { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.3fr) minmax(0, 1fr); gap: 6px; align-items: center; font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.range-signed .label { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.range-signed .label .venue-mark { margin-right: 5px; }
+.range-signed .total { text-align: right; min-width: 0; }
+.range-signed .total small { display: block; color: var(--muted); font-size: 10.5px; line-height: 1.3; }
+.range-signed .bars { position: relative; height: 9px; }
+.range-signed .bars::before { content: ''; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line); }
+.range-signed .bars i { position: absolute; top: 0; bottom: 0; width: var(--v); }
+.range-signed .bars i.up { left: 50%; background: var(--candle-up); }
+.range-signed .bars i.down { right: 50%; background: var(--candle-down); }
+.range-signed.muted { color: var(--muted); }
+.range-signed.muted .bars i { opacity: .5; }
+.range-show-ctl { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
 .panel .name { font-weight: 600; color: var(--text); }
 .panel .desc { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
 .panel .opt { display: grid; grid-template-columns: 18px 1fr; column-gap: 9px; align-items: start; padding: 6px 8px; margin: 0 -8px; border-radius: var(--radius); cursor: pointer; }
@@ -981,6 +1057,11 @@ button.open { border-color: var(--ui); }
 .toolbar.cockpit .split > .led-btn { padding-left: 17px; padding-right: 4px; }
 .toolbar.cockpit .split > .led-btn::before { left: 5px; }
 html[data-frame="textmode"] .toolbar.cockpit .split > .split-cfg { width: 14px; }
+/* The Heatmap key at the end of the colour scale (toolbar.ts `#heatSplit`; Karl, 2026-11-12: the colour range's Auto and the smoothing went
+   behind it): the scale takes the room, the key keeps its own width and is a key of its own, not the joined half of a button. */
+.toolbar .heat-split { align-items: center; gap: 4px; }
+.toolbar .heat-split > .scale { flex: 1 1 auto; width: auto; min-width: 120px; }
+.toolbar .heat-split > .split-cfg { margin-left: 0; border-top-left-radius: var(--radius); border-bottom-left-radius: var(--radius); }
 .led-btn { position: relative; padding-left: 22px; }
 .led-btn::before { content: ""; position: absolute; left: 8px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: var(--edge); opacity: 1; transition: background .2s, box-shadow .2s; }
 .led-btn[data-state="on"]::before { background: var(--bid); opacity: 1; }
