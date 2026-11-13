@@ -1,7 +1,7 @@
 import { loadKernels, type Kernels } from '../kernels.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import type { ColumnSet, LiveBook } from '../wire.ts';
-import { ltSeries, type LtParams, type LtStore } from '../lt.ts';
+import { ltSeries, type LtParams, type LtParts, type LtStore } from '../lt.ts';
 import { LT_FIELDS } from '../../shared/lt-sample.ts';
 import { shareInCell, type CellShare } from '../cell-sources.ts';
 import { depthBands } from '../depth-series.ts';
@@ -22,7 +22,7 @@ export type WorkerIn =
   | { type: 'live'; books: LiveBook[]; now: number }
   | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean }
   | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; radii: number[] }
-  | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams; /** Read the lane's trackers (`ltLane`) in place of the columns'. */ lane?: boolean }
+  | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams; /** Read the lane's trackers (`ltLane`) in place of the columns'. */ lane?: boolean; /** Each market's own part too (`LtParts`, in the order of `enabled`). */ parts?: boolean }
   /** The trackers the lane holds, whole (a replacement): per market its windows' starts and LT_FIELDS numbers each, at this step. */
   | { type: 'ltLane'; stepMs: number; instruments: { id: string; times: Float64Array; values: Float32Array }[] }
   | { type: 'cell'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number };
@@ -32,8 +32,8 @@ export interface RasterStats { p15: number; p50: number; p96: number; max: numbe
 export type WorkerOut =
   | { type: 'ready' }
   | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number }
-  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array }
-  | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number }
+  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; stepMs: number }
+  | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number; parts?: LtParts; approx?: Uint8Array }
   | { type: 'cell'; id: number; items: CellShare[] }
   | { type: 'error'; message: string };
 
@@ -136,8 +136,9 @@ function raster(message: Extract<WorkerIn, { type: 'raster' }>): void {
 function depth(message: Extract<WorkerIn, { type: 'depth' }>): void {
   const held = recorded.current;
   const stores = message.enabled.map(id => held.get(id)).filter((rec): rec is Store => rec !== undefined);
-  const { k, bid, ask, bidCoin, askCoin } = depthBands(stores, recorded.stepMs, message.t0, message.t1, message.w, message.radii);
-  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer]);
+  const { k, bid, ask, bidCoin, askCoin, present, centred } = depthBands(stores, recorded.stepMs, message.t0, message.t1, message.w, message.radii);
+  // `present` counts the books held (a market with none at all is not among the stores): the pane compares it with the markets it asked for.
+  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin, present, centred, stepMs: recorded.stepMs }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer, present.buffer, centred.buffer]);
 }
 
 /** Which instruments make up one cell of the map, so the popup can say where the liquidity under the pointer comes from. */
@@ -161,13 +162,16 @@ function cell(message: Extract<WorkerIn, { type: 'cell' }>): void {
 function lt(message: Extract<WorkerIn, { type: 'lt' }>): void {
   const stepMs = message.lane ? laneStepMs : recorded.stepMs, useLive = stepMs === COLUMN_MS, held = recorded.current;
   const stores: LtStore[] = [];
-  for (const id of message.enabled) {
+  message.enabled.forEach((id, owner) => {
     const rec = message.lane ? lane.get(id) : held.get(id), lv = useLive ? live.get(id) : undefined;
-    if (rec) stores.push({ ...rec, cutoff: lv?.minute });
-    if (lv) stores.push({ ...lv, instant: true });
-  }
-  const out = ltSeries(stores, message.t0, message.t1, stepMs, message.params);
-  scope.postMessage({ type: 'lt', id: message.id, times: out.times, bid: out.bid, ask: out.ask, estimated: out.estimated, stepMs }, [out.times.buffer, out.bid.buffer, out.ask.buffer]);
+    if (rec) stores.push({ ...rec, cutoff: lv?.minute, owner });
+    if (lv) stores.push({ ...lv, instant: true, owner });
+  });
+  const out = ltSeries(stores, message.t0, message.t1, stepMs, message.params, message.parts ? message.enabled.length : 0), parts = out.parts;
+  const buffers: Transferable[] = [out.times.buffer, out.bid.buffer, out.ask.buffer];
+  if (parts) for (const a of [parts.bid, parts.ask, parts.wBid, parts.wAsk]) if (a) buffers.push(a.buffer);
+  if (out.approx) buffers.push(out.approx.buffer);
+  scope.postMessage({ type: 'lt', id: message.id, times: out.times, bid: out.bid, ask: out.ask, estimated: out.estimated, stepMs, parts, approx: out.approx }, buffers);
 }
 
 scope.onmessage = event => {

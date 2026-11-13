@@ -228,7 +228,9 @@ button.on { background: var(--text); color: var(--bg); border-color: var(--text)
 .statusbar .update-notice button.notice-close { width: 18px; height: 16px; --cross: 8px; }
 .venue-list .blocked { color: var(--ask); }
 .seg.scope.inert { opacity: .6; }
-.seg:is(.scope, .zone-seg) button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+:where(.sheet) .seg:is(.scope, .zone-seg) button.on { background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+/* In the top bar, Both / Spot / Perp lights as every chosen button of the bar does, in the theme's own way (Karl, 2026-11-13: it stayed the same blue in every
+   theme beside the timeframes and the panels' buttons, which follow it); the phone's Settings keeps its segments filled, as a panel's are. */
 
 /* The columns' widths until one is dragged: the golden section for the map, the rest shared (layouts/layouts.ts `defaultColumns` says the same). */
 main { --side-w: max(clamp(350px, 26.25vw, 420px), 19.1vw); --flow-w: max(clamp(260px, 18.75vw, 300px), 19.1vw); display: grid; grid-template-columns: var(--left-w) 6px minmax(0, 1fr) 6px var(--right-w); min-height: 0; }
@@ -486,8 +488,18 @@ html[data-layout="desktop"] .pane.cvd .pane-head > .fit-cells > .cvd-seg button,
 .pane-head .readout b { color: var(--text); }
 .pane-head .readout b.bid { color: var(--bid); }
 .pane-head .readout b.ask { color: var(--ask); }
-/* Six controls fill this header: its figures (Bid, Ask, imbalance) take a line under them instead of the sliver that is left. */
-html[data-layout="desktop"] .pane.lt .pane-head .readout { flex: 1 0 100%; order: 9; padding-bottom: 2px; }
+/* A pane's header is one row on a desktop (Karl, 2026-11-13): where its figures would get less than their room beside the controls, the last
+   controls fold behind the settings key, which opens them in a panel (pane-tune.ts); the Liquidity Tracker's figures took a line of their own. */
+html[data-layout="desktop"] .pane-head .folded { display: none; }
+html[data-layout="desktop"] .pane-head.folding > .tune-btn { display: inline-grid; place-items: center; flex: none; box-sizing: border-box; width: var(--head-key, 22px); height: var(--head-key, 22px); min-height: 0; padding: 0; }
+html[data-layout="desktop"] .pane-head.folding > .tune-btn > svg { width: 15px; height: 15px; }
+html[data-layout="desktop"] .pane-head.tune-measuring { width: max-content !important; flex-wrap: nowrap !important; }
+html[data-layout="desktop"] .pane-head.tune-measuring > .readout { display: none !important; }
+.panel .tune-panel > .ctl { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; margin: 0; color: var(--text); }
+.panel .tune-panel > :not([hidden]) ~ .ctl:not([hidden]) { border-top: 1px solid var(--line); }
+.panel .tune-panel > .ctl:has(> input[type=checkbox]) { justify-content: flex-start; gap: 8px; }
+.panel .tune-panel > .ctl-group { justify-content: flex-start; }
+.panel .tune-panel > [hidden] { display: none; }
 .ctl { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
 .ctl[hidden] { display: none; }
 .ctl select, .pane-head button { padding: 1px 6px; font-size: 11px; }
@@ -722,13 +734,17 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
 /* A field of 16 px or more is not zoomed in on by an iPhone. */
 @media (max-width: 860px), (pointer: coarse) { .guide-q { height: 36px; font-size: 16px; } .guide-q-x { top: 17px; } }
 @media (prefers-reduced-motion: reduce) { .guide-scroll { scroll-behavior: auto; } .guide-article .flash { animation: none; background: color-mix(in srgb, var(--ui) 20%, transparent); } }
-/* The tour's button: the one filled button of the page, wider than its neighbours and with a play mark (the invitation's Take the tour is the same). */
-.toolbar.cockpit .deck-tools button.tour-btn, .sheet-tiles > button.tour-btn { font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
+/* The tour's button, with a play mark (the invitation's Take the tour is the same). The bar's Tour wears the lit look of the bar's chosen buttons (`on`, set
+   while it is in the bar: Toolbar #arrange), in the theme's own way, not a fill of the accent that stayed the same blue in every theme (Karl, 2026-11-13); a
+   phone's Settings tile stays filled and bold, the one such tile there. */
+.sheet-tiles > button.tour-btn { font-weight: 700; background: var(--ui); border-color: var(--ui); color: var(--on-ui, #fff); }
 :is(button.tour-btn, button.guide-tour, .tour-invite-go) { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 :is(button.tour-btn, button.guide-tour, .tour-invite-go)::before { content: ""; flex: none; width: 8px; height: 10px; background: currentColor; clip-path: polygon(0 0, 100% 50%, 0 100%); }
-/* In the top bar the button has no mark: the bar is fitted to the pixel, and the mark was 14 px of width that took Russian and Japanese past the bar's smallest zoom at 1,500 px (it is filled and bold, the one such button there). */
+/* In the top bar the button has no mark: the bar is fitted to the pixel, and the mark was 14 px of width that took Russian and Japanese past the bar's smallest zoom at 1,500 px (it is lit, the one button of the bar that is lit and acts). */
 .toolbar.cockpit .deck-tools button.tour-btn::before { display: none; }
-.toolbar.cockpit .deck-tools button.tour-btn:hover, .sheet-tiles > button.tour-btn:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+.sheet-tiles > button.tour-btn:hover { background: color-mix(in srgb, var(--ui) 86%, var(--text)); border-color: color-mix(in srgb, var(--ui) 86%, var(--text)); }
+/* A lit button does not change under the pointer or while held, and the Tour is lit always: held, it fades a little, so that a press answers in every frame. */
+.toolbar .tour-btn.on:active:not(:disabled) { opacity: .75; }
 /* The invitation to the tour (tour/invite.ts), a notice: its text takes the room, the buttons wrap under it on a narrow screen. */
 .toolbar .tour-invite { flex-wrap: wrap; row-gap: 6px; }
 .tour-invite-text { flex: 1 1 220px; min-width: 0; }

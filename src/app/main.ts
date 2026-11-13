@@ -38,6 +38,10 @@ import { NlnsSource } from './delta/nlns-source.ts';
 import { LsPane, lsIds } from './panes/ls-pane.ts';
 import { LsRangeSummary, lsHeldKey } from './range/ls-lines.ts';
 import { FundingRangeSummary } from './range/funding-lines.ts';
+import { LtRangeSummary } from './range/lt-lines.ts';
+import { DepthRangeSummary } from './range/depth-lines.ts';
+import { activeIds, emptyScopeMessage } from './scope.ts';
+import { ScriptRangeSummary } from './range/script-lines.ts';
 import { FundingPane } from './panes/funding-pane.ts';
 import { TabTitle } from './tab-title.ts';
 import { ScriptPane } from './panes/script-pane.ts';
@@ -272,6 +276,29 @@ async function main(): Promise<void> {
   range.useProvider({
     pane: 'funding', title: () => t('Funding'), shown: () => store.state.show.funding, barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
     lines: (sel, shown) => { const key = funding.rangeKey(store.state); return fundingSummary.lines(sel, funding.rangeHeld, shown, key ?? '', pageNow(), store.state.timeZone, key === null); },
+  });
+  // A drag in the Scripts pane sums up each script drawn in it (range/script-lines.ts): its visible plots of one value a candle over the
+  // closed candles, in their own values. It reads only what the pane drew: it never starts a run.
+  const scriptSummary = new ScriptRangeSummary();
+  range.useProvider({
+    pane: 'script', title: () => t('Scripts'), shown: () => scriptRows(store.state), barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
+    lines: (sel, shown) => scriptSummary.lines(sel, script.rangeHeld, shown, script.rangeKey(store.state), pageNow(), replaying(), store.state.timeZone, !script.hasRows),
+  });
+  // Why the order-book panes have no venue to read, or '': the Spot / Perp filter leaves none, or every venue's chip is off.
+  const noVenue = (s: typeof store.state): string => emptyScopeMessage(s) ?? (s.levels?.books.length && !activeIds(s).length ? t('No venue is on: switch one on to sum up the order books.') : '');
+  // A drag in the Depth pane sums up its bands over the columns drawn (range/depth-lines.ts): the order book's columns holding every venue, or
+  // the liquidation levels' snapshots in force.
+  const depthSummary = new DepthRangeSummary();
+  range.useProvider({
+    pane: 'depth', title: () => t('Depth'), shown: () => store.state.show.depth, barMs: () => 60_000,
+    lines: (sel, shown) => depthSummary.lines(sel, depth.rangeHeld, shown, depth.rangeKey(store.state), pageNow(), store.state.timeZone,
+      store.state.depthSource === 'liq' ? depth.rangeEmpty(store.state, currentCoin().coin) : noVenue(store.state), replaying()),
+  });
+  // A drag in the Liquidity Tracker pane sums up its drawn bids and asks over the windows holding every venue asked for (range/lt-lines.ts).
+  const ltSummary = new LtRangeSummary();
+  range.useProvider({
+    pane: 'lt', title: () => t('Liquidity Tracker'), shown: () => store.state.show.lt, barMs: () => lt.rangeHeld?.stepMs ?? 60_000,
+    lines: (sel, shown) => ltSummary.lines(sel, lt.rangeHeld, shown, lt.rangeKey(store.state), pageNow(), store.state.timeZone, noVenue(store.state) !== '', replaying()),
   });
   toolbar.onRecenter = () => { heat.fit(); ladder.recenter(); };
   // The countdown under the price tag: a redraw a second when nothing else draws the map.
@@ -583,7 +610,10 @@ async function main(): Promise<void> {
     if (changed.has('chartType')) heat.invalidate();
     // The candles' own colours: the map, the book's price row and the Tape view's mark are drawn in them (Sol: nothing else asked for a frame).
     if (changed.has('candleColors')) { heat.invalidate(); ladder.invalidate(); candle.invalidate(); }
-    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show') || changed.has('timeZone')) range.refreshHeld();
+    // A pane's summary is read again when what it stands for changes (a hidden pane draws nothing to say so; its old snapshot is then stale).
+    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show') || changed.has('timeZone')
+      || changed.has('timeframe') || changed.has('marketId') || changed.has('seriesInstrument') || changed.has('replay')
+      || changed.has('lt') || changed.has('disabledVenues') || changed.has('scope') || changed.has('depthSource') || changed.has('depthBands') || changed.has('liqBands')) range.refreshHeld();
     if (changed.has('tradeBubbles') || changed.has('show')) hub.setTape(tapeWanted());
     if (changed.has('sounds')) heat.invalidate();
     if (changed.has('mark') && state.show.book) ladder.markMoved();
@@ -603,7 +633,7 @@ async function main(): Promise<void> {
     // A script that reads the change in open interest runs again once it lands, not at its next refresh.
     if (changed.has('oi') || changed.has('oiParts')) script.refresh();
     if (changed.has('show')) script.showChanged();
-    if (changed.has('lt') || changed.has('show') || changed.has('sounds')) lt.refresh();
+    if (changed.has('lt') || changed.has('ltTable') || changed.has('show') || changed.has('sounds')) lt.refresh();
     if (changed.has('sounds')) depth.syncSound();
     // The pane is sized again only when its rows change (which, or grouped and folded), not for every option: a height set by hand stays.
     const shape = `${state.barStats.join(',')}|${state.barStatOptions.grouped}|${state.barStatOptions.folded.join(',')}`;
@@ -616,7 +646,7 @@ async function main(): Promise<void> {
     if (['show', 'timeframe', 'oiFine', 'range', 'replay'].some(k => changed.has(k as never))) funding.invalidate();
     // The order book's row under the pointer: the map and the flow column's price strip draw its price.
     if (changed.has('bookHover')) { heat.invalidateHover(); cvd.syncBookHover(); }
-    if (changed.has('delta')) delta.settingsChanged();
+    if (changed.has('delta') || changed.has('deltaTable')) delta.settingsChanged();
     if ((changed.has('oi') || changed.has('oiParts')) && topShown(state)) heat.invalidate();
     if (changed.has('marketId')) candle.marketChanged();
     if (['levels', 'mark', 'disabledVenues', 'scope', 'markets', 'footprint', 'customMarkets', 'replay', 'bookGone', 'show'].some(k => changed.has(k as never))) candle.invalidate();

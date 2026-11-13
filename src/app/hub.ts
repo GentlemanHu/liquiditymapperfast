@@ -170,7 +170,7 @@ export function defaultMarket(markets: readonly { instrumentId?: string; venue?:
 }
 
 /** The Depth pane's answer: `k` nested bands per pixel column, `bid[x * k + j]` the bid USD within band j (each band holds the inner ones), and the same in coins. */
-export interface DepthAnswer { k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array }
+export interface DepthAnswer { k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; /** Per pixel column, how many of the markets asked for had a book column there, and whether a price centre was found; the book columns' own length (ms). Absent for liquidation levels. */ present?: Uint16Array; centred?: Uint8Array; stepMs?: number }
 
 export class Hub {
   readonly priceHistory: ChartPriceHistory;
@@ -612,9 +612,9 @@ export class Hub {
         const message = event.data;
         if (message.type === 'ready') resolve();
         else if (message.type === 'error') console.error('raster worker:', message.message);
-        else if (message.type === 'lt') { this.#ltWaiters.get(message.id)?.({ times: message.times, bid: message.bid, ask: message.ask, estimated: message.estimated, stepMs: message.stepMs }); this.#ltWaiters.delete(message.id); }
+        else if (message.type === 'lt') { this.#ltWaiters.get(message.id)?.({ times: message.times, bid: message.bid, ask: message.ask, estimated: message.estimated, stepMs: message.stepMs, ...(message.parts ? { parts: message.parts } : {}), ...(message.approx ? { approx: message.approx } : {}) }); this.#ltWaiters.delete(message.id); }
         else if (message.type === 'cell') { this.#cellWaiters.get(message.id)?.(message.items); this.#cellWaiters.delete(message.id); }
-        else if (message.type === 'depth') { this.#depthWaiters.get(message.id)?.({ k: message.k, bid: message.bid, ask: message.ask, bidCoin: message.bidCoin, askCoin: message.askCoin }); this.#depthWaiters.delete(message.id); }
+        else if (message.type === 'depth') { this.#depthWaiters.get(message.id)?.({ k: message.k, bid: message.bid, ask: message.ask, bidCoin: message.bidCoin, askCoin: message.askCoin, present: message.present, centred: message.centred, stepMs: message.stepMs }); this.#depthWaiters.delete(message.id); }
         else {
           const bounds = this.#inflight.get(message.id);
           this.#inflight.delete(message.id);
@@ -1704,10 +1704,13 @@ export class Hub {
     return new Promise(resolve => { this.#cellWaiters.set(id, resolve); this.#post({ type: 'cell', id, enabled, t0, t1, p0, p1 }); });
   }
 
-  /** Liquidity Tracker series over [t0, t1] for the enabled instruments: from the recorded columns, or (`lane`) from the trackers the lane holds. `stepMs`: that of the windows. */
-  lt(enabled: string[], t0: number, t1: number, params: LtParams, lane = false): Promise<LtSeries & { stepMs?: number }> {
+  /**
+   * Liquidity Tracker series over [t0, t1] for the enabled instruments: from the recorded columns, or (`lane`) from the trackers the lane holds.
+   * `stepMs`: that of the windows. `parts`: each market's own part too (`LtParts`, in the order of `enabled`), for the pane's table.
+   */
+  lt(enabled: string[], t0: number, t1: number, params: LtParams, lane = false, parts = false): Promise<LtSeries & { stepMs?: number }> {
     const id = ++this.#rasterId + 2_000_000;
-    return new Promise(resolve => { this.#ltWaiters.set(id, resolve); this.#post({ type: 'lt', id, enabled, t0, t1, params, lane }); });
+    return new Promise(resolve => { this.#ltWaiters.set(id, resolve); this.#post({ type: 'lt', id, enabled, t0, t1, params, lane, parts }); });
   }
 
   /** New minutes may have been recorded: the next `loadColumns` asks again for the windows that could have changed. */
