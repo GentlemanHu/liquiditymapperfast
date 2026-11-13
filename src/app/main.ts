@@ -29,6 +29,7 @@ import { HeatPane, gutter, gutterAt, leftGutter } from './panes/heat-pane.ts';
 import { LadderPane } from './panes/ladder-pane.ts';
 import { CvdPane } from './panes/cvd-pane.ts';
 import { TNS_LOOKBACK_MS } from './tns/model.ts';
+import type { FlowLike } from './trades/blocks.ts';
 import { BarStatsPane, barStatsHeldKey, DepthPane, LtPane, OiPane, oiHeldKey } from './panes/lower-panes.ts';
 import { LiqPane } from './panes/liq-pane.ts';
 import { setTourDemo } from './tour/demo.ts';
@@ -40,7 +41,7 @@ import { LsRangeSummary, lsHeldKey } from './range/ls-lines.ts';
 import { FundingRangeSummary } from './range/funding-lines.ts';
 import { LtRangeSummary } from './range/lt-lines.ts';
 import { DepthRangeSummary } from './range/depth-lines.ts';
-import { activeIds, emptyScopeMessage } from './scope.ts';
+import { bookEmptyMessage, booksAskedAgain } from './book-markets.ts';
 import { ScriptRangeSummary } from './range/script-lines.ts';
 import { FundingPane } from './panes/funding-pane.ts';
 import { TabTitle } from './tab-title.ts';
@@ -202,7 +203,7 @@ async function main(): Promise<void> {
     { id: 'script', root: script.root, height: 220, min: 60, head: script.header, closable: false },
   ];
   const arrange = new Layout(main, chart, { left: flowCol, right: side }, strip, [
-    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow'), views: [{ id: 'flow', title: t('Flow') }, { id: 'tns', title: t('Time & sales') }, { id: 'all', title: t('All trades') }] },
+    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow'), views: [{ id: 'flow', title: t('Flow') }, { id: 'trades', title: t('Trades') }] },
     { id: 'book', root: ladder.root, head: ladder.controls, title: t('Order Book') },
   ]);
   // What the person does to the layout (layouts/actions.ts): the layouts panel, a pane's close button and the edge tab of a closed side pane (the Panels row in the top bar flips the same switches).
@@ -211,15 +212,18 @@ async function main(): Promise<void> {
     env: () => ({ width: window.innerWidth, height: chart.clientHeight || Math.max(400, window.innerHeight - 200), held: scriptRows(store.state) ? ['script' as const] : [] }),
   });
   arrange.onClose = id => layouts.hide(id, arrange.title(id)); arrange.onOpen = id => layouts.setPane(id, true);
-  arrange.onView = (id, view) => { if (id === 'cvd' && (view === 'flow' || view === 'tns' || view === 'all') && store.state.flowView !== view) store.set({ flowView: view }); };
-  // All trades reads the tape ring; a click on a row takes the map to the order.
+  arrange.onView = (id, view) => { if (id === 'cvd' && (view === 'flow' || view === 'trades') && store.state.flowView !== view) store.set({ flowView: view }); };
+  // Trades reads the tape ring (blocks and each order), the per-second flow the Flow lines hold (any size before the tape) and the recording's
+  // large orders (the browser's memory or the local server: free, never an exchange); a click takes the map to an order or a block's time.
   cvd.trades.ring = () => hub.tape;
-  cvd.trades.onGoTo = (at, price) => heat.focusOn({ t0: at, t1: at, p0: price, p1: price });
-  // Time & sales takes every order the live stream sends; a click on a row takes the map to the order.
-  hub.onLivePrints = live => cvd.tns.take(live);
-  cvd.tns.onGoTo = (at, price) => heat.focusOn({ t0: at, t1: at, p0: price, p1: price });
-  // The list starts with the orders the recording already holds (the browser's memory or the local server: free), over every market of the coin.
-  cvd.tns.prefill = (until, minUsd) => hub.recentPrints(store.state.markets.flatMap(m => { const id = m.instrumentId ?? m.id; return id ? [id] : []; }), TNS_LOOKBACK_MS, until, minUsd);
+  cvd.trades.onGoTo = (t0, t1, p0, p1) => heat.focusOn({ t0, t1, p0, p1 });
+  cvd.trades.flowOf = (id): FlowLike | undefined => hub.flow.get(id);
+  cvd.trades.ensureFlow = (ids, from) => { void hub.ensureFlow(ids, from); };
+  cvd.trades.recorded = (until, minUsd) => hub.recentPrints(store.state.markets.flatMap(m => { const id = m.instrumentId ?? m.id; return id ? [id] : []; }), TNS_LOOKBACK_MS, until, minUsd);
+  cvd.trades.printsIn = (from, to, minUsd) => hub.printsIn(from, to, minUsd);
+  cvd.trades.holes = (ids, from, to) => hub.recordingHoles(ids, from, to);
+  cvd.trades.flowHeldFrom = id => hub.flow.heldFrom(id);
+  cvd.trades.flowLoads = () => hub.flow.loads;
   // A desktop folds its side columns to their edge tabs when the map would be left too little plot (layouts/dock-model.ts `chooseFold`).
   arrange.plotAt = paneW => paneW - gutterAt(paneW, store.state);
   toolbar.layouts = layouts;
@@ -243,7 +247,7 @@ async function main(): Promise<void> {
   toolbar.profileAnchorBar = at => heat.profileAnchorBar(at);
   heat.onAnchoredWindow = () => toolbar.refreshTradedPanel();
   // The Range tool: a drag on the map, on a pane under it or across the flow column selects, and its panel adds up what happened there.
-  const range = new RangeTool(store, hub); range.anchor = toolbar.rangeButton; range.mapWindow = () => ({ t0: heat.view.t0, t1: heat.view.t1 });
+  const range = new RangeTool(store, hub); range.anchorOf = () => toolbar.rangeButton; range.mapWindow = () => ({ t0: heat.view.t0, t1: heat.view.t1 });
   heat.range = range; cvd.range = range; for (const pane of [depth, oi, delta, ls, funding, lt, bars, script]) pane.useRange(range);
   toolbar.onRange = () => range.toggle();
   // A drag in the Delta pane sums up its own candles (range/delta-lines.ts): what it drew, in its own terms.
@@ -284,8 +288,9 @@ async function main(): Promise<void> {
     pane: 'script', title: () => t('Scripts'), shown: () => scriptRows(store.state), barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
     lines: (sel, shown) => scriptSummary.lines(sel, script.rangeHeld, shown, script.rangeKey(store.state), pageNow(), replaying(), store.state.timeZone, !script.hasRows),
   });
-  // Why the order-book panes have no venue to read, or '': the Spot / Perp filter leaves none, or every venue's chip is off.
-  const noVenue = (s: typeof store.state): string => emptyScopeMessage(s) ?? (s.levels?.books.length && !activeIds(s).length ? t('No venue is on: switch one on to sum up the order books.') : '');
+  // Why the order-book panes have no book to read, or '': the Spot / Perp filter leaves none, every venue's chip is off, or their Venues
+  // choice counts none (book-markets.ts).
+  const noVenue = (s: typeof store.state): string => bookEmptyMessage(s);
   // A drag in the Depth pane sums up its bands over the columns drawn (range/depth-lines.ts): the order book's columns holding every venue, or
   // the liquidation levels' snapshots in force.
   const depthSummary = new DepthRangeSummary();
@@ -298,7 +303,7 @@ async function main(): Promise<void> {
   const ltSummary = new LtRangeSummary();
   range.useProvider({
     pane: 'lt', title: () => t('Liquidity Tracker'), shown: () => store.state.show.lt, barMs: () => lt.rangeHeld?.stepMs ?? 60_000,
-    lines: (sel, shown) => ltSummary.lines(sel, lt.rangeHeld, shown, lt.rangeKey(store.state), pageNow(), store.state.timeZone, noVenue(store.state) !== '', replaying()),
+    lines: (sel, shown) => ltSummary.lines(sel, lt.rangeHeld, shown, lt.rangeKey(store.state), pageNow(), store.state.timeZone, noVenue(store.state), replaying()),
   });
   toolbar.onRecenter = () => { heat.fit(); ladder.recenter(); };
   // The countdown under the price tag: a redraw a second when nothing else draws the map.
@@ -368,9 +373,9 @@ async function main(): Promise<void> {
   };
   // On a phone the Tape keeps the market's orders from the page's opening, whichever tab shows, so the ring runs there always.
   // The book's cues read the tape for the contact ripples and for what traded beside a change (the hover), so they want it whether or not the ripples are on.
-  // All trades wants the tape while it is on screen (its column shown and not folded, or a phone's Flow tab open; its view chosen).
-  const allTradesShown = (): boolean => !cvd.root.hidden && !cvd.covered() && store.state.flowView === 'all';
-  const tapeWanted = (): boolean => (store.state.show.bubbles && store.state.tradeBubbles.live) || candleShown() || store.state.material === 'glass' || isPhone() || (store.state.show.book && store.state.ladderCues.look !== 'off') || allTradesShown();
+  // Trades wants the tape while it is on screen (its column shown and not folded, or a phone's Flow tab open; its view chosen).
+  const tradesShown = (): boolean => !cvd.root.hidden && !cvd.covered() && store.state.flowView === 'trades';
+  const tapeWanted = (): boolean => (store.state.show.bubbles && store.state.tradeBubbles.live) || candleShown() || store.state.material === 'glass' || isPhone() || (store.state.show.book && store.state.ladderCues.look !== 'off') || tradesShown();
   // The map is covered while a view that fills the area shows, and the book while any tab but its own does (the Tape draws its own): they draw nothing then, and catch up when they show again.
   const coverPanes = (): void => { const covered = mapCovered(); heat.setSuspended(covered); hub.mapCovered = covered; ladder.setSuspended(isPhone() && dock.tab !== 'book'); };
   // A phone shows one tab at a time: the flow column's lists show only on the Flow tab (they draw nothing and ask nothing behind another).
@@ -559,13 +564,9 @@ async function main(): Promise<void> {
     if (changed.has('cvd')) cvd.settingsChanged();
     if (changed.has('flowView')) cvd.viewChanged();
     // A venue switched on or off filters the list as its own settings do: drawn again from the top.
-    // Each list: its own settings and the venues make its rows again; the whale size, a replay and the clock only redraw them.
-    if (changed.has('tns') || changed.has('disabledVenues')) cvd.tns.refresh();
-    else if (changed.has('sounds') || changed.has('replay') || changed.has('timeZone')) cvd.tns.redraw();
+    // Trades' own settings and the venues make its rows again; the whale size, a replay and the clock only redraw them.
     if (changed.has('trades') || changed.has('disabledVenues')) cvd.trades.refresh();
     else if (changed.has('sounds') || changed.has('replay') || changed.has('timeZone')) cvd.trades.redraw();
-    if (changed.has('connected') && !state.connected) cvd.tns.streamBroke();
-    if (changed.has('connected') && state.connected) cvd.tns.sourceReady();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
     if (changed.has('show') || changed.has('liqLevels')) layout(); else if (changed.has('traded')) { gutters(); arrange.refit(); }
     // The map's own columns change with the market too (the liquidation column is BTC's, the price axis as wide as its prices).
@@ -576,7 +577,11 @@ async function main(): Promise<void> {
       let framed = false;
       void hub.loadSeries(true, () => { framed = true; heat.fit(); lower(); }).then(() => { if (!framed) heat.fit(); lower(); });
     }
-    if (changed.has('disabledVenues') || changed.has('heatmapSource') || changed.has('scope')) { heat.dataChanged(); depth.refresh(); lt.refresh(); cvd.refresh(); }
+    const venuesChanged = changed.has('disabledVenues') || changed.has('heatmapSource') || changed.has('scope');
+    if (venuesChanged) { heat.dataChanged(); cvd.refresh(); }
+    // The two order-book panes count the venues switched on (the chips and the filter), the chart market's book or the picks (book-markets.ts):
+    // asked again when what they count may have changed, and their Venues controls (an open picker too) show it.
+    if (booksAskedAgain(state, changed as ReadonlySet<string>)) { depth.refresh(); lt.refresh(); }
     if (changed.has('markets')) cvd.invalidate();
     // Open interest added up over the venues switched on: another choice of them is another series. Not the Spot / Perp filter, which
     // open interest does not follow (`oiFlowIds`).
@@ -613,7 +618,7 @@ async function main(): Promise<void> {
     // A pane's summary is read again when what it stands for changes (a hidden pane draws nothing to say so; its old snapshot is then stale).
     if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('show') || changed.has('timeZone')
       || changed.has('timeframe') || changed.has('marketId') || changed.has('seriesInstrument') || changed.has('replay')
-      || changed.has('lt') || changed.has('disabledVenues') || changed.has('scope') || changed.has('depthSource') || changed.has('depthBands') || changed.has('liqBands')) range.refreshHeld();
+      || changed.has('lt') || changed.has('disabledVenues') || changed.has('scope') || changed.has('bookMarkets') || changed.has('bookPicks') || changed.has('depthSource') || changed.has('depthBands') || changed.has('liqBands')) range.refreshHeld();
     if (changed.has('tradeBubbles') || changed.has('show')) hub.setTape(tapeWanted());
     if (changed.has('sounds')) heat.invalidate();
     if (changed.has('mark') && state.show.book) ladder.markMoved();

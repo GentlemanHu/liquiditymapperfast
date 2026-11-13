@@ -5,7 +5,7 @@ import type { Print } from '../prints.ts';
 import type { Liquidation } from '../../shared/liquidations.ts';
 import { familyKey, venueOfInstrument } from '../cvd/families.ts';
 import { venueLabel } from '../venues.ts';
-import { clock, price as fmtPrice, usd } from '../format.ts';
+import { clock, price as fmtPrice, spanClock, usd } from '../format.ts';
 import { t, tn } from '../i18n.ts';
 import { MINUTE, type RangeSelection } from './selection.ts';
 import type { CandleRow, OiBar } from '../store.ts';
@@ -68,9 +68,11 @@ export interface ProfileBar { label: string; buy: number; sell: number; total: s
 
 /**
  * One part of a stacked bar: its length as a share of the bar's scale (0..1), whose side it is (`up` the buyers', the candle-up colour;
- * `down` the sellers'; `none` neither), whether it is closing (drawn lighter, as the OI pane draws what closed), and its words for a tip.
+ * `down` the sellers'; `none` neither; `gap` what the shorter stack of its section lacks of the longer one, their difference, drawn
+ * hatched with its figure inside where it fits: `text`), whether it is closing (drawn lighter, as the OI pane draws what closed), and its
+ * words for a tip.
  */
-export interface StackPart { size: number; tone: 'up' | 'down' | 'none'; closed?: boolean; tip: string }
+export interface StackPart { size: number; tone: 'up' | 'down' | 'none' | 'gap'; closed?: boolean; tip: string; text?: string }
 /** A tile of a grid: a label, its figure, its tip, a note under it, and lines of counts (a category's kinds) in place of one figure. */
 export interface GridItem { key: string; label: string; value: string; tone?: 'buy' | 'sell' | 'text' | 'muted'; tip?: string; note?: string; rows?: { label: string; value: string; tone?: 'buy' | 'sell' | 'text' }[] }
 
@@ -87,8 +89,10 @@ export interface RangeLine {
   cells: string[];
   /** A stack's parts. */
   parts?: StackPart[];
-  /** A signed bar's length and side, -1..1. */
-  signed?: number;
+  /** A signed bar's length and side, -1..1; `null`: no bar (no change to draw), the zero line left out too. */
+  signed?: number | null;
+  /** A signed line with no bar whose value is words: they take the bar's room as well as the value's. */
+  wide?: boolean;
   /** A grid's tiles. */
   grid?: GridItem[];
   share?: number;
@@ -117,7 +121,7 @@ const durationText = (ms: number): string => {
 
 /** The selection in words: its minutes (and live), and its prices or "every price". */
 export function selectionLines(sel: RangeSelection): RangeLine[] {
-  const span = `${clock(sel.t0, true)} – ${clock(sel.t1)} · ${durationText(sel.t1 - sel.t0)}${sel.live ? ` · ${t('live')}` : ''}`;
+  const span = `${spanClock(sel.t0, sel.t1)} · ${durationText(sel.t1 - sel.t0)}${sel.live ? ` · ${t('live')}` : ''}`;
   const prices = sel.p0 !== null && sel.p1 !== null
     ? `${fmtPrice(sel.p0)} – ${fmtPrice(sel.p1)} (${((sel.p1 - sel.p0) / sel.p0 * 100).toFixed(2)}%)`
     : t('Every price');

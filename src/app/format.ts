@@ -1,6 +1,27 @@
 import { language, t } from './i18n.ts';
 const compact = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 });
-export const usd = (value: number): string => !Number.isFinite(value) ? '–' : value === 0 ? '0' : Math.abs(value) < 1000 ? value.toFixed(0) : compact.format(value);
+const UNITS = ['K', 'M', 'B', 'T'] as const;
+/**
+ * `compact.format` for |value| >= 1000 without Intl (a list paints hundreds of amounts a second, and Intl's compact form costs several
+ * microseconds each): the value in thousands, millions, billions or trillions to one decimal, rounded half away from zero, "1.0" written
+ * "1", and a value that rounds up to 1,000 of a unit written in the next. Where the tenths sit within a hair of a tie, the division by a
+ * power of ten can round where Intl's exact decimal would not: those few go to Intl. Checked against Intl in tests/app-format-fast.test.mts.
+ */
+export function compactUsd(value: number): string {
+  const a = Math.abs(value);
+  let u = a >= 1e12 ? 3 : a >= 1e9 ? 2 : a >= 1e6 ? 1 : 0;
+  let tenths = a / 10 ** (3 * u + 2);
+  if (Math.abs(tenths - Math.floor(tenths) - 0.5) < 1e-7) return compact.format(value);
+  let r = Math.round(tenths);
+  if (r >= 10_000 && u < 3) {
+    u++; tenths = a / 10 ** (3 * u + 2);
+    if (Math.abs(tenths - Math.floor(tenths) - 0.5) < 1e-7) return compact.format(value);
+    r = Math.round(tenths);
+  }
+  const whole = Math.floor(r / 10), d = r - whole * 10;
+  return `${value < 0 ? '-' : ''}${whole}${d ? `.${d}` : ''}${UNITS[u]}`;
+}
+export const usd = (value: number): string => !Number.isFinite(value) ? '–' : value === 0 ? '0' : Math.abs(value) < 1000 ? value.toFixed(0) : compactUsd(value);
 
 /** One formatter per number of decimals: `toLocaleString` builds a new Intl object on every call, which is slow enough to show when a frame prints hundreds of prices. */
 const fixed: Intl.NumberFormat[] = [];
@@ -85,6 +106,18 @@ export function clockYear(t: number, now = Date.now()): string {
   let format = yearFormats.get(code);
   if (!format) { format = new Intl.DateTimeFormat(code, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }); yearFormats.set(code, format); }
   return `${format.format(d)} ${time}`;
+}
+/**
+ * A span's two ends on the page's clock, then the zone it writes in ("Nov 12 16:00 – Nov 13 14:00 UTC"): the first with its date, and its year
+ * when that is not this year's; the second with its date when it falls on another day (a minute before the end decides) and its year when it
+ * is written in another year than the first. A Range selection can reach a year back, and its title named neither the year nor the zone.
+ */
+export function spanClock(t0: number, t1: number, now = Date.now()): string {
+  const day = (t: number): string => clock(t, true).slice(0, -6);
+  // The year of the end as it is written (an end at New Year's midnight is written as Jan 1, so it carries its year), and the zone's name at
+  // the span's start (a span in the other half of the year is on that half's offset, which a name taken now would misname).
+  const first = clockYear(t0, now), second = onWall(t1).getUTCFullYear() !== onWall(t0).getUTCFullYear() ? clockYear(t1, t0) : clock(t1, day(t1 - 1) !== day(t0));
+  return `${first} – ${second} ${zoneName(undefined, t0)}`;
 }
 /** A moment as a date field and a time field show it, on the page's clock: "2026-11-04" and "14:23". */
 export function wallFields(t: number): { date: string; time: string } {

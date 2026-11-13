@@ -14,6 +14,12 @@ export class FlowBook {
   readonly #held = new Map<string, FlowUpdate[]>();
   /** inst -> the earliest millisecond its history was asked from (answered or not: an instrument with nothing recorded is not asked again). */
   readonly #from = new Map<string, number>();
+  /**
+   * inst -> from when (ms) the last answer held its flow: the later of where it was asked from and where the answer reached (its earliest
+   * second of any instrument: a market quiet for hours was recorded quiet, not missing; each market's own record is the coverage record's
+   * business). None when the answer held nothing. Not cleared when the stream breaks: what was answered stays answered until the next.
+   */
+  readonly #answered = new Map<string, number>();
   /** Counts the times what was loaded stopped being trustworthy (the live stream broke), and the count each held instrument's request began under. */
   #epoch = 0;
   readonly #began = new Map<string, number>();
@@ -49,6 +55,8 @@ export class FlowBook {
     series.set(sec, buy, sell, px ?? 0);
   }
 
+  /** From when (ms) the instrument's history is held (the last answer's, see `#answered`), Infinity when no answer held any of it. */
+  heldFrom(id: string): number { return this.#answered.get(id) ?? Infinity; }
   /** Which of `ids` still need history reaching back to `from` (never asked, or asked from later). */
   missing(ids: readonly string[], from: number): string[] { return ids.filter(id => !((this.#from.get(id) ?? Infinity) <= from)); }
 
@@ -63,12 +71,17 @@ export class FlowBook {
   invalidate(): void { this.#epoch++; this.#from.clear(); this.loads++; }
   /** The answer: replace each instrument's series with its history, then put the held live seconds on top. */
   load(frame: FlowFrame, ids: readonly string[], from: number): void {
+    let reach = Infinity;
     for (const s of frame.instruments) {
       let series = this.#series.get(s.id); if (!series) { series = new FlowSeries(); this.#series.set(s.id, series); }
       series.load(Math.floor(s.t0 / 1000), s.buy, s.sell, s.px);
+      if (s.buy.length && s.t0 < reach) reach = s.t0;
     }
     for (const id of ids) {
-      if (this.#began.get(id) === this.#epoch) this.#from.set(id, from);
+      if (this.#began.get(id) === this.#epoch) {
+        this.#from.set(id, from);
+        if (Number.isFinite(reach)) this.#answered.set(id, Math.max(from, reach)); else this.#answered.delete(id);
+      }
       this.#began.delete(id);
       for (const item of this.#held.get(id) ?? []) this.#put(item);
       this.#held.delete(id);

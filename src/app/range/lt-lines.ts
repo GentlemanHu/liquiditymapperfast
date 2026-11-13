@@ -2,7 +2,7 @@ import { clock, usd } from '../format.ts';
 import type { LtParts } from '../lt.ts';
 import { sizeText } from '../sizes.ts';
 import { t, tn } from '../i18n.ts';
-import { durationText, spanText } from './oi-lines.ts';
+import { durationPair, durationText, spanText } from './oi-lines.ts';
 import type { RangeSelection } from './selection.ts';
 import type { GridItem, RangeLine } from './stats.ts';
 
@@ -151,22 +151,22 @@ function lackingNames(s: LtStretch, h: LtPaneHeld): string[] {
  */
 export class LtRangeSummary {
   #kept: { current: string; t0: number; t1: number; replayAt: number | null; at: number; s: LtStretch; held: LtPaneHeld } | null = null;
-  #last: { held: LtPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; minute: number; zone: string; noVenues: boolean; replay: boolean; lines: RangeLine[] } | null = null;
+  #last: { held: LtPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; minute: number; zone: string; empty: string; replay: boolean; lines: RangeLine[] } | null = null;
 
-  /** `noVenues`: no venue is on (the pane says why); `replay`: whether `now` is a replay's moment. */
-  lines(sel: RangeSelection, held: LtPaneHeld | null, shown: boolean, current: string, now: number, zone = '', noVenues = false, replay = false): RangeLine[] {
+  /** `empty`: why the pane has no book to read (no venue on, or its Venues choice counts none), or ''; `replay`: whether `now` is a replay's moment. */
+  lines(sel: RangeSelection, held: LtPaneHeld | null, shown: boolean, current: string, now: number, zone = '', empty = '', replay = false): RangeLine[] {
     const last = this.#last, minute = Math.floor(now / 60_000);
-    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.minute === minute && last.zone === zone && last.noVenues === noVenues && last.replay === replay) return last.lines;
-    const lines = this.#lines(sel, held, shown, current, now, noVenues, replay);
-    this.#last = { held, sel, shown, current, minute, zone, noVenues, replay, lines };
+    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.minute === minute && last.zone === zone && last.empty === empty && last.replay === replay) return last.lines;
+    const lines = this.#lines(sel, held, shown, current, now, empty, replay);
+    this.#last = { held, sel, shown, current, minute, zone, empty, replay, lines };
     return lines;
   }
 
-  #lines(sel: RangeSelection, held: LtPaneHeld | null, shown: boolean, current: string, now: number, noVenues: boolean, replay: boolean): RangeLine[] {
+  #lines(sel: RangeSelection, held: LtPaneHeld | null, shown: boolean, current: string, now: number, empty: string, replay: boolean): RangeLine[] {
     const title = (text: string): RangeLine => ({ key: 'lt-title', kind: 'title', cells: [text] });
     const note = (key: string, text: string): RangeLine => ({ key, kind: 'note', tone: 'muted', cells: [text] });
     const span = title(spanText(sel.t0, sel.t1));
-    if (noVenues) return [span, note('lt-none', t('No venue is on: switch one on to sum up the order books.'))];
+    if (empty) return [span, note('lt-none', empty)];
     // A snapshot of other settings is not this one (the pane keeps drawing the old series while a new half-life or step is read).
     const fresh = held && held.key === current ? held : null;
     const now0 = fresh ? ltStretch(fresh, sel, now) : null;
@@ -236,9 +236,10 @@ export class LtRangeSummary {
         ...(s.forming > 0 ? [t('open window excluded: {time}', { time: shortDuration(s.forming) })] : []),
         ...(s.none > 0 ? [t('no window held: {time}', { time: shortDuration(s.none) })] : []),
       ];
-      const head = s.unverified ? t('Windows cover {k} of {span}', { k: shortDuration(s.covered), span: durationText(s.span) })
-        : many ? t('Windows holding all {n} venues cover {k} of {span}', { n: h.ids.length, k: shortDuration(s.covered), span: durationText(s.span) })
-        : t('Windows cover {k} of {span}', { k: shortDuration(s.covered), span: durationText(s.span) });
+      const pair = durationPair(s.covered, s.span);
+      const head = s.unverified ? t('Windows cover {k} of {span}', { k: pair.k, span: pair.n })
+        : many ? t('Windows holding all {n} venues cover {k} of {span}', { n: h.ids.length, k: pair.k, span: pair.n })
+        : t('Windows cover {k} of {span}', { k: pair.k, span: pair.n });
       lines.push(note('lt-cover', [head, ...(s.windows > 0 && !s.unverified ? [tn(s.windows, '{n} included window', '{n} included windows')] : []), ...parts].join(' · ')));
     }
     lines.push(note('lt-how', many ? t('Each included window is weighted by its overlap with the selection. Windows missing a venue are left out, so the set of venues stays the same.')
