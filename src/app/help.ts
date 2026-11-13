@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'tns' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'tns' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
 
 export interface HelpTopic {
   title: string;
@@ -203,7 +203,10 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('Every market order fills resting orders on its own exchange, so the prices that took the most are where the resting orders were that absorbed them. The absorption marks and the resting orders are the ones the map draws.'),
       t('On a narrow band the average order leans: a sweep that began inside the band and ran out of it counts here with only part of its volume, one that began outside counts its volume here without the order.'),
       t('A drag across the Open Interest pane holds whole candles and sums up that pane in its own terms: the known change and the line\'s level, what NL/NS estimates was added and reduced, each venue\'s part, and how the stretch compares with the ones held. Show at the top of the panel switches between the map\'s summary and the pane\'s for the same stretch.'),
-      t('A drag across the Delta pane does the same in its terms: the recorded taker flow (bought, sold, the delta and its share of the volume), the price over the same candles, the CVD inside a daily or weekly run, how the delta was spread, and with NL/NS the estimated added and reduced.')],
+      t('A drag across the Delta pane does the same in its terms: the recorded taker flow (bought, sold, the delta and its share of the volume), the price over the same candles, the CVD inside a daily or weekly run, how the delta was spread, and with NL/NS the estimated added and reduced.'),
+      t('A drag across the Bar stats pane sums up the statistics chosen there, each by its own rule: volumes, dollars and counts added up, ratios worked out from the sums (never averaged candle by candle), the point of control of all the rows together, each CVD\'s change, the marks counted kind by kind, and how much of the stretch the recording holds. A point of control\'s move is per candle only and says so.'),
+      t('A drag across the Long/Short pane sums up each venue on its own, grouped by who it counts: its first and last long share and the change in percentage points, the lowest and highest drawn, the time mean, how long the long or the short side was the majority and the longest unbroken stretch, and how much of the stretch its readings cover; venues of one kind are also compared over the moments all of them are drawn, each against itself, with the gap between the highest and the lowest. No share of all venues is given: their populations differ.'),
+      t('A drag across the Funding pane sums up the venue it shows: each settlement counts for the interval it paid for, giving the first and last rate per 8 hours and the change in basis points, the lowest and highest, the rate over time, and how long longs or shorts paid; time no settlement covers is said apart (before the read reaches, after the newest settlement held, or none held). The funding accruing now is shown apart and not counted, the premium by its completed readings and how many sat in the band where funding holds its base rate, and on Hyperliquid who opened, from the closed hours added up. It gives no amount paid.')],
   },
   heatmap: {
     title: t('The heatmap'), guide: 'heatmap',
@@ -258,10 +261,17 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   tns: {
     title: t('Time & sales'), guide: 'tns',
-    tip: t('The flow column\'s second view: every large market order as it arrives, newest on top, with its time, exchange, side, price and size. Nothing is fetched, so the list starts when the page opens.'),
+    tip: t('The flow column\'s second view: every large market order, newest on top, with its time, exchange, side, price and size. It starts with the orders this page already recorded, up to the last hour, and asks the exchanges for nothing.'),
     body: [t('The tabs in the column\'s title switch between the flow lines and this list; with the column closed, the strip along the edge has a tab for each. The orders are the ones the trade bubbles draw, from the exchanges switched on, so a row on the list is a bubble on the map.'),
       t('From $100,000 by default (the menu above the list, or the settings key): a busy minute of BTC orders from $25,000 is too many rows to read. A burst of orders on one exchange and side is one row, ×16 saying how many, its size added up and its price their average weighted by size. Bold rows are whale size, as the bubbles\' glow; the bar behind a size grows with it on a log scale.'),
-      t('Pointing at the list holds it still: new rows are counted on a button that brings them in. The order pointed at is marked on the map and the panes at its moment, and a click takes the map there. A line says where orders may be missing: the stream dropped, or the page was in the background.')],
+      t('Pointing at the list holds it still: new rows are counted on a button that brings them in. The order pointed at is marked on the map and the panes at its moment, and a click takes the map there. A line says where orders may be missing: the stream dropped, the page was in the background, or nothing was recorded then.')],
+  },
+  trades: {
+    title: t('All trades'), guide: 'all-trades',
+    tip: t('The flow column\'s third view: every market order this page receives, of any size, as it arrives, newest on top. Nothing is fetched or recorded: it holds what came since the page started listening.'),
+    body: [t('Each row is one order: its time, exchange, side (▲ bought, ▼ sold), price and size. Bigger orders get taller rows, heavier type and a stronger tint of their side\'s colour, on a fixed scale (under $10K, to $100K, to the whale size of Sounds, and above), so the same order looks the same whatever is filtered.'),
+      t('The menu above the list sets the smallest order: any size at first. A busy market sends dozens of orders a second, too many to read as they pass: point at the list to hold it, or scroll back with the wheel (on a phone, with a finger; a tap on a row shows its details); a button counts what came meanwhile. The settings key also chooses the side and can show a burst of orders on one market as one row.'),
+      t('The orders are held in this page\'s memory from when it started listening, the last hours of them; nothing is fetched to fill it. A line says where orders may be missing: the stream reconnected, or the source left some out.')],
   },
   book: {
     title: t('Order book'), guide: 'order-book',

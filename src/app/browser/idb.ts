@@ -37,9 +37,18 @@ type OiRow = OiReading;
 interface CoverRow extends Omit<CoverageRow, 'metric'> { metric: CoverageRow['metric'] | 'history'; t: number }
 /**
  * The mark of an hour of the recorded history read whole is a coverage row of metric `history` whose instrument names the reader's version:
- * `v2` reads the footprint and absorption too. An hour an older page read (instrument '') is read again once, for what that page passed over.
+ * `v2` reads the footprint and absorption too, `v3` also the footprint minutes of kind 11 (f32 USD, no list). An hour an older page read
+ * (instrument '') is read again once, for what that page passed over. An hour from `V3_FROM` on that a `v2` page read is read again once
+ * too, whatever this page holds of it (`staleHours`): that page passed kind 11 over, and in the hour of the service's restart onto kind 11,
+ * which holds both kinds, it also claimed the hour's trades from its kind-7 minutes, so the page would not want it by its coverage. A `v2`
+ * mark before `V3_FROM` stands: the service wrote kind 11 only after this page was published.
  */
-const IMPORTED = 'history', IMPORTED_INST = 'v2', HOUR = 3_600_000, MINUTE = 60_000;
+const IMPORTED = 'history', IMPORTED_INST = 'v3', HOUR = 3_600_000, MINUTE = 60_000;
+/** The hour this page was built in (2026-11-12 22:00Z): the service's hours before it hold no footprint minute of kind 11. */
+const V3_FROM = 1_794_520_800_000;
+export const importedMark = (row: { inst: string; from: number }): boolean => row.inst === IMPORTED_INST || (row.inst === 'v2' && row.from < V3_FROM);
+/** A mark a page from before kind 11 left on an hour that may hold it: the hour is read again (`staleHours`). */
+export const staleMark = (row: { inst: string; from: number }): boolean => row.inst === 'v2' && row.from >= V3_FROM;
 
 /** `name` is the coin's database (app/coin.ts recordingsName): each coin's recordings are kept and read apart. */
 function openDatabase(name: string): Promise<IDBDatabase> {
@@ -137,13 +146,16 @@ export interface Recordings {
   /**
    * The same for the other recordings: a flow minute joins second by second where it is the fuller copy, a liquidation or an open-interest
    * reading the page does not hold is added, a large trade only outside the stretches this page recorded itself (where its own are the ones
-   * to keep: an order rebuilt from the same fills elsewhere may differ in its price), a footprint minute or an absorption minute (with its
-   * groups) only where this page did not record the whole minute itself; the service's stretches of trade coverage join the page's own for
-   * the instruments whose footprint minutes were taken (see `importRows`).
+   * to keep: an order rebuilt from the same fills elsewhere may differ in its price), an absorption minute (with its groups) only where this
+   * page did not record the whole minute itself, a footprint minute except where the page recorded the whole minute and already held it when
+   * it opened; the service's stretches of trade coverage join the page's own for the instruments whose footprint minutes were taken (see
+   * `importRows`).
    */
   importRows(rows: HistoryRows): number;
   /** The hours of the recorded history read whole (kept as the coverage record is, so they go with it), and marking more. */
   importedHours(): number[];
+  /** Hours a page from before kind 11 marked as read that may hold it, to be read again whatever this page holds (see `staleMark`). */
+  staleHours(): number[];
   /** `since`: `writeEpoch()` before the import; the hours are marked only when every write since went through. */
   markImported(hours: readonly number[], since: number): Promise<void>;
   writeEpoch(): number;
@@ -407,6 +419,8 @@ export async function openRecordings(name: string, since: number, canWrite: () =
   const hoursRead = new Set<number>(), footprintHours = new Set<number>(), firstFootprint = new Map<string, number>(), pendingCover: CoverageRow[] = [];
   const footprintAt = new Map<string, number>();
   footprintRows.forEach((row, i) => footprintAt.set(`${row.inst}|${row.t}`, i));
+  // The minutes it held as it opened, as `trade` is taken (`planFootprint` `heldAtOpen`).
+  const footprintAtOpen = new Set(footprintAt.keys());
   // Minutes recorded elsewhere join the rows `load` hands the recorder (a thinner copy of the same minute is replaced) and are stored like
   // the recorder's own (by the tab that writes; another tab shows them and stores nothing, as it does with what it records).
   const importColumns =(incoming: readonly { inst: string; step: number; column: Column }[]): number => {
@@ -455,8 +469,9 @@ export async function openRecordings(name: string, since: number, canWrite: () =
       printRows.sort((a, b) => a.t - b.t);
       prints.save(newPrints, since); taken += newPrints.length;
     }
-    // Footprint minutes where this page did not record the whole minute, on its step, the fuller copy (`planFootprint`).
-    const newFootprint = planFootprint(trade, incoming.footprint, key => { const i = footprintAt.get(key); return i === undefined ? undefined : footprintRows[i]; });
+    // Footprint minutes on its step, the fuller copy, except a minute this page recorded whole and already held when it opened
+    // (`planFootprint`).
+    const newFootprint = planFootprint(trade, incoming.footprint, key => { const i = footprintAt.get(key); return i === undefined ? undefined : footprintRows[i]; }, key => footprintAtOpen.has(key));
     for (const row of newFootprint) {
       const key = `${row.inst}|${row.t}`, i = footprintAt.get(key);
       if (i === undefined) { footprintAt.set(key, footprintRows.length); footprintRows.push(row); } else footprintRows[i] = row;
@@ -518,7 +533,8 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     if (newCover.length) { enqueue(tx => { const store = tx.objectStore('coverage'); for (const row of newCover) store.put(row); }); taken += newCover.length; }
     return taken;
   };
-  const importedHours = (): number[] => coverRows.filter(row => row.metric === IMPORTED && row.inst === IMPORTED_INST).map(row => row.from);
+  const importedHours = (): number[] => coverRows.filter(row => row.metric === IMPORTED && importedMark(row)).map(row => row.from);
+  const staleHours = (): number[] => coverRows.filter(row => row.metric === IMPORTED && staleMark(row)).map(row => row.from);
   // Written once what the import queued has been written (or let go), and only when nothing was let go since `since` (`writeEpoch()`
   // before the import): a mark without its rows would keep the hour from being read again.
   const markImported = async (hours: readonly number[], since: number): Promise<void> => {
@@ -532,7 +548,7 @@ export async function openRecordings(name: string, since: number, canWrite: () =
     if (epoch === since) coverRows.push(...rows);
   };
   return {
-    columns, footprint, prints, flow, absorption, coverage, liquidations, oi, importColumns, importRows, importedHours, markImported, writeEpoch: () => epoch,
+    columns, footprint, prints, flow, absorption, coverage, liquidations, oi, importColumns, importRows, importedHours, staleHours, markImported, writeEpoch: () => epoch,
     flush() { if (timer) clearTimeout(timer); return write(); },
     close() { if (timer) clearTimeout(timer); void write().finally(() => { closed = true; db.close(); }); },
   };

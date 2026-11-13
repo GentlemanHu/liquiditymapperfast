@@ -5,7 +5,8 @@ import type { Print } from '../../shared/prints.ts';
 import { coveredMs, union, type CoverageRow, type SeamTrade } from '../../shared/coverage.ts';
 import type { OiReading } from '../../shared/engine.ts';
 import { hyperliquidOneSide } from '../../shared/oi-sides.ts';
-import { SIZE_EDGES, STATS_VERSION, type FootprintMinuteRow, type StoredBin, type TradeStats } from '../../shared/footprint.ts';
+import { SIZE_EDGES, STATS_VERSION, listFits, type FootprintMinuteRow, type StoredBin, type TradeStats } from '../../shared/footprint.ts';
+import { SAME_VOLUME } from '../../shared/recording-merge.ts';
 import type { AbsorptionGroup, AbsorptionMinute, AbsorptionStep } from '../../shared/absorption.ts';
 import { parseTilesInfo, type TilesInfo } from '../archive/tiles.ts';
 
@@ -65,15 +66,23 @@ export function decodeHour(buffer: ArrayBuffer): { hour: number; columns: Histor
   const view = new DataView(buffer), size = buffer.byteLength;
   if (size < 16 || view.getUint32(0, false) !== 0x484c4d43 || view.getUint16(4, true) !== 1) return null;
   const hour = Number(view.getBigInt64(8, true)), text = new TextDecoder(), columns: HistoryColumn[] = [], rows = noRows();
+  // Where each large trade and footprint minute taken stood in the file (record offsets), for `fillListsFromPrints`.
+  const printAt: number[] = [], footprintAt: number[] = [];
   for (let at = 16; at + 4 <= size;) {
     const length = view.getUint32(at, true), end = at + 4 + length;
     // The smallest record is 31 bytes (kind, id length, a one-letter id, time, samples, step, count, tracker samples): a shorter length is
     // not a record boundary (a zero-filled tail after a crash), and nothing after it can be trusted.
     if (end > size || length < 31) break;
     if (view.getUint8(at + 4) === 1) { const column = record(view, buffer, text, at + 4, end, hour); if (column) columns.push(column); }
-    else other(view, buffer, text, at + 4, end, rows);
+    else {
+      const prints = rows.prints.length, footprints = rows.footprint.length;
+      other(view, buffer, text, at + 4, end, rows);
+      if (rows.prints.length > prints) printAt.push(at);
+      if (rows.footprint.length > footprints) footprintAt.push(at);
+    }
     at = end;
   }
+  fillListsFromPrints(rows, printAt, footprintAt);
   rows.hour = hour;
   return { hour, columns, rows };
 }
@@ -125,8 +134,8 @@ export function joinParts(parts: readonly ArrayBuffer[], hour: number): ArrayBuf
 
 /**
  * A record of another kind (rows.rs): 2 a flow minute, 3 a liquidation, 4 and 10 an open-interest reading, 5 a large trade, 6 a stretch of
- * trade coverage, 7 a footprint minute, 8 an absorption candidate group, 9 an absorption minute, into `rows` when it is whole and sane; a
- * kind this page does not know is passed over. An open-interest reading is kept on one side of every contract and marked so: kind 10 is
+ * trade coverage, 7 and 11 a footprint minute, 8 an absorption candidate group, 9 an absorption minute, into `rows` when it is whole and sane;
+ * a kind this page does not know is passed over. An open-interest reading is kept on one side of every contract and marked so: kind 10 is
  * written so, kind 4 (until 2026-11-04) holds each venue's figure as this page read it then, Hyperliquid's on both sides (halved here once:
  * `shared/oi-sides.ts`).
  */
@@ -165,8 +174,8 @@ function other(view: DataView, buffer: ArrayBuffer, text: TextDecoder, from: num
       seams.push(present && seamId && Number.isFinite(t) ? { id: seamId, t } : null);
     }
     if (finite(fromT, to) && to > fromT) rows.coverage.push({ inst: id, metric: 'trades', from: fromT, to, kind: recovered ? 'recovered' : 'live', ...(seams[0] ? { first: seams[0] } : {}), ...(seams[1] ? { last: seams[1] } : {}) });
-  } else if (kind === 7 && has(20)) {
-    const footprint = footprintMinute(view, p, end, id);
+  } else if ((kind === 7 || kind === 11) && has(20)) {
+    const footprint = footprintMinute(view, p, end, id, kind === 11);
     if (footprint) rows.footprint.push(footprint);
   } else if (kind === 8 && has(21)) {
     const t0 = i64(), buy = u8() === 1, price = f64(), count = view.getUint32(p, true); p += 4;
@@ -189,37 +198,88 @@ function other(view: DataView, buffer: ArrayBuffer, text: TextDecoder, from: num
 }
 
 /**
- * A footprint minute (kind 7, rows.rs): i64 t, f64 step, u32 rows, each row i32 bin, f64 buy USD, f64 sell USD, u32 buy orders, u32 sell
- * orders; then u8 statistics present and, when they are, u32 buy orders, u32 sell orders, f64 buy USD and f64 sell USD per size bucket, u32
- * large orders and f64 each (signed: a buy positive). The service's minutes always count orders by price, so every row has five numbers.
- * Null when it is not a whole, sane minute.
+ * A footprint minute (rows.rs): i64 t, f64 step, u32 rows, each row i32 bin, buy USD, sell USD, u32 buy orders, u32 sell orders; then u8
+ * statistics present and, when they are, u32 buy orders, u32 sell orders, f64 buy USD and f64 sell USD per size bucket. Kind 7 (until
+ * 2026-11) holds each row's USD as f64 and ends the statistics with u32 large orders and f64 each (signed: a buy positive); kind 11 (`f32`)
+ * holds each row's USD as f32 and no list, which `fillListsFromPrints` rebuilds. The service's minutes always count orders by price, so
+ * every row has five numbers. Null when it is not a whole, sane minute.
  */
-function footprintMinute(view: DataView, from: number, end: number, inst: string): FootprintMinuteRow | null {
+function footprintMinute(view: DataView, from: number, end: number, inst: string, f32: boolean): FootprintMinuteRow | null {
   let p = from;
   const has = (n: number): boolean => p + n <= end;
   const f64 = (): number => { const v = view.getFloat64(p, true); p += 8; return v; };
+  const usd = f32 ? (): number => { const v = view.getFloat32(p, true); p += 4; return v; } : f64;
   const u32 = (): number => { const v = view.getUint32(p, true); p += 4; return v; };
   const t = Number(view.getBigInt64(p, true)); p += 8;
   const step = f64(), count = u32();
-  if (t % COLUMN_MS !== 0 || !(step > 0) || !Number.isFinite(step) || !has(count * 28 + 1)) return null;
+  if (t % COLUMN_MS !== 0 || !(step > 0) || !Number.isFinite(step) || !has(count * (f32 ? 20 : 28) + 1)) return null;
   const bins: StoredBin[] = [], seen = new Set<number>();
   for (let k = 0; k < count; k++) {
     const bin = view.getInt32(p, true); p += 4;
-    const buy = f64(), sell = f64(), buyN = u32(), sellN = u32();
+    const buy = usd(), sell = usd(), buyN = u32(), sellN = u32();
     if (seen.has(bin) || !finite(buy, sell) || buy < 0 || sell < 0 || !(buy + sell > 0)) return null;
     seen.add(bin); bins.push([bin, buy, sell, buyN, sellN]);
   }
   let stats: TradeStats | null = null;
   if (view.getUint8(p++) === 1) {
     const n = SIZE_EDGES.length;
-    if (!has(8 + 16 * n + 4)) return null;
-    const buyN = u32(), sellN = u32(), buy = Array.from({ length: n }, f64), sell = Array.from({ length: n }, f64), bigs = u32();
-    if (!has(8 * bigs) || ![...buy, ...sell].every(v => Number.isFinite(v) && v >= 0)) return null;
-    const big = Array.from({ length: bigs }, f64);
-    if (!big.every(v => Number.isFinite(v) && v !== 0)) return null;
-    stats = { buyN, sellN, buy, sell, v: STATS_VERSION, big };
+    if (!has(8 + 16 * n + (f32 ? 0 : 4))) return null;
+    const buyN = u32(), sellN = u32(), buy = Array.from({ length: n }, f64), sell = Array.from({ length: n }, f64);
+    if (![...buy, ...sell].every(v => Number.isFinite(v) && v >= 0)) return null;
+    if (f32) stats = { buyN, sellN, buy, sell, v: STATS_VERSION };
+    else {
+      const bigs = u32();
+      if (!has(8 * bigs)) return null;
+      const big = Array.from({ length: bigs }, f64);
+      if (!big.every(v => Number.isFinite(v) && v !== 0)) return null;
+      stats = { buyN, sellN, buy, sell, v: STATS_VERSION, big };
+    }
   }
   return p === end ? { inst, t, step, bins, stats } : null;
+}
+
+/** Earlier copies of a minute each copy's runs start after (a file holds one copy a flush, two a minute, more only after restarts). */
+const EARLIER_COPIES = 8;
+
+/**
+ * The lists of large orders a footprint minute of kind 11 leaves out, rebuilt from the large trades (kind 5) of the same file: the list holds
+ * every order from the second size bucket's edge up, which is the coin's floor for a large trade too, and the service writes both from the
+ * same orders at the same times (2026-11-12: 56,386 minutes of 92 hours, all 21 coins, rebuilt exactly). A list is taken only where it adds
+ * up to the minute's sums by size (`listFits`, as `FootprintRecorder.fillLists` checks); a minute where it does not (a trade written into
+ * the next hour's file) keeps no list, and the engine fills it from every large trade it holds once the import is in (shared/engine.ts).
+ *
+ * A file can hold two copies of a minute: one written while an order was still open and one once it was counted, or one from before a
+ * restart and a thinner one after it. The service writes a flush's large trades before its footprint minutes (tape.rs `flush`), so each copy
+ * is tried first with the minute's trades written before it, then with those after each earlier copy of the minute (the nearest first),
+ * then with all of them; a fitting run is the copy's list (two runs that both fit are the same list: an order is at least the floor).
+ */
+function fillListsFromPrints(rows: HistoryRows, printAt: readonly number[], footprintAt: readonly number[]): void {
+  if (!rows.footprint.some(row => row.stats && row.stats.big === undefined)) return;
+  const found = new Map<string, { value: number; at: number }[]>();
+  rows.prints.forEach((print, i) => {
+    const key = `${print.id}|${Math.floor(print.t / COLUMN_MS) * COLUMN_MS}`, entry = { value: print.side === 'buy' ? print.usd : -print.usd, at: printAt[i]! }, list = found.get(key);
+    if (list) list.push(entry); else found.set(key, [entry]);
+  });
+  // Offsets that do not line up with the rows (never, while `other` adds one row a record) leave each copy all of its trades.
+  const placed = printAt.length === rows.prints.length && footprintAt.length === rows.footprint.length;
+  const earlier = new Map<string, number[]>();
+  rows.footprint.forEach((row, i) => {
+    const key = `${row.inst}|${row.t}`, at = footprintAt[i]!, stats = row.stats;
+    let copies = earlier.get(key);
+    if (!copies) earlier.set(key, copies = []);
+    const since = copies.slice(-EARLIER_COPIES).reverse();
+    copies.push(at);
+    if (!stats || stats.big !== undefined) return;
+    const trades = found.get(key) ?? [];
+    // Its trades before it, then those after each of the nearest earlier copies, the nearest first (a run may have written copies of its
+    // own), then all of them. A minute with no large trade here has one choice: none.
+    let picks: (readonly { value: number; at: number }[])[] = [trades];
+    if (placed && trades.length) { const before = trades.filter(p => p.at < at); picks = [before, ...since.map(after => before.filter(p => p.at > after)), trades]; }
+    for (const pick of picks) {
+      const list = pick.map(p => p.value);
+      if (listFits(list, stats)) { stats.big = list; return; }
+    }
+  });
 }
 
 /** One record of an hour file, or null when it is not a column of this hour that can be shown. */
@@ -251,8 +311,12 @@ function record(view: DataView, buffer: ArrayBuffer, text: TextDecoder, from: nu
  * `trades`: the stretches over which this page recorded each instrument's trades itself (its own trade coverage); `imported`: the hours of
  * the service it has read whole already.
  */
-export interface Held { steps: Map<string, number>; samples: Map<string, number>; trades: Map<string, { from: number; to: number }[]>; imported: Set<number> }
-export function heldOf(rows: Iterable<{ instrumentId: string; step: number; column: { t: number; n: number } }>, coverage: Iterable<Pick<CoverageRow, 'inst' | 'metric' | 'from' | 'to'>> = [], imported: Iterable<number> = []): Held {
+/**
+ * What the page holds before an import: each book's step and samples a minute, its own trade coverage, the hours read whole before
+ * (`imported`), and hours read again whatever it holds (`again`: hours a page from before kind 11 read, app/browser/idb.ts `staleHours`).
+ */
+export interface Held { steps: Map<string, number>; samples: Map<string, number>; trades: Map<string, { from: number; to: number }[]>; imported: Set<number>; again: Set<number> }
+export function heldOf(rows: Iterable<{ instrumentId: string; step: number; column: { t: number; n: number } }>, coverage: Iterable<Pick<CoverageRow, 'inst' | 'metric' | 'from' | 'to'>> = [], imported: Iterable<number> = [], again: Iterable<number> = []): Held {
   const steps = new Map<string, number>(), oldest = new Map<string, number>(), samples = new Map<string, number>(), trades = new Map<string, { from: number; to: number }[]>();
   for (const { instrumentId, step, column } of rows) {
     samples.set(`${instrumentId}|${column.t}`, column.n);
@@ -263,7 +327,7 @@ export function heldOf(rows: Iterable<{ instrumentId: string; step: number; colu
     let list = trades.get(inst); if (!list) trades.set(inst, list = []);
     list.push({ from, to });
   }
-  return { steps, samples, trades, imported: new Set(imported) };
+  return { steps, samples, trades, imported: new Set(imported), again: new Set(again) };
 }
 
 /**
@@ -312,7 +376,7 @@ export function hoursToRead(latest: HistoryLatest, held: Held, since: number, no
       return have < COVERED * minutes;
     }) || trades.some(inst => coveredMs(union(held.trades.get(inst) ?? [], start, end), start, end) < COVERED * (end - start));
   };
-  if (Number.isFinite(from) && Number.isFinite(to)) for (let h = from; h <= to && out.length <= 25; h += HOUR_MS) if (!held.imported.has(h) && wanted(h)) out.push(h);
+  if (Number.isFinite(from) && Number.isFinite(to)) for (let h = from; h <= to && out.length <= 25; h += HOUR_MS) if (!held.imported.has(h) && (held.again.has(h) || wanted(h))) out.push(h);
   return out;
 }
 
@@ -337,11 +401,13 @@ export const ownsMinute = (state: TradeImport, id: string, t: number): boolean =
 export const footprintVolume = (row: Pick<FootprintMinuteRow, 'bins'>): number => { let sum = 0; for (const bin of row.bins) sum += bin[1] + bin[2]; return sum; };
 /**
  * Whether `next` is a fuller copy of a footprint minute than `kept`: more volume, or as much and more of its market orders counted (a
- * minute is written while its last order is still open, and written again once that order is counted, with the same trades).
+ * minute is written while its last order is still open, and written again once that order is counted, with the same trades). Volumes
+ * `SAME_VOLUME` apart count as the same: the service writes each row's USD as an f32 (kind 11, 7 significant digits), so its copy of the
+ * trades this page holds as doubles differs from the page's by rounding alone, and the orders counted decide (ties keep `kept`).
  */
 export function fullerFootprint(kept: Pick<FootprintMinuteRow, 'bins' | 'stats'>, next: Pick<FootprintMinuteRow, 'bins' | 'stats'>): boolean {
   const a = footprintVolume(kept), b = footprintVolume(next);
-  if (b !== a) return b > a;
+  if (Math.abs(b - a) > SAME_VOLUME * Math.max(a, b)) return b > a;
   const orders = (row: Pick<FootprintMinuteRow, 'bins' | 'stats'>): [number, number] => {
     let onRows = 0; for (const bin of row.bins) onRows += (bin[3] ?? 0) + (bin[4] ?? 0);
     return [row.stats ? row.stats.buyN + row.stats.sellN : -1, onRows];
@@ -353,14 +419,18 @@ export function fullerFootprint(kept: Pick<FootprintMinuteRow, 'bins' | 'stats'>
 /**
  * The footprint minutes of an hour worth taking: where the page did not record the whole minute itself, on the page's step for the market
  * (rows on another step are not re-binned), and fuller (`fullerFootprint`) than the copy the page holds (`held`, or undefined), the fuller
- * of two copies the service wrote of a minute. Taking one fixes the market's step (`state.steps`).
+ * of two copies the service wrote of a minute. Taking one fixes the market's step (`state.steps`). A minute the page's coverage holds whole
+ * but whose copy it does not hold is taken too: the page saw no trade there, or the coverage came from the service (a page from before kind
+ * 11 read the hour of the service's restart onto it, took its kind-7 minutes alone and joined the service's coverage over the whole hour).
+ * Whether the page holds a copy is judged as it opened (`heldAtOpen`, as `state` is): a copy taken earlier in this import, from a newer
+ * hour's file, is weighed against a fuller one in an older file like any other (`held` answers with it).
  */
-export function planFootprint(state: TradeImport, rows: readonly FootprintMinuteRow[], held: (key: string) => FootprintMinuteRow | undefined): FootprintMinuteRow[] {
+export function planFootprint(state: TradeImport, rows: readonly FootprintMinuteRow[], held: (key: string) => FootprintMinuteRow | undefined, heldAtOpen: (key: string) => boolean = key => held(key) !== undefined): FootprintMinuteRow[] {
   const chosen = new Map<string, FootprintMinuteRow>();
   for (const row of rows) {
-    const step = state.steps.get(row.inst) ?? row.step;
-    if (row.step !== step || ownsMinute(state, row.inst, row.t)) continue;
-    const key = `${row.inst}|${row.t}`, have = chosen.get(key) ?? held(key);
+    const step = state.steps.get(row.inst) ?? row.step, key = `${row.inst}|${row.t}`;
+    if (row.step !== step || (heldAtOpen(key) && ownsMinute(state, row.inst, row.t))) continue;
+    const have = chosen.get(key) ?? held(key);
     if (have && !fullerFootprint(have, row)) continue;
     state.steps.set(row.inst, step);
     chosen.set(key, row);
