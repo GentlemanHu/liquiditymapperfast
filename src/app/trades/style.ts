@@ -1,10 +1,11 @@
 import { contrastRatio, mixHex, textOn, type Palette } from '../theme.ts';
-import { usd as fmtUsd } from '../format.ts';
+import { price, priceDecimals, usd as fmtUsd } from '../format.ts';
 
 /**
  * How All trades draws an order, as numbers (no page): size carried by four fixed tiers of row height and type (coin-scaled, never relative
- * to the floor, so the same order looks the same whatever is filtered) and by a continuous tint of the side's colour on a log scale of
- * dollars; text in the theme's own colour where it reads on the finished row, else black or white. Designed with Sol 6.1 and the advisor
+ * to the floor, so the same order looks the same whatever is filtered) and by a bar after the price, the square root of its dollars over
+ * the floor's full size (`orderBarFull`, `rowGeom`); each row a faint tint of its side's colour; text in the theme's own colour where it
+ * reads on the finished row, else black or white. Designed with Sol 6.1 and the advisor
  * (2026-11-12): size steps in type and weight and a continuous colour, without gifs, glows or flashes, on a canvas.
  */
 
@@ -23,38 +24,33 @@ export function tierOf(usd: number, scale: (usd: number) => number, whale: numbe
 }
 
 /**
- * The tint's stops: (dollars, share of the side's colour mixed into the panel). Quiet at the low end so a screen of small orders stays calm
- * and every theme's text reads on it (Sol computed the theme text's contrast over the 23 palettes at 4.84:1 or more up to 22%); the top end
- * (the Leviathan size of Sounds, $1.5M for BTC) chosen by eye on real orders, so the rare order stands out as a near-solid fill.
+ * An order row's share of its side's colour, the same for every size: the row says buy or sell at a glance and its bar says how much
+ * (Karl, 2026-11-14: the empty room between the price and the size; the size tint it replaces told size a third way, after the row's height
+ * and the amount's weight, and a side-coloured bar on a strong tint of its own side faded on exactly the largest orders). Within the shares
+ * every theme's text was checked to read on (up to 22 %, Sol, over the 23 palettes).
  */
-export function tintStops(scale: (usd: number) => number, whale: number, leviathan: number, top: number): [number, number][] {
-  // In order of size whatever the tiers of Sounds are (its Whale size may be set under $100K), and never weaker for a larger order.
-  const stops: [number, number][] = [[scale(1_000), 0.02], [scale(10_000), 0.06], [scale(100_000), 0.12], [whale, 0.18], [Math.max(leviathan, whale * 1.5), top]];
-  stops.sort((a, b) => a[0] - b[0]);
-  for (let i = 1; i < stops.length; i++) stops[i]![1] = Math.max(stops[i]![1], stops[i - 1]![1]);
-  return stops;
-}
-/** The share of the side's colour for an order of `usd`, interpolated in log dollars between the stops (flat beyond the ends). */
-export function tintOf(usd: number, stops: readonly [number, number][]): number {
-  const a = Math.abs(usd);
-  if (!(a > stops[0]![0])) return stops[0]![1];
-  for (let i = 1; i < stops.length; i++) {
-    const [x1, y1] = stops[i]!, [x0, y0] = stops[i - 1]!;
-    if (x1 <= x0) continue; // two stops at one size (a Whale size of exactly $100K): no span to interpolate over
-    if (a <= x1) return y0 + (y1 - y0) * (Math.log(a / x0) / Math.log(x1 / x0));
-  }
-  return stops[stops.length - 1]![1];
+export const ORDER_TINT = 0.07;
+/**
+ * The dollars an order's bar is full at, for the list's smallest order (store dollars, before the coin's scale): about the order one in ten
+ * is larger than at that floor (fills of one market and side in a 100 ms slice merged), on BTC's busiest twenty minutes of 2026-11-13 across
+ * 11 markets, rounded: $19.7K with no floor, $60.9K from $1K, $116K from $5K, $168K from $10K, $297K from $25K, $824K from $100K. The bar is
+ * the square root of the dollars over this, so a median order from $1K ($6.4K) draws over a third of it; one row in ten passes it (a mark).
+ */
+export function orderBarFull(minUsd: number): number {
+  return minUsd < 1_000 ? 20_000 : minUsd < 5_000 ? 50_000 : minUsd < 10_000 ? 100_000 : minUsd < 25_000 ? 150_000 : minUsd < 100_000 ? 250_000 : Math.max(1_000_000, minUsd * 10);
 }
 
 /** The colours of a row: its background, its text, and its quiet text (time, counts), each reading on that background. */
-export interface RowInk { bg: string; text: string; muted: string }
+export interface RowInk { bg: string; text: string; muted: string; glyph: string; bar: string }
 /** Steps of tint the inks are worked out for (cached per palette): finer than any eye tells apart. */
 export const TINT_STEPS = 64;
 export function rowInk(p: Palette, buy: boolean, tint: number): RowInk {
   const side = buy ? p.candleUp : p.candleDown, bg = mixHex(p.panel, side, tint);
   const text = contrastRatio(p.text, bg) >= 4.5 ? p.text : textOn(bg, 1, p);
   const muted = contrastRatio(p.muted, bg) >= 3 ? p.muted : mixHex(text, bg, 0.35);
-  return { bg, text, muted };
+  // The side's glyph (▲ ▼) in the side's colour where that reads on the row, else in the row's text colour; the size bar, 85 % of the side's
+  // colour over the row, as one solid colour (drawing it needs no change of alpha).
+  return { bg, text, muted, glyph: contrastRatio(side, bg) >= 3 ? side : text, bar: mixHex(bg, side, 0.85) };
 }
 
 /** A palette's inks for every tint step and side, worked out once. */
@@ -66,6 +62,48 @@ export class InkCache {
     const list = buy ? this.#buy : this.#sell;
     return list[step] ??= rowInk(p, buy, step / TINT_STEPS * top);
   }
+}
+
+/**
+ * How many characters `price(value)` is written with, worked out without writing it (its digits are en-US: the integer digits of the value
+ * rounded to its decimals, a comma for every three, the point and the decimals), so a frame can size the price column for every row it lays
+ * out. Within a hair of a carry the formatter's own rounding decides (it writes 9.995 as "10.00", though the double is 9.99499...): there,
+ * as for anything that is not a price (negative, not finite), the price is written and counted.
+ */
+export function priceWidth(value: number): number {
+  // Not a price, or past what the digits are counted for (-0, NaN, infinities, 1e21 and over): written and counted.
+  if (!(value > 0) || !(value < 1e21)) return price(value).length;
+  const d = priceDecimals(value), x = value * 10 ** d, lo = intDigits(Math.round(x * (1 - 1e-9)), d), hi = intDigits(Math.round(x * (1 + 1e-9)), d);
+  return lo !== hi ? price(value).length : lo + Math.floor((lo - 1) / 3) + (d > 0 ? d + 1 : 0);
+}
+
+/** An order row's spacing (CSS px): the edges' padding, the gap between parts, the venue mark's size and the side glyph's column. */
+export const ROW_PAD = 8, ROW_GAP = 6, ROW_MARK = 14, ROW_SIDE = 10;
+/** The widths an order row is laid out by (CSS px): the clock in its two forms, a digit of the clock's, the price's and the largest amount's font, and the mark past full dollars. */
+export interface RowFontWidths { hms: number; ms: number; digit11: number; digit13: number; digitBig: number; more: number }
+/** Where an order row's parts go at one width (CSS px), and the bar's full dollars. */
+export interface RowGeom { form: ClockForm; clockW: number; xMark: number; xSide: number; xPrice: number; xBar: number; barRoom: number; xMore: number; xRight: number; full: number }
+/**
+ * Where an order row's parts go at width `w`. From the left: the clock, the venue mark, the side, then a price column `priceChars` wide (the
+ * widest price among the rows drawn: a price's width rises by one at each power of ten and falls by three at $1, so the newest row alone
+ * cannot size it). From the right: the amount, with room for the widest ("$999.9K", seven characters of the largest tier), and, where rows
+ * group orders, a count before it ("×999"). Between them the bar, then the mark past its full dollars ('›') in a room of its own; no bar
+ * where that leaves it under 24 px.
+ */
+export function rowGeom(w: number, m: RowFontWidths, group: boolean, priceChars: number, full: number): RowGeom {
+  const form = clockForm(w), clockW = form === 'none' ? 0 : form === 'hms' ? m.hms : m.ms;
+  const xMark = ROW_PAD + (clockW ? clockW + ROW_GAP : 0) + ROW_MARK / 2, xSide = xMark + ROW_MARK / 2 + ROW_GAP, xPrice = xSide + ROW_SIDE + ROW_GAP, xRight = w - ROW_PAD;
+  const xBar = Math.round(xPrice + priceChars * m.digit13 + ROW_GAP);
+  // Right to left from the amount's room: the count's room and a gap (grouping), a gap, the mark, 2 px; what is left is the bar's.
+  const room = Math.floor(xRight - 7 * m.digitBig - (group ? 4 * m.digit11 + ROW_GAP : 0) - ROW_GAP - m.more - 2 - xBar);
+  const barRoom = room >= 24 ? room : 0;
+  return { form, clockW, xMark, xSide, xPrice, xBar, barRoom, xMore: xBar + barRoom + 2, xRight, full };
+}
+/** The integer digits of `units` written with `d` decimals (units of 10^-d). */
+function intDigits(units: number, d: number): number {
+  let n = 1;
+  for (let at = 10 ** (d + 1); units >= at && n < 24; at *= 10) n++;
+  return n;
 }
 
 /** The clock written on a row for the width: hours, minutes and seconds; minutes and seconds under 300 px; none under 250 px (it is in the hover). */

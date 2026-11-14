@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import { BLOCK, BOUNDARY, TapeRing } from '../src/app/tape/ring.ts';
 import type { TapeBatch } from '../src/shared/tape.ts';
 import { TradeIndex, readRecord } from '../src/app/trades/index.ts';
-import { TIERS, amountText, clockForm, rowInk, tierOf, tintOf, tintStops } from '../src/app/trades/style.ts';
+import { ORDER_TINT, ROW_GAP, ROW_MARK, ROW_PAD, TIERS, amountText, clockForm, orderBarFull, priceWidth, rowGeom, rowInk, tierOf } from '../src/app/trades/style.ts';
 import { TRADES_DEFAULTS, readTrades } from '../src/app/trades/settings.ts';
 import { PALETTES, contrastRatio } from '../src/app/theme.ts';
+import { price } from '../src/app/format.ts';
 import { LAYOUT_KEYS, readSettings } from '../src/app/store.ts';
 
 /** A batch of orders: [market, exchange time, price, signed usd]. */
@@ -104,29 +105,59 @@ test('boundaries between two rows: a reconnect between their writes, even when t
   assert.equal(index.boundariesBetween(2, 2), 0);
 });
 
-test('size is told on a fixed scale: four tiers and a log tint, the same whatever the floor', () => {
-  const same = (x: number): number => x, whale = 400_000, stops = tintStops(same, whale, 1_500_000, 0.42);
+test('size is told by four tiers and a bar whose full dollars follow the smallest order', () => {
+  const same = (x: number): number => x, whale = 400_000;
   assert.deepEqual([500, 15_000, 150_000, 450_000, -2_000_000].map(u => tierOf(u, same, whale)), [0, 1, 2, 3, 3]);
   assert.ok(TIERS.every((tier, i) => i === 0 || (tier.row > TIERS[i - 1]!.row && tier.amountPx > TIERS[i - 1]!.amountPx)));
-  assert.equal(tintOf(10, stops), 0.02);
-  assert.equal(tintOf(10_000, stops), 0.06);
-  assert.equal(tintOf(5_000_000, stops), 0.42);
-  let last = 0;
-  for (let u = 100; u < 3e6; u *= 1.3) { const k = tintOf(u, stops); assert.ok(k >= last - 1e-12, `rises with size at ${u}`); last = k; }
   // A coin that trades less: its edges scale with it.
   assert.equal(tierOf(15_000, x => x / 10, 40_000), 2);
-  // A Whale size set under $100K in Sounds: the stops stay in order and the tint never weakens for a larger order.
-  const low = tintStops(same, 30_000, 1_500_000, 0.42);
-  let prev = 0;
-  for (let u = 100; u < 3e6; u *= 1.2) { const k = tintOf(u, low); assert.ok(k >= prev - 1e-12, `rises at ${u}`); prev = k; }
+  // About the order one in ten is larger than at each floor of the menu, rounded; never under ten floors from $100K.
+  assert.deepEqual([0, 1_000, 5_000, 10_000, 25_000, 100_000, 250_000].map(orderBarFull), [20_000, 50_000, 100_000, 150_000, 250_000, 1_000_000, 2_500_000]);
+  let last = 0;
+  for (let f = 0; f < 2e6; f = f * 1.4 + 100) { const v = orderBarFull(f); assert.ok(v >= last && v > f, `full rises past the floor at ${f}`); last = v; }
 });
 
 test('every theme\'s text reads on every tint the list draws', () => {
   for (const [name, p] of Object.entries(PALETTES)) {
-    for (const tint of [0.02, 0.12, 0.18, 0.3, 0.42]) for (const buy of [true, false]) {
+    for (const tint of [0.02, ORDER_TINT, 0.12, 0.18, 0.3, 0.42]) for (const buy of [true, false]) {
       const ink = rowInk(p, buy, tint);
       assert.ok(contrastRatio(ink.text, ink.bg) >= 4.5, `${name} ${buy ? 'buy' : 'sell'} ${tint}: text ${contrastRatio(ink.text, ink.bg).toFixed(2)}`);
       assert.ok(contrastRatio(ink.muted, ink.bg) >= 2.5, `${name} ${buy ? 'buy' : 'sell'} ${tint}: muted ${contrastRatio(ink.muted, ink.bg).toFixed(2)}`);
+      const side = buy ? p.candleUp : p.candleDown;
+      assert.ok(ink.glyph === (contrastRatio(side, ink.bg) >= 3 ? side : ink.text), `${name} ${buy ? 'buy' : 'sell'} ${tint}: the side glyph in its colour only where it reads`);
+      assert.ok(contrastRatio(ink.bar, ink.bg) > 1 && ink.bar !== ink.bg, `${name} ${buy ? 'buy' : 'sell'} ${tint}: the bar stands off its row`);
+    }
+  }
+});
+
+test('a price is counted as wide as it is written, without writing it', () => {
+  // Across magnitudes, the rounding edges (9,999.96 is written 10,000.0; 9.995 is written 10.00), the decimals' own edges ($1, $1,000)
+  // and what is not a price.
+  const values: number[] = [0, -0, -1, NaN, Infinity, -Infinity, 1e21, 1e24, 1e25, Number.MAX_VALUE];
+  for (let e = -9; e <= 7; e++) for (const m of [1, 1.5, 2, 5, 9, 9.5, 9.94, 9.949, 9.95, 9.951, 9.96, 9.994, 9.995, 9.996, 9.9995, 9.99995, 9.999995]) values.push(m * 10 ** e);
+  values.push(999.995, 999.996, 999.9949, 9_999.95, 9_999.949, 99_999.95, 0.999995, 0.9999949, 68_277.4, 100_000, 99_999.94);
+  let seed = 7; const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 4000; i++) values.push(10 ** (rand() * 16 - 9));
+  for (const v of values) assert.equal(priceWidth(v), price(v).length, `${v}: "${price(v)}"`);
+  // A coin that just crossed $1 upward still shows rows below it, three characters wider: the column is sized for them.
+  assert.equal(Math.max(priceWidth(1.0001), priceWidth(0.99991)), price(0.99991).length);
+});
+
+test('an order row\'s parts never meet: the widest price, the bar, the mark past full, a count and the widest amount', () => {
+  // Three monospace fonts' advances (Consolas 0.55 em; Courier New and Lucida Console about 0.6), every width a column can have, grouping
+  // off and on, price columns of 4 to 13 characters.
+  for (const [name, em] of [['consolas', 0.55], ['courier', 0.6], ['lucida', 0.6021]] as const) {
+    const m = { hms: 8 * 11 * em, ms: 5 * 11 * em, digit11: 11 * em, digit13: 13 * em, digitBig: TIERS[TIERS.length - 1]!.amountPx * em, more: 12 * em };
+    for (let w = 240; w <= 900; w += 7) for (const group of [false, true]) for (let chars = 4; chars <= 13; chars++) {
+      const g = rowGeom(w, m, group, chars, 50_000), tag = `${name} at ${w} px, grouping ${group}, ${chars}-character prices`;
+      if (g.clockW) assert.ok(ROW_PAD + g.clockW + ROW_GAP <= g.xMark - ROW_MARK / 2 + 1e-9, `${tag}: the clock clears the venue mark`);
+      assert.ok(g.xBar - (g.xPrice + chars * m.digit13) >= ROW_GAP - 0.5, `${tag}: the widest price clears the bar`);
+      assert.ok(g.barRoom === 0 || g.barRoom >= 24, `${tag}: a bar has its room, or none is drawn`);
+      if (!g.barRoom) continue;
+      // The count ("×999", grouping) is drawn a gap left of the amount; the mark past full ends a gap before whichever comes first.
+      const amountLeft = g.xRight - 7 * m.digitBig, next = group ? amountLeft - ROW_GAP - 4 * m.digit11 : amountLeft;
+      assert.ok(g.xMore + m.more <= next - ROW_GAP + 1e-9, `${tag}: the mark clears the count and the amount`);
+      assert.equal(g.xMore, g.xBar + g.barRoom + 2);
     }
   }
 });
