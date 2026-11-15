@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { AbsorptionRecorder, markedPart, mergeMoments, parseAbsorptionAnswer, parseAbsorptionLive, parseGroup, parseMinute, peakOf, type AbsorptionAnswer, type AbsorptionGroup, type AbsorptionMinute, type AbsorptionStep } from '../src/shared/absorption.ts';
 import { AbsorptionRecorder as SqliteAbsorptionRecorder } from '../src/server/v2/absorption.mts';
-import { ABSORPTION_DEFAULTS, AbsorptionBook, MARK_MAX_PX, MARK_MIN_PX, NEAR_PX, iconsOf, markLines, markSize, passiveText, readAbsorption, type AbsorptionMark, type MarkIcon } from '../src/app/absorption.ts';
+import { ABSORPTION_DEFAULTS, AbsorptionBook, MARK_MAX_PX, MARK_MIN_PX, NEAR_PX, iconsOf, markLines, markSize, passiveText, readAbsorption, sameMarks, type AbsorptionMark, type MarkIcon } from '../src/app/absorption.ts';
 import { BookConnector, type TradeEvent } from '../src/shared/connector.ts';
 import { Engine } from '../src/shared/engine.ts';
 import type { BrowserVenue } from '../src/shared/venues.ts';
@@ -527,7 +527,12 @@ test('the marks of a window are judged once until the groups or thresholds chang
   };
   const check = (label: string): void => {
     for (const [t0, t1, p0, p1] of [[T, T + 600_000, 0, 1e9], [T + 1_000, T + 2_000, 110, 130], [T + 999, T + 999, 0, 1e9], [T - 5_000, T + 50, 120, 120]] as const)
-      assert.deepEqual(book.marks(ids, thresholds, t0, t1, p0, p1), reference(t0, t1, p0, p1), `${label}: ${t0 - T}..${t1 - T}`);
+    {
+      const ref = reference(t0, t1, p0, p1);
+      assert.deepEqual(book.marks(ids, thresholds, t0, t1, p0, p1), ref, `${label}: ${t0 - T}..${t1 - T}`);
+      // The map's order: the largest first, equal ones in the order the groups came (a stable sort of the same marks).
+      assert.deepEqual(book.marksByUsd(ids, thresholds, t0, t1, p0, p1), [...ref].sort((a, b) => b.usd - a.usd), `${label} by size: ${t0 - T}..${t1 - T}`);
+    }
   };
   // Live groups in time order (with a repeat that updates a group in place), an older window loaded after them, a few the same instant.
   for (let i = 0; i < 200; i++) add([groupAt(T + 1_000 + i * 10)]);
@@ -548,6 +553,91 @@ test('the marks of a window are judged once until the groups or thresholds chang
   check('after the smallest were dropped');
 });
 
+test('a judged list brought up to date is what judging every group gives, through updates, busy minutes, freed room and thresholds that move', () => {
+  let s = 11; const rnd = (): number => { s = (s * 1_103_515_245 + 12_345) & 0x7fffffff; return s / 0x7fffffff; };
+  const T = Math.floor(Date.now() / MIN) * MIN, ids = ['a:BTC', 'b:BTC', 'c:BTC'];
+  // Equal sizes on purpose (a few dollar values only): the order of equal marks must be the order the groups came.
+  const groupAt = (t0: number, price = 100 + Math.floor(rnd() * 8)): AbsorptionGroup => { const usd = [40_000, 60_000, 60_000, 90_000][Math.floor(rnd() * 4)]!; return { id: ids[Math.floor(rnd() * 3)]!, side: rnd() < 0.5 ? 'buy' : 'sell', price, t0, steps: [[usd, usd, 1 + Math.floor(rnd() * 5), t0, t0 + 3]] }; };
+  // A small book (room freed now and then) and three groups a minute per instrument (a busy minute lets its smallest go). Every call made to
+  // it is made again on a twin built fresh for each check, whose first question judges every group: the reference.
+  const make = (): AbsorptionBook => new AbsorptionBook(400, 3), book = make(), calls: ((b: AbsorptionBook) => void)[] = [];
+  const call = (f: (b: AbsorptionBook) => void): void => { calls.push(f); f(book); };
+  let thresholds = new Map<string, number | null>([['a:BTC', 50_000], ['b:BTC', 30_000], ['c:BTC', null]]);
+  const held: AbsorptionGroup[] = [];
+  const same = (label: string): void => {
+    const twin = make(); for (const f of calls) f(twin);
+    const whole = twin.marks(ids, thresholds, 0, Number.MAX_SAFE_INTEGER, 0, 1e9);
+    assert.deepEqual(book.marks(ids, thresholds, 0, Number.MAX_SAFE_INTEGER, 0, 1e9), whole, `${label}: in the order the groups came`);
+    assert.deepEqual(book.marksByUsd(ids, thresholds, 0, Number.MAX_SAFE_INTEGER, 0, 1e9), [...whole].sort((a, b) => b.usd - a.usd), `${label}: the largest first`);
+  };
+  same('empty');
+  for (let step = 0; step < 400; step++) {
+    const r = rnd();
+    if (r < 0.45) { const g = groupAt(T + step * 20_000); held.push(g); call(b => b.add([g])); }
+    else if (r < 0.6 && held.length) { const g = held[Math.floor(rnd() * held.length)]!, usd = 30_000 + Math.floor(rnd() * 90_000), next = { ...g, steps: [[usd, usd, 2, g.t0, g.t0 + 2]] as AbsorptionStep[] }; call(b => b.add([next])); }
+    else if (r < 0.7) { const t0 = T + Math.floor(rnd() * 20) * MIN, batch = Array.from({ length: 5 }, () => groupAt(t0 + Math.floor(rnd() * 50))); call(b => b.add(batch)); }
+    else if (r < 0.75) { const m = { id: 'a:BTC', t: T + step * MIN, n: 1, mean: 0, m2: 0, floor: 1_000 }; call(b => b.addMinutes([m])); }
+    else if (r < 0.8) { const answer = { groups: Array.from({ length: 90 }, (_, i) => groupAt(T - (i + 1) * MIN)), minutes: [], capped: [], floors: {} } as unknown as AbsorptionAnswer; call(b => b.load(answer)); }
+    else if (r < 0.9) {
+      // A threshold moves (one instrument's, or all of them, or one gains or loses one), in a new map as the map hands them over.
+      const next = new Map(thresholds), pick = ids[Math.floor(rnd() * 3)]!, k = rnd();
+      if (k < 0.6) next.set(pick, [null, 35_000, 45_000, 55_000, 70_000][Math.floor(rnd() * 5)]!);
+      else if (k < 0.8) for (const id of ids) next.set(id, 30_000 + Math.floor(rnd() * 50_000));
+      thresholds = next;
+    }
+    // Asked now and then, not after every change: bringing up to date spans several versions and thresholds.
+    if (rnd() < 0.35) same(`step ${step}`);
+  }
+  same('at the end');
+});
+
+test('a new group, a busy minute letting its smallest go, a threshold that moved: the marks they do not touch are kept, not judged again', () => {
+  const T = Math.floor(Date.now() / MIN) * MIN, two = ['a:BTC', 'b:BTC'], th = new Map<string, number | null>([['a:BTC', 10], ['b:BTC', 10]]);
+  const all = (b: AbsorptionBook, at: ReadonlyMap<string, number | null> = th): AbsorptionMark[] => b.marks(two, at, 0, Number.MAX_SAFE_INTEGER, 0, 1e9);
+  const g = (t0: number, usd: number, price = 100, id = 'a:BTC'): AbsorptionGroup => ({ id, side: 'sell', price, t0, steps: [[usd, usd, 1, t0, t0 + 1]] });
+  const book = new AbsorptionBook(1_000, 2);
+  book.add([g(T, 50), g(T + 2 * MIN, 60), g(T + 3 * MIN, 30, 100, 'b:BTC')]);
+  const first = all(book);
+  book.add([g(T + 4 * MIN, 70)]);
+  const next = all(book);
+  assert.equal(next.length, 4);
+  assert.ok(first.every(m => next.includes(m)), 'the marks held before are the same objects: caught up, not judged again');
+  // The minute of T holds two: a third larger one makes it let the smallest go.
+  book.add([g(T + 1_000, 80, 101), g(T + 2_000, 90, 102)]);
+  const after = all(book);
+  assert.ok(!after.some(m => m.usd === 50), 'the smallest of the busy minute went');
+  assert.ok(next.filter(m => m.usd !== 50).every(m => after.includes(m)), 'the rest are still the same objects');
+  // a:BTC's threshold moves: its marks are judged again (b:BTC's stay the same objects), and the values decide, not the map handed over.
+  const moved = new Map(th).set('a:BTC', 75), later = all(book, moved);
+  assert.deepEqual(later.map(m => m.usd).sort((x, y) => x - y), [30, 80, 90], 'what the moved threshold leaves');
+  assert.ok(later.filter(m => m.id === 'b:BTC').every(m => after.includes(m)), 'the other instrument is not judged again');
+  assert.ok(all(book, new Map(moved)).every(m => later.includes(m)), 'another map with the same values: nothing judged again');
+  // The reference: a book given the same groups, judged whole.
+  const twin = new AbsorptionBook(1_000, 2);
+  twin.add([g(T, 50), g(T + 2 * MIN, 60), g(T + 3 * MIN, 30, 100, 'b:BTC')]); twin.add([g(T + 4 * MIN, 70)]); twin.add([g(T + 1_000, 80, 101), g(T + 2_000, 90, 102)]);
+  assert.deepEqual(all(book, moved), all(twin, moved), 'and what judging every group gives');
+});
+
+test('a change of more groups than the log keeps (a long history answer) has a judged list judged whole again, and right', () => {
+  const T = Math.floor(Date.now() / MIN) * MIN, ids = ['a:BTC', 'b:BTC'], th = new Map<string, number | null>([['a:BTC', 40_000], ['b:BTC', 60_000]]);
+  const answer = (n: number, from: number): AbsorptionAnswer => ({ groups: Array.from({ length: n }, (_, i) => { const usd = 20_000 + (i * 7_919) % 90_000, t0 = from + i * 1_000; return { id: ids[i % 2]!, side: i % 3 ? 'buy' : 'sell', price: 100 + (i % 50), t0, steps: [[usd, usd, 1, t0, t0 + 1]] } as AbsorptionGroup; }), minutes: [], capped: [], floors: {} } as unknown as AbsorptionAnswer);
+  // A book of 20,100 groups, so 5,000 changed are under a quarter of it: only the log's bound has them judged whole.
+  const first = answer(20_100, T), big = answer(5_000, T - 6_000_000);
+  const book = new AbsorptionBook(50_000, Infinity), twin = new AbsorptionBook(50_000, Infinity);
+  book.load(first);
+  const all = (b: AbsorptionBook, fn: 'marks' | 'marksByUsd'): AbsorptionMark[] => b[fn](ids, th, 0, Number.MAX_SAFE_INTEGER, 0, 1e9);
+  const early = all(book, 'marks');
+  book.load(big); twin.load(first); twin.load(big);
+  assert.deepEqual(all(book, 'marks'), all(twin, 'marks'));
+  assert.ok(!early.some(m => all(book, 'marks').includes(m)), 'judged whole: the log keeps no list of 5,000 keys');
+  assert.deepEqual(all(book, 'marksByUsd'), all(twin, 'marksByUsd'));
+  // Then live groups again: caught up one by one from there.
+  const g = { id: 'a:BTC', side: 'buy', price: 120, t0: T + 500_000, steps: [[95_000, 95_000, 1, T + 500_000, T + 500_001]] } as AbsorptionGroup;
+  const held = all(book, 'marks'); book.add([g]); twin.add([g]);
+  assert.deepEqual(all(book, 'marks'), all(twin, 'marks'));
+  assert.ok(held.every(m => all(book, 'marks').includes(m)), 'the marks held before are kept (caught up, not judged whole)');
+});
+
 test('marks near each other become one square exactly as comparing each with every square did', () => {
   let s = 9; const rnd = (): number => { s = (s * 1_103_515_245 + 12_345) & 0x7fffffff; return s / 0x7fffffff; };
   const marks: AbsorptionMark[] = Array.from({ length: 3_000 }, (_, i) => ({ id: `v${i % 4}:BTC`, side: rnd() < 0.5 ? 'buy' : 'sell', price: 100 + rnd() * 40, t0: i, t1: i, usd: 1 + Math.floor(rnd() * 40) * 1_000, fills: 1, peak: 1, threshold: 1 }));
@@ -562,6 +652,10 @@ test('marks near each other become one square exactly as comparing each with eve
   const icons = iconsOf(marks, xOf, yOf, 800, 560);
   assert.ok(icons.some(i => i.marks.length > 3), 'the made-up marks crowd together');
   assert.deepEqual(icons, reference);
+  // Given the largest first already (the book's `marksByUsd`, equal sizes in the order given), the same squares without sorting again.
+  assert.deepEqual(iconsOf([...marks].sort((a, b) => b.usd - a.usd), xOf, yOf, 800, 560), reference);
+  // Off the plot in every direction and a mark with no place: left out, as before.
+  assert.deepEqual(iconsOf([{ ...marks[0]!, price: 1e9 }, { ...marks[1]!, price: -1e9 }, { ...marks[2]!, price: Number.NaN }], xOf, yOf, 800, 560), []);
 });
 
 test('a question reaching back into a large store does not overflow the stack (the first answers after a restart)', async () => {
@@ -572,4 +666,29 @@ test('a question reaching back into a large store does not overflow the stack (t
   const answer = await recorder.query(['binance:BTCUSDT'], [0], T0 - 300_000 * MIN, T0, 50, T0 - 300_000 * MIN);
   assert.equal(answer.minutes.length, 300_000);
   assert.equal(answer.floors['binance:BTCUSDT'], 1_000);
+});
+
+test('a new version of the book that touched nothing in view gives the same marks, which keep the squares on the map; a change in view gives others', () => {
+  // The map lays its squares out again only when the marks in view changed (HeatPane.#paintAbsorption, 2026-11-14: 23 of 33 versions in a
+  // busy half minute changed none, each costing a clustering of ~24,000 marks). A mark judged again is a new object, so objects compare.
+  const g = (id: string, minute: number, peak: number, price: number): AbsorptionGroup => ({ id, side: 'buy', price, t0: T0 + minute * MIN, steps: [[peak, peak, 1, T0 + minute * MIN, T0 + minute * MIN]] });
+  const book = new AbsorptionBook(), ids = ['a:BTC'], thresholds = new Map<string, number | null>([['a:BTC', 10]]);
+  book.add([g('a:BTC', 0, 50, 100), g('a:BTC', 1, 80, 101), g('a:BTC', 2, 30, 102)]);
+  const inView = (): AbsorptionMark[] => book.marksByUsd(ids, thresholds, T0, T0 + 3 * MIN, 95, 105);
+  const first = inView(), version = book.version;
+  assert.equal(first.length, 3);
+  // Far outside the view's prices: the book moves on, the marks in view do not.
+  book.add([g('a:BTC', 1, 60, 500)]);
+  assert.ok(book.version > version, 'the book has a new version');
+  const second = inView();
+  assert.ok(second !== first && sameMarks(first, second), 'the same marks: the squares are kept');
+  // A group in view that grows is judged again: a new object, so the squares are laid out again.
+  book.add([g('a:BTC', 2, 90, 102)]);
+  const third = inView();
+  assert.ok(!sameMarks(second, third), 'a mark in view changed');
+  assert.equal(third.find(m => m.price === 102)!.usd, 90);
+  // A list of the same values in new objects, a shorter one, an empty one.
+  assert.ok(!sameMarks(third, third.map(m => ({ ...m }))), 'new objects are not taken for the same marks');
+  assert.ok(!sameMarks(third, third.slice(1)));
+  assert.ok(sameMarks([], []));
 });

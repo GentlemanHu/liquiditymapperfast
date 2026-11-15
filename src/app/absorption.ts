@@ -58,36 +58,84 @@ export const NEAR_PX = 12;
 export interface MarkIcon { side: 'buy' | 'sell'; x: number; y: number; usd: number; marks: AbsorptionMark[] }
 
 /**
- * The marks as squares on a plot `w` x `h` px: the largest first, each joins the first square of its side within NEAR_PX on both axes (its
- * volume added) or starts one where it is; a mark more than NEAR_PX off the plot is left out. Squares never move, so the ones a mark can
- * join are in the 3 x 3 cells of NEAR_PX around it: the same squares as comparing it with every one, in one pass.
+ * The marks as squares on a plot `w` x `h` px: the largest first (equal ones in the order given), each joins the first square of its side
+ * within NEAR_PX on both axes (its volume added) or starts one where it is; a mark more than NEAR_PX off the plot is left out. Squares never
+ * move, so the ones a mark can join are in the 3 x 3 cells of NEAR_PX around it: the same squares as comparing it with every one, in one
+ * pass. The cells' squares are linked lists in flat arrays over a grid of the plot and two cells around it, and marks given already the
+ * largest first (the book's `marksByUsd`) are not sorted again: on the live page's 27,890 marks in view, 6 ms instead of 24-30.
  */
 export function iconsOf(marks: readonly AbsorptionMark[], xOf: (m: AbsorptionMark) => number, yOf: (m: AbsorptionMark) => number, w: number, h: number): MarkIcon[] {
-  const icons: MarkIcon[] = [], cells = new Map<number, number[]>();
-  const cellOf = (cx: number, cy: number): number => (cx + 4) * 1_048_576 + (cy + 4);
-  for (const m of [...marks].sort((a, b) => b.usd - a.usd)) {
+  let sorted = true;
+  for (let i = 1; i < marks.length && sorted; i++) if (marks[i]!.usd > marks[i - 1]!.usd) sorted = false;
+  const order = sorted ? marks : [...marks].sort((a, b) => b.usd - a.usd);
+  const rows = Math.floor((h + NEAR_PX) / NEAR_PX) + 4, cols = Math.floor((w + NEAR_PX) / NEAR_PX) + 4;
+  const head = new Int32Array(Math.max(1, cols * rows)).fill(-1), next: number[] = [], ix: number[] = [], iy: number[] = [], buy: boolean[] = [];
+  const icons: MarkIcon[] = [];
+  for (const m of order) {
     const x = xOf(m), y = yOf(m);
     if (!(x >= -NEAR_PX && x <= w + NEAR_PX && y >= -NEAR_PX && y <= h + NEAR_PX)) continue;
-    const cx = Math.floor(x / NEAR_PX), cy = Math.floor(y / NEAR_PX);
+    const cx = Math.floor(x / NEAR_PX) + 2, cy = Math.floor(y / NEAR_PX) + 2, isBuy = m.side === 'buy';
     let joins = -1;
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-      for (const i of cells.get(cellOf(cx + dx, cy + dy)) ?? []) {
-        const icon = icons[i]!;
-        if ((joins < 0 || i < joins) && icon.side === m.side && Math.abs(icon.x - x) < NEAR_PX && Math.abs(icon.y - y) < NEAR_PX) joins = i;
+      for (let j = head[(cx + dx) * rows + cy + dy]!; j >= 0; j = next[j]!) {
+        if ((joins < 0 || j < joins) && buy[j] === isBuy && Math.abs(ix[j]! - x) < NEAR_PX && Math.abs(iy[j]! - y) < NEAR_PX) joins = j;
       }
     }
     if (joins >= 0) { const icon = icons[joins]!; icon.usd += m.usd; icon.marks.push(m); continue; }
-    const key = cellOf(cx, cy), cell = cells.get(key);
-    if (cell) cell.push(icons.length); else cells.set(key, [icons.length]);
+    const cell = cx * rows + cy;
+    next.push(head[cell]!); head[cell] = icons.length; ix.push(x); iy.push(y); buy.push(isBuy);
     icons.push({ side: m.side, x, y, usd: m.usd, marks: [m] });
   }
   return icons;
+}
+
+/**
+ * Whether two lists of marks are the same marks in the same order (the map keeps its squares then, `HeatPane.#paintAbsorption`). A mark
+ * judged again is a new object (`AbsorptionBook.#markOf`) and a mark is never changed in place, so comparing the objects is enough.
+ */
+export function sameMarks(a: readonly AbsorptionMark[], b: readonly AbsorptionMark[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 const MINUTE = 60_000;
 const keyOf = (g: AbsorptionGroup): string => `${g.id}|${g.side}|${g.price}|${g.t0}`;
 /** The instrument and minute a group is kept under, as the recorder keeps it: the minute of its first fill. */
 const slotOf = (g: AbsorptionGroup): string => `${g.id}|${Math.floor(g.t0 / MINUTE)}`;
+
+/** A group judged a mark: its key, its place in the book's order (`#seq`), when it started, its mark and the mark's dollars (what orders it). */
+interface JudgedMark { key: string; seq: number; t0: number; usd: number; mark: AbsorptionMark }
+/** The marks of every group at one set of thresholds: in the book's order, and the largest first (equal ones in the book's order). */
+interface Judged { version: number; thresholds: ReadonlyMap<string, number | null>; ids: string; wanted: ReadonlySet<string>; marks: JudgedMark[]; byUsd: JudgedMark[]; at: Map<string, JudgedMark> }
+/** The order of `Judged.byUsd`: the largest first, equal ones in the book's order (what a stable sort of the book's order by size gives). */
+const byUsd = (a: JudgedMark, b: JudgedMark): number => b.usd - a.usd || a.seq - b.seq;
+/** The order of `Judged.marks`: the book's. */
+const bySeq = (a: JudgedMark, b: JudgedMark): number => a.seq - b.seq;
+/** The first place in `list` (ordered by `cmp`) that `x` is not after. */
+function lowerBound<T>(list: readonly T[], x: T, cmp: (a: T, b: T) => number): number {
+  let lo = 0, hi = list.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (cmp(list[mid]!, x) < 0) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+/** Two lists ordered by `cmp` (no element in both) as one, in one pass (pushed, so the list has no holes: reading it stays fast). */
+function merged<T>(a: readonly T[], b: readonly T[], cmp: (x: T, y: T) => number): T[] {
+  const out: T[] = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) out.push(cmp(a[i]!, b[j]!) <= 0 ? a[i++]! : b[j++]!);
+  while (i < a.length) out.push(a[i++]!);
+  while (j < b.length) out.push(b[j++]!);
+  return out;
+}
+/**
+ * Versions of the book whose changes are remembered (for a judged list to catch up instead of judging every group again), and the most keys
+ * they keep: one change of more groups than LOG_KEYS is noted as too many (a list from before it is judged whole again), and the oldest
+ * versions go once the log holds LOG_TOTAL keys (twenty history answers of 30,000 groups each had kept 122 MB of keys).
+ */
+const LOG_MAX = 256, LOG_KEYS = 4_096, LOG_TOTAL = 16_384;
+/** Up to this many groups judged again are each put in their place (a part of two lists moved); more, both lists are merged in one pass. */
+const FEW_KEYS = 64;
 
 /**
  * What the last history answer says the book holds: every group of its instruments that started in [from, to) (`to` is Infinity when the
@@ -131,14 +179,28 @@ export class AbsorptionBook {
    */
   readonly floors = new Map<string, number>();
   /**
-   * Every group that is a mark at the thresholds last asked for, with the time it started, in the order the groups came: judged again only
-   * when the groups, the thresholds (a new map from the caller) or the instruments change, so a frame that only moves the pointer, or the
-   * map, reads a list instead of judging tens of thousands of groups. Two are kept, the one used last first: the map's and the Range panel's
-   * (which judges with its own thresholds now and then) do not push each other out.
+   * For a set of instruments, every group that is a mark at the thresholds last asked for, with the time it started, in the order the groups
+   * came and the largest first. Brought up to date when asked, never judged whole again unless the instruments change or that is cheaper: the
+   * groups added, changed or let go since (`#log`) and the groups of each instrument whose threshold moved are judged again in place. On the
+   * live page every group found (about one a second, a busy minute letting its smallest go as often) had all 26,000 judged again (5-17 ms),
+   * and each threshold that moved, five times in the seconds after every minute, all of them again (20-40 ms). Two lists are kept, the one
+   * used last first: the map's and the Range panel's do not push each other out.
    */
-  #judged: { version: number; thresholds: ReadonlyMap<string, number | null>; ids: string; marks: { t0: number; mark: AbsorptionMark }[] }[] = [];
+  #judged: Judged[] = [];
+  /** Each group's place in the order the groups came (`#groups`' own): numbered as it first enters, again if it enters again after going. */
+  readonly #seq = new Map<string, number>();
+  #nextSeq = 0;
+  /** The keys of each instrument's groups (what a moved threshold judges again). */
+  readonly #keysOf = new Map<string, Set<string>>();
+  /** The groups the change under way added, changed or let go (by key), while `add` runs. */
+  #touched: string[] | null = null;
+  /** What each version changed (see LOG_MAX): the keys of the groups added, changed or let go; none for minutes alone; null for too many. */
+  #log: { version: number; keys: readonly string[] | null }[] = [];
+  #logKeys = 0;
   /** Bumped whenever anything changes, so a painter can tell its cache is stale. */
   version = 0;
+  /** Bumped when the minutes change (the automatic threshold reads them): groups alone leave it, so a painter keeps its thresholds. */
+  minutesVersion = 0;
   constructor(private max = 40_000, private perMinute = GROUPS_PER_MINUTE) {}
 
   get size(): number { return this.#groups.size; }
@@ -149,10 +211,16 @@ export class AbsorptionBook {
 
   add(groups: readonly AbsorptionGroup[]): void {
     if (!groups.length) return;
-    const crowded = new Set<string>();
+    const crowded = new Set<string>(), touched: string[] = [];
+    this.#touched = touched;
     for (const g of groups) {
       const key = keyOf(g), slot = slotOf(g);
-      this.#groups.set(key, g);
+      if (!this.#groups.has(key)) {
+        this.#seq.set(key, this.#nextSeq++);
+        let keys = this.#keysOf.get(g.id); if (!keys) { keys = new Set(); this.#keysOf.set(g.id, keys); }
+        keys.add(key);
+      }
+      this.#groups.set(key, g); touched.push(key);
       let held = this.#slots.get(slot); if (!held) { held = new Map(); this.#slots.set(slot, held); }
       held.set(key, g);
       if (held.size > this.perMinute) crowded.add(slot);
@@ -162,11 +230,19 @@ export class AbsorptionBook {
       for (const [key, g] of [...held].sort((a, b) => largerFirst(a[1], b[1])).slice(this.perMinute)) this.#drop(key, g);
     }
     if (this.#groups.size > this.max) this.#evict();
+    this.#touched = null;
     this.version++;
+    this.#note(touched);
+  }
+  /** What this version changed, for the judged lists to catch up with (`#log`). */
+  #note(keys: readonly string[]): void {
+    const kept = keys.length > LOG_KEYS ? null : keys;
+    this.#log.push({ version: this.version, keys: kept }); this.#logKeys += kept?.length ?? 0;
+    while (this.#log.length > LOG_MAX || this.#logKeys > LOG_TOTAL) this.#logKeys -= this.#log.shift()!.keys?.length ?? 0;
   }
 
   #drop(key: string, g: AbsorptionGroup): void {
-    this.#groups.delete(key);
+    this.#groups.delete(key); this.#seq.delete(key); this.#keysOf.get(g.id)?.delete(key); this.#touched?.push(key);
     const slot = slotOf(g), held = this.#slots.get(slot);
     if (held) { held.delete(key); if (!held.size) this.#slots.delete(slot); }
   }
@@ -205,7 +281,8 @@ export class AbsorptionBook {
     }
     const cutoff = Date.now() - 25 * 3_600_000;
     for (const byTime of this.#minutes.values()) for (const t of byTime.keys()) if (t < cutoff) byTime.delete(t);
-    this.version++;
+    this.version++; this.minutesVersion++;
+    this.#note([]);
   }
 
   /**
@@ -224,6 +301,7 @@ export class AbsorptionBook {
     }
     this.add(answer.groups); this.addMinutes(answer.minutes);
     this.version++;
+    this.#note([]);
   }
 
   /**
@@ -246,24 +324,97 @@ export class AbsorptionBook {
    * threshold. The marks are shared between calls: read them, never change them.
    */
   marks(ids: readonly string[], thresholds: ReadonlyMap<string, number | null>, t0: number, t1: number, p0: number, p1: number): AbsorptionMark[] {
-    const idsKey = ids.join(',');
-    let judged = this.#judged.find(j => j.version === this.version && j.thresholds === thresholds && j.ids === idsKey);
-    if (judged) this.#judged = [judged, ...this.#judged.filter(j => j !== judged)];
-    else {
-      const wanted = new Set(ids), marks: { t0: number; mark: AbsorptionMark }[] = [];
-      for (const g of this.#groups.values()) {
-        if (!wanted.has(g.id)) continue;
-        const threshold = thresholds.get(g.id);
-        if (threshold === null || threshold === undefined || peakOf(g) < threshold) continue;
-        const part = markedPart(g, threshold);
-        if (part) marks.push({ t0: g.t0, mark: { id: g.id, side: g.side, price: g.price, t0: part.t0, t1: part.t1, usd: part.usd, fills: part.fills, peak: part.peak, threshold } });
-      }
-      judged = { version: this.version, thresholds, ids: idsKey, marks };
-      this.#judged = [judged, ...this.#judged.filter(j => j.version === this.version)].slice(0, 2);
-    }
+    return this.#within(this.#judge(ids, thresholds).marks, t0, t1, p0, p1);
+  }
+  /** The same marks, the largest first (equal ones in the order the groups came): what the map lays out as squares (`iconsOf`) without sorting. */
+  marksByUsd(ids: readonly string[], thresholds: ReadonlyMap<string, number | null>, t0: number, t1: number, p0: number, p1: number): AbsorptionMark[] {
+    return this.#within(this.#judge(ids, thresholds).byUsd, t0, t1, p0, p1);
+  }
+  #within(list: readonly JudgedMark[], t0: number, t1: number, p0: number, p1: number): AbsorptionMark[] {
     const out: AbsorptionMark[] = [], from = t0 - ABSORPTION_WINDOW_MS;
-    for (const { t0: start, mark } of judged.marks) if (start >= from && start <= t1 && mark.price >= p0 && mark.price <= p1) out.push(mark);
+    for (const { t0: start, mark } of list) if (start >= from && start <= t1 && mark.price >= p0 && mark.price <= p1) out.push(mark);
     return out;
+  }
+  /** The judged list for these instruments at these thresholds, as the book stands now: brought up to date (`#bringUp`), or judged whole. */
+  #judge(ids: readonly string[], thresholds: ReadonlyMap<string, number | null>): Judged {
+    const idsKey = ids.join(',');
+    let judged = this.#judged.find(j => j.ids === idsKey);
+    if (judged && !this.#bringUp(judged, thresholds)) judged = undefined;
+    if (!judged) {
+      const made: Judged = { version: this.version, thresholds, ids: idsKey, wanted: new Set(ids), marks: [], byUsd: [], at: new Map() };
+      for (const [key, g] of this.#groups) { const m = this.#markOf(made, key, g); if (m) { made.marks.push(m); made.at.set(key, m); } }
+      made.byUsd = [...made.marks].sort(byUsd);
+      judged = made;
+    }
+    const first = judged;
+    this.#judged = [first, ...this.#judged.filter(j => j !== first)].slice(0, 2);
+    return first;
+  }
+  /** Group `g` (kept under `key`) as a mark of `judged`'s thresholds, or null. */
+  #markOf(judged: Judged, key: string, g: AbsorptionGroup): JudgedMark | null {
+    if (!judged.wanted.has(g.id)) return null;
+    const threshold = judged.thresholds.get(g.id);
+    if (threshold === null || threshold === undefined || peakOf(g) < threshold) return null;
+    const part = markedPart(g, threshold);
+    return part ? { key, seq: this.#seq.get(key)!, t0: g.t0, usd: part.usd, mark: { id: g.id, side: g.side, price: g.price, t0: part.t0, t1: part.t1, usd: part.usd, fills: part.fills, peak: part.peak, threshold } } : null;
+  }
+  /**
+   * Bring `judged` up to the book's version and to `thresholds`: the groups added, changed or let go since it was judged (the log) and every
+   * group of an instrument whose threshold moved are judged again (`#refresh`), which is what judging every group gives, the others being as
+   * they were; false, and nothing changed, where the log does not reach back, notes too many, or those are more than a quarter of the groups
+   * (judging every group from the start is cheaper then: 40,000 groups in about 25 ms, against keeping both orders in step one by one).
+   */
+  #bringUp(judged: Judged, thresholds: ReadonlyMap<string, number | null>): boolean {
+    const keys = new Set<string>();
+    if (judged.version !== this.version) {
+      const log = this.#log, start = log.findIndex(e => e.version > judged.version);
+      if (start < 0 || log[start]!.version !== judged.version + 1) return false;
+      for (let i = start; i < log.length; i++) { const changed = log[i]!.keys; if (changed === null) return false; for (const key of changed) keys.add(key); }
+    }
+    // The instruments whose threshold moved, counted before any of their groups is looked at.
+    const moved: string[] = [];
+    let count = keys.size;
+    if (judged.thresholds !== thresholds) for (const id of judged.wanted) if (!Object.is(judged.thresholds.get(id), thresholds.get(id))) { moved.push(id); count += this.#keysOf.get(id)?.size ?? 0; }
+    if (count > FEW_KEYS && count > this.#groups.size / 4) return false;
+    for (const id of moved) for (const key of this.#keysOf.get(id) ?? []) keys.add(key);
+    judged.thresholds = thresholds;
+    if (keys.size) this.#refresh(judged, keys);
+    judged.version = this.version;
+    return true;
+  }
+  /**
+   * The groups of `keys` judged again as the book holds them now: a mark whose dollars and place did not change takes its new value where it
+   * is (a threshold that moved a little leaves most marks on the same step: only its own figure changes), the others go out and come in at
+   * their places in both orders.
+   */
+  #refresh(judged: Judged, keys: ReadonlySet<string>): void {
+    const gone = new Set<string>(), fresh: JudgedMark[] = [];
+    for (const key of keys) {
+      const was = judged.at.get(key), g = this.#groups.get(key), mark = g ? this.#markOf(judged, key, g) : null;
+      if (was && mark && mark.seq === was.seq && mark.t0 === was.t0 && mark.usd === was.usd) { was.mark = mark.mark; continue; }
+      if (was) gone.add(key);
+      if (mark) fresh.push(mark);
+    }
+    if (gone.size + fresh.length <= FEW_KEYS) {
+      for (const key of gone) {
+        const was = judged.at.get(key)!;
+        judged.marks.splice(lowerBound(judged.marks, was, bySeq), 1);
+        judged.byUsd.splice(lowerBound(judged.byUsd, was, byUsd), 1);
+        judged.at.delete(key);
+      }
+      for (const mark of fresh) {
+        judged.marks.splice(lowerBound(judged.marks, mark, bySeq), 0, mark);
+        judged.byUsd.splice(lowerBound(judged.byUsd, mark, byUsd), 0, mark);
+        judged.at.set(mark.key, mark);
+      }
+      return;
+    }
+    // Many (a threshold moved, room freed): each list filtered and merged with the new marks in one pass.
+    const kept = (m: JudgedMark): boolean => !gone.has(m.key);
+    judged.marks = merged(judged.marks.filter(kept), [...fresh].sort(bySeq), bySeq);
+    judged.byUsd = merged(judged.byUsd.filter(kept), [...fresh].sort(byUsd), byUsd);
+    for (const key of gone) judged.at.delete(key);
+    for (const mark of fresh) judged.at.set(mark.key, mark);
   }
 
   /** The highest floor of `id` over [from, to): the last answer's (`floors`) with the minutes held there, the live stream's among them. */

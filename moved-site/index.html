@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="referrer" content="origin">
+  <title>LiquidityMapperFast has moved to liquiditymapper.com</title>
+  <link rel="canonical" href="https://liquiditymapper.com/">
+  <noscript><meta http-equiv="refresh" content="0; url=https://liquiditymapper.com/"></noscript>
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; font: 16px/1.5 system-ui, sans-serif; background: #fff; color: #1b1d1e; }
+    @media (prefers-color-scheme: dark) { body { background: #111317; color: #e6e8eb; } a { color: #7fb4ff; } }
+    main { max-width: 34rem; padding: 16px; text-align: center; }
+  </style>
+  <!--
+    The old address's page (liquiditymapperfast.github.io, index.html and 404.html alike). It reads what this browser saved here (layouts,
+    drawings, scripts, settings, the coin and the venues: localStorage belongs to the address) and opens the new address with it in the
+    fragment, which no server receives; the new site takes it once (src/app/handover.ts, same key rule and encoding as below). Other paths
+    go to the same path there. An installed copy of the app is told to install it again rather than sent off.
+    The module script below does nothing: a tab still open on the old site asks which build the site serves (src/app/update-check.ts) and
+    offers Reload when this file's name differs from its own, which brings it here.
+  -->
+  <script type="module" src="/assets/moved-v1a2026.js"></script>
+  <script>
+    var Moved = (function () {
+      var NEW_ORIGIN = 'https://liquiditymapper.com';
+      var PREFIX = '#hlm-handover=';
+      var MAX_URL = 1000000;
+      function handed(key) {
+        if (!/^(?:hlm-[a-z0-9][a-z0-9:._-]{0,79}|lmf\.[a-z0-9][a-z0-9._-]{0,79})$/.test(key)) return false;
+        return key !== 'lmf.coins' && key !== 'hlm-stale' && key !== 'hlm-stale-reload' && key !== 'hlm-handover-v1';
+      }
+      function base64url(bytes) {
+        var binary = '';
+        for (var i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      }
+      function encode(text) {
+        var bytes = new TextEncoder().encode(text);
+        var plainForm = function () { return 'j' + base64url(bytes); };
+        if (typeof CompressionStream !== 'function') return Promise.resolve(plainForm());
+        return Promise.resolve().then(function () {
+          return new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer();
+        }).then(function (buffer) { return 'z' + base64url(new Uint8Array(buffer)); }, plainForm);
+      }
+      function saved(storage) {
+        var items = {}, count = 0;
+        try {
+          for (var i = 0; i < storage.length; i++) {
+            var key = storage.key(i);
+            if (key === null || !handed(key)) continue;
+            var value = storage.getItem(key);
+            if (value !== null) { items[key] = value; count++; }
+          }
+        } catch (e) { return null; }
+        return count ? items : null;
+      }
+      function plain(loc) {
+        var root = /^\/(?:index(?:\.html)?|404\.html)?$/.test(loc.pathname) || /^\/\//.test(loc.pathname);
+        var guide = /^#guide(?:\/[a-z-]+)?$/.test(loc.hash) ? loc.hash : '';
+        return { root: root, url: NEW_ORIGIN + (root ? '/' : loc.pathname) + loc.search, guide: guide };
+      }
+      function target(loc, storage) {
+        var p = plain(loc), items = p.root ? saved(storage) : null;
+        if (!items) return Promise.resolve(p.url + p.guide);
+        return encode(JSON.stringify({ v: 1, items: items })).then(function (data) {
+          var full = p.url + PREFIX + data + (p.guide ? '~' + p.guide.slice(1) : '');
+          return full.length <= MAX_URL ? full : p.url + p.guide;
+        }, function () { return p.url + p.guide; });
+      }
+      return { target: target, plain: plain, saved: saved, encode: encode, handed: handed };
+    })();
+    if (typeof document !== 'undefined' && typeof location !== 'undefined') {
+      var storage = null;
+      try { storage = window.localStorage; } catch (e) { /* blocked storage: nothing to carry */ }
+      var installed = false;
+      try { installed = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; } catch (e) { /* no media queries: a browser tab */ }
+      var fallback = Moved.plain(location);
+      var ready = function (fn) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn); else fn(); };
+      Moved.target(location, storage || { length: 0, key: function () { return null; }, getItem: function () { return null; } }).then(function (to) {
+        ready(function () {
+          document.getElementById('go').href = to;
+          if (installed) { document.getElementById('installed').hidden = false; document.getElementById('taking').hidden = true; }
+        });
+        if (installed) return;
+        try { location.replace(to); } catch (e) { location.replace(fallback.url + fallback.guide); }
+      });
+    }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>LiquidityMapperFast has moved</h1>
+    <p>Its new address is <a id="go" href="https://liquiditymapper.com/">liquiditymapper.com</a>.</p>
+    <p id="taking">Taking you there, with your layouts, drawings, scripts and settings…</p>
+    <p id="installed" hidden>You installed it as an app, and this copy still opens the old address. Open the new address with the link above (your layouts, drawings, scripts and settings come with you), then install it again from there and remove this copy.</p>
+  </main>
+</body>
+</html>

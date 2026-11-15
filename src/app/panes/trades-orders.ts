@@ -16,6 +16,7 @@ import { TradeIndex, readRecord, type TradeRecord } from '../trades/index.ts';
 import { RetainedRows } from './retained-rows.ts';
 import { DIVIDER_ROW, InkCache, ORDER_TINT, ROW_GAP, ROW_MARK, ROW_PAD, TIERS, amountText, clockForm, orderBarFull, priceWidth, rowGeom, tierOf, type RowFontWidths, type RowGeom, type Tier } from '../trades/style.ts';
 import { GROUP_MS } from '../trades/settings.ts';
+import { Conveyor } from '../trades/conveyor.ts';
 import type { TnsLine } from '../tns/model.ts';
 import type { Store } from '../store.ts';
 
@@ -23,8 +24,6 @@ const MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const PAD = ROW_PAD, GAP = ROW_GAP, MARK = ROW_MARK;
 /** Rows found beyond the visible ones (so a wheel step or a held list has them ready). */
 const OVERSCAN = 40;
-/** A new row slides in only when the batch adds this little (Sol: a fast conveyor of repeated slides reads worse than a plain update). */
-const SLIDE_ROWS = 2, SLIDE_PX = 48, SLIDE_MS = 120;
 /** A list out of sight longer than this (in writes) is found again from the newest rather than caught up order by order. */
 const CATCH_UP_MAX = 50_000;
 /**
@@ -39,7 +38,7 @@ interface FontWidths extends RowFontWidths { dpr: number }
 /** What an order row shows (one order, or the orders a row groups): its time, price, signed dollars, market and how many orders. */
 interface RowOrder { t: number; price: number; usd: number; id: string; orders: number }
 /** A row of a frame (device pixels), laid out before anything is drawn: its signature and what draws it. */
-interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; tier: (typeof TIERS)[number]; orders: number; usd: number; showTime: boolean; outlined: boolean; reasons: number; words: string }
+interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; tier: (typeof TIERS)[number]; orders: number; usd: number; timeY: number; outlined: boolean; reasons: number; words: string }
 /** A line the last frame drew: an order (or a burst of them when grouping is on), or a divider where orders may be missing. */
 type Drawn =
   | { kind: 'row'; k: number; y: number; h: number; rec: TradeRecord; orders: number; usd: number }
@@ -48,13 +47,15 @@ type Drawn =
 /**
  * Trades' "Each order" unit (the flow column's second view; until 2026-11-13 the view All trades): every market order the page receives
  * (the tape ring's), newest on top, on one canvas. Size is carried by row height, the amount's type and a bar after the price, the square
- * root of its dollars (`trades/style.ts`); every row says its side with ▲/▼ and a faint tint of its colour. The list holds still under a mouse or once scrolled back (a
- * key counts what arrived meanwhile), a row pointed at sets the shared time cursor and a click takes the map there. Forward only: the
- * orders are the ring's, from when it started, never fetched. `panes/trades-view.ts` is the shell around it (the menus, the status).
+ * root of its dollars (`trades/style.ts`); every row says its side with ▲/▼ and a faint tint of its colour. New rows come down from the top on
+ * every frame (`trades/conveyor.ts`: the batches arrive four times a second, the list moves sixty). The list holds still under a mouse or
+ * once scrolled back (a key counts what arrived meanwhile, the rows not yet down included), a row pointed at sets the shared time cursor and
+ * a click takes the map there. Forward only: the orders are the ring's, from when it started, never fetched. `panes/trades-view.ts` is the
+ * shell around it (the menus, the status).
  */
 export class OrderList {
   readonly root = el('div', { class: 'trades-wrap trades-orders' });
-  #canvas = el('canvas', { class: 'trades-canvas', ariaLabel: t('Trades') });
+  #canvas = el('canvas', { class: 'trades-canvas', ariaLabel: t('Tape') });
   #ctx: CanvasRenderingContext2D;
   #pill = el('button', { type: 'button', class: 'trades-resume', hidden: true });
   #index = new TradeIndex();
@@ -65,12 +66,16 @@ export class OrderList {
   /** null: the list follows the newest order; else the row of write `k` is drawn `offset` px above the top (held, or scrolled back). */
   #anchor: { k: number; offset: number } | null = null;
   #pointerIn = false; #pointer: { x: number; y: number } | null = null;
-  /** A finger on the list: where it last was, whether it moved (a drag scrolls, a still tap pins a row), and the row a tap pinned. */
-  #touch: { id: number; y: number; moved: number; owed: number } | null = null;
+  /**
+   * A finger on the list: where it last was, whether it moved (a drag scrolls, a still tap pins a row), whether it took the hold as it touched
+   * (a cancelled touch gives it back), and the row a tap pinned.
+   */
+  #touch: { id: number; y: number; moved: number; owed: number; took: boolean } | null = null;
   #pinned: number | null = null;
   /** The wheel moved the list back from the newest order: it stays held when the pointer leaves. */
   #scrolled = false;
-  #slide: { px: number; start: number } | null = null;
+  /** What the batches added above the newest row drawn, played out a little on every frame while the list follows the newest. */
+  #conveyor = new Conveyor();
   #drawn: Drawn[] = [];
   /** The rows kept on the canvas between frames, this frame's rows, and a count bumped by any change the look key cannot see. */
   readonly rows = new RetainedRows();
@@ -89,12 +94,19 @@ export class OrderList {
   #historyCharsOf: TnsLine[] | null = null; #historyCharsN = 0;
   /** The one row description the painter is handed, filled for each row (no object made for every row drawn). */
   #order: RowOrder = { t: 0, price: 0, usd: 0, id: '', orders: 1 };
+  /** Prices as written, by value (a moving list draws a row or two a frame, mostly at prices it wrote moments before). */
+  #prices = new Map<number, string>();
   #scanTimer = 0;
   /** What the index was found for: the list's settings and the venues the map shows (a venue's book joining the map lets its orders in). */
   #filterKey = '';
   #resizeObserver: ResizeObserver;
   /** The last press was a finger (its click is the tap's, not a mouse click that takes the map to the order). */
   #lastTouch = false;
+  /**
+   * A press began on the key at the foot of a held list: only then does a click on it let the list go (a finger holds the list as it touches,
+   * so the key can appear under a tap begun on the rows, and the tap's click would land on it; a keyboard's click has no press and counts).
+   */
+  #pillPressed = false;
   /** The tape ring (set by the page: it exists once a view has asked for the tape). */
   ring: () => TapeRing | null = () => null;
   /** Take the map to an order (set by the shell). */
@@ -109,7 +121,12 @@ export class OrderList {
   constructor(private store: Store) {
     this.root.append(this.#canvas, this.#pill);
     this.#ctx = this.#canvas.getContext('2d', { alpha: false })!;
-    this.#pill.onclick = () => { this.#pointerIn = false; this.#release(); };
+    this.#pill.addEventListener('pointerdown', () => { this.#pillPressed = true; });
+    this.#pill.onclick = e => {
+      const pressed = this.#pillPressed; this.#pillPressed = false;
+      if (e.detail !== 0 && !pressed) return;
+      this.#pointerIn = false; this.#release();
+    };
     this.#resizeObserver = new ResizeObserver(() => this.#resize()); this.#resizeObserver.observe(this.root);
     sharpens({ resize: () => this.#resize(), paint: () => { if (this.#shown) this.#paint(); } });
     const c = this.#canvas;
@@ -130,11 +147,17 @@ export class OrderList {
     // Ctrl + wheel is the browser's zoom, not the list's.
     c.addEventListener('wheel', e => { if (e.ctrlKey) return; e.preventDefault(); this.#scroll(e.deltaY * (e.deltaMode === 1 ? 24 : e.deltaMode === 2 ? this.#h : 1)); this.#hoverChanged(); }, { passive: false });
     c.addEventListener('click', e => { if (this.#lastTouch) return; const row = this.#rowAt(e.offsetY); if (row && !replaying() && !isPhone()) this.onGoTo(row.rec.t, row.rec.price); });
-    // A finger drags the list (holding it), and a tap without a drag pins a row's details (a second tap on it, or elsewhere, lets them go).
+    // A finger holds the list as it touches (rows come down on every frame: the row under it at the lift would be another), drags it, and a tap
+    // without a drag pins the row it touched (a second tap on it, or elsewhere, lets it go).
     c.addEventListener('pointerdown', e => {
       this.#lastTouch = e.pointerType === 'touch';
+      // A press on the rows: a press on the key that never became a click (slid off it) no longer counts for its next click.
+      this.#pillPressed = false;
       if (e.pointerType !== 'touch') return;
-      this.#touch = { id: e.pointerId, y: e.clientY, moved: 0, owed: 0 }; c.setPointerCapture(e.pointerId);
+      // A second finger takes over the first one's record, and the hold the first one took with it (so a cancel still gives it back).
+      let took = this.#touch?.took ?? false;
+      if (!this.#anchor) { this.#hold(); took = !!this.#anchor; }
+      this.#touch = { id: e.pointerId, y: e.clientY, moved: 0, owed: 0, took }; c.setPointerCapture(e.pointerId);
     });
     c.addEventListener('pointermove', e => {
       const tch = this.#touch;
@@ -155,17 +178,24 @@ export class OrderList {
       else if (!this.#scrolled) { this.#release(); return; }
       this.invalidate();
     };
-    c.addEventListener('pointerup', lift); c.addEventListener('pointercancel', e => { if (this.#touch?.id === e.pointerId) this.#touch = null; });
+    c.addEventListener('pointerup', lift);
+    // A touch the browser took over (a scroll of the page, a gesture): the hold it took is given back, unless a row is pinned or the list scrolled.
+    c.addEventListener('pointercancel', e => {
+      const tch = this.#touch;
+      if (tch?.id !== e.pointerId) return;
+      this.#touch = null;
+      if (tch.took && this.#pinned === null && !this.#scrolled) this.#release();
+    });
   }
 
   dispose(): void { window.clearTimeout(this.#scanTimer); this.#resizeObserver.disconnect(); document.removeEventListener('visibilitychange', this.#onVisible); if (this.#frame) cancelAnimationFrame(this.#frame); }
-  /** A page shown again draws the list whole (a browser may have let a hidden page's canvas go). */
-  #onVisible = (): void => { if (document.visibilityState === 'visible') { this.rows.reset(); this.invalidate(); } };
+  /** A page shown again draws the list whole (a browser may have let a hidden page's canvas go); a hidden one stops where it stands. */
+  #onVisible = (): void => { if (document.visibilityState === 'visible') { this.rows.reset(); this.invalidate(); } else this.#conveyor.reset(); };
 
   setShown(shown: boolean): void {
     if (shown === this.#shown) return;
     this.#shown = shown;
-    if (!shown) { window.clearTimeout(this.#scanTimer); this.#pointerIn = false; this.#pointer = null; this.#hoverChanged(); this.#release(false); this.#drawn = []; return; }
+    if (!shown) { window.clearTimeout(this.#scanTimer); this.#pointerIn = false; this.#pointer = null; this.#hoverChanged(); this.#release(false); this.#conveyor.reset(); this.#drawn = []; return; }
     // Shown again: drawn whole (hidden, the canvas was made 1 px and back, which empties it while the look stays the same).
     this.rows.reset();
     this.#sync();
@@ -173,34 +203,48 @@ export class OrderList {
   }
   setPalette(p: Palette): void { this.#palette = p; this.#epoch++; this.invalidate(); }
   /** The list's settings, the venues or the sizes changed: found again from the newest order, from the top. */
-  refresh(): void { this.#release(false); this.#drawn = []; this.#index.reset(null); this.#filterKey = ''; if (this.#shown) this.#sync(); }
+  refresh(): void { this.#release(false); this.#conveyor.reset(); this.#drawn = []; this.#index.reset(null); this.#filterKey = ''; if (this.#shown) this.#sync(); }
   /** Something the rows are drawn with changed (the whale size, the time zone, a replay): drawn again as they stand. */
   redraw(): void { this.#epoch++; this.invalidate(); }
 
-  /** A batch reached the ring: the list takes it (a slide for a row or two at the top, else a plain update), and a held one counts it. */
+  /**
+   * A batch reached the ring: a list following the newest takes it above the top, to come down on the next frames as far as the batch added
+   * (`#conveyor`; at once with reduced motion or on a hidden page), and a held one counts it.
+   */
   tapeArrived(): void {
     if (!this.#shown) return;
     const ring = this.ring();
     if (!ring) return;
     if (this.#index.ring !== ring || this.#index.behind > CATCH_UP_MAX || this.#filterKeyNow() !== this.#filterKey) { this.#sync(); return; }
-    const before = this.#index.length, newest = this.#index.newest, added = this.#index.update();
+    // Where the newest row ends before the batch: its first orders can join that row (grouping), and what the batch adds above that edge,
+    // the row grown taller included, is how far the list comes down.
+    const before = this.#index.length, ref = before ? this.#index.at(before - 1) : -1, follows = !this.#anchor && ref >= 0 && this.#glides();
+    const edge = follows ? this.#edgeOf(ref, true) : 0;
+    const added = this.#index.update();
     if (this.#index.length === 0 && before === 0) { this.invalidate(); return; }
-    if (this.#anchor) { this.#pill.hidden = this.#index.newSinceHold === 0; setText(this.#pill, t('Held · {n} new ↑', { n: String(this.#index.newSinceHold) })); this.invalidate(); return; }
-    // No slide with grouping on: an order joining the top row would move the list for nothing.
-    if (added > 0 && added <= SLIDE_ROWS && !reducedMotion() && !document.hidden && newest >= 0 && !this.store.state.trades.group) {
-      let px = 0;
-      for (let i = this.#index.length - added; i < this.#index.length; i++) px += this.#heightOf(readRecord(ring, this.#index.at(i)));
-      this.#slide = px <= SLIDE_PX ? { px: px + (this.#slide ? this.#remainingSlide() : 0), start: performance.now() } : null;
-    } else this.#slide = null;
+    if (this.#anchor) { this.#showHeld(); this.invalidate(); return; }
+    // The walk stops at the list's height past the old edge: more is jumped anyway (a burst of thousands of orders walks no further).
+    if (!follows || !this.#index.valid(ref)) this.#conveyor.reset();
+    else if (added > 0) { const cap = this.#cap(); this.#conveyor.add(this.#edgeOf(ref, true, edge + cap) - edge, cap); }
     this.invalidate();
   }
 
-  invalidate(): void { if (!this.#frame && this.#shown) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#paint(); }); }
+  invalidate(): void { if (!this.#frame && this.#shown) this.#frame = requestAnimationFrame(now => { this.#frame = 0; this.#paint(now); }); }
+  /** Whether new rows come down rather than appear: not with reduced motion asked for, nor on a hidden page (no frames to move them in). */
+  #glides(): boolean { return !reducedMotion() && !document.hidden; }
+  /** The most the list holds above its top to bring down (CSS px): its height; a burst taller than that is jumped. */
+  #cap(): number { return Math.max(DIVIDER_ROW, this.#h); }
+  /** The key at the foot of a held list: how many orders came since it was held (the rows that had not come down yet among them). */
+  #showHeld(): void { this.#pill.hidden = this.#index.newSinceHold === 0; setText(this.#pill, t('Held · {n} new ↑', { n: String(this.#index.newSinceHold) })); }
 
   /** What the last frame drew, for the checks that look at the list without reading its pixels. */
-  get snapshot(): { rows: number; dividers: number; held: boolean; waiting: number; indexed: number; anchored: boolean } {
-    return { rows: this.#drawn.filter(d => d.kind === 'row').length, dividers: this.#drawn.filter(d => d.kind === 'divider').length, held: this.#index.held, waiting: this.#index.newSinceHold, indexed: this.#index.length, anchored: !!this.#anchor };
+  get snapshot(): { rows: number; dividers: number; held: boolean; waiting: number; indexed: number; anchored: boolean; debt: number; pinned: number | null } {
+    return { rows: this.#drawn.filter(d => d.kind === 'row').length, dividers: this.#drawn.filter(d => d.kind === 'divider').length, held: this.#index.held, waiting: this.#index.newSinceHold, indexed: this.#index.length, anchored: !!this.#anchor, debt: this.#conveyor.debt, pinned: this.#pinned };
   }
+  /** The write number of the row the last frame drew at `y` (CSS px down the list), or null: for the checks that aim at a row. */
+  rowAt(y: number): number | null { return this.#rowAt(y)?.k ?? null; }
+  /** How far the conveyor has moved the list in all (CSS px; of a batch taller than the list, its height): a trace for the checks that time its motion. */
+  get motionY(): number { return this.#conveyor.travelled; }
 
   /** The index on the current ring and filter, found back from the newest order enough to fill the list (more in steps, between frames). */
   #sync(): void {
@@ -211,7 +255,7 @@ export class OrderList {
       // Found again from the newest: a hold, a pinned row and a count of what came meanwhile belonged to the rows it had.
       this.#release(false); this.#drawn = [];
       this.#index.reset(ring, { minUsd: s.minUsd === 0 ? 0 : scaledUsd(s.minUsd), side: s.side, shown: instrumentShown(this.store.state) });
-      this.#anchor = null; this.#slide = null;
+      this.#anchor = null; this.#conveyor.reset();
     }
     this.#index.update();
     this.#fillBack();
@@ -222,16 +266,20 @@ export class OrderList {
     const s = this.store.state, venues = mapVenues(s);
     return `${venues ? [...venues].sort().join(',') : '*'}|${[...s.disabledVenues].sort().join(',')}`;
   }
-  /** Find older matches until the list and its overscan are full, a step per task so a high floor never blocks a frame. */
-  #fillBack(): void {
+  /**
+   * Find older matches until the list and its overscan are full, a step per task so a high floor never blocks a frame. The count is of
+   * orders, and grouping puts a burst of them in one row: a frame whose rows ran out above the list's foot asks for `more` beyond what is
+   * found (until 2026-11-14 a burst of more orders than the count stopped the list at one row with nothing under it).
+   */
+  #fillBack(more = 0): void {
     window.clearTimeout(this.#scanTimer);
     // Enough found below the top row drawn: the visible rows at the smallest height, and some more.
-    const want = Math.ceil(this.#h / TIERS[0]!.row) + OVERSCAN;
     const have = (): number => (this.#anchor ? this.#index.position(this.#anchor.k) : this.#index.length - 1) + 1;
+    const want = Math.max(Math.ceil(this.#h / TIERS[0]!.row) + OVERSCAN, more > 0 ? have() + more : 0);
     if (have() >= want || !this.#index.moreBehind) return;
     this.#index.scanBack(want - have());
     this.invalidate();
-    if (have() < want && this.#index.moreBehind) this.#scanTimer = window.setTimeout(() => this.#fillBack(), 0);
+    if (have() < want && this.#index.moreBehind) this.#scanTimer = window.setTimeout(() => this.#fillBack(want - have()), 0);
   }
 
   #resize(): void {
@@ -274,6 +322,21 @@ export class OrderList {
     const d = this.#dpr || 1;
     return Math.round(DIVIDER_ROW * d) / d;
   }
+  /**
+   * How far below the newest row's top the row holding write `k` begins (or, with `bottom`, ends): rows at their drawn heights and the lines
+   * between them, walked from the newest, at most `limit`.
+   */
+  #edgeOf(k: number, bottom: boolean, limit = Infinity): number {
+    const target = this.#index.position(k);
+    let pos = this.#unitTop(this.#index.length - 1), y = 0;
+    while (pos >= 0 && y < limit) {
+      const u = this.#unit(pos);
+      if (pos - u.count < target) return Math.min(limit, bottom ? y + u.h : y);
+      y += u.h + this.#lineUnder(pos, u.count);
+      pos -= u.count;
+    }
+    return Math.min(limit, y);
+  }
   /** The newest position of the row holding `pos` (grouping gathers newer orders of the same slice above it). */
   #unitTop(pos: number): number {
     if (!this.store.state.trades.group) return pos;
@@ -282,25 +345,29 @@ export class OrderList {
     return pos;
   }
 
-  #remainingSlide(): number {
-    const s = this.#slide;
-    if (!s) return 0;
-    const k = Math.min(1, (performance.now() - s.start) / SLIDE_MS), ease = 1 - (1 - k) ** 3;
-    return s.px * (1 - ease);
-  }
-
   #hold(): void {
     if (this.#anchor || !this.#index.length) return;
-    // Held where it stands: the row at the top (as the last frame drew it) stays there while new orders are counted.
+    // Held where it stands: the row at the top (as the last frame drew it) stays there while new orders are counted, and so do the rows
+    // above it that had not come down yet (the key counts them with what comes).
     const top = this.#drawn.find(d => d.kind === 'row');
     if (!top || top.kind !== 'row') return;
-    this.#slide = null;
-    this.#anchor = { k: top.k, offset: -top.y };
-    this.#index.hold();
+    this.#conveyor.reset();
+    // A row under a line at the top (rows were coming down) is held at the top, the line dropped: a held list draws no line above the row it
+    // starts from, and the strip would stay blank for the whole hold (a nudge of a line's height at most, rare: a line is at the top for a frame or two).
+    this.#anchor = { k: top.k, offset: Math.max(0, -top.y) };
+    this.#index.hold(top.k + 1);
+    this.#showHeld();
   }
+  /**
+   * Let go: the list follows the newest again, coming down to it from where it stands (as far as the list is tall; further is jumped).
+   * `draw` false: the list is being found again or hidden, and stands at the newest at once.
+   */
   #release(draw = true): void {
     if (!this.#anchor && !this.#index.held) return;
-    this.#anchor = null; this.#index.release(); this.#pill.hidden = true; this.#slide = null; this.#scrolled = false; this.#pinned = null;
+    const a = this.#anchor, cap = this.#cap();
+    const from = draw && a && this.#glides() && this.#index.valid(a.k) ? this.#edgeOf(a.k, false, cap) + a.offset : 0;
+    this.#anchor = null; this.#index.release(); this.#pill.hidden = true; this.#scrolled = false; this.#pinned = null;
+    if (from > 0) this.#conveyor.from(from, cap); else this.#conveyor.reset();
     if (draw) this.invalidate();
   }
   /** The wheel moves the held top row by `dy` px (down: older orders); back at the newest with no mouse on it, the list follows again. */
@@ -342,8 +409,8 @@ export class OrderList {
 
   /** A row of this frame, laid out before anything is drawn: device-pixel top and height, and what draws it. */
   #item(sig: string, y: number, h: number, kind: Item['kind'], fixed = false): Item {
-    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, shown: null, tier: TIERS[0]!, showTime: false, outlined: false, reasons: 0, words: '' };
-    it.sig = sig; it.y = y; it.h = h; it.kind = kind; it.fixed = fixed; it.rec = null; it.shown = null; it.showTime = false; it.outlined = false; it.reasons = 0; it.words = '';
+    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, shown: null, tier: TIERS[0]!, timeY: -1, outlined: false, reasons: 0, words: '' };
+    it.sig = sig; it.y = y; it.h = h; it.kind = kind; it.fixed = fixed; it.rec = null; it.shown = null; it.timeY = -1; it.outlined = false; it.reasons = 0; it.words = '';
     this.#items.push(it);
     return it;
   }
@@ -355,7 +422,7 @@ export class OrderList {
    * is on and the rows the box beside it covered are drawn. Where the recording's rows show below the tape's oldest order, the frame is
    * drawn whole, as before.
    */
-  #paint(): void {
+  #paint(now = performance.now()): void {
     const ctx = this.#ctx, w = this.#w, h = this.#h, p = this.#palette, dpr = this.#dpr;
     if (!this.#shown || w < 40 || h < 20) return;
     const ring = this.#index.ring, replay = replaying();
@@ -379,10 +446,7 @@ export class OrderList {
     if (this.#anchor) {
       if (!this.#index.valid(this.#anchor.k)) { expired = true; this.#anchor = { k: this.#index.at(0), offset: 0 }; }
       pos = this.#unitTop(this.#index.position(this.#anchor.k)); y = -this.#anchor.offset;
-    } else if (this.#slide) {
-      const left = this.#remainingSlide();
-      if (left <= 0.5) this.#slide = null; else y = -left;
-    }
+    } else if (this.#conveyor.moving) y = -this.#conveyor.step(now);
     const { whale } = this.#whale(), s = this.store.state.trades, form = clockForm(w);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const widths = this.#widths(ctx), clockW = form === 'none' ? 0 : form === 'hms' ? widths.hms : widths.ms;
@@ -391,6 +455,7 @@ export class OrderList {
     // Device pixels from here: each row's top on a whole one, its height its nominal height rounded at this ratio.
     // The price column is sized for the widest price among the rows laid out (`rowGeom`).
     let yd = Math.round(y * dpr), lastSecond = '', above = -1, first = true, priceChars = 0;
+    const top = pos;
     while (pos >= 0 && yd < H) {
       const k = this.#index.at(pos);
       if (!this.#index.valid(k)) break;
@@ -408,18 +473,24 @@ export class OrderList {
       if (above >= 0) {
         const reasons = this.#index.boundariesBetween(k, above);
         if (reasons) {
-          const dh = Math.round(DIVIDER_ROW * dpr), d = this.#item(`d|${k}|${reasons}`, yd, dh, 'divider'); d.reasons = reasons;
-          drawn.push({ kind: 'divider', y: yd / dpr, h: dh / dpr, reasons }); yd += dh;
+          const dh = Math.round(DIVIDER_ROW * dpr);
+          // A line wholly above the top (rows not down yet) is passed, not drawn.
+          if (yd + dh > 0) { const d = this.#item(`d|${k}|${reasons}`, yd, dh, 'divider'); d.reasons = reasons; drawn.push({ kind: 'divider', y: yd / dpr, h: dh / dpr, reasons }); }
+          yd += dh;
           if (yd >= H) break;
         }
       }
       const buy = rec.usd > 0, signed = buy ? usd : -usd, tier = TIERS[tierOf(signed, scaledUsd, whale)]!, hd = Math.round(tier.row * dpr);
+      // A row wholly above the top (one the conveyor has not brought down yet) is passed, not drawn: the time goes on the first row in sight.
+      if (yd + hd <= 0) { lastSecond = clockSeconds(rec.t); above = lowest; yd += hd; pos = next; continue; }
       const shown = orders > 1 ? { ...rec, usd: signed, price: usd / qty, lo, hi } : rec;
       priceChars = Math.max(priceChars, priceWidth(shown.price));
-      // The time once per second-run, and always on the first row drawn.
+      // The time once per second-run and on the first row in sight; on a row coming in at the top it slides down inside the row to stay in
+      // sight (the top of a moving list always says its time): its middle, CSS px down the row, or -1 for none.
       const second = clockSeconds(rec.t), showTime = clockW > 0 && (second !== lastSecond || first);
-      const it = this.#item(`r|${k}|${orders}|${usd}|${showTime ? 1 : 0}`, yd, hd, 'row');
-      it.rec = rec; it.shown = shown; it.tier = tier; it.orders = orders; it.usd = signed; it.showTime = showTime;
+      const timeY = !showTime ? -1 : yd < 0 ? Math.min(tier.row - 6, Math.max(tier.row / 2, -yd / dpr + 7)) : tier.row / 2;
+      const it = this.#item(`r|${k}|${orders}|${usd}|${timeY}`, yd, hd, 'row');
+      it.rec = rec; it.shown = shown; it.tier = tier; it.orders = orders; it.usd = signed; it.timeY = timeY;
       drawn.push({ kind: 'row', k, y: yd / dpr, h: hd / dpr, rec: shown, orders, usd: signed });
       lastSecond = second; first = false;
       above = lowest; yd += hd; pos = next;
@@ -444,7 +515,7 @@ export class OrderList {
       const it = items[i]!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, it.y);
       const fh = it.h / dpr;
-      if (it.kind === 'row') this.#drawOrder(ctx, g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders), 0, it.tier, fh, fw, it.showTime, it.outlined, p);
+      if (it.kind === 'row') this.#drawOrder(ctx, g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders), 0, it.tier, fh, fw, it.timeY, it.outlined, p);
       else if (it.kind === 'divider') this.#paintDivider(ctx, 0, w, it.reasons, p, fh, fw);
       else { ctx.fillStyle = p.panel; ctx.fillRect(0, 0, fw, fh); this.#paintNote(ctx, 0, w, it.words, p, fh); }
     }
@@ -466,10 +537,10 @@ export class OrderList {
     // A pointer resting on the list when its first rows were drawn holds them now; the shared time cursor follows the row it is on now.
     if (this.#pointerIn && !this.#anchor) this.#hold();
     if (this.#pointer) this.#hoverChanged();
-    if (this.#slide || (pos < OVERSCAN && this.#index.moreBehind)) {
-      if (this.#slide) this.invalidate();
-      if (pos < OVERSCAN && this.#index.moreBehind) this.#fillBack();
-    }
+    // Moving: the next frame steps it on. Rows ran out above the foot (a burst grouped in one row): more are found, as many orders again as
+    // the rows drawn took; near the oldest found, the usual overscan.
+    if (this.#conveyor.moving) this.invalidate();
+    if (this.#index.moreBehind) { if (pos < 0 && yd < H) this.#fillBack(Math.max(OVERSCAN, top + 1)); else if (pos < OVERSCAN) this.#fillBack(); }
   }
 
   /** The row a finger pinned, if it is drawn, else the one under the pointer (among the rows this frame has laid out so far). */
@@ -503,6 +574,12 @@ export class OrderList {
     }
     return this.#historyCharsN;
   }
+  /** A price as the rows write it, kept for the next rows at that price (at most 1,024 kept: then it starts again). */
+  #priceText(v: number): string {
+    let s = this.#prices.get(v);
+    if (s === undefined) { if (this.#prices.size >= 1024) this.#prices.clear(); s = fmtPrice(v); this.#prices.set(v, s); }
+    return s;
+  }
   /** The scratch row description filled with one row's parts (see `#order`). */
   #fill(t: number, price: number, usd: number, id: string, orders: number): RowOrder {
     const o = this.#order; o.t = t; o.price = price; o.usd = usd; o.id = id; o.orders = orders;
@@ -525,7 +602,7 @@ export class OrderList {
    * drawn height) and `fw` wide: the faint tint of its side, the time once per second-run, the mark, the side, the price, the bar (the
    * square root of its dollars over the full dollars, a mark past them) and the size. The tape's rows and the recording's are drawn alike.
    */
-  #drawOrder(ctx: CanvasRenderingContext2D, g: RowGeom, o: RowOrder, y0: number, tier: Tier, fh: number, fw: number, showTime: boolean, outlined: boolean, p: Palette): void {
+  #drawOrder(ctx: CanvasRenderingContext2D, g: RowGeom, o: RowOrder, y0: number, tier: Tier, fh: number, fw: number, timeY: number, outlined: boolean, p: Palette): void {
     const buy = o.usd > 0, usd = Math.abs(o.usd), top = p.dark ? TINT_TOP_DARK : TINT_TOP_LIGHT, ink = this.#inks.get(p, buy, ORDER_TINT, top), mid = y0 + tier.row / 2;
     ctx.fillStyle = ink.bg; ctx.fillRect(0, y0, fw, fh);
     // The bar straight after the row's fill, before any text is set up (it touches no text): one colour and one rectangle a row.
@@ -534,10 +611,10 @@ export class OrderList {
       ctx.fillStyle = ink.bar; ctx.fillRect(g.xBar, mid - bh / 2, len, bh);
     }
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-    if (showTime && g.clockW) {
+    if (timeY >= 0 && g.clockW) {
       const second = clockSeconds(o.t);
       ctx.font = `11px ${MONO}`; ctx.fillStyle = ink.muted;
-      ctx.fillText(g.form === 'hms' ? second : second.slice(3), PAD, mid);
+      ctx.fillText(g.form === 'hms' ? second : second.slice(3), PAD, y0 + timeY);
     }
     drawVenueMark(ctx, o.id, g.xMark, mid, MARK, this.#dpr);
     // The side's glyph in its colour where that reads on the row, else in the row's text colour; past the bar's full dollars, a mark in the
@@ -546,7 +623,7 @@ export class OrderList {
     ctx.fillText(buy ? '▲' : '▼', g.xSide, mid);
     if (g.barRoom && usd > g.full) { ctx.font = `700 12px ${MONO}`; ctx.fillText('›', g.xMore, mid); }
     ctx.font = `13px ${MONO}`; ctx.fillStyle = ink.text;
-    ctx.fillText(fmtPrice(o.price), g.xPrice, mid);
+    ctx.fillText(this.#priceText(o.price), g.xPrice, mid);
     ctx.textAlign = 'right';
     ctx.font = `${tier.weight} ${tier.amountPx}px ${MONO}`;
     const amount = amountText(usd);
@@ -602,7 +679,7 @@ export class OrderList {
       }
       const buy = l.side === 'buy', signed = buy ? l.usd : -l.usd, tier = TIERS[tierOf(signed, scaledUsd, whale)]!, rowH = tier.row, sec = Math.floor(l.t / 1000);
       if (y + rowH <= 0) { lastSec = sec; y += rowH; continue; }
-      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders), y, tier, rowH, fw, sec !== lastSec, false, p);
+      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders), y, tier, rowH, fw, sec !== lastSec ? rowH / 2 : -1, false, p);
       lastSec = sec;
       drawn.push({ kind: 'row', k: -1 - i, y, h: rowH, rec: { k: -1 - i, t: l.t, price: l.price, usd: signed, id: l.id, lo: l.lo, hi: l.hi }, orders: l.orders, usd: signed });
       y += rowH;

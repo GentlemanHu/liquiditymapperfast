@@ -82,6 +82,12 @@ export class StatusBar {
     this.root.append(this.#connection, this.#venues, this.#mark, this.#recording, this.#saving, this.#source, this.notices, el('span', { class: 'spacer' }), this.controls);
   }
 
+  /**
+   * Put the frame-rate meter at the bar's left end (fps/meter.ts): the page's own status first, where the bar's data begins (Karl, 2026-11-14).
+   * Its GPU lamp is what the red dot of a browser without WebGL2 was.
+   */
+  placeMeter(meter: HTMLElement): void { this.root.prepend(meter); }
+
   setVenues(entries: readonly VenueEntry[]): void { this.#entries = entries; }
 
   update(state: Pick<AppState, 'status' | 'connected' | 'mark' | 'marketId'>, recordedSince: number, saving: SavingState, now: number = Date.now()): void {

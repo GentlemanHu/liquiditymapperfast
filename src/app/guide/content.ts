@@ -171,9 +171,9 @@ export const SECTIONS: readonly Section[] = [
     ],
   },
   {
-    id: 'flow-trades', title: 'Trades in the flow column',
+    id: 'flow-trades', title: 'Tape in the flow column',
     blocks: [
-      { t: 'p', text: '**Trades**, the second tab in the flow column\'s title, shows what was bought and sold at market, newest on top. At first each row is one second of every exchange on the map: when the market sends hundreds of orders a second, a second at a time is what a person can read as it happens.' },
+      { t: 'p', text: '**Tape**, the second tab in the flow column\'s title, shows what was bought and sold at market, newest on top. At first each row is one order, or a burst of them (one exchange\'s orders on one side within a tenth of a second, added up: ×5 says how many), coming down from the top as they arrive. When the market sends hundreds of orders a second, **Group by** a second makes each row one second of every exchange on the map, which a person can read as it happens.' },
       { t: 'list', items: [
         'Each block has its time and, under it, how far the price moved: the reference market\'s volume-weighted price in the block\'s last second against the second before (Binance\'s perpetual for BTC, else the most traded market the coin has).',
         'Then the dollars bought (▲) over the dollars sold (▼), each with a bar split by exchange, and the largest buy and the largest sell. A bar grows with the square root of its dollars: ten times more draws about three times longer.',
@@ -182,7 +182,7 @@ export const SECTIONS: readonly Section[] = [
         'Older blocks come from what the page already holds, and nothing is fetched: any size from its per-second record of every exchange, from $25,000 from its recording of large orders, smaller sizes only from when the page began listening.',
         'Point at the list to hold it still. Beside a wide list, the details of the newest second (or the block you click) show each market\'s dollars and price move, the largest orders, and notes such as large orders on several exchanges within 5 ms.',
       ] },
-      { t: 'note', text: 'With the column closed, the strip along the window\'s edge has a tab for each view: Flow and Trades. On a phone the Flow tab has the same two, and a tap on a block opens its details.' },
+      { t: 'note', text: 'With the column closed, the strip along the window\'s edge has a tab for each view: Flow and Tape. On a phone the Flow tab shows the lines and the Tape tab the list, where a tap on a block opens its details.' },
     ],
   },
   {
@@ -458,13 +458,30 @@ export const SECTIONS: readonly Section[] = [
     blocks: [
       { t: 'p', text: 'The page is arranged for the screen it is on. On a phone held upright the top bar has two rows (the coin and Settings above; timeframes and Recenter below), the map fills the width, one pane shows under it, and a **bar of tabs** picks the pane: the **Tape**, the **Flow**, the **Map**, the **Book**, and the panes you switch on in Settings. **Map** gives the chart the whole screen. Held on its side, the pane stands beside the map and the tabs become a rail. A large tablet held sideways (over 1,100 pixels wide) gets the desktop arrangement, with Layouts under Settings; a smaller one gets the phone\'s.' },
       { t: 'list', items: [
-        'The **Tape** is every trade since the page opened, as one continuous tape: each row is a price, with what was sold at market on the left and bought on the right, the book resting either side, and the trail of the last seconds of market orders running left behind it. It opens at once, because it fetches nothing.',
+        'The **Tape** is every order as it arrives, newest on top: the flow column\'s Tape, made for a phone. The wave button in the top bar shows it as a chart instead: every trade since the page opened, each row a price, with what was sold at market on the left and bought on the right, the book resting either side, and the trail of the last seconds of market orders running left behind it. The lines button brings the list back.',
         'The **Flow** tab is the flow column made for a phone: the price drawn over the flow of all the exchanges (spot blue, perpetual amber), with a row for each exchange under it. A finger along the chart scrubs it, a tap pins the moment, and two fingers apart or together step to a longer or a shorter span.',
         '**Settings** (the ⋯ button) is a bottom sheet holding every control that does not fit the bar: the pane switches, the heatmap colours, the market and the venues, the alerts, the theme, **Keep screen on** (a sleeping screen stops the recording) and Guide, Screenshot, Author and Install.',
         'The small up-arrow at the right end of the top bar **folds** it away to give the chart the screen, and the strip\'s down-arrow brings it back. A desktop has the same arrow.',
         'A **TPO** block has no right click on a touch screen: tap the block to pin it, then tap the box that opens over it for its menu (split, merge, lay out).',
       ] },
       { t: 'note', kind: 'tip', text: 'The gestures are listed under “Moving around”. Every button explains itself when held, and the ? beside a pane says what it is.' },
+    ],
+  },
+  {
+    id: 'speed', title: 'Speed and the frame-rate meter',
+    blocks: [
+      { t: 'p', text: 'The LED window at the left end of the status bar is the page\'s frame-rate meter (on a computer; a phone has no status bar). Its digits are the frames the page drew in the last second: green while that is close to your screen\'s rate (from 90 % of it), amber from 60 %, red below. The bar beside them lights up when a frame came late, more cells the later it came, and falls back on its own. The **GPU** lamp is green while the graphics card draws the map (WebGL2), red when the browser gives the page no WebGL2 (the map is then drawn on the processor, more slowly, and Live trades and the Glass look are off), and amber when WebGL2 is there but could not draw the map (the processor draws it then too).' },
+      { t: 'p', text: 'Point at the meter for a sentence on how the page runs; press it for the details, what helps on your computer and **Copy for AI**: a report of what the page measured and of the steps below, written for an AI assistant to walk you through them (it names your browser and your graphics card).' },
+      { t: 'list', items: [
+        '**Graphics acceleration.** Chrome: Settings › System › Use graphics acceleration when available, then Relaunch. Edge: Settings › System and performance, the same switch, then Restart. Firefox: Settings › General › Performance: untick Use recommended performance settings, then tick Use hardware acceleration when available. Safari always uses it.',
+        '**The browser\'s own report.** chrome://gpu (in Edge, edge://gpu) says under Graphics Feature Status whether WebGL2 is hardware accelerated, and under Problems Detected why not: an old or blocked driver, or a crash of the graphics process.',
+        '**The graphics driver.** Update it from the card\'s maker (NVIDIA, AMD, Intel) or through Windows Update; on a Mac, the macOS updates carry it. Restart the browser afterwards.',
+        '**Energy saving.** On battery, Chrome\'s Energy Saver (Settings › Performance) and the system\'s power mode can hold a page to 30 frames a second.',
+        '**Your screen\'s rate.** Windows: Settings › System › Display › Advanced display › Choose a refresh rate; macOS: System Settings › Displays. With several screens, keep the page on the fastest one.',
+        '**Other load.** Tabs and programs that draw (video, games, other charts) share the graphics card, and the browser\'s Task Manager (Shift+Esc in Chrome and Edge on Windows and Linux) shows what uses it. Extensions that read every page can slow drawing too.',
+        '**The page itself.** Waves, the glass look, draws the panels on every frame; each open panel draws as the market moves; a larger window means more pixels to draw.',
+      ] },
+      { t: 'note', kind: 'tip', text: 'A short amber or red blink when you change the theme or open several panels at once is the page building its pictures, not a slow computer: the meter judges the page by the last minute before it suggests anything.' },
     ],
   },
   {

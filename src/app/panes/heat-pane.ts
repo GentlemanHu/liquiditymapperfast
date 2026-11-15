@@ -1,4 +1,5 @@
-import { HeatGL, type HeatStyle } from '../heatmap/gl.ts';
+import type { HeatRenderer, HeatStyle } from '../heatmap/gl.ts';
+import { heatRenderer } from '../heatmap/canvas.ts';
 import { buildLut } from '../heatmap/lut.ts';
 import { colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
 import { isCoarse, isPhone } from '../device.ts';
@@ -28,14 +29,14 @@ import { fitText } from '../text-fit.ts';
 import { distanceText } from './ladder-info.ts';
 import { binsPerRow, dollarPriceOf, liqCurves, liqProfile, onTheWay, seamStats, liqRows, paintLiqStripe, standingBelow, standingHeat, type CurvePoint, type LiqLevels, type LiqRow, type LiqStanding } from '../liq-levels.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
-import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRows, type TradedRows } from '../traded.ts';
+import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRowsHeld, type TradedRows } from '../traded.ts';
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
 import { lineMetric, onPriceAxis, placedOn } from '../traded/profiles.ts';
 import { MAX_BANDS, arrangeProfiles, arrangeSides, columnHit, type Arranged, type ProfileRoom } from '../traded/arrange.ts';
-import { flowIds, flowLoadIds, instrumentShown, mapVenues, oiFlowIds } from '../cvd/ids.ts';
+import { flowIds, flowLoadIds, instrumentShown, mapVenues, oiFlowIds, shownKey } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
-import { iconsOf, markLines, markSize, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
+import { iconsOf, markLines, markSize, sameMarks, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
 import { diamondRadius, liquidationHidden, liquidationLines, type Liquidation } from '../liquidations.ts';
 import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
@@ -335,7 +336,7 @@ interface StripState { bars: StripBar[]; rows: TimeRows | null; ids: string[]; t
 
 export class HeatPane {
   readonly root = document.createElement('section');
-  readonly gl: HeatGL;
+  readonly gl: HeatRenderer;
   readonly overlay = document.createElement('canvas');
   readonly view = new View({ t0: 0, t1: 0, p0: 0, p1: 0 });
   stats = { p15: 0, p50: 0, p96: 0, max: 0 };
@@ -656,7 +657,8 @@ export class HeatPane {
   /** Absorption icons drawn in the last frame (centre, size, the marks they stand for), for hover. */
   #absorptionIcons: { x: number; y: number; s: number; marks: AbsorptionMark[]; usd: number }[] = [];
   /** The squares last worked out, for the view they were worked out at (see #paintAbsorption). */
-  #absorptionLayout: { key: string; t0: number; shown: MarkIcon[] } | null = null;
+  /** The squares as last laid out: for the book's `version` and the view `view` (`key` both), from `marks` (the marks in view, largest first). */
+  #absorptionLayout: { key: string; view: string; marks: readonly AbsorptionMark[]; t0: number; shown: MarkIcon[] } | null = null;
   /** The thresholds of the last frame, kept while nothing they depend on changed (the book, the settings, the minute, the venues). */
   #absorptionKey = ''; #absorptionThresholds: Map<string, number | null> = new Map();
   /** Bubbles drawn in the last frame, for hover. */
@@ -704,7 +706,11 @@ export class HeatPane {
     // The pointer's layer right after the overlay: over it and under what is stacked over it, as when it was drawn into the overlay.
     this.root.append(this.#glCanvas, this.#dustCanvas, this.#pulse, this.#drawEdit, this.overlay, this.#hoverCanvas, this.#liveButton);
     host.append(this.root);
-    this.gl = new HeatGL(this.#glCanvas);
+    // WebGL2, or a 2D canvas where the browser gives none; the 2D picture may need a fresh element in the canvas's place, so the pane takes the renderer's.
+    this.gl = heatRenderer(this.#glCanvas);
+    this.#glCanvas = this.gl.canvas;
+    // A 2D picture the browser discarded comes back empty: draw it again at once rather than at the next change (review r14).
+    this.#glCanvas.addEventListener('contextrestored', () => this.invalidate());
     this.#ctx = this.overlay.getContext('2d')!;
     this.#hoverCtx = this.#hoverCanvas.getContext('2d')!;
     this.#drawEditCtx = this.#drawEdit.getContext('2d')!;
@@ -2326,6 +2332,26 @@ export class HeatPane {
    * They fade under the footprint, whose rows say the same thing in more detail. A bubble large enough carries its exchange's mark, and
    * while the pointer is on one, the bubbles of the other venues step back and that venue's own are ringed: where else it traded.
    */
+  /** The largest prints and liquidations in view as last found (`#printsInView`), each with the key it was found for. */
+  #bubblesHeld: { key: string; list: Print[] } = { key: '', list: [] };
+  #liquidationsHeld: { key: string; list: Liquidation[] } = { key: '', list: [] };
+  /**
+   * `topPrints` for the view, kept while nothing it reads has changed: it scanned the window on every frame, half of the bubbles' drawing and
+   * two thirds of the liquidations' on Karl's 2560 px map (2026-11-14). The window is widened to whole pixels of the view's time, so what is
+   * kept depends on its key alone, whichever frame found it: the book's version (bumped on every change of its items), `filters` (the sizes,
+   * the side and the venues `instrumentShown` lets in, `shownKey`), the pixel grid (the span over the plot's width) and the pixels the view
+   * starts and ends on, its prices and the count. A print up to a pixel beyond either edge may be drawn, as far in as its bubble reaches. A
+   * replay moves its right edge every frame (the replay's moment): it asks afresh.
+   */
+  #printsInView<T extends { t: number; price: number; usd: number }>(held: { key: string; list: T[] }, book: { readonly items: T[]; readonly version: number }, filters: string, pw: number, limit: number, hidden: (p: T) => boolean): T[] {
+    const v = this.view;
+    if (replaying()) return topPrints(book.items, v.t0, Math.min(v.t1, pageNow()), v.p0, v.p1, limit, hidden);
+    const px = (v.t1 - v.t0) / pw, i0 = Math.floor(v.t0 / px), i1 = Math.ceil(v.t1 / px);
+    const key = `${book.version}|${filters}|${px}|${i0}|${i1}|${v.p0}|${v.p1}|${limit}`;
+    if (held.key !== key) { held.list = topPrints(book.items, i0 * px, i1 * px, v.p0, v.p1, limit, hidden); held.key = key; }
+    return held.list;
+  }
+
   #paintBubbles(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     this.#bubbles = [];
     if (!state.show.bubbles) return;
@@ -2334,7 +2360,7 @@ export class HeatPane {
     const limit = Math.max(40, Math.min(400, Math.round(pw / 9)));
     const s = state.tradeBubbles, shown = instrumentShown(state);
     const hidden = (print: Print): boolean => bubbleHidden(print, s) || !shown(print.id);
-    const visible = topPrints(this.hub.prints.items, v.t0, replaying() ? Math.min(v.t1, pageNow()) : v.t1, v.p0, v.p1, limit, hidden);
+    const visible = this.#printsInView(this.#bubblesHeld, this.hub.prints, `${scaledUsd(s.minUsd)}|${s.side}|${shownKey(state)}`, pw, limit, hidden);
     if (!visible.length) return;
     const whale = scaledUsd(state.sounds.tiers[2]?.usd ?? 400_000);
     ctx.save();
@@ -3613,7 +3639,7 @@ export class HeatPane {
     const bar = (from: number, length: number): [number, number] => left ? [x0 + W - 1 - from - length, length] : [x0 + 1 + from, length];
     // The column's inside, off the edge line on the map's side.
     const inner = left ? x0 : x0 + 1;
-    const rows: TradedRows | null = answer ? tradedRows(answer, this.#tradedStep(), v.p0, v.p1) : null;
+    const rows: TradedRows | null = answer ? tradedRowsHeld(answer, this.#tradedStep(), v.p0, v.p1) : null;
     const s = state.traded, levels = this.#viewLevels(metric), loaded = this.#loadedColumn(metric), unsplit = !!loaded && !loaded.split;
     // The header: the total, the line under it, and the difference of the two sides (none for an estimate whose candles do not say who bought).
     const headH = 28 + (rows && rows.total > 0 && !unsplit ? 12 : 0);
@@ -4202,7 +4228,9 @@ export class HeatPane {
   #absorptionContext(state: AppState): { ids: string[]; thresholds: Map<string, number | null> } {
     const ids = flowLoadIds(state, this.hub.flow.ids).filter(instrumentShown(state));
     const s = state.absorption, minute = Math.floor(Date.now() / 60_000);
-    const key = `${this.hub.absorption.version}|${minute}|${s.mode}|${s.k}|${s.sdMinutes}|${s.fixedUsd}|${ids.join(',')}`;
+    // The minutes' version, not the book's: a new group leaves the thresholds as they were, and the same map lets the book's judged marks
+    // take the group in place of judging every group again.
+    const key = `${this.hub.absorption.minutesVersion}|${minute}|${s.mode}|${s.k}|${s.sdMinutes}|${s.fixedUsd}|${ids.join(',')}`;
     if (key !== this.#absorptionKey) { this.#absorptionKey = key; this.#absorptionThresholds = this.hub.absorption.thresholds(ids, s, Date.now()); }
     return { ids, thresholds: this.#absorptionThresholds };
   }
@@ -4220,13 +4248,21 @@ export class HeatPane {
     const OFFSET = 20, span = v.t1 - v.t0, pixelMs = span / pw;
     // The squares are worked out again only when the marks, the scale or the plot change, or the map has moved by a whole pixel: a frame that
     // only moves the pointer, or follows the live edge by part of a pixel, draws the same squares moved by what the map moved (`dx`).
-    const key = `${this.#absorptionKey}|${Math.round(span)}|${v.p0}|${v.p1}|${pw}|${ph}|${Math.floor(v.t0 / pixelMs)}`;
-    if (this.#absorptionLayout?.key !== key) {
-      const marks = this.hub.absorption.marks(ids, thresholds, v.t0, v.t1, v.p0, v.p1);
-      const icons = iconsOf(marks, m => v.xOf((m.t0 + m.t1) / 2, pw), m => v.yOf(m.price, ph), pw, ph);
-      this.#absorptionLayout = { key, t0: v.t0, shown: icons.sort((a, b) => b.usd - a.usd).slice(0, Math.max(30, Math.min(200, Math.round(pw / 12)))) };
+    const view = `${this.#absorptionKey}|${Math.round(span)}|${v.p0}|${v.p1}|${pw}|${ph}|${Math.floor(v.t0 / pixelMs)}`, key = `${this.hub.absorption.version}|${view}`;
+    let layout = this.#absorptionLayout;
+    if (layout?.key !== key) {
+      // The largest first, as the squares take them (no sort of tens of thousands of marks for each new group).
+      const marks = this.hub.absorption.marksByUsd(ids, thresholds, v.t0, v.t1, v.p0, v.p1);
+      // A new version of the book that left every mark in view as it was keeps the squares: 23 of 33 versions in a busy half minute
+      // (2026-11-14, Karl's 2560 px map), each of which clustered ~24,000 marks again in 6-10 ms. A mark judged again is a new object
+      // (`AbsorptionBook.#markOf`), so the same objects in the same order are the same marks.
+      if (layout && layout.view === view && sameMarks(layout.marks, marks)) layout.key = key;
+      else {
+        const icons = iconsOf(marks, m => v.xOf((m.t0 + m.t1) / 2, pw), m => v.yOf(m.price, ph), pw, ph);
+        layout = this.#absorptionLayout = { key, view, marks, t0: v.t0, shown: icons.sort((a, b) => b.usd - a.usd).slice(0, Math.max(30, Math.min(200, Math.round(pw / 12)))) };
+      }
     }
-    const { shown } = this.#absorptionLayout, dx = (this.#absorptionLayout.t0 - v.t0) / pixelMs;
+    const { shown } = layout, dx = (layout.t0 - v.t0) / pixelMs;
     if (shown.length) {
       ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
       const edge = p.dark ? '#f2f2f2' : '#14171c', largest = shown[0]!.usd;
@@ -4290,7 +4326,7 @@ export class HeatPane {
     const s = state.liquidations; if (!s.on) return;
     const v = this.view, p = this.#palette, shown = instrumentShown(state);
     const hidden = (l: Liquidation): boolean => liquidationHidden(l, s) || !shown(l.id);
-    const visible = topPrints(this.hub.liquidations.items, v.t0, replaying() ? Math.min(v.t1, pageNow()) : v.t1, v.p0, v.p1, Math.max(30, Math.min(300, Math.round(pw / 10))), hidden);
+    const visible = this.#printsInView(this.#liquidationsHeld, this.hub.liquidations, `${scaledUsd(s.minUsd)}|${s.side}|${shownKey(state)}`, pw, Math.max(30, Math.min(300, Math.round(pw / 10))), hidden);
     if (!visible.length) return;
     const ordered = [...visible].sort((a, b) => a.usd - b.usd), largest = ordered[ordered.length - 1]!.usd, edge = p.dark ? '#ffffff' : '#14171c';
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();

@@ -50,8 +50,8 @@ export function unitLabel(unit: number): string {
 
 /**
  * Trades, the flow column's second view (2026-11-13: it replaced Time & sales and All trades, which Karl could not tell apart; the design
- * is the tape study of Research_Findings.md, from two rounds with the advisor, Sol 6.1 and Astra). A row is a block of whole
- * seconds (one by default) or, as "Each order", one market order. The shell holds the two menus (Group by, Smallest order), the status
+ * is the tape study of Research_Findings.md, from two rounds with the advisor, Sol 6.1 and Astra). A row is, as "Each order", one market
+ * order (a burst of them grouped: the default since 2026-11-14) or a block of whole seconds. The shell holds the two menus (Group by, Smallest order), the status
  * (the bar scale, a hold, since when), the per-second tally the blocks read, the sources before the tape (the page's per-second flow, the
  * recording's large orders: nothing is fetched that the page would not read anyway) and the inspector (beside a list wide enough, else a
  * bottom sheet on a phone).
@@ -231,7 +231,7 @@ export class TradesView {
 
   /** The settings panel (the column's settings key opens it in this view, and Custom… in the Group by menu). */
   openSettings(anchor: HTMLElement): void {
-    this.#panel = togglePanel(anchor, { title: t('Trades'), width: 360, align: 'left', onClose: () => { this.#panel = null; } }, (_tools, body) => this.#build(body));
+    this.#panel = togglePanel(anchor, { title: t('Tape'), width: 360, align: 'left', onClose: () => { this.#panel = null; } }, (_tools, body) => this.#build(body));
   }
   #build(body: HTMLElement): void {
     const s = this.store.state.trades, scaled = (v: number): number => v === 0 ? 0 : scaledUsd(v);

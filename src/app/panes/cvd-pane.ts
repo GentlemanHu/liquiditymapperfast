@@ -150,7 +150,7 @@ export class CvdPane {
   #spanButtons = new Map<CvdSpan, HTMLButtonElement>();
   #spanSelect = el('select', { class: 'cvd-span-select', ariaLabel: t('Time span') });
   #gear = el('button', { type: 'button', class: 'icon-btn cvd-gear', ariaLabel: t('Settings'), tip: t('How the column ranks and draws the exchanges.') });
-  /** The column's views, a tab each in the header's name (the flow lines, Trades); a phone's are a row of their own. */
+  /** The column's views, a tab each in the header's name (the flow lines, the Tape); a phone shows none (one view to a tab: `phoneView`). */
   #viewTabs = new Map<FlowView, HTMLButtonElement>();
   #helpFlow = helpButton('cvd'); #helpTrades = helpButton('trades');
   /** The span buttons' cell, which only the flow view has. */
@@ -160,6 +160,11 @@ export class CvdPane {
   readonly trades: TradesView;
   /** Whether the column is covered by another tab (a phone shows one tab at a time by its stylesheet, never by `hidden`; set by the page). */
   covered: () => boolean = () => false;
+  /**
+   * On a phone, the view its tab asks for (the Flow tab the lines, the Tape tab the list), the saved view left alone for the desktop; null
+   * elsewhere (set by the page). A phone has one view to a tab, so its column shows no view tabs.
+   */
+  phoneView: () => FlowView | null = () => null;
   /** The column was shown or hidden, or its view changed: what wants the tape (Trades) is weighed again (set by the page). */
   onVisibility: () => void = () => {};
   /** Bursts the alert engine has seen, drawn as markers on their rows (set from outside; newest last). */
@@ -208,17 +213,10 @@ export class CvdPane {
     if (this.root.hidden) return;
     const name = this.controls.querySelector<HTMLElement>(':scope > .cvd-views'), tools = this.controls.querySelector<HTMLElement>(':scope > .pane-tools');
     if (!name) return;
-    // A phone gives the tabs a row of their own, each a third of it: a label that overflows its tab steps down instead.
-    if (isPhone()) {
-      const fitsTabs = (): boolean => [...name.children].every(b => (b as HTMLElement).scrollWidth <= (b as HTMLElement).clientWidth + 1);
-      this.root.classList.remove('narrow', 'narrower');
-      if (fitsTabs()) return;
-      this.root.classList.add('narrow');
-      if (!fitsTabs()) this.root.classList.add('narrower');
-      return;
-    }
+    // A phone shows no view tabs (one view to a tab, 2026-11-14): nothing to fit.
+    if (isPhone()) { this.root.classList.remove('narrow', 'narrower'); return; }
     if (!tools) return;
-    // Every label in full, then short (Trades is short already; another language's may not be), then the header may wrap. Each step is
+    // Every label in full, then short (Tape is short already; another language's may not be), then the header may wrap. Each step is
     // taken only while the pane's tools still fall to a second line or the header runs out of its width.
     const fits = (): boolean => tools.offsetTop <= name.offsetTop + name.offsetHeight / 2 && this.controls.scrollWidth <= this.controls.clientWidth + 1;
     this.root.classList.remove('narrow', 'narrower');
@@ -227,10 +225,14 @@ export class CvdPane {
     if (fits()) return;
     this.root.classList.add('narrower');
   }
-  /** The view the column shows (a phone's Flow tab has the same two). */
-  #view(): FlowView { return this.store.state.flowView; }
-  /** Whether the flow lines are on screen: the column shown, in the flow view. Every drawing of the lines and the dot rows waits on it. */
-  #flowOn(): boolean { return !this.root.hidden && this.#view() === 'flow'; }
+  /** The view the column shows: the saved one, or a phone's tab's (`phoneView`). */
+  #view(): FlowView { return this.phoneView() ?? this.store.state.flowView; }
+  get activeView(): FlowView { return this.#view(); }
+  /**
+   * Whether the flow lines are on screen: the column shown and not covered by another of a phone's tabs, in the flow view. Every drawing of
+   * the lines and the dot rows waits on it (a phone keeps the column in the page for its Tape tab even with the column switched off).
+   */
+  #flowOn(): boolean { return !this.root.hidden && !this.covered() && this.#view() === 'flow'; }
   /**
    * The view changed (the tabs, a layout, a phone turned into a desktop) or the column was shown or hidden: the lines, the notice and the dot
    * rows show in the flow view, Trades in its own; the header's span buttons, settings and help follow the view.
@@ -248,7 +250,7 @@ export class CvdPane {
     this.#panel?.close(); this.#panel = null;
     this.#wrap.hidden = !flow; this.#readout.hidden = !flow; this.#helpFlow.hidden = !flow; this.#helpTrades.hidden = flow;
     if (this.#cells) this.#cells.hidden = !flow;
-    this.#gear.dataset.tip = flow ? t('How the column ranks and draws the exchanges.') : t('Trades settings: what a row is, the smallest order, the side.');
+    this.#gear.dataset.tip = flow ? t('How the column ranks and draws the exchanges.') : t('Tape settings: what a row is, the smallest order, the side.');
     // The notice is the flow's: hidden with it, and said again when the flow comes back (its words may have changed meanwhile).
     if (!flow) this.#notice.hidden = true;
     this.#noticeKey = '';
@@ -379,7 +381,7 @@ export class CvdPane {
     // place in the header (the layout puts the pane's tools after it).
     const views: [FlowView, string, string, string][] = [
       ['flow', t('Flow'), t('Flow'), t('Taker flow: cumulative volume delta (market buys minus market sells) per exchange, spot and perpetual. Biggest exchanges first; the top row adds them all.')],
-      ['trades', t('Trades'), t('Trades'), t('Trades: what was bought and sold at market, a block of time per row (a second by default) or each order, newest on top, with the markets it came from and its largest orders.')],
+      ['trades', t('Tape'), t('Tape'), t('Tape: what was bought and sold at market, each order (by default, a burst of them one row) or a block of time per row, newest on top, with the markets it came from and its largest orders.')],
     ];
     const name = el('strong', { class: 'seg cvd-views', role: 'group', ariaLabel: t('Flow column view') }, ...views.map(([id, long, short, tip]) => {
       const tab = el('button', { type: 'button', class: 'cvd-view', tip, ariaLabel: long, onclick: () => { if (this.store.state.flowView !== id) this.store.set({ flowView: id }); } },
@@ -387,7 +389,9 @@ export class CvdPane {
       tab.dataset.view = id; this.#viewTabs.set(id, tab);
       return tab;
     }));
-    this.controls.append(name, cells, this.#spanSelect, this.#gear, this.#helpFlow, this.#helpTrades, this.#readout);
+    // A phone has one view to a tab and shows no view tabs: the Tape's row says its name instead (the stylesheet shows it there alone).
+    const phoneTitle = el('span', { class: 'cvd-phone-title', textContent: t('Tape'), ariaHidden: 'true' });
+    this.controls.append(name, phoneTitle, cells, this.#spanSelect, this.#gear, this.#helpFlow, this.#helpTrades, this.#readout);
     this.#fit = new FitGrid(this.controls, cells, this.root);
     this.#syncControls();
   }
