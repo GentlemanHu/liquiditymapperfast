@@ -12,7 +12,7 @@ import type { ScriptResult, Warning } from './protocol.ts';
 import { MAX_SCRIPTS, MAX_SOURCE_CHARS, ROW_DEFAULT, SCRIPT_API, cleanName, exportFile, importText, inferredOption, mergeScripts, newId, type OptionValue, type ScriptRecord } from './records.ts';
 import { errorText, warningText } from './messages.ts';
 import { exampleHeight, examples } from './examples.ts';
-import { NEW_SCRIPT, sameOptions, statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
+import { NEW_SCRIPT, choiceIndex, choiceLabel, sameOptions, statusOf, type ScriptsHost, type ScriptsPanelState } from './panel-state.ts';
 import { aiBundle, type BundleInput } from './lang/reference.ts';
 import { newestOf } from './protocol.ts';
 import { aboutExample, aboutScript, exampleId, type ScriptAbout } from './about.ts';
@@ -57,9 +57,9 @@ function aboutToggle(ui: ScriptsPanelState, redraw: () => void, key: string, abo
 }
 
 /** The options a script shows in its panel: those it declares, then those it reads without declaring them. */
-function optionRows(a: Analysis | ScriptError, set: Readonly<Record<string, OptionValue>> = {}): { name: string; label: string; type: string; value: OptionValue; declared: boolean; min?: number; max?: number; step?: number }[] {
+function optionRows(a: Analysis | ScriptError, set: Readonly<Record<string, OptionValue>> = {}): { name: string; label: string; type: string; value: OptionValue; declared: boolean; min?: number; max?: number; step?: number; choices?: OptionValue[] }[] {
   if (isError(a)) return [];
-  const rows = a.declared.map(d => ({ name: d.name, label: d.label ?? d.name, type: d.type, value: d.value, declared: true, ...(d.min !== undefined ? { min: d.min } : {}), ...(d.max !== undefined ? { max: d.max } : {}), ...(d.step !== undefined ? { step: d.step } : {}) }));
+  const rows = a.declared.map(d => ({ name: d.name, label: d.label ?? d.name, type: d.type, value: d.value, declared: true, ...(d.min !== undefined ? { min: d.min } : {}), ...(d.max !== undefined ? { max: d.max } : {}), ...(d.step !== undefined ? { step: d.step } : {}), ...(d.choices?.length ? { choices: d.choices } : {}) }));
   for (const name of a.read) {
     // What it is: the value it already has says (a text stays a text), else its name, else it is a text.
     const had = Object.prototype.hasOwnProperty.call(set, name) ? set[name] : undefined, guess = had !== undefined ? had : inferredOption(name);
@@ -172,7 +172,7 @@ function reference(): string[] {
     t('Inputs: time (seconds), vbuy, vsell (dollars bought and sold at market), lbuy, lsell (dollars of shorts and longs liquidated), $price.open, .high, .low, .close (the chart\'s candle), renderer.length (candles so far), options.name.'),
     t('source(vbuy, type=spot, exchange=BINANCE, quote=USDT) reads over those markets only (the flow column\'s markets are the rest). Options: name = option(default=14, type=number|color|checkbox|text, label=...).'),
     t('Functions: sma, ema, rma, sum, cum, cma, highest, lowest, last, linreg, stoch, pivot_high, pivot_low, avg, avg_ohlc, heikinashi, ohlc, cum_ohlc, interpolate; Math and Number as in JavaScript.'),
-    t('Plots: line, histogram, area, baseline, candlestick, plotbar, cloudarea, brokenarea, each with title=, color=, lineWidth=, priceScaleId=, scaleMargins=. A point can be an object: {time: time, value: x, color: c}.'),
+    t('Plots: line, histogram, area, baseline, candlestick, plotbar, cloudarea, brokenarea, mark, level, each with title=, color=, lineWidth=, priceScaleId=, scaleMargins=. A point can be an object: {time: time, value: x, color: c}.'),
     t('Not here: trade counts (cbuy, csell read NaN), single markets by name (EXCHANGE:pair), the chart library\'s series objects, try, switch. A candle that was not recorded reads NaN and draws nothing; the functions skip it.'),
   ];
 }
@@ -228,8 +228,26 @@ function buildEditor(host: ScriptsHost, body: HTMLElement, redraw: () => void, u
     body.append(heading(t('Options')));
     for (const o of rows) {
       const current = o.name in draft.options ? draft.options[o.name] : o.value;
-      let input: HTMLInputElement;
-      if (o.type === 'boolean') { input = el('input', { type: 'checkbox', checked: current === true || current === 1 }); input.onchange = () => { draft.options[o.name] = input.checked; }; }
+      let input: HTMLInputElement | HTMLSelectElement;
+      // A list with its choices: one of them, picked, each kept as it is written (a number stays a number, so a line width of 3 is 3).
+      const choices = o.type === 'list' && o.choices?.length ? o.choices : null;
+      if (choices) {
+        const select = el('select', {});
+        // Texts are quoted only where a text and a number would read alike ("1" beside 1).
+        const mixed = choices.some(c => typeof c === 'string') && choices.some(c => typeof c !== 'string');
+        choices.forEach((c, k) => select.append(new Option(choiceLabel(c, mixed), String(k))));
+        const at = choiceIndex(choices, current);
+        // A value that is none of the choices (typed in an earlier page, or the empty text of a list with no default) shows as a row of its
+        // own, which picked again gives that value back: the box says what the script reads.
+        const kept = at < 0 && current !== undefined && current !== null ? current : undefined;
+        if (kept !== undefined) { select.append(new Option(choiceLabel(kept, mixed), 'kept')); select.value = 'kept'; }
+        else select.value = String(Math.max(0, at));
+        select.onchange = () => {
+          if (select.value === 'kept') { if (kept !== undefined) draft.options[o.name] = kept; return; }
+          const k = Number(select.value); if (Number.isInteger(k) && choices[k] !== undefined) draft.options[o.name] = choices[k]!;
+        };
+        input = select;
+      } else if (o.type === 'boolean') { const box = el('input', { type: 'checkbox', checked: current === true || current === 1 }); box.onchange = () => { draft.options[o.name] = box.checked; }; input = box; }
       else if (o.type === 'number' || o.type === 'range') {
         input = el('input', { type: 'number', value: typeof current === 'number' ? String(current) : '', step: o.step !== undefined ? String(o.step) : 'any' });
         input.oninput = () => { const v = Number(input.value); if (input.value.trim() === '') delete draft.options[o.name]; else if (Number.isFinite(v)) draft.options[o.name] = v; };

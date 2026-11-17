@@ -91,6 +91,7 @@ export const PLOT_KINDS: readonly { kind: PlotKind; is: string; style: string }[
   { kind: 'cloudarea', is: 'The area between two values, cloudarea(lower, higher), filled and edged.', style: 'positiveColor, negativeColor, higherLineColor (or positiveLineColor), lowerLineColor (or negativeLineColor), higherLineWidth, lowerLineWidth, higherLineStyle, lowerLineStyle' },
   { kind: 'brokenarea', is: 'A band from lowerValue to higherValue a candle, without joining candles (a row of colour per candle: heat maps).', style: 'color' },
   { kind: 'mark', is: 'A mark at a value, on the candles where the call gives one: mark(value, text, tip, colour), or mark({value: v, text: t, tip: s, color: c}). text (up to 24 characters) is shown on the chart; tip (up to 600, a new line with \\n) is what the pointer on the mark reads, with the script\'s name. A value that is not a number draws no mark there. Where marks would cover one another, a label is drawn as a dot and a text alone is left out, so they read when zoomed in.', style: 'color, textColor, shape (label, text, dot, circle, square, diamond, triangleUp, triangleDown, arrowUp, arrowDown, cross), position (above, below, at: above or below stands a few pixels clear of the value), offset (pixels further off the value, to stack marks of two plots at one candle), size (0.6 to 2.5)' },
+  { kind: 'level', is: "A price held from one candle to a later one, or on to the right edge, named at its right end: level(value, from, to, text, colour), or level({value: v, from: t0, to: t1, text: s, color: c}). from and to are candles' starts in seconds, as time reads them (keep them in a name: start = time, then start[n] is the start of the candle n back); the level is drawn from the middle of the candle from names (this one where it names none) to the middle of the one to names, or on to the right edge where to is left out. Each level is kept at its from candle, so one call can draw many (one per candle), and a later call naming the same from replaces it: ends it, moves it, renames or recolours it; a value that is not a number takes it away. A from or to after this candle names this one. text (up to 24 characters) is shown on a plate at its right end, of the level's colour or of textColor; where names would cover one another, those running on to the edge and the newer go first and the others are left out. endShape draws a cross or a dot at the end of each level that ended.", style: "color, lineWidth, lineStyle, textColor, endShape (none, cross, dot)" },
 ];
 
 /** What every kind of plot also takes, whatever it draws. */
@@ -114,8 +115,8 @@ export const RULES: readonly string[] = [
   'Statements: var, let, const, if / else, for (;;), while, do ... while, break, continue, function name(...) { ... }, return; expressions as in JavaScript, arrow functions and ternaries included. As in JavaScript, a line break ends a statement only where the next line cannot carry it on: x = 1 followed by a line + 2 is x = 3, and a line that starts with ( or [ carries on the line before it. Two statements on one line need a semicolon; end a statement with one when the next line starts with an operator or a bracket.',
   'A name assigned without var, let or const anywhere in the script (x = ...) keeps its value from candle to candle and starts at 0; x[1] is its value one candle back (x[n], n candles back; the first candle reads itself). Such names are one name whatever their case. A var, let or const starts again each candle.',
   'Plot calls, option(...), source(...) and alert(...) take named arguments: line(x, title="CVD", color=red, lineWidth=2); a bare word as a named value is a text (title=CVD). Every other function takes its arguments by position only, and ignores a named one: write sma(x, 20), not sma(x, length=20).',
-  "A plot's named arguments are its style, read once, at its first call: what changes from candle to candle goes in its values, by position or in a point object (a mark's text, tip and colour: mark(v, text, tip, colour) or mark({value: v, text: t, color: c}); a line's colour: line({value: x, color: c})).",
-  "Plots are line, area, histogram, baseline, candlestick, plotbar, cloudarea, brokenarea, mark (each also as plotline, plothistogram, ...). Each takes title=, priceScaleId=, scaleMargins={top: 0.1, bottom: 0.1} and visible=, and the style its kind reads (see Plots: a candlestick has upColor and downColor, not color); a kind ignores the style it does not read. lineWidth is 1 to 6; lineStyle is 0 solid, 1 dotted, 2 dashed, 3 long dashes, 4 sparse dots. A point can be an object: line({time: time, value: x, color: c}) colours that candle's point.",
+  "A plot's named arguments are its style, read once, at its first call: what changes from candle to candle goes in its values, by position or in a point object (a mark's text, tip and colour: mark(v, text, tip, colour) or mark({value: v, text: t, color: c}); a line's colour: line({value: x, color: c})). A level is the one plot that can be drawn from an earlier candle: level(price, from, to, text) starts it at the candle from names.",
+  "Plots are line, area, histogram, baseline, candlestick, plotbar, cloudarea, brokenarea, mark, level (each also as plotline, plothistogram, ...). Each takes title=, priceScaleId=, scaleMargins={top: 0.1, bottom: 0.1} and visible=, and the style its kind reads (see Plots: a candlestick has upColor and downColor, not color); a kind ignores the style it does not read. lineWidth is 1 to 6; lineStyle is 0 solid, 1 dotted, 2 dashed, 3 long dashes, 4 sparse dots. A point can be an object: line({time: time, value: x, color: c}) colours that candle's point.",
   "A script draws in a row of its own under the map, or on the map, where plots on the default price scale (priceScaleId right) stand at their prices and the others on scales of their own; the Draw setting in its panel chooses. $price.color colours the map's candles.",
   'A candle whose flow is known neither from the recording nor from Binance\'s own candles, or whose liquidations were not recorded (no candle reports them), reads NaN: the functions skip it (they do not take it as 0) and a plot draws nothing there. Use nz(x) where 0 is meant.',
   'Each call of a function with a history (sma, ema, cum, ...) keeps its own: call them at fixed places, not in a loop over windows (a loop would share one).',
@@ -237,13 +238,22 @@ line(sma(total, len), title="Average", color="rgba(128,128,128,0.8)")`;
 
 const callsOf = (kind: PlotKind): string[] => Object.entries(PLOTS).filter(([, k]) => k === kind).map(([name]) => `${name}(...)`);
 
+/**
+ * A plot's style keys one by one, from its style text: an alias in brackets ("color (or lineColor)") is a key of its own; any other bracket
+ * (its values, a range, a note: "shape (label, text, ...)", "size (0.6 to 2.5)") belongs to the key before it and is left out.
+ */
+export function styleKeys(style: string): string[] {
+  const keys = style.replace(/\s*\(or ([A-Za-z0-9]+)\)/g, ' or $1').replace(/\s*\([^()]*\)/g, '');
+  return keys.split(', ').flatMap(s => s.split(' or ')).map(s => s.trim()).filter(Boolean);
+}
+
 /** The machine-readable reference (`scripts.json`). */
 export function referenceData(): Record<string, unknown> {
   return {
     name: 'LiquidityMapperFast scripts', version: SCRIPT_API, language: 'JavaScript-shaped indicator scripts, run once per candle', reference: REFERENCE_URL,
     rules: RULES, inputs: INPUTS, globals: GLOBALS, functions: FUNCTIONS,
     // Style keys one by one, an alias ("color (or lineColor)") as a key of its own.
-    plots: PLOT_KINDS.map(p => ({ kind: p.kind, calls: callsOf(p.kind), fields: PLOT_FIELDS[p.kind], style: [...p.style.split(', ').flatMap(s => s.replace(/[()]/g, '').split(' or ')), ...PLOT_COMMON.split(', ')], is: p.is })),
+    plots: PLOT_KINDS.map(p => ({ kind: p.kind, calls: callsOf(p.kind), fields: PLOT_FIELDS[p.kind], style: [...styleKeys(p.style), ...PLOT_COMMON.split(', ')], is: p.is })),
     exchanges: Object.keys(EXCHANGES), notSupported: NOT_SUPPORTED, limits: LIMITS,
     errors: ERRORS.map(e => ({ code: e.code, message: errorSentence(e.code), when: e.when, ...(e.note ? { note: e.note } : {}), ...(e.shown ?? (e.wrong ? { wrong: e.wrong, right: e.right } : {})) })),
     warnings: WARNINGS.map(code => ({ code, message: warningSentence(code) })),
