@@ -16,7 +16,7 @@ import { LABEL_FLOOR, ageAlpha, ageRanks, carriedLines, runPieces, type CarriedL
 import { LabelBoard } from '../labels.ts';
 import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
-import { PALETTES, rgb, textOn, type Palette } from '../theme.ts';
+import { PALETTES, rgb, textOn, type Palette, paletteOf } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
 import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, usd, zoneName } from '../format.ts';
 import { timeAxis } from '../time-axis.ts';
@@ -227,7 +227,7 @@ export function sideColumns(state: AppState): ReturnType<typeof arrangeSides> {
   if (sidesMemo?.set !== set || sidesMemo.fit !== fit) sidesMemo = { set, fit, sides: arrangeSides(set, fit) };
   return sidesMemo.sides;
 }
-const TIME_H = 22;
+export const TIME_H = 22;
 /**
  * How many candles before the view's left edge the scripts read, so a line that needs a window of candles is already worked out there: the
  * VWAP script's 48 and a 200-candle average both fit. A longer window shows its first candles on the screen, as on any chart.
@@ -626,6 +626,10 @@ export class HeatPane {
   onRollingReach: () => void = () => {};
   /** A click on the header of the profile along the top (set by the page): its settings, in the Volume profile panel. */
   onTopProfile: () => void = () => {};
+  /** A double click on the plot (set by the page): the map maximized to the whole screen, or the panels given back; false when that changes nothing (nothing to fold away). */
+  onMaximize: () => boolean = () => false;
+  /** What last pressed on the map (a mouse, a pen, a finger): a finger's double tap does not maximize. */
+  #lastPointer = '';
   /** What of the profiles has no room changed (a resize, a taller legend): the open panel says it again. */
   onArrangedChange: () => void = () => {};
   #hiddenKey = '';
@@ -729,7 +733,7 @@ export class HeatPane {
   get plotW(): number { return Math.max(1, this.#w - gutter(this.store.state)); }
   get plotH(): number { return Math.max(1, this.#h - TIME_H); }
   setPalette(name: string): void {
-    this.#palette = PALETTES[name] ?? PALETTES.light!;
+    this.#palette = paletteOf(name);
     this.#radius = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--radius')) || 0;
     this.gl.setLut(buildLut(this.#palette.dark)); this.invalidate();
   }
@@ -828,10 +832,10 @@ export class HeatPane {
 
   /**
    * Where an order at `price` that traded at `t` sits on the screen (window CSS px), for the glass's light (glass/ui-glass.ts); null when
-   * the map does not show that time or price, is hidden, or replays.
+   * the map does not show that time or price, is hidden or covered by a maximized pane (layout.ts #setMax), or replays.
    */
   liveSpot(price: number, t: number): { x: number; y: number } | null {
-    if (this.#suspended || replaying() || this.root.hidden) return null;
+    if (this.#suspended || replaying() || this.root.hidden || this.root.closest('.max-lower') !== null) return null;
     const pw = this.plotW, ph = this.plotH, x = this.view.xOf(t, pw), y = this.view.yOf(price, ph);
     if (!(x >= 0 && x <= pw + 2 && y >= 0 && y <= ph)) return null;
     const r = this.overlay.getBoundingClientRect();
@@ -1596,7 +1600,7 @@ export class HeatPane {
   #fitCorner(pw: number): void {
     const tools = this.root.querySelector<HTMLElement>('.map-tools');
     if (!tools || isPhone()) return;
-    const key = `${pw}|${this.#legendNeed}|${tools.childElementCount}|${tools.textContent?.length ?? 0}|${document.documentElement.dataset.frame ?? ''}`;
+    const key = `${pw}|${this.#legendNeed}|${tools.querySelectorAll(':scope > :not([hidden])').length}|${tools.textContent?.length ?? 0}|${document.documentElement.dataset.frame ?? ''}`;
     if (key === this.#cornerKey) return;
     this.#cornerKey = key;
     const was = tools.classList.contains('compact');
@@ -4639,6 +4643,7 @@ export class HeatPane {
     }, { passive: false });
     el.addEventListener('contextmenu', e => e.preventDefault());
     el.addEventListener('pointerdown', e => {
+      this.#lastPointer = e.pointerType;
       if (e.pointerType === 'touch') return;
       const { x, y } = local(e);
       // The plot is from 0 to plotW: the columns left of the map are at negative x and take their own presses. Placing an anchor, a press is
@@ -4664,7 +4669,7 @@ export class HeatPane {
       if (e.button === 2) { this.#zoomDrag = { x, y, view: this.view.clone(), moved: false }; el.setPointerCapture(e.pointerId); return; }
       if (e.button !== 0) return;
       // The drawing tools come next: a press on the selected drawing's handle or stroke drags it instead of the map.
-      if (onPlot && this.draw?.down({ x, y }, false)) { this.#press = null; el.setPointerCapture(e.pointerId); return; }
+      if (onPlot && this.draw?.down({ x, y }, false)) { this.#press = null; this.#drawClickAt = performance.now(); el.setPointerCapture(e.pointerId); return; }
       this.#press = onPlot ? { x, y, moved: false } : null;
       if (this.#onScale(x, y)) {
         // Dragging the price scale zooms it (up zooms in, down zooms out) about the current price, or the price under the pointer when that is off the map.
@@ -4770,8 +4775,16 @@ export class HeatPane {
       if (this.#drag || this.#zoomDrag || this.#scaleDrag) { this.#drag = null; this.#zoomDrag = null; this.#scaleDrag = null; this.invalidate(); }
     });
     el.addEventListener('pointerleave', e => { if (e.pointerType === 'touch') return; if (!this.draw?.dragging) this.draw?.leave(); if (!this.#scaleDrag) el.style.cursor = ''; this.#profileHover = null; this.#tradedHover = null; if (!this.#drag && !this.#zoomDrag) { this.store.set({ hover: null }); this.invalidateHover(); } });
-    // A double click recentres the map, except while a tool is armed or when it selected a drawing (its first click was the drawing tools').
-    el.addEventListener('dblclick', () => { if (this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return; this.fit(); });
+    // A double click on the plot maximizes the map to the whole screen, or gives the panels back, where there is something to fold away (a pane
+    // under it or a column beside it; TradingView's, Karl 2026-11-17); on its axes and columns, or with nothing to fold, it recentres the map. Neither while a tool is armed or when it
+    // selected a drawing (its first click was the drawing tools').
+    el.addEventListener('dblclick', e => {
+      // A finger's double tap is the map's own gesture (it recentres, `doubleTap`).
+      if (this.#lastPointer === 'touch' || this.draw?.placing || this.store.state.vwapAnchoring || this.store.state.profileAnchoring || performance.now() - this.#drawClickAt < 600) return;
+      const at = local(e);
+      if (!this.store.state.rangeTool && at.x >= 0 && at.x < this.plotW && at.y >= 0 && at.y < this.plotH && this.onMaximize()) return;
+      this.fit();
+    });
     bindTouch(el, new GestureRecognizer(this.#touchHandlers()), () => this.#left);
   }
 }

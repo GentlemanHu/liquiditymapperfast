@@ -85,7 +85,8 @@ export const SECTIONS: readonly Section[] = [
         ['Right-drag', 'Right or up zooms the time or price axis in; left or down zooms out'],
         ['[[+]], [[−]]', 'Zoom the time axis in or out'],
         ['[[1]] to [[7]]', 'The timeframe: 1m, 5m, 15m, 30m, 1h, 4h, 1d'],
-        ['Double-click, [[R]], [[Home]], **Recenter**', 'Back to the live edge, price range fitted'],
+        ['Double-click the price scale, [[R]], [[Home]], **Recenter**', 'Back to the live edge, price range fitted'],
+        ['Double-click the chart, [[Z]]', 'Maximize the chart to the whole screen: the panels under it and the side columns fold away. Again brings them back'],
         ['**Live**, [[End]]', 'Back to the live candle at the zoom you have'],
       ] },
       { t: 'p', text: 'On a **phone or tablet** the same moves are made with fingers:' },
@@ -393,8 +394,9 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'funding', title: 'Funding',
     blocks: [
-      { t: 'p', text: '**Funding** is what holders of a perpetual pay each other every interval to keep its price near the index: when it is positive, longs pay shorts. The **Funding** pane shows one exchange\'s (Hyperliquid, Binance, Bybit, OKX, Bitget or Deribit, chosen by *Venue*): settled funding as thick steps, the one accruing now dashed, and where the exchange publishes it the **premium** (how far the perpetual\'s price sits from the index) as a thin line.' },
-      { t: 'p', text: 'Every rate is per eight hours, so the base rate (0.01%, dashed) and the band where the premium moves while funding stays put are the same on every exchange that has them. Hyperliquid settles every hour, which the pane scales to eight, and Deribit\'s funding is continuous, with no base rate. The table lists every exchange that lists the coin: click a row to show that one.' },
+      { t: 'p', text: '**Funding** is what holders of a perpetual pay each other every interval to keep its price near the index: when it is positive, longs pay shorts, and the pane fills it above the zero line in the buy colour; when it is negative, shorts pay longs, filled below in the sell colour. *Venue* chooses one exchange (Hyperliquid, Binance, Bybit, OKX, Bitget or Deribit): settled funding as thick steps, the one accruing now dashed, and where the exchange publishes it the **premium** (how far the perpetual\'s price sits from the index) as a thin line.' },
+      { t: 'p', text: 'Every rate is per eight hours, so the base rate (0.01%, dashed) is the same on every exchange that has one, and so is the band where the premium moves while funding stays put: two dotted lines in the premium\'s colour, drawn where the premium is. Outside them, funding follows the premium. Hyperliquid settles every hour, which the pane scales to eight, and Deribit\'s funding is continuous, with no base rate. The table lists every exchange that lists the coin: click a row to show that one.' },
+      { t: 'p', text: '**Every venue**, first under *Venue*, draws each exchange\'s funding as a thin line in its colour and their **median** as a thick one: the middle of the exchanges that have a rate at that time, drawn where at least half of them have one. A median and not an average, because Hyperliquid sits at the base rate most hours while the others rarely do, and an average weighted by open interest mostly follows Binance.' },
       { t: 'p', text: 'On Hyperliquid, under each hour back to the dotted mark, the pane shows the share of new positions that buyers opened at market (NL/NS). Measured on BTC and ETH, funding moved with that share hour by hour. It is context: whether any of it says where the price goes was not tested.' },
     ],
   },
@@ -422,10 +424,25 @@ export const SECTIONS: readonly Section[] = [
         '**Move** a panel by dragging its grip in the title bar. The flow column and the order book can stand on either side of the map, or one over the other; the panels under the map change places among themselves. The ⋯ menu on each panel offers the same moves from a keyboard or a touch screen.',
         '**Resize** with the splitters between panels. Double-click a splitter to give back the default size.',
         '**Layouts**, the first button in the map\'s corner (under Settings on a tablet), holds six ready-made arrangements (Default, Map only, Order book, Order flow, Positioning and Everything) and your own, each drawn as a small picture of its panels. A ready-made layout decides which panels are open and how big they are, and Order flow also switches the footprint on: your colours, timeframe and venues stay as they are.',
-        '**Save** what is on the screen under a name and apply it from the same panel. Tick “With the chart’s settings” to keep the timeframe, the colours and every switch as well.',
+        '**Save** what is on the screen under a name and apply it from the same panel. A layout keeps the chart\'s settings too (the timeframe, the heatmap colours and every switch) unless you clear “With the chart’s settings”; each of your cards says *with settings* or *panels only*.',
         '**Undo** is offered for a few seconds after applying a layout, hiding a panel or deleting a layout, and puts back only what that did.',
       ] },
       { t: 'note', kind: 'tip', text: 'Layouts live in this browser. **Export** writes them to a file and **Import** reads it back, to use them in another browser. On a phone the panels are tabs, so there is nothing to arrange.' },
+      { t: 'p', text: 'A layout never holds the coin, the venues, the theme, the time zone or the sounds. **Back up and restore** (the last button of the Layouts panel; in Settings on a phone or tablet) keeps all of it: **Save a backup** writes your settings, layouts, scripts, drawings and themes, the coin and the venues to one file, and **Restore a backup…** reads such a file in another browser or on another computer. It says what the file holds and asks before it replaces anything, then reloads the page.' },
+    ],
+  },
+  {
+    id: 'maximize', title: 'Maximize a chart',
+    blocks: [
+      { t: 'p', text: '**Maximize** gives one chart the whole screen between the top bar and the status bar: the map itself, or one of the panels under it (Depth, Open interest, Delta, Long/Short, Funding, LT, Bar stats or Scripts). The other panels, the flow column and the order book fold away, keep their places and sizes, and come back as they were.' },
+      { t: 'list', items: [
+        '**Double-click** the chart or the panel to maximize it, and again to bring the other panels back.',
+        '**The four-corner button** does the same: on the title bar of each panel under the map, beside its ⋯ menu, and last among the map\'s corner buttons. It is lit while its chart is maximized, and the ⋯ menu offers the same.',
+        '[[Z]] maximizes the chart under the pointer, or brings the other panels back.',
+        'A maximized panel keeps the map\'s time labels along its bottom.',
+        'Opening or closing a panel brings the others back, so that you see what you asked for. Maximize is not saved: a reload shows every panel.',
+      ] },
+      { t: 'note', kind: 'tip', text: 'On the map, a double-click on the price scale still recentres it, as [[R]] does. On a phone the panels are tabs and already fill the screen.' },
     ],
   },
   {
@@ -491,7 +508,8 @@ export const SECTIONS: readonly Section[] = [
       { t: 'p', text: '**Search** this guide with the box at its top. It finds sections as you type, forgives a typo, and takes you to the paragraph. Press [[/]] to reach the box.' },
       { t: 'p', text: '**Screenshot** (or [[S]]) freezes the page under a dim layer that says “Select an area”. Drag a region, or click or tap a pane to take all of it (the top bar takes the whole page). Draw on it with the pen, line, arrow, rectangle, highlighter or text, and hide anything private with **pixelate** or **blur**. **Copy** puts the picture on the clipboard; the arrow beside it saves a PNG, and on a phone the share arrow opens the phone\'s own share sheet.' },
       { t: 'p', text: 'The picture is saved with at least two pixels to each pixel of the page (more on a sharper screen), so it stays crisp. **GIF** records the same area for 1 to 15 seconds instead.' },
-      { t: 'p', text: 'The **theme** menu (in the status bar; in Settings on a phone) has more than twenty themes, light and dark: hover one to preview it everywhere, click or tap to keep it. **Install** appears when your browser can install this page as an app; an iPhone or iPad has no prompt: choose Share, then Add to Home Screen.' },
+      { t: 'p', text: 'The **theme** menu (in the status bar; in Settings on a phone) has more than twenty themes, light and dark: hover one to preview it everywhere, click or tap to keep it. Its last row, **Make your own…**, copies the theme on the screen into one of your own: change any of its sixteen colours and its shape, and the whole page follows as you pick. Words are kept readable whatever you choose, and the panel says which colours will be hard to see. **Export** writes a theme to a file that holds colours only, so a theme someone shares is safe to **Import**.' },
+      { t: 'p', text: '**Install** appears when your browser can install this page as an app; an iPhone or iPad has no prompt: choose Share, then Add to Home Screen.' },
       { t: 'p', text: 'The browser tab shows the price too: its title starts with the chart market\'s price and an arrow for the way the candle under way is going, and its icon draws that candle, so a pinned tab still tells you where the price is going. The clock button in the status bar (it reads Local or UTC) switches the page\'s times between your computer\'s time and UTC, and the **Language** button beside it switches the page and this guide between its twelve languages.' },
       { t: 'keys', rows: [
         ['[[S]]', 'Screenshot'],

@@ -1,4 +1,4 @@
-import { PALETTES, mixHex, textOn, type Palette } from '../theme.ts';
+import { PALETTES, mixHex, textOn, type Palette, paletteOf } from '../theme.ts';
 import { setTip } from '../tip.ts';
 import { helpButton } from '../help.ts';
 import { TIMEFRAMES, type DepthAnswer, type Hub } from '../hub.ts';
@@ -78,6 +78,22 @@ export abstract class TimePane {
   #canvasW = 0;
   /** The canvas has no width (the pane is closed, or on a phone its tab is not the one shown): nothing it would draw could be seen. */
   #hidden = false;
+  /**
+   * Covered by a maximized pane of the map's column (layout.ts #setMax): laid out still, but out of sight, so it draws nothing and its cards
+   * (hover, pinned) are put away, as a hidden pane's are; uncovered, it draws again. Its cards are top-layer popovers: drawn, they floated over
+   * the maximized chart (review r1).
+   */
+  #covered = false;
+  cover(on: boolean): void {
+    if (on === this.#covered) return;
+    this.#covered = on;
+    if (!on) { this.invalidate(); return; }
+    if (this.#frame) { cancelAnimationFrame(this.#frame); this.#frame = 0; }
+    if (this.#pinned) this.#unpin();
+    this.undrawn();
+  }
+  /** Let go of a finger's pin and of the pointer: the pane's card goes at its next drawing (a pane left drawn under a maximized map, review r3). */
+  dismiss(): void { if (this.#pinned) this.#unpin(); this.pointer = null; this.invalidate(); }
   get #left(): number { return leftGutter(this.store.state); }
   protected palette = PALETTES.light!;
   #frame = 0;
@@ -98,7 +114,7 @@ export abstract class TimePane {
     this.ctx = this.canvas.getContext('2d')!;
     new ResizeObserver(() => this.#resize()).observe(this.canvas);
     // A pane that is not shown keeps its canvas of no size: drawing it would draw nothing.
-    sharpens({ resize: () => this.#resize(), paint: () => { if (this.canvas.getBoundingClientRect().width > 0) this.#prepare(); } });
+    sharpens({ resize: () => this.#resize(), paint: () => { if (!this.#covered && this.canvas.getBoundingClientRect().width > 0) this.#prepare(); } });
     const source = this.#source = cls as 'depth' | 'oi' | 'lt' | 'bars' | 'delta' | 'ls' | 'funding' | 'script';
     // A drag across a pane selects a stretch of time for the Range tool while it is armed, or with Ctrl (Cmd on a Mac) held.
     this.canvas.addEventListener('pointerdown', e => {
@@ -195,13 +211,13 @@ export abstract class TimePane {
   /** Header element, the grip target for drag-reordering. */
   get header(): HTMLElement { return this.head; }
   get plotW(): number { return Math.max(1, this.w - gutter(this.store.state)); }
-  setPalette(name: string): void { this.palette = PALETTES[name] ?? PALETTES.light!; this.invalidate(); }
+  setPalette(name: string): void { this.palette = paletteOf(name); this.invalidate(); }
   /**
    * Draw again at the next frame, unless the canvas has no width: a pane not on screen asks for nothing (on a phone the panes under the map
    * sit in tabs, and the shown tab's data changes asked the hidden ones for frames several times a second, each only to find it had no
    * room). Its canvas getting a width again (the resize) draws it.
    */
-  invalidate(): void { if (!this.#frame && !this.#hidden) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#prepare(); }); }
+  invalidate(): void { if (!this.#frame && !this.#hidden && !this.#covered) this.#frame = requestAnimationFrame(() => { this.#frame = 0; this.#prepare(); }); }
   #resize(): void {
     // Hidden is no width (closed, or a phone tab not shown); a pane squeezed to no height still draws its header's readout and its marks.
     const r = this.canvas.getBoundingClientRect(), hidden = r.width < 1, was = this.#hidden;
@@ -218,7 +234,7 @@ export abstract class TimePane {
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); this.ctx.clearRect(0, 0, this.#canvasW, this.h);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, this.dpr * left, 0);
     this.ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; this.ctx.textBaseline = 'middle';
-    if (this.view.t1 > this.view.t0 && this.w > 1) { this.cursorT = null; this.scaleAt = null; this.#grid(); this.draw(); this.#replayMask(); this.#rangeBand(); this.#crosshair(); } else { if (this.#pinned) this.#unpin(); this.undrawn(); }
+    if (this.view.t1 > this.view.t0 && this.w > 1) { this.cursorT = null; this.scaleAt = null; this.leftTag = false; this.#grid(); this.draw(); this.#replayMask(); this.#rangeBand(); this.#crosshair(); } else { if (this.#pinned) this.#unpin(); this.undrawn(); }
   }
   #grid(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW;
@@ -258,10 +274,14 @@ export abstract class TimePane {
     const tagH = 16, top = Math.round(Math.max(0, Math.min(this.h - tagH, hv.y - tagH / 2))), left = this.w - AXIS_W;
     ctx.fillStyle = p.text; ctx.fillRect(left, top, AXIS_W, tagH);
     ctx.fillStyle = p.bg; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, left + AXIS_W / 2, top + tagH / 2 + 0.5);
+    // The same value at the plot's left end, where the pane asks for it (`leftTag`): the eye need not cross the pane to the scale.
+    if (this.leftTag) { const w = Math.ceil(ctx.measureText(text).width) + 10; ctx.fillStyle = p.text; ctx.fillRect(0, top, w, tagH); ctx.fillStyle = p.bg; ctx.fillText(text, w / 2, top + tagH / 2 + 0.5); }
     ctx.restore();
   }
   /** The value at a height of the pane, for the crosshair's tag on the scale: set by the pane as it draws (null: no tag, the line alone). */
   protected scaleAt: ((y: number) => string | null) | null = null;
+  /** Whether the crosshair's value tag shows at the plot's left end too: set by the pane as it draws (off unless it says so, as where its table stands over that end). */
+  protected leftTag = false;
   /** Whether the pointer's height means anything in this pane (a table's rows take no horizontal line). */
   protected crossY = true;
   /** Where the readout stands when it is not under the pointer (past the newest point it shows the newest): the cursor is drawn there. Set by `draw`. */
