@@ -247,6 +247,8 @@ export class FundingPane extends TimePane {
   #drawTable(venue: FundingVenue | null, shown: FundingView | null, tf: number, at: number, now: number, pointed: boolean, all?: { views: ReadonlyMap<FundingVenue, FundingView>; venues: readonly VenueFunding[]; median: { per8h: number } | null }): ReturnType<PaneTable['draw']> {
     const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null };
     const listed = FUNDING_VENUES.filter(x => coin.markets[x]), heads = ['', t('Funding'), 'APR', t('Premium')], minCols = 2;
+    // One venue: a row that repeats the header; no table, and the popup stays.
+    if (listed.length < 2) return null;
     const sample = listed.map(x => ({ name: venueLabel(x), per8h: 0.0001, premium: -0.0004 }));
     if (all) sample.push({ name: t('Median'), per8h: 0.0001, premium: -0.0004 });
     if (!placeTable(text => ctx.measureText(text).width, room, { heads, minCols, rows: fundingTableRows(sample, p) })) return null;
@@ -389,9 +391,10 @@ export class FundingPane extends TimePane {
     ctx.restore();
     labels();
     if (hover && this.pointer && hover.t > at) this.cursorT = at;
-    const plated = state.fundingTable && this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianNow })?.plate === true;
-    this.leftTag = !plated;
-    if (hover && this.pointer && !plated) {
+    // A table drawn takes the popup's place, as on every pane with one; the left tag stays unless the table is on a plate there.
+    const placed = state.fundingTable ? this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianNow }) : null;
+    this.leftTag = placed?.plate !== true;
+    if (hover && this.pointer && !placed) {
       this.#lines = fundingAllCardLines({ time: at, median: medianNow, need, venues: shown.map(s => { const r = fundingIn(s.rows, s.forming, at, now); return { id: s.id, name: venueLabel(s.id), per8h: r?.per8h ?? null, forming: r?.forming ?? false }; }) });
     }
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
@@ -543,10 +546,11 @@ export class FundingPane extends TimePane {
     // stay at their newest, and the cursor is drawn there.
     if (hover && this.pointer && hover.t > at) this.cursorT = at;
     const hourOpens = opens.find(h => h.t <= at && at < h.t + HOUR) ?? null;
-    // On a plate the table is the popup; beside the plot the popup says other things (who opened, when it settled).
-    const plated = state.fundingTable && this.#drawTable(venue, data, tf, at, now, !!hover)?.plate === true;
-    this.leftTag = !plated;
-    if (hover && this.pointer && !plated) this.#lines = fundingCardLines({ time: at, venue: name, row: shownRow, forming: isForming, premium: premiumAt, opens: hourOpens, coin: coin.coin, continuous: continuousFunding(venue), band: hasPremium(venue) });
+    // A table drawn takes the popup's place, as on every pane with one (Table off brings back who opened and when it settled); the left tag stays
+    // unless the table is on a plate there.
+    const placed = state.fundingTable ? this.#drawTable(venue, data, tf, at, now, !!hover) : null;
+    this.leftTag = placed?.plate !== true;
+    if (hover && this.pointer && !placed) this.#lines = fundingCardLines({ time: at, venue: name, row: shownRow, forming: isForming, premium: premiumAt, opens: hourOpens, coin: coin.coin, continuous: continuousFunding(venue), band: hasPremium(venue) });
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
     const parts: string[] = [];
     if (shownRow) parts.push(`${key(p.text)}${t('Funding')} <b class="${tone(shownRow.per8h)}">${rateText(shownRow.per8h)}</b> / 8 h · APR ${rateText(shownRow.per8h * PER_YEAR, 2)}`);

@@ -22,11 +22,15 @@ import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, liqCardLines, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
-import { LiqHistory, bandIndex, type LiqRow } from '../liq-history.ts';
+import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
+import { groupApplies, groupTitle, liveView, viewKey, type LiqView } from '../liq-view.ts';
+import { FREE_DAYS, freeFrom, plusOnSale } from '../plus/config.ts';
+import { plus } from '../plus/pass.ts';
+import { togglePlus } from '../plus/panel.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
 import { addTune } from '../pane-tune.ts';
-import { PaneTable, tableInk, tableRowCap, type TableCell, type TableRoom } from './pane-table.ts';
+import { PaneTable, ratioCell, ratioFigure, sideRatio, tableInk, tableRowCap, type TableCell, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
@@ -251,7 +255,17 @@ export abstract class TimePane {
   #unpin(): void {
     // The pointer the pin set goes with it: left set, a table on a plate stayed over the chart after the finger had let go.
     this.#pinned = null; this.pointer = null;
-    if (this.store.state.hover?.touch) this.store.set({ hover: null });
+    if (this.store.state.hover?.touch) this.store.set({ hover: null }); else this.invalidate();
+  }
+  /**
+   * Pin the pointer at `p` (plot coordinates) for what the pane itself answers there (a script's tag, past the plot): no time is pinned, and
+   * the pin goes as any does, with a tap near it or the pane hidden, or by `unpinPoint` (the pane's own thing tapped again).
+   */
+  protected unpinPoint(): void { this.#unpin(); }
+  protected pinPoint(p: Pt): void {
+    const box = this.canvas.getBoundingClientRect();
+    this.#pinned = p; this.pointer = { x: box.left + this.#left + p.x, y: box.top + p.y };
+    if (this.store.state.hover) this.store.set({ hover: null }); else this.invalidate();
   }
   /** Whether the last press began a Range selection: the click it ends in is the selection's, not a click on the pane. */
   protected rangeGesture = false;
@@ -357,9 +371,17 @@ export function oiSourceText(state: Pick<AppState, 'oiParts' | 'oiInstrument' | 
 }
 
 /** The Depth pane's Liquidation levels series: the Depth series' shape, the rows it was built from and the row in force in each pixel column (-1: none), and what it was built for. */
-type LiqSeries = { key: string; series: { t0: number; t1: number; w: number; radii: readonly number[]; answer: DepthAnswer }; rowAt: Int32Array; rows: LiqRow[]; /** The history bucket each band reads (-1: none), and the bands asked beyond its reach. */ idx: number[]; omitted: number[] };
-/** How long a liquidation levels snapshot stands for in the Depth pane: about three of their periods (one comes every ~29 minutes); after that, a gap. */
-const LIQ_HOLD_MS = 90 * 60_000;
+type LiqSeries = {
+  key: string; series: { t0: number; t1: number; w: number; radii: readonly number[]; answer: DepthAnswer }; rowAt: Int32Array; rows: LiqRow[];
+  /** The history bucket each band reads (-1: none), and the bands asked beyond its reach (or, from the rollups, not one of their bands). */
+  idx: number[]; omitted: number[];
+  /** The stretch of the view whose history is Plus and closed to this visitor (`LiqHistory.closedBefore`), from where the recording begins, or null. */
+  closed: { from: number; to: number } | null;
+  /** What it shows (`liq-view.ts`), how long a row stands without a later one (90 minutes; a rollup's four hours and that), whether it is the rollups. */
+  view: LiqView; holdMs: number; wide: boolean;
+  /** The take profits, a layer of their own (a dashed line), in the same shape: per column and band, below the price (`bid`) and above. */
+  takes: { bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; rowAt: Int32Array } | null;
+};
 /** A difference as the Depth pane writes it, with its sign (a minus sign, not a hyphen). */
 const signedText = (value: number): string => `${value >= 0 ? '+' : '−'}${usd(Math.abs(value))}`;
 /** The Depth table's figures: three significant figures (263M, 1.38B), so its columns stay narrow enough to sit beside the plot. */
@@ -384,6 +406,8 @@ export class DepthPane extends TimePane {
   #series: { t0: number; t1: number; w: number; radii: readonly number[]; answer: DepthAnswer; ids?: readonly string[]; answeredAt?: number } | null = null;
   /** How far the liquidation history's buckets reach (a fraction of the price), once its index is read: bands past it are not drawn. */
   #liqReach: number | null = null;
+  /** The bands last drawn for a view and the bands asked (`viewKey|bands`), for the Range summary's key. */
+  #liqDrawn: { key: string; radii: readonly number[] } | null = null;
   /** What the pane said last instead of drawing liquidation levels (none recorded yet, out of reach), or '' (drawn, or loading); the reach then. */
   #liqSay = ''; #liqReachSaid: number | null = null;
   /** What the pane drew last, for its Range summary (range/depth-lines.ts): the same object while that does not change. */
@@ -392,9 +416,11 @@ export class DepthPane extends TimePane {
   /** What a snapshot of the pane is for, now: the source, the books counted (the order book's: Venues) and the bands. */
   rangeKey(state: AppState): string {
     if (state.depthSource !== 'liq') return depthHeldKey('book', bookIds(state), bandsOf(state.depthBands));
-    // Liquidation levels: the bands the pane draws, those within the history's reach once it is known (`#liqSeries`).
-    const reach = this.#liqReach, bands = bandsOf(state.liqBands);
-    return depthHeldKey('liq', [], reach === null ? bands : bands.filter(r => r <= reach * (1 + 1e-9)));
+    // Liquidation levels: what they show, and the bands the pane draws: those within the history's reach once it is known, or as last drawn
+    // for this view and these bands (the rollups have bands of their own: `#liqSeries`).
+    const reach = this.#liqReach, bands = bandsOf(state.liqBands), view = viewKey(liveView(state.liqLevels)), drawn = this.#liqDrawn;
+    const radii = drawn?.key === `${view}|${bands.join(',')}` ? drawn.radii : reach === null ? bands : bands.filter(r => r <= reach * (1 + 1e-9));
+    return depthHeldKey('liq', [], radii, view);
   }
   /** Why the liquidation levels have nothing to sum up, or '': another coin, or every band beyond the history's reach. */
   rangeEmpty(state: AppState, coin: string): string {
@@ -431,9 +457,17 @@ export class DepthPane extends TimePane {
   readonly #venues: BookVenues;
   #panel: Panel | null = null;
   /** The liquidation levels' history (liq-history.ts), read a UTC day at a time while the pane shows Liquidation levels. */
-  readonly #history = new LiqHistory();
+  // The server's boundary decides what goes with a pass, sale or no sale. While Plus is not on sale the page closes nothing by itself: every
+  // day is asked for, and only the gate's own refusal closes one (and the days before it).
+  readonly #history = new LiqHistory(undefined, { freeFrom, onSale: plusOnSale, pass: now => plus().pass(now), refused: pass => plus().refused(pass) });
   /** The Liquidation levels series last built, with the row in force in each pixel column, kept until the history, the view or the bands change. */
   #liq: LiqSeries | null = null;
+  /**
+   * Where the history is closed to this visitor (Plus), a button on the pane says so and opens what Plus is: a page element, so that it
+   * can be pressed and read like any other. Placed by each drawing at the closed stretch's near end (`#lockAt`, a plot x, or null: none).
+   */
+  readonly #lock = el('button', { type: 'button', class: 'plus-lock', hidden: true });
+  #lockAt: number | null = null;
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
     super(host, store, view, 'depth');
     this.#bars = new DepthBars((ids, from, to, stepMs) => hub.source.columns(ids, from, to, stepMs));
@@ -467,7 +501,7 @@ export class DepthPane extends TimePane {
     this.#units.append(new Option('USD', 'usd'), new Option(currentCoin().coin, 'coin'));
     this.#units.onchange = () => this.#set({ units: this.#units.value === 'coin' ? 'coin' : 'usd' });
     units.append(this.#units);
-    const table = el('label', { class: 'ctl', tip: t('Each band\'s bids, asks and their difference in a table on the pane, at the pointer\'s time or the newest. Click a row to bring that band forward.') });
+    const table = el('label', { class: 'ctl', tip: `${t('Each band\'s bids, asks and their difference in a table on the pane, at the pointer\'s time or the newest. Click a row to bring that band forward.')} ${t('× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.')}` });
     this.#tableBox.type = 'checkbox'; this.#tableBox.onchange = () => this.#set({ table: this.#tableBox.checked });
     table.append(this.#tableBox, t('Table'));
     // An extreme balance can sound; its band, how rare and the hours it is judged against are in the Sounds panel.
@@ -480,6 +514,25 @@ export class DepthPane extends TimePane {
     this.syncSound(); this.#sync();
     // On a phone the source stays in the row and the rest waits behind the key (pane-tune.ts); on a desktop the venues fold last.
     addTune(this.head, [this.#venues.root, group, scale, units, bell, table], t('Depth'), { fold: true });
+    this.#lock.onclick = () => { togglePlus(this.#lock); };
+    this.root.append(this.#lock);
+    // A pass that comes or goes opens or closes the older days: the series is built again from what may now be read.
+    plus().subscribe(() => { this.#history.accessChanged(); this.#liq = null; this.invalidate(); this.rangeStale(); });
+  }
+  /** The lock at the near end of the closed stretch, under the header and inside the plot; out of sight when nothing in view is closed. */
+  #placeLock(): void {
+    const at = this.#lockAt, lock = this.#lock;
+    if (at === null) { if (!lock.hidden) lock.hidden = true; return; }
+    const text = t('Earlier history: Plus');
+    if (lock.textContent !== text) {
+      lock.textContent = text;
+      setTip(lock, t('The liquidation levels\' history is free for the last {n} days. What is older is part of Plus, which pays for the servers that record it. Press for what Plus is.', { n: FREE_DAYS }));
+    }
+    if (lock.hidden) lock.hidden = false;
+    const w = lock.offsetWidth, x = Math.max(4, Math.min(this.plotW - w - 4, at - w - 8));
+    const left = `${Math.round(leftGutter(this.store.state) + x)}px`, top = `${this.head.offsetHeight + 6}px`;
+    if (lock.style.left !== left) lock.style.left = left;
+    if (lock.style.top !== top) lock.style.top = top;
   }
   /** The venues or the source changed: the bands are asked again. */
   refresh(): void { this.#sync(); this.#key = ''; this.invalidate(); this.rangeStale(); }
@@ -492,6 +545,9 @@ export class DepthPane extends TimePane {
   #sync(): void {
     const liq = this.store.state.depthSource === 'liq', s = this.#settings();
     this.#source.value = liq ? 'liq' : 'book';
+    // The second source is what the levels show, as the page's one choice says (`liq-view.ts`): its name follows it.
+    const kind = liveView(this.store.state.liqLevels).kind, option = this.#source.options[1], name = kind === 'stops' ? t('Stop levels') : kind === 'both' ? t('Liquidation and stop levels') : t('Liquidation levels');
+    if (option && option.text !== name) option.text = name;
     // The depth sound and the venues are the order book's: they have nothing to say about liquidation levels.
     if (this.#bellLabel) this.#bellLabel.hidden = liq;
     this.#venues.root.hidden = liq; this.#venues.sync();
@@ -531,11 +587,13 @@ export class DepthPane extends TimePane {
   protected draw(): void {
     this.#lines = null;
     this.#table.clear();
+    this.#lockAt = null;
     this.#paint();
+    this.#placeLock();
     const at = this.pointer;
     if (this.#lines && at) this.#card.show(this.#lines, at.x, at.y); else this.#card.hide();
   }
-  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); }
+  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); this.#lockAt = null; this.#placeLock(); }
   protected override ownsPoint(x: number): boolean { return this.#table.owns(x, this.pointer); }
   protected override ownsPress(x: number): boolean { return this.#table.takesPress(x, this.pointer); }
   protected override claimTap(p: Pt): boolean { return this.#table.tap(p); }
@@ -548,34 +606,53 @@ export class DepthPane extends TimePane {
    */
   #liqSeries(pw: number, asked: readonly number[]): string | LiqSeries {
     let radii = asked;
-    const v = this.view, now = Date.now();
-    this.#history.ensure(v.t0, v.t1, now, () => this.invalidate());
-    const index = this.#history.index;
-    if (!index) return t('The liquidation levels\' history is loading…');
-    if (index.first === null) return t('No liquidation levels recorded yet.');
-    // The history's buckets end at its last edge (±25 %): a wider band would leave out what lies past it, so it is not drawn.
-    const reach = index.edges[index.edges.length - 1]! / 100, inReach = radii.filter(r => r <= reach * (1 + 1e-9)), omitted = radii.filter(r => r > reach * (1 + 1e-9));
+    const v = this.view, now = Date.now(), view = liveView(this.store.state.liqLevels), vk = viewKey(view);
+    this.#history.ensure(v.t0, v.t1, now, () => this.invalidate(), view);
+    const index = this.#history.index, shape = this.#history.shape(view);
+    if (!shape.wide) {
+      if (!index) return t('The liquidation levels\' history is loading…');
+      if (index.first === null) return t('No liquidation levels recorded yet.');
+    }
+    const edges = shape.edges;
+    if (!edges) return t('The liquidation levels\' history is loading…');
+    // The history's buckets end at its last edge (±25 %): a wider band would leave out what lies past it, so it is not drawn. The rollups'
+    // thirteen buckets end on the presets' bands: a band between two of their edges would read a narrower one, so it is not drawn either.
+    const reach = edges[edges.length - 1]! / 100, bucket = (r: number): number => shape.wide ? bandOnEdge(edges, r) : bandIndex(edges, r);
+    const inReach = radii.filter(r => r <= reach * (1 + 1e-9) && (!shape.wide || bucket(r) >= 0)), omitted = radii.filter(r => !inReach.includes(r));
     this.#liqReach = reach;
-    if (!inReach.length) return t('Liquidation levels reach ±{pct} % at most.', { pct: reach * 100 });
+    this.#liqDrawn = { key: `${vk}|${asked.join(',')}`, radii: inReach };
+    if (!inReach.length) return shape.wide ? t('Views this wide read the 4-hour history, which has the preset bands only.') : t('Liquidation levels reach ±{pct} % at most.', { pct: reach * 100 });
     radii = inReach;
     const w = depthColumns(pw), k = radii.length, t0 = v.t0, t1 = v.t1, until = replaying() ? pageNow() : now;
-    const key = `${this.#history.version}|${t0}|${t1}|${w}|${radii.join(',')}|${Math.floor(until / 5_000)}`;
+    // Plus: the history before the free days is closed to a visitor without a pass, from where the recording begins.
+    const closedTo = shape.wide ? null : this.#history.closedBefore(now), closedFrom = Math.max(t0, index?.first ?? t0);
+    // Only where something was recorded and is in view: a view wholly before the recording began has nothing closed in it.
+    const closedEnd = closedTo === null ? -Infinity : Math.min(closedTo, t1);
+    const closed = closedEnd > closedFrom ? { from: closedFrom, to: closedEnd } : null;
+    const key = `${this.#history.version}|${vk}|${shape.wide}|${t0}|${t1}|${w}|${radii.join(',')}|${Math.floor(until / 5_000)}|${closed ? closed.to : ''}`;
     if (this.#liq?.key === key) return this.#liq;
-    const rows = this.#history.rows(t0, t1), idx = radii.map(r => bandIndex(index.edges, r));
-    const bid = new Float32Array(w * k), ask = new Float32Array(w * k), bidCoin = new Float32Array(w * k), askCoin = new Float32Array(w * k), rowAt = new Int32Array(w).fill(-1);
-    for (let x = 0, i = 0; x < w; x++) {
-      const time = t0 + (x + 0.5) / w * (t1 - t0);
-      if (time > until) break;
-      while (i + 1 < rows.length && rows[i + 1]!.fetchedAt <= time) i++;
-      const row = rows[i];
-      if (!row || row.fetchedAt > time || time - row.fetchedAt > LIQ_HOLD_MS) continue;
-      rowAt[x] = i;
-      for (let j = 0; j < k; j++) {
-        const b = idx[j]!; if (b < 0) continue;
-        bid[x * k + j] = row.long[b]!; ask[x * k + j] = row.short[b]!; bidCoin[x * k + j] = row.longCoin[b]!; askCoin[x * k + j] = row.shortCoin[b]!;
+    const s = this.#history.series(t0, t1, view), idx = radii.map(bucket);
+    // Each pixel column holds the row in force at its time, from its fetch until the next, at most `holdMs`.
+    const build = (rows: LiqRow[]): { bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; rowAt: Int32Array } => {
+      const bid = new Float32Array(w * k), ask = new Float32Array(w * k), bidCoin = new Float32Array(w * k), askCoin = new Float32Array(w * k), rowAt = new Int32Array(w).fill(-1);
+      for (let x = 0, i = 0; x < w; x++) {
+        const time = t0 + (x + 0.5) / w * (t1 - t0);
+        if (time > until) break;
+        if (closed && time < closed.to) continue;
+        while (i + 1 < rows.length && rows[i + 1]!.fetchedAt <= time) i++;
+        const row = rows[i];
+        if (!row || row.fetchedAt > time || time - row.fetchedAt > s.holdMs) continue;
+        rowAt[x] = i;
+        for (let j = 0; j < k; j++) {
+          const b = idx[j]!; if (b < 0) continue;
+          bid[x * k + j] = row.long[b]!; ask[x * k + j] = row.short[b]!; bidCoin[x * k + j] = row.longCoin[b]!; askCoin[x * k + j] = row.shortCoin[b]!;
+        }
       }
-    }
-    this.#liq = { key, series: { t0, t1, w, radii, answer: { k, bid, ask, bidCoin, askCoin } }, rowAt, rows, idx, omitted };
+      return { bid, ask, bidCoin, askCoin, rowAt };
+    };
+    const main = build(s.rows);
+    this.#liq = { key, series: { t0, t1, w, radii, answer: { k, bid: main.bid, ask: main.ask, bidCoin: main.bidCoin, askCoin: main.askCoin } }, rowAt: main.rowAt, rows: s.rows, idx, omitted, closed,
+      view, holdMs: s.holdMs, wide: s.wide, takes: s.takes ? build(s.takes) : null };
     return this.#liq;
   }
 
@@ -626,35 +703,50 @@ export class DepthPane extends TimePane {
       const was = this.#held, rows = liqHeld ? liqHeld.rows : null;
       // Liquidation levels: a rebuild for a view that moved (following live, every frame) says the same until its snapshots, bands or whole minutes
       // of its span change.
-      const sameLiq = (): boolean => !!was && !!rows && !!was.rows && was.source === 'liq' && was.rows.length === rows.length && rows.every((r, i) => r === was.rows![i])
+      const sameLiq = (): boolean => !!was && !!rows && !!was.rows && was.source === 'liq' && was.key === depthHeldKey('liq', [], s.radii, liqHeld ? viewKey(liqHeld.view) : '') && was.rows.length === rows.length && rows.every((r, i) => r === was.rows![i])
         && was.radii.join(',') === s.radii.join(',') && Math.floor(was.t0 / MINUTE) === Math.floor(s.t0 / MINUTE) && Math.floor(was.t1 / MINUTE) === Math.floor(s.t1 / MINUTE)
         && was.t1 >= pageNow();
       if (!was || (was.bid !== s.answer.bid && !sameLiq()) || was.coins !== coins || was.focus !== top || was.coin !== coin) {
         const ids = liqHeld ? [] : (this.#series?.ids ?? []);
-        this.#publish({ key: depthHeldKey(liqHeld ? 'liq' : 'book', ids, s.radii), source: liqHeld ? 'liq' : 'book', ids, t0: s.t0, t1: s.t1, w: s.w, radii: s.radii,
+        this.#publish({ key: depthHeldKey(liqHeld ? 'liq' : 'book', ids, s.radii, liqHeld ? viewKey(liqHeld.view) : ''), source: liqHeld ? 'liq' : 'book', ids, t0: s.t0, t1: s.t1, w: s.w, radii: s.radii,
           bid: s.answer.bid, ask: s.answer.ask, bidCoin: s.answer.bidCoin, askCoin: s.answer.askCoin, present: liqHeld ? null : s.answer.present ?? null,
           centred: liqHeld ? null : s.answer.centred ?? null, stepMs: liqHeld ? 0 : s.answer.stepMs ?? MINUTE, answeredAt: liqHeld ? Infinity : this.#series?.answeredAt ?? 0,
-          rows, buckets: liqHeld ? liqHeld.idx : null, omitted: liqHeld ? liqHeld.omitted : [], coins, coin, focus: top });
+          rows, buckets: liqHeld ? liqHeld.idx : null, omitted: liqHeld ? liqHeld.omitted : [], coins, coin, focus: top, ...(liqHeld?.closed ? { closedFrom: liqHeld.closed.from, closedTo: liqHeld.closed.to } : {}),
+          ...(liqHeld ? { view: liqHeld.view, holdMs: liqHeld.holdMs, wide: liqHeld.wide } : {}) });
       }
     }
     // A column holds something where the book had depth, or (liquidation levels) where a snapshot is in force, money in its bands or not.
     const has = (x: number): boolean => x >= 0 && x < s.w && (liqHeld ? liqHeld.rowAt[x]! >= 0 : bid[at(x, k - 1)]! > 0 || ask[at(x, k - 1)]! > 0);
     // Replay: only the columns up to its moment speak (the rest is covered).
     const cutW = replaying() ? Math.max(0, Math.min(s.w, Math.floor((pageNow() - s.t0) / (s.t1 - s.t0) * s.w))) : s.w;
+    // The take profits (a dashed line each side, never added to the levels: they sit on the other side of the price), on the same scale.
+    const takes = liqHeld?.takes ?? null, takeBid = takes ? (coins ? takes.bidCoin : takes.bid) : null, takeAsk = takes ? (coins ? takes.askCoin : takes.ask) : null;
     let max = 0, lastX = -1;
-    for (let x = 0; x < cutW; x++) { max = Math.max(max, bid[at(x, top)]!, ask[at(x, top)]!); if (has(x)) lastX = x; }
+    for (let x = 0; x < cutW; x++) { max = Math.max(max, bid[at(x, top)]!, ask[at(x, top)]!, takeBid?.[at(x, top)] ?? 0, takeAsk?.[at(x, top)] ?? 0); if (has(x)) lastX = x; }
     if (!(max > 0)) max = 1;
     const colT = (x: number): number => s.t0 + x / s.w * (s.t1 - s.t0);
     const unit = coins ? ` ${coin}` : '';
     const rowOf = (x: number): LiqRow | null => { const i = liqHeld && x >= 0 ? liqHeld.rowAt[x]! : -1; return liqHeld && i >= 0 ? liqHeld.rows[i] ?? null : null; };
-    if (liq && lastX < 0) { say(t('No liquidation levels recorded for this stretch of time.')); return; }
+    // Plus: the stretch of the view whose history is closed to this visitor; the lock stands at its near end.
+    const closed = liqHeld?.closed ?? null, closedX = closed ? Math.min(pw, v.xOf(closed.to, pw)) : 0;
+    if (liq && lastX < 0) {
+      if (closed) { say(t('This stretch of the liquidation levels\' history is part of Plus.')); this.#lockAt = closedX; return; }
+      const kind = liqHeld?.view.kind;
+      say(kind === 'stops' ? t('No stop levels recorded for this stretch of time.') : kind === 'both' ? t('No snapshot with both liquidations and stops in this stretch of time.')
+        : t('No liquidation levels recorded for this stretch of time.'));
+      return;
+    }
     // The header reads the watched band at the newest column (Liquidation levels: longs and shorts, and when those positions stood).
     if (liq) {
-      const b = bid[at(lastX, top)]!, a = ask[at(lastX, top)]!, row = rowOf(lastX);
-      setHtml(readout, `±${bandText(s.radii[top]!)}% L <b class="bid">${amountText(b, coins)}</b> S <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${row ? ` · ${t('positions as of {time}', { time: clock(row.asOf) })}` : ''}`);
+      const b = bid[at(lastX, top)]!, a = ask[at(lastX, top)]!, row = rowOf(lastX), view = liqHeld!.view, r = sideRatio(b, a);
+      // Whose levels (the Source names which), and the take profits beside them: the sells that close longs above, the buys that close shorts below.
+      const whose = groupApplies(view.kind) && view.group !== 'all' ? `${groupTitle(view.group)} · ` : '';
+      const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('longs') : t('shorts')} ${ratioFigure(r.ratio)}</b>` : '';
+      const tp = takeBid && takeAsk && takes!.rowAt[lastX]! >= 0 ? ` · ${t('take profits')} <b class="ask">▲${amountText(takeAsk[at(lastX, top)]!, coins)}</b> <b class="bid">▼${amountText(takeBid[at(lastX, top)]!, coins)}</b>` : '';
+      setHtml(readout, `${whose}±${bandText(s.radii[top]!)}% L <b class="bid">${amountText(b, coins)}</b> S <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${larger}${tp}${row ? ` · ${t('positions as of {time}', { time: clock(row.asOf) })}` : ''}`);
     } else if (lastX >= 0) {
-      const b = bid[at(lastX, top)]!, a = ask[at(lastX, top)]!, total = b + a, lean = total > 0 ? (b - a) / total : 0;
-      const dominant = Math.abs(lean) < 0.005 ? '' : ` <b class="${lean > 0 ? 'bid' : 'ask'}">${lean > 0 ? t('bids') : t('asks')} +${(Math.abs(lean) * 100).toFixed(1)}%</b>`;
+      const b = bid[at(lastX, top)]!, a = ask[at(lastX, top)]!, total = b + a, lean = total > 0 ? (b - a) / total : 0, r = sideRatio(b, a);
+      const dominant = Math.abs(lean) < 0.005 ? '' : ` <b class="${lean > 0 ? 'bid' : 'ask'}">${lean > 0 ? t('bids') : t('asks')} +${(Math.abs(lean) * 100).toFixed(1)}%${r ? ` · ${ratioFigure(r.ratio)}` : ''}</b>`;
       setHtml(readout, `±${bandText(s.radii[top]!)}% B <b class="bid">${amountText(b, coins)}</b> A <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${dominant}`);
     } else setHtml(readout, '');
     // The column the table reads: the one under the pointer, past the newest the newest; with no pointer the newest.
@@ -697,6 +789,23 @@ export class DepthPane extends TimePane {
       ctx.stroke();
     }
     ctx.lineWidth = 1;
+    // The take profits of the watched band: a dashed line in the text's ink each side, so they read apart from the levels' rings.
+    if (takes && takeBid && takeAsk) {
+      ctx.save(); ctx.strokeStyle = p.text; ctx.globalAlpha = 0.8; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+      for (const [values, sign] of [[takeAsk, -1], [takeBid, 1]] as const) {
+        ctx.beginPath();
+        let open = false;
+        for (let x = 0; x < s.w; x++) {
+          const h = takes.rowAt[x]! >= 0 ? yOf(values[at(x, top)]!) : 0;
+          if (!(h > 0)) { open = false; continue; }
+          const y = mid + sign * h;
+          if (!open) { ctx.moveTo(xs[x]!, y); open = true; } else ctx.lineTo(xs[x]!, y);
+          ctx.lineTo(xs[x + 1]!, y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
     // Highlights: where the watched band was unusually heavy on one side, that side's edge is drawn thick across the column.
     if (state.highlight.on && !liq) {
       const marks = this.#highlight(s, state, top);
@@ -705,6 +814,19 @@ export class DepthPane extends TimePane {
         const w = xs[x + 1]! - xs[x]! + 0.6;
         if (mark === ASKS) { const h = yOf(ask[at(x, top)]!); ctx.fillStyle = edge(p.ask); ctx.fillRect(xs[x]!, mid - h - 1, w, 3); }
         if (mark === BIDS) { const h = yOf(bid[at(x, top)]!); ctx.fillStyle = edge(p.bid); ctx.fillRect(xs[x]!, mid + h - 2, w, 3); }
+      }
+    }
+    // The closed stretch (Plus) is hatched, faintly, so that it does not read as a time with nothing recorded, and ends on a dashed line.
+    if (closed) {
+      const from = Math.max(0, v.xOf(closed.from, pw));
+      if (closedX > from + 1) {
+        ctx.save(); ctx.beginPath(); ctx.rect(from, 0, closedX - from, ph); ctx.clip();
+        ctx.strokeStyle = p.line; ctx.beginPath();
+        for (let x = from - ph; x < closedX; x += 12) { ctx.moveTo(x, ph); ctx.lineTo(x + ph, 0); }
+        ctx.stroke(); ctx.restore();
+        const edgeX = Math.round(closedX) + 0.5;
+        ctx.strokeStyle = p.muted; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(edgeX, 0); ctx.lineTo(edgeX, ph); ctx.stroke(); ctx.setLineDash([]);
+        this.#lockAt = closedX;
       }
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(0, mid + 0.5); ctx.lineTo(pw, mid + 0.5); ctx.stroke();
@@ -718,7 +840,10 @@ export class DepthPane extends TimePane {
     const readRow = liq ? rowOf(readX) : null;
     const foot = liq ? (readRow ? t('positions as of {time}', { time: clock(readRow.asOf, true) }) : '') : Number.isFinite(readTime) ? (pointed ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';
     const drawn = settings.table && this.#drawTable(rows, this.pointer !== null, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')]);
-    if (!drawn && pointed && readX >= 0 && liq) { if (readRow) this.#lines = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin }); }
+    if (!drawn && pointed && readX >= 0 && liq) {
+      const tk = takeBid && takeAsk && takes!.rowAt[readX]! >= 0 ? { bid: takeBid[at(readX, top)]!, ask: takeAsk[at(readX, top)]! } : null;
+      if (readRow) this.#lines = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
+    }
     else if (!drawn && pointed && readX >= 0) {
       const here = bid[at(readX, top)]! + ask[at(readX, top)]!;
       let rank = 1, of = 0;
@@ -729,13 +854,14 @@ export class DepthPane extends TimePane {
 
   /**
    * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them and the time read
-   * under them. The header reads the watched band; where even a row a band does not fit, the table is not drawn and the card says it instead. Returns whether it was drawn.
+   * under them. The header reads the watched band; where even a row a band does not fit, the table is not drawn and the card says it instead. Returns whether it was drawn
+   * (a plate is drawn whole or not at all, so one that cannot hold the × column leaves the card, which says the watched band's ratio).
    */
   #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, focus: number, time: string, unit: string, sides: readonly [string, string]): boolean {
     const { ctx, palette: p } = this;
+    const heads = ['', sides[0], sides[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing }, {
-      heads: ['', sides[0], sides[1], 'Δ'], minCols: 3, focus, foot: `${time}${unit}`,
-      rows: rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(p.bid, p) }, { text: tableText(row.ask), color: tableInk(p.ask, p) }, { text: Number.isFinite(row.bid) ? tableSigned(row.bid - row.ask) : '–' }]),
+      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p),
     }) !== null;
   }
 
@@ -806,6 +932,15 @@ function whoText(c: NlnsCandle | undefined, d: number): string {
   if (!c || d === 0) return '';
   const opened = [[t('New longs'), c.longOpened, 'bid'], [t('New shorts'), c.shortOpened, 'ask']] as const, closed = [[t('Shorts closed'), -c.shortClosed, 'bid'], [t('Longs closed'), -c.longClosed, 'ask']] as const;
   return [...(d > 0 ? [...opened, ...closed] : [...closed, ...opened])].filter(([, x]) => x !== 0).map(([label, x, tone]) => ` ${label} <b class="${tone}">${coinText(x, '')}</b>`).join('');
+}
+
+/**
+ * The Depth pane's table (both sources): a band a row, its bids and asks (longs and shorts), bids less asks, and how many times the larger side is
+ * the smaller in that side's colour (pane-table.ts `ratioCell`). A band not read has dashes.
+ */
+export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
+  return rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(p.bid, p) }, { text: tableText(row.ask), color: tableInk(p.ask, p) },
+    { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, p)]);
 }
 
 /** The OI pane's table: a venue a row, its open interest in coins, its change over the candle read and its share of those read then. */
@@ -1156,11 +1291,12 @@ export class OiPane extends TimePane {
       const c = who?.get(there[0]);
       if (c && this.#lines.length) this.#lines.splice(this.#lines.length - 1, 0, ...nlnsWhoLines(c, coinOf(state)));
     }
-    // Who holds it and who moved it, at the bar read. On a plate the table is the popup; beside the plot the popup says other things (its rank, who made the change).
+    // Who holds it and who moved it, at the bar read. A table drawn (beside the plot or on a plate) takes the popup's place, as on every pane with one;
+    // the header still reads the bar, and with Table off the popup says the rest (its rank, who made the change).
     const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]) : [];
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
-      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, focus: -1, foot, rows: oiTableRows(venuesThen, p) })?.plate) this.#lines = null;
+      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, focus: -1, foot, rows: oiTableRows(venuesThen, p) })) this.#lines = null;
     }
     say(`${t('base')} <b>${fmtPrice(bar[4], 1)}</b> Δ <b class="${d > 0 ? 'bid' : d < 0 ? 'ask' : ''}">${sign}${fmtPrice(Math.abs(d), 1)}</b>${whoText(who?.get(bar[0]), d)}${sigma}${source}${stale ? ` <span class="ask">${t('last sample {n} min ago', { n: Math.round(age / 60_000) })}</span>` : ''}`);
   }
@@ -1241,7 +1377,7 @@ export class LtPane extends TimePane {
     bell.append(bellBox, t('Sound')); setTip(bell, t('Within 1% of the price, the bids outweigh the asks (or the other way round) by more than this share. It sounds once and again only after the book has come back. Three steps.')); group.append(bell);
     this.#sync.push(() => { bellBox.checked = panelSwitchOn(this.store, 'depth'); });
     this.#sync.push(() => { if (box.checked !== lt().average) box.checked = lt().average; });
-    const table = el('label', { class: 'ctl', tip: t('Each venue\'s weighted bids and asks, their imbalance and its share of the total in a table on the pane, at the pointer\'s time or the newest. The largest venues get a row each; the rest are added up in the last row.') });
+    const table = el('label', { class: 'ctl', tip: `${t('Each venue\'s weighted bids and asks, their imbalance and its share of the total in a table on the pane, at the pointer\'s time or the newest. The largest venues get a row each; the rest are added up in the last row.')} ${t('× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.')}` });
     this.#tableBox.type = 'checkbox'; this.#tableBox.checked = store.state.ltTable; this.#tableBox.onchange = () => store.set({ ltTable: this.#tableBox.checked });
     table.append(this.#tableBox, t('Table')); group.append(table);
     this.#sync.push(() => { this.#tableBox.checked = this.store.state.ltTable; });
@@ -1392,14 +1528,15 @@ export class LtPane extends TimePane {
     // Readout follows the cursor, else the newest point.
     let at = n - 1;
     if (state.hover) { at = 0; for (let i = 0; i < n; i++) if (s.times[i]! <= state.hover.t) at = i; }
-    const b = s.bid[at]!, a = s.ask[at]!, total = b + a;
+    const b = s.bid[at]!, a = s.ask[at]!, total = b + a, r = sideRatio(b, a);
+    const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('bids') : t('asks')} ${ratioFigure(r.ratio)}</b>` : '';
     // ≈: part of the line was worked out from the minutes' average books (a size filter, or minutes recorded before the tracker was kept: see the help).
-    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${usd(b)}</b> ${t('Ask')} <b class="ask">${usd(a)}</b> Δ <b>${usd(b - a)}</b> ${t('imb')} <b>${total > 0 ? Math.round((b - a) / total * 100) : 0}%</b> · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
+    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${usd(b)}</b> ${t('Ask')} <b class="ask">${usd(a)}</b> Δ <b>${usd(b - a)}</b> ${t('imb')} <b>${total > 0 ? Math.round((b - a) / total * 100) : 0}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
     // The card reads the windows shown too: in a replay, never one under way at its moment or after it (the mask covers pixels, not the card).
     const over = state.hover && this.pointer ? readAt(slotAt(s.times.subarray(0, n), step, state.hover.t), state.hover.t, n - 1, s.times[n - 1]) : -1;
     if (over >= 0 && state.hover && state.hover.t >= s.times[over]! + step) this.cursorT = s.times[over]! + step / 2;
     if (over >= 0) this.#lines = ltCardLines({ time: s.times[over]!, bid: s.bid[over]!, ask: s.ask[over]!, halfLifeBp: lt.halfLifeBp, venues: s.ids.length });
-    // Each market at the window read (the readout's): on a plate the table is the popup; beside the plot the popup stays (it says the settings).
+    // Each market at the window read (the readout's): a table drawn takes the popup's place, as on every pane with one (Table off brings the popup back).
     if (state.ltTable && s.parts && s.ids.length > 1) {
       const parts = s.parts, windows = s.times.length;
       // The order is the series' (worked out once for it): rows keep their places while the pointer moves and as the newest window changes.
@@ -1408,7 +1545,7 @@ export class LtPane extends TimePane {
       const foot = `${s.estimated ? '≈ ' : ''}${state.hover ? clock(s.times[at]!, true) : `${t('newest')} ${clock(s.times[at]!)}`}`;
       // Per level is what the series was worked out with (its parts carry the weights), not the setting, which a new series may still be on its way for.
       const heads = ltHeads(parts);
-      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, focus: -1, foot, rows: ltTableRows(rows, p) })?.plate) this.#lines = null;
+      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, plateMin: heads.length - 1, focus: -1, foot, rows: ltTableRows(rows, p) })) this.#lines = null;
     }
   }
 }
@@ -1437,7 +1574,7 @@ export function ltRank(parts: LtParts, windows: number, owners: number, n: numbe
 }
 
 /** The Liquidity Tracker table's heads: no share in the Per level mode, which is the series' own (its parts carry the weights), as in `ltRowsAt`. */
-export const ltHeads = (parts: LtParts): string[] => (parts.wBid ? ['', t('Bid'), t('Ask'), t('imb')] : ['', t('Bid'), t('Ask'), t('imb'), t('Share')]);
+export const ltHeads = (parts: LtParts): string[] => (parts.wBid ? ['', t('Bid'), t('Ask'), t('imb'), '×'] : ['', t('Bid'), t('Ask'), t('imb'), t('Share'), '×']);
 
 /**
  * The table's rows at window `k`: the markets in `order` that have something in it, as many as `cap`, the rest added up in the last row (a
@@ -1463,13 +1600,14 @@ export function ltRowsAt(s: Pick<LtSeries, 'times' | 'bid' | 'ask' | 'parts'>, n
   return rows;
 }
 
-/** The Liquidity Tracker's table: a market a row, its bids and asks, its imbalance (bids less asks over both) and, where there is one, its share. */
+/** The Liquidity Tracker's table: a market a row, its bids and asks, its imbalance (bids less asks over both), where there is one its share, and how many times the larger side is the smaller (last: imb says the lean too, Share is said nowhere else). */
 export function ltTableRows(rows: readonly LtRow[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
   return rows.map(r => {
     const both = r.bid + r.ask, imb = both > 0 ? Math.round((r.bid - r.ask) / both * 100) : 0;
     const cells: TableCell[] = [{ text: r.name }, { text: tableText(r.bid), color: tableInk(p.bid, p) }, { text: tableText(r.ask), color: tableInk(p.ask, p) },
       { text: imb === 0 ? '0%' : `${imb > 0 ? '+' : '−'}${Math.abs(imb)}%`, color: imb ? tableInk(imb > 0 ? p.bid : p.ask, p) : p.muted }];
     if (r.share !== null) cells.push({ text: `${Math.round(r.share * 100)}%`, color: p.muted });
+    cells.push(ratioCell(r.bid, r.ask, p));
     return cells;
   });
 }
