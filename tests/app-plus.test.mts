@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DAY_MS, FREE_DAYS, freeFrom, plusApi, PLUS_API } from '../src/app/plus/config.ts';
 import { PLUS_STORE, Plus, parsePass, readGrant, readHeld, type Post } from '../src/app/plus/pass.ts';
+import { ARRIVAL_SECONDS, Arrival, countsDown, placeOf, stopOnActivity, type ArrivalDocument, type ArrivalPlace, type ArrivalState } from '../src/app/plus/arrival.ts';
 
 const b64url = (text: string): string => Buffer.from(text, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 /** A pass as the server writes one (the signature is the server's business: the page reads only the middle part). */
@@ -371,4 +372,232 @@ test('a short pass near a membership’s end is asked again within the hour, soo
   for (let i = 0; i < 30; i++) { now += 60_000; plus.pass(); await settle(); }
   // Twenty minutes left: the next ask is about ten minutes later, not an hour (when the pass is long gone) and not each minute.
   assert.ok(times.length >= 2 && times.length <= 4, `asked ${times.length} times in 30 minutes`);
+});
+
+/** A clock the test moves, with the page's interval timers on it. */
+function fakeClock(start = 0) {
+  let now = start;
+  const timers = new Map<number, { every: number; next: number; run: () => void }>();
+  let id = 0;
+  return {
+    clock: { now: () => now, every: (ms: number, run: () => void) => { const n = ++id; timers.set(n, { every: ms, next: now + ms, run }); return () => { timers.delete(n); }; } },
+    timers,
+    advance(ms: number) {
+      const end = now + ms;
+      for (;;) {
+        const due = [...timers.values()].filter(t => t.next <= end).sort((a, b) => a.next - b.next)[0];
+        if (!due) break;
+        now = due.next; due.next += due.every; due.run();
+      }
+      now = end;
+    },
+  };
+}
+
+test('right after Plus came on, the confirmation counts down to the map, which "Stay here" stops and nothing else starts', () => {
+  const c = fakeClock(1_000_000), went: number[] = [], drawn: (ArrivalState | null)[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => { drawn.push(a.state && { ...a.state }); });
+  // Read through a function: an assertion that it is null would otherwise hold for the type ever after.
+  const st = (): ArrivalState | null => a.state;
+  assert.equal(a.state, null, 'nothing until the page says Plus came on');
+  const until = Date.UTC(2026, 11, 18);
+  a.start(until);
+  assert.deepEqual(a.state, { until, left: ARRIVAL_SECONDS, counting: true });
+  assert.equal(a.started, 1);
+  c.advance(1_100);
+  assert.equal(st()!.left, ARRIVAL_SECONDS - 1, 'a second gone');
+  c.advance(2_000);
+  assert.equal(st()!.left, 2);
+  assert.deepEqual(drawn.map(d => d?.left), [5, 4, 3, 2], 'drawn again once a second, not at every tick');
+  c.advance(2_000);
+  assert.deepEqual(went, [1_000_000 + ARRIVAL_SECONDS * 1_000], 'to the map after the five seconds, once');
+  assert.equal(a.state, null, 'gone before leaving: a page shown again from the browser\'s history holds no countdown');
+  assert.equal(c.timers.size, 0, 'and its timer with it');
+  c.advance(10_000);
+  assert.equal(went.length, 1);
+
+  // Stay here: the confirmation stays, the countdown stops, the map is never opened by itself; Close takes it away.
+  a.start(null);
+  assert.equal(a.started, 2, 'a new confirmation is drawn afresh');
+  c.advance(2_500);
+  a.stay();
+  assert.deepEqual(a.state, { until: null, left: 3, counting: false });
+  assert.equal(c.timers.size, 0);
+  c.advance(30_000);
+  assert.equal(went.length, 1, 'stayed');
+  a.dismiss();
+  assert.equal(a.state, null);
+
+  // A browser that would not keep Plus: no countdown at all (leaving would lose it).
+  a.start(until, false);
+  assert.equal(st()!.counting, false); assert.equal(c.timers.size, 0);
+  c.advance(30_000);
+  assert.equal(went.length, 1);
+  a.dismiss();
+
+  // Following the link: nothing more is counted, and the page kept by the browser comes back still (pageshow: stay).
+  a.start(until);
+  c.advance(1_000);
+  a.leaving();
+  assert.equal(c.timers.size, 0);
+  c.advance(30_000);
+  assert.equal(went.length, 1);
+  a.stay();
+  assert.equal(st()!.counting, false);
+});
+
+test('the return to the map counts down only after a key typed into the key box: after a checkout or a restore the new key is shown, to be copied first', () => {
+  assert.equal(countsDown('key', false, true, false), true, 'a key typed or pasted: back to the map in five seconds');
+  assert.equal(countsDown('checkout', true, true, false), false, 'a checkout: the page shows the new key, and waits');
+  assert.equal(countsDown('checkout', false, true, false), false, 'a checkout never counts down, the key shown or not');
+  assert.equal(countsDown('restore', true, true, false), false, 'a restore shows the key too');
+  assert.equal(countsDown('key', true, true, false), false, 'a key typed while the page shows the key (revealed before): it waits');
+  assert.equal(countsDown('key', false, false, false), false, 'a browser that would not keep Plus: leaving would lose it');
+  assert.equal(countsDown('key', false, true, true), false, 'the tab hidden when the answer comes: it waits for the visitor');
+});
+
+/** The page's document as the countdown listens to it: the listeners it adds, the view's scroll position, events fired at named targets. */
+function fakeDocument() {
+  const listeners = new Map<string, ((event: { type: string; target: unknown; key?: string }) => void)[]>();
+  const doc: ArrivalDocument & { hidden: boolean; scrollY: number } = {
+    hidden: false, scrollY: 0,
+    addEventListener(type, listener) { const list = listeners.get(type) ?? []; list.push(listener); listeners.set(type, list); },
+  };
+  const fire = (type: string, target: unknown = 'page', key?: string): void => { for (const l of listeners.get(type) ?? []) l({ type, target, ...(key === undefined ? {} : { key }) }); };
+  return { doc, types: () => [...listeners.keys()].sort(), fire };
+}
+/** An element as the countdown reads it: `closest` finds it for a list of selectors that names its tag (all these tests' elements need). */
+const element = (tag: string): { tag: string; closest(selectors: string): unknown } => ({
+  tag, closest(selectors: string) { return selectors.split(',').some(s => s.trim() === tag) ? this : null; },
+});
+/** The confirmation: its region, its Stay here button and its Open the map link. */
+const BANNER = element('section'), STAY = element('button'), OPEN = element('a');
+const ON_BANNER = new Set<unknown>([BANNER, STAY, OPEN]);
+const place = (target: unknown): ArrivalPlace => placeOf(target, t => ON_BANNER.has(t));
+const named = (target: unknown): string => typeof target === 'string' ? target : target === BANNER ? 'the confirmation' : target === STAY ? 'Stay here' : target === OPEN ? 'Open the map' : String(target);
+
+test('on the page: a key accepted, then Reveal pressed within the five seconds: the key shows and the page stays', () => {
+  const c = fakeClock(5_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument();
+  stopOnActivity(page.doc, a, place, () => page.doc.scrollY);
+  assert.deepEqual(page.types(), ['keydown', 'pointerdown', 'scroll', 'touchstart', 'visibilitychange', 'wheel']);
+  a.start(Date.UTC(2026, 11, 18), countsDown('key', false, true, page.doc.hidden));
+  c.advance(2_000);
+  page.fire('pointerdown', BANNER); page.fire('pointerdown', STAY); page.fire('keydown', BANNER, 'Tab'); page.fire('keydown', STAY, ' ');
+  assert.equal(a.state!.counting, true, 'its own presses and keys are the confirmation\'s: its buttons do what they say (Space presses Stay here)');
+  page.fire('pointerdown', 'Reveal');
+  assert.equal(a.state!.counting, false, 'Reveal pressed: the countdown stops');
+  c.advance(30_000);
+  assert.deepEqual(went, [], 'and the page never leaves by itself');
+  assert.ok(a.state, 'the confirmation stays, the map a press away');
+});
+
+test('on the page: a key, a touch, the wheel or a scroll stops the countdown at once, the wheel and scrolling keys over the confirmation too', () => {
+  const c = fakeClock(6_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument(), activity = stopOnActivity(page.doc, a, place, () => page.doc.scrollY);
+  const fresh = (): void => { a.start(null, true); c.advance(100); assert.equal(a.state!.counting, true); };
+  for (const [type, target, key] of [['keydown', 'the key field', 'a'], ['touchstart', 'Copy', undefined], ['wheel', 'page', undefined], ['wheel', BANNER, undefined],
+    ['keydown', BANNER, 'PageDown'], ['keydown', OPEN, 'ArrowDown'], ['keydown', BANNER, ' '], ['keydown', OPEN, 'End']] as const) {
+    fresh(); page.fire(type, target, key);
+    assert.equal(a.state!.counting, false, `${type} ${named(target)} ${key ?? ''}`);
+  }
+  // The drawing's own scroll (the page grew shorter and the browser moved the view) lands where the drawing left the view: let pass, once.
+  fresh(); activity.redraw(() => { page.doc.scrollY = 380; }); page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, true, 'the page\'s own scroll');
+  page.doc.scrollY = 420; page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false, 'a scroll anywhere else is the visitor\'s, however early');
+  fresh(); activity.redraw(() => {}); page.doc.scrollY += 40; page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false, 'a scroll right after the confirmation came, not the drawing\'s: stops it');
+  fresh(); page.fire('scroll', 'a scrolling box');
+  assert.equal(a.state!.counting, false, 'a box scrolled inside the page');
+  c.advance(30_000);
+  assert.deepEqual(went, []);
+});
+
+test('on the page: a drawing that comes between the visitor\'s swipe and its scroll event does not swallow the swipe', () => {
+  const c = fakeClock(7_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument(), activity = stopOnActivity(page.doc, a, place, () => page.doc.scrollY);
+  const fresh = (): void => { a.start(null, true); c.advance(100); assert.equal(a.state!.counting, true); };
+  // A swipe moves the view and its scroll event waits for the next frame; a server's answer draws the page first, leaving the view where it is.
+  fresh(); page.doc.scrollY = 300; activity.redraw(() => {}); page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false, 'the swipe stops the countdown');
+  // The same, the drawing moving the view too (the page grew shorter): the swipe was under way first, so the one scroll event counts.
+  fresh(); page.doc.scrollY = 900; activity.redraw(() => { page.doc.scrollY = 850; }); page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false, 'a movement under way before the drawing counts, wherever the view ends');
+  // Nothing under way: the drawing's own move is let pass, once, and a second drawing that leaves the view alone keeps it so.
+  fresh(); activity.redraw(() => { page.doc.scrollY = 700; }); activity.redraw(() => {}); page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, true, 'the drawing\'s own scroll');
+  page.doc.scrollY = 690; page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false, 'once only');
+  // Scrolls made while no countdown runs are followed too: a countdown started afterwards does not take them for a movement under way.
+  page.doc.scrollY = 1_200; page.fire('scroll', page.doc);
+  fresh(); activity.redraw(() => { page.doc.scrollY = 1_100; }); page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, true, 'the drawing\'s own scroll after the visitor scrolled with no countdown');
+  assert.deepEqual(went, []);
+  c.advance(ARRIVAL_SECONDS * 1_000 + 300);
+  assert.equal(went.length, 1, 'that countdown, left alone, takes the page to the map');
+});
+
+test('on the confirmation: Space presses its button but scrolls from its link, so on the link it stops the countdown, at the page\'s foot too', () => {
+  const c = fakeClock(8_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument();
+  stopOnActivity(page.doc, a, place, () => page.doc.scrollY);
+  assert.deepEqual([place(STAY), place(OPEN), place(BANNER), place(element('button')), place('page')], ['control', 'confirmation', 'confirmation', 'page', 'page'],
+    'its button is a control Space presses; its link is not (Space scrolls from a link); a button of the page is the page');
+  // Its button: Space presses it (Stay here, whose own press decides), so the key alone does not stop the countdown.
+  a.start(null, true); c.advance(100);
+  page.fire('keydown', STAY, ' ');
+  assert.equal(a.state!.counting, true, 'Space on the button');
+  // Its link, the page free to scroll: Space scrolls it, and the key stops the countdown before the scroll comes.
+  page.fire('keydown', OPEN, ' ');
+  assert.equal(a.state!.counting, false, 'Space on the link');
+  page.doc.scrollY += 600; page.fire('scroll', page.doc);
+  assert.equal(a.state!.counting, false);
+  // Its link, the page already at its foot: Space moves nothing and no scroll follows; the key alone stops the countdown.
+  a.start(null, true); c.advance(100);
+  page.fire('keydown', OPEN, ' ');
+  assert.equal(a.state!.counting, false, 'Space on the link at the page\'s foot, no scroll after it');
+  // Enter on the link opens the map: that is the link's own press, not something else done on the page.
+  a.start(null, true); c.advance(100);
+  page.fire('keydown', OPEN, 'Enter');
+  assert.equal(a.state!.counting, true, 'Enter on the link');
+  assert.deepEqual(went, []);
+});
+
+test('on the page: the tab hidden while the countdown runs stops it, and showing the tab again does not start it again', () => {
+  const c = fakeClock(9_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument();
+  stopOnActivity(page.doc, a, () => 'page', () => page.doc.scrollY);
+  a.start(null, true);
+  c.advance(1_500);
+  page.doc.hidden = true; page.fire('visibilitychange', page.doc);
+  assert.equal(a.state!.counting, false);
+  c.advance(60_000);
+  page.doc.hidden = false; page.fire('visibilitychange', page.doc);
+  assert.equal(a.state!.counting, false, 'not resumed');
+  c.advance(60_000);
+  assert.deepEqual(went, [], 'the page stays where the visitor left it');
+  // Without any of it, the countdown still takes the page back to the map.
+  a.start(null, true); c.advance(ARRIVAL_SECONDS * 1_000 + 300);
+  assert.equal(went.length, 1);
+});
+
+test('on the page: a key sent, the tab hidden before the server answers: the confirmation comes without a countdown, and stays', () => {
+  const c = fakeClock(12_000_000), went: number[] = [];
+  const a = new Arrival(c.clock, () => { went.push(c.clock.now()); }, () => {});
+  const page = fakeDocument();
+  stopOnActivity(page.doc, a, place, () => page.doc.scrollY);
+  page.doc.hidden = true; page.fire('visibilitychange', page.doc);
+  // The answer comes while the tab is hidden: the page starts the confirmation as it does (page.ts `arrived`).
+  a.start(Date.UTC(2026, 11, 18), countsDown('key', false, true, page.doc.hidden));
+  assert.ok(a.state && !a.state.counting, 'shown, not counting');
+  page.doc.hidden = false; page.fire('visibilitychange', page.doc);
+  c.advance(60_000);
+  assert.deepEqual(went, [], 'the visitor comes back to the confirmation, not to the map');
+  assert.ok(a.state);
 });

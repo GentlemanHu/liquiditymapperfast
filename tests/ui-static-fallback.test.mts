@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { IncomingMessage } from 'node:http';
 import { Socket } from 'node:net';
 import { Writable } from 'node:stream';
-import { createLocalServer, sendUiStaticResponse, type UiStaticRoots } from '../src/server/http.mts';
+import { RETIRED_SERVICE_WORKER, createLocalServer, sendUiStaticResponse, type UiStaticRoots } from '../src/server/http.mts';
 import { HistoryStore } from '../src/server/history.mts';
 import { QuotaLedger } from '../src/core/quota.mts';
 
@@ -103,6 +103,30 @@ test('static UI routing keeps traversal, missing files, and directories blocked'
   } finally { fixture.close(); }
 });
 
+test('an address ending in a slash serves that folder\'s index.html (the Plus and legal pages), and still never leaves the root', async () => {
+  const fixture = assetFixture();
+  try {
+    fs.writeFileSync(path.join(fixture.roots.builtRoot, 'index.html'), '<p>map</p>');
+    for (const folder of ['plus', 'privacy']) {
+      fs.mkdirSync(path.join(fixture.roots.builtRoot, folder));
+      fs.writeFileSync(path.join(fixture.roots.builtRoot, folder, 'index.html'), `<p>${folder} page</p>`);
+    }
+    fs.writeFileSync(path.join(fixture.directory, 'index.html'), 'private sibling');
+    const plus = await uiResponse('/plus/', fixture.roots);
+    assert.equal(plus.statusCode, 200);
+    assert.equal(plus.headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal(plus.body, '<p>plus page</p>');
+    assert.equal((await uiResponse('/privacy/', fixture.roots)).body, '<p>privacy page</p>');
+    assert.equal((await uiResponse('/plus/index.html', fixture.roots)).body, '<p>plus page</p>', 'the file itself as before');
+    assert.equal((await uiResponse('/', fixture.roots)).body, '<p>map</p>', 'the root as before');
+    for (const pathname of ['/../', '/plus/../../', '/terms/', '/plus']) {
+      const response = await uiResponse(pathname, fixture.roots);
+      assert.equal(response.statusCode, 404, pathname);
+      assert.doesNotMatch(response.body, /private sibling/);
+    }
+  } finally { fixture.close(); }
+});
+
 test('API health dispatch remains usable on an unlistening server without UI initialization', async () => {
   const app = createLocalServer({ history: new HistoryStore({ filePath: ':memory:' }), quota: new QuotaLedger({ filePath: ':memory:' }), persistFixture: false });
   const socket = new Socket();
@@ -118,5 +142,23 @@ test('API health dispatch remains usable on an unlistening server without UI ini
     const payload: unknown = JSON.parse(response.body);
     assert.ok(payload !== null && typeof payload === 'object' && 'ok' in payload && payload.ok === true);
     assert.equal(app.server.listening, false);
+  } finally { socket.destroy(); await app.close(); }
+});
+
+test('the old service worker is retired: /sw.js answers a worker that empties the caches, unregisters itself and reloads its pages, never cached', async () => {
+  const app = createLocalServer({ history: new HistoryStore({ filePath: ':memory:' }), quota: new QuotaLedger({ filePath: ':memory:' }), persistFixture: false });
+  const socket = new Socket();
+  try {
+    const request = new IncomingMessage(socket);
+    request.method = 'GET'; request.url = '/sw.js';
+    const response = new CapturedResponse();
+    const completed = once(response, 'finish');
+    app.server.emit('request', request, response);
+    await completed;
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers['content-type'], 'text/javascript; charset=utf-8');
+    assert.equal(response.headers['cache-control'], 'no-store', 'a browser checks it afresh');
+    assert.equal(response.body, RETIRED_SERVICE_WORKER);
+    for (const step of ['skipWaiting()', 'caches.delete(key)', 'registration.unregister()', 'client.navigate(client.url)']) assert.ok(response.body.includes(step), step);
   } finally { socket.destroy(); await app.close(); }
 });

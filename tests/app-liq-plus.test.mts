@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LiqLevelsSource, combineTaken, parseLiqGroups, parseLiqLevels, parseTriggers, sumLevels, takenByCandles, liqStanding, type LiqLevels } from '../src/app/liq-levels.ts';
+import { LiqLevelsSource, combineTaken, liqRows, onTheWay, parseLiqGroups, parseLiqLevels, parseTriggers, partsBetween, partsOnTheWay, standingBelow, sumLevels, takenByCandles, liqStanding, type LiqLevels, type LiqRow, type LiqStanding } from '../src/app/liq-levels.ts';
 import { DAY_MS, LIQ_HOLD_MS, LiqHistory, MAX_DAYS, bandOnEdge, dayText, familiesFor, readHistRows, readRollup, type LiqAnswer } from '../src/app/liq-history.ts';
 import { readLiqLevels, plusUrls } from '../src/app/liq-url.ts';
 import { FREE_VIEW, effectiveView, heldBack, isFreeChoice, viewKey, type LiqView } from '../src/app/liq-view.ts';
 import { PRESET_BANDS } from '../src/app/depth-settings.ts';
 import { changeOf, isPlusChange, liqMenuItems } from '../src/app/liq-menu.ts';
-import { liqNote, liqWhy } from '../src/app/liq-words.ts';
+import { columnNotes, liqNote, liqWhy, splitAmounts, splitText, takesLeftOut } from '../src/app/liq-words.ts';
+import { dollars, mirrorSplits, probeBoxLines, readingTexts, stripeBoxLines } from '../src/app/liq-box.ts';
+import { usd } from '../src/app/format.ts';
+import type { InfoLine } from '../src/app/infobox.ts';
 import { BTC } from '../src/shared/coins.ts';
 import type { CandleRow } from '../src/app/store.ts';
 
@@ -46,15 +49,19 @@ test('the Plus files live beside the levels file, so a local stand-in answers fo
   assert.equal(plusUrls('http://localhost:8790/x.json'), null, 'not the levels file\'s shape: no Plus files');
 });
 
-test('the groups file is read field by field: each group as the levels file, the proven traders\' may be null, anything malformed refused whole', () => {
+test('the groups file is read for the profitable traders alone: whatever else its groups hold is left unread, the profitable group checked field by field', () => {
   const g = parseLiqGroups(groups([[8, 0, 120, 0, 0, 1, 0, 120, 0]], [[11, 0, 0, 0, 90, 0, 1, 0, 90]]), 'BTC')!;
   assert.ok(g);
   assert.equal(g.createdAt, AS_OF + 35 * MIN);
   assert.deepEqual([...g.profitable.k], [8]); assert.equal(g.profitable.longCross[0], 120); assert.equal(g.profitable.kind, 'liq');
-  assert.deepEqual([...g.proven!.k], [11]); assert.equal(g.proven!.shortCross[0], 90);
-  assert.equal(g.night, '2026-11-14');
-  const none = parseLiqGroups(groups([[8, 0, 120, 0, 0, 1, 0, 120, 0]], null), 'BTC')!;
-  assert.equal(none.proven, null, 'no proven list for the snapshot: null, never a guess');
+  const held = (x: object): string[] => Object.keys(x).filter(k => !['asOf', 'createdAt', 'fetchedAt'].includes(k)).sort();
+  assert.deepEqual(held(g), ['mark', 'profitable', 'step'], 'a second group the server still sends is neither read nor kept');
+  // As the server sends it now (a null second group), as it will (no such key), and with anything at all there: the same.
+  const plain = groups([[8, 0, 120, 0, 0, 1, 0, 120, 0]], null);
+  for (const body of [plain, { ...plain, groups: { profitable: (plain.groups as Record<string, unknown>).profitable } }, { ...plain, groups: { ...(plain.groups as Record<string, unknown>), proven: 'not a group', other: [1, 2] } }]) {
+    const r = parseLiqGroups(body, 'BTC');
+    assert.ok(r); assert.deepEqual([...r.profitable.k], [8]); assert.deepEqual(held(r), ['mark', 'profitable', 'step']);
+  }
   assert.equal(parseLiqGroups({ ...groups([], []), v: 2 }, 'BTC'), null, 'another format');
   assert.equal(parseLiqGroups(groups([[8, 0, 120, 0, 0, 1, 0, 999, 0]], []), 'BTC'), null, 'a largest position bigger than its side');
   assert.equal(parseLiqGroups(groups([[9, 0, 1, 0, 0, 1, 0, 1, 0], [8, 0, 1, 0, 0, 1, 0, 1, 0]], []), 'BTC'), null, 'bins out of order');
@@ -119,17 +126,20 @@ test('liquidations and stops added together: bin by bin, each part counted from 
 test('one choice for the page: the free view without Plus, the choice kept; old saves read as the free view', () => {
   assert.deepEqual(readLiqLevels(undefined), { on: true, column: true, kind: 'liq', takes: false, group: 'all' });
   assert.deepEqual(readLiqLevels({ on: false, column: true }), { on: false, column: true, kind: 'liq', takes: false, group: 'all' }, 'a save from before the choice');
-  assert.deepEqual(readLiqLevels({ kind: 'stops', takes: true, group: 'proven' }), { on: true, column: true, kind: 'stops', takes: true, group: 'proven' });
+  assert.deepEqual(readLiqLevels({ kind: 'stops', takes: true, group: 'profitable' }), { on: true, column: true, kind: 'stops', takes: true, group: 'profitable' });
+  // A group the page no longer offers, saved before (in the settings or a layout): everyone's, never the profitable traders'.
+  assert.deepEqual(readLiqLevels({ kind: 'liq', takes: true, group: 'proven' }), { on: true, column: true, kind: 'liq', takes: true, group: 'all' });
+  assert.deepEqual(readLiqLevels({ kind: 'both', group: 'Proven' }).group, 'all');
   assert.deepEqual(readLiqLevels({ kind: 'all', takes: 'yes', group: 'rich' }), { on: true, column: true, kind: 'liq', takes: false, group: 'all' }, 'anything else reads as the free view');
-  const chosen = readLiqLevels({ kind: 'both', takes: true, group: 'proven' });
+  const chosen = readLiqLevels({ kind: 'both', takes: true, group: 'profitable' });
   assert.deepEqual(effectiveView(chosen, false), FREE_VIEW, 'no Plus: the free view is drawn');
-  assert.deepEqual(effectiveView(chosen, true), { kind: 'both', takes: true, group: 'proven' });
-  assert.deepEqual(effectiveView(readLiqLevels({ kind: 'stops', group: 'proven' }), true), { kind: 'stops', takes: false, group: 'all' }, 'stops have no groups');
+  assert.deepEqual(effectiveView(chosen, true), { kind: 'both', takes: true, group: 'profitable' });
+  assert.deepEqual(effectiveView(readLiqLevels({ kind: 'stops', group: 'profitable' }), true), { kind: 'stops', takes: false, group: 'all' }, 'stops have no groups');
   assert.ok(heldBack(chosen, false), 'a Plus choice without Plus is held back (the controls show it locked)');
   assert.ok(!heldBack(chosen, true));
   assert.ok(!heldBack(readLiqLevels({}), false), 'the free view is never held back');
   assert.ok(isFreeChoice(FREE_VIEW) && !isFreeChoice({ kind: 'liq', takes: true, group: 'all' }) && !isFreeChoice({ kind: 'liq', takes: false, group: 'profitable' }));
-  assert.equal(viewKey({ kind: 'stops', takes: false, group: 'proven' }), viewKey({ kind: 'stops', takes: false, group: 'all' }), 'the group of stops counts for nothing');
+  assert.equal(viewKey({ kind: 'stops', takes: false, group: 'profitable' }), viewKey({ kind: 'stops', takes: false, group: 'all' }), 'the group of stops counts for nothing');
 });
 
 /** A levels service as the page reads it: the free file by `get`, the Plus files by `read` (with the pass), every request noted. */
@@ -153,17 +163,16 @@ test('the live Plus files are asked for with the pass after the free file, only 
   s.src.ensure(BTC, () => {}); await tick(); s.src.ensure(BTC, () => {}); await tick();
   assert.deepEqual(s.asked.map(a => a.url), [LEVELS_URL]);
   // A Plus view without a pass (it cannot be the effective one, but the source asks nothing paid even so).
-  s.src.ensure(BTC, () => {}, view({ group: 'proven' })); await tick();
+  s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick();
   assert.deepEqual(s.asked.map(a => a.url), [LEVELS_URL], 'nothing paid without a pass');
   assert.equal(s.src.levels, null, 'and nothing of all traders drawn under a group\'s name');
   // With a pass: the groups file, with it.
   pass.value = 'v1.pass.sig';
-  s.src.ensure(BTC, () => {}, view({ group: 'proven' })); await tick();
+  s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick();
   assert.deepEqual(s.asked.slice(1), [{ url: U.groups, pass: 'v1.pass.sig' }]);
   assert.equal(s.src.state, 'ready');
-  assert.deepEqual([...s.src.levels!.k], [9], 'the proven traders\' levels');
+  assert.deepEqual([...s.src.levels!.k], [7], 'the profitable traders\' levels, the second group of the file left unread');
   s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick();
-  assert.deepEqual([...s.src.levels!.k], [7], 'the profitable traders\', from the same file');
   assert.equal(s.asked.length, 2, 'not asked again for the same snapshot');
   // Stops: the orders file.
   s.src.ensure(BTC, () => {}, view({ kind: 'stops' })); await tick();
@@ -179,27 +188,27 @@ test('the live Plus files are asked for with the pass after the free file, only 
   assert.equal(s.src.takes!.kind, 'takes'); assert.equal(s.src.takesState, 'ready');
   assert.notEqual(s.src.key(), '', 'the key names the view');
   const k = s.src.key();
-  s.src.ensure(BTC, () => {}, view({ kind: 'both', takes: true, group: 'proven' })); await tick();
+  s.src.ensure(BTC, () => {}, view({ kind: 'both', takes: true, group: 'profitable' })); await tick();
   assert.notEqual(s.src.key(), k, 'another view, another key');
 });
 
-test('the gate\'s refusal drops the pass; a 503 waits its Retry-After; an older orders file is asked again a few times; a missing proven list is said', async () => {
+test('the gate\'s refusal drops the pass; a 503 waits its Retry-After; an older orders file is asked again a few times', async () => {
   const pass = { value: 'v1.old.sig' as string | null };
   let groupsAnswer: LiqAnswer = { status: 403, body: { error: 'plus_required' } };
   let ordersAnswer: LiqAnswer = { status: 503, body: null, retryAfter: 300 };
   const s = service({ [U.groups]: () => groupsAnswer, [U.triggers]: () => ordersAnswer }, pass);
   const t0 = s.now();
-  s.src.ensure(BTC, () => {}, view({ group: 'proven' })); await tick(); await tick();
+  s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick(); await tick();
   assert.deepEqual(s.refused, ['v1.old.sig'], 'the gate\'s own refusal: the pass is reported, by which one');
   assert.equal(s.src.state, 'unavailable');
   // Any other 403 is a failed read: nothing is blamed.
   groupsAnswer = { status: 403, body: { error: 'forbidden' } };
-  s.at(t0 + 31_000); s.src.ensure(BTC, () => {}, view({ group: 'proven' })); await tick();
+  s.at(t0 + 31_000); s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick();
   assert.equal(s.refused.length, 1);
-  // A proven list missing for the snapshot: said, not drawn as all traders.
+  // Then a file whose second group is null, as the server sends it now: the profitable traders, drawn.
   groupsAnswer = { status: 200, body: groups([[7, 0, 50, 0, 0, 1, 0, 50, 0]], null) };
-  s.at(t0 + 62_000); s.src.ensure(BTC, () => {}, view({ group: 'proven' })); await tick();
-  assert.equal(s.src.state, 'missing'); assert.equal(s.src.missing(), 'proven'); assert.equal(s.src.levels, null);
+  s.at(t0 + 62_000); s.src.ensure(BTC, () => {}, view({ group: 'profitable' })); await tick();
+  assert.equal(s.src.state, 'ready'); assert.deepEqual([...s.src.levels!.k], [7]);
   // A 503: not asked again before its Retry-After (300 s).
   s.src.ensure(BTC, () => {}, view({ kind: 'stops' })); await tick();
   const ordersAsks = (): number => s.asked.filter(a => a.url === U.triggers).length;
@@ -226,11 +235,17 @@ const part = (at: Record<number, [number, number]>, n = EDGES.length): unknown[]
 const freeRow = (fetchedAt: number, at: Record<number, [number, number]>): unknown[] => { const p = part(at); return [fetchedAt - 2_400_000, fetchedAt - 300_000, fetchedAt, 100_000, 0, 0, p[2], p[3]]; };
 const plusRow = (fetchedAt: number, a: unknown[] | null, b: unknown[] | null): unknown[] => [fetchedAt - 2_400_000, fetchedAt - 300_000, fetchedAt, 100_000, a, b];
 
-test('history rows of every family are read field by field: a group may be null, a malformed part leaves its row out', () => {
-  const rows = readHistRows({ rows: [plusRow(3, part({ 4: [10, 20] }), null), plusRow(1, part({}), [1, 2, [1], [2]]), plusRow(2, part({ 0: [1, 1] }), part({ 1: [5, 5] }))] }, EDGES.length, 'groups');
-  assert.deepEqual(rows.map(r => r.fetchedAt), [2, 3], 'the malformed row out, the rest by fetch time');
-  assert.equal(rows[1]!.parts[1], null, 'a group without a list');
-  assert.equal(rows[1]!.parts[0]!.long[4], 10);
+test('history rows of every family are read field by field; of the groups only the profitable traders\' part is read, and a malformed one leaves its row out', () => {
+  const rows = readHistRows({ rows: [plusRow(3, part({ 4: [10, 20] }), null), plusRow(1, part({}), [1, 2, [1], [2]]), plusRow(2, part({ 0: [1, 1] }), part({ 1: [5, 5] })), plusRow(4, [1, 2, [1], [2]], part({}))] }, EDGES.length, 'groups');
+  assert.deepEqual(rows.map(r => r.fetchedAt), [1, 2, 3], 'the row whose profitable part is malformed out; whatever follows that part is not read at all');
+  assert.ok(rows.every(r => r.parts.length === 1), 'one part a row: nothing else kept');
+  assert.equal(rows[2]!.parts[0]!.long[4], 10);
+  // Rows of five, as the server will send them once it drops the null; and the part found by its name where the file names its groups.
+  assert.equal(readHistRows({ rows: [plusRow(5, part({ 2: [3, 3] }), null).slice(0, 5)] }, EDGES.length, 'groups')[0]!.parts[0]!.long[2], 3);
+  const named = readHistRows({ groups: ['proven', 'profitable'], rows: [plusRow(6, part({ 1: [9, 9] }), part({ 2: [7, 7] }))] }, EDGES.length, 'groups');
+  assert.equal(named[0]!.parts[0]!.long[2], 7, 'at the place the names give the profitable traders');
+  assert.deepEqual(readHistRows({ groups: ['profitable', 'proven'], rows: [plusRow(7, part({ 3: [4, 4] }), null).slice(0, 5)] }, EDGES.length, 'groups').map(r => r.parts[0]!.long[3]), [4]);
+  assert.deepEqual(readHistRows({ groups: ['other'], rows: [plusRow(8, part({}), part({}))] }, EDGES.length, 'groups'), [], 'names without the profitable traders: no rows, never another group\'s');
   const roll = readRollup({ hours: 4, edges: ROLLUP_EDGES, rows: [plusRow(5, part({ 9: [1, 2] }, 13), part({}, 13))] }, 'orders')!;
   assert.equal(roll.rows.length, 1); assert.equal(roll.hours, 4); assert.equal(roll.edges.length, 13);
   assert.equal(readRollup({ hours: 4, edges: [2, 1], rows: [] }, 'orders'), null);
@@ -238,8 +253,8 @@ test('history rows of every family are read field by field: a group may be null,
   for (const bands of Object.values(PRESET_BANDS)) for (const r of bands) assert.ok(bandOnEdge(ROLLUP_EDGES, r) >= 0, `±${r * 100} %`);
   assert.equal(bandOnEdge(ROLLUP_EDGES, 0.004), -1, '±0.4 % reads no rollup bucket');
   assert.deepEqual(familiesFor(FREE_VIEW), ['free']);
-  assert.deepEqual(familiesFor(view({ group: 'proven' })), ['groups']);
-  assert.deepEqual(familiesFor(view({ kind: 'stops', group: 'proven' })), ['orders']);
+  assert.deepEqual(familiesFor(view({ group: 'profitable' })), ['groups']);
+  assert.deepEqual(familiesFor(view({ kind: 'stops', group: 'profitable' })), ['orders']);
   assert.deepEqual(familiesFor(view({ kind: 'both', takes: true })), ['free', 'orders']);
   assert.deepEqual(familiesFor(view({ takes: true, group: 'profitable' })), ['groups', 'orders']);
 });
@@ -269,16 +284,14 @@ test('the history asks for each choice\'s files (with the pass for every Plus on
   const freeOnly = await ask(FREE_VIEW);
   assert.ok(freeOnly.every(u => !u.includes('/plus/')), 'the free view asks nothing paid');
   // A Plus view without a pass: nothing paid is asked for.
-  const noPass = await ask(view({ kind: 'both', takes: true, group: 'proven' }));
+  const noPass = await ask(view({ kind: 'both', takes: true, group: 'profitable' }));
   assert.ok(noPass.every(u => !u.includes('/plus/')), `nothing paid without a pass: ${noPass.join(', ')}`);
   assert.deepEqual(h.rows(day, now, view({ kind: 'stops' })), [], 'and nothing drawn');
   access.pass = 'v1.member.sig'; h.accessChanged();
-  // Proven traders: the groups days, each with the pass; a snapshot without a proven list has no row.
-  const proven = await ask(view({ group: 'proven' }));
-  assert.ok(proven.includes(path(U.groupsDay(dayText(day)))));
+  // The profitable traders: the groups days, each with the pass; their part of each row, whatever else the row holds.
+  const profitable = await ask(view({ group: 'profitable' }));
+  assert.ok(profitable.includes(path(U.groupsDay(dayText(day)))));
   assert.ok(asked.filter(a => a.url.includes('/plus/')).every(a => a.pass === 'v1.member.sig'), 'every Plus file with the pass');
-  assert.deepEqual(h.rows(day, now, view({ group: 'proven' })).map(r => r.fetchedAt), [t2]);
-  assert.equal(h.rows(day, now, view({ group: 'proven' }))[0]!.long[10], 3);
   assert.deepEqual(h.rows(day, now, view({ group: 'profitable' })).map(r => [r.fetchedAt, r.long[10]]), [[t1, 10], [t2, 30]]);
   // Stops: the orders days.
   await ask(view({ kind: 'stops' }));
@@ -312,17 +325,18 @@ test('the history asks for each choice\'s files (with the pass for every Plus on
 
 test('the menu shows the saved choice, tags every Plus choice (locked without Plus), and greys the traders while stops alone are shown', () => {
   const rows = (s: Parameters<typeof liqMenuItems>[0], member: boolean) => Object.fromEntries(liqMenuItems(s, member).map(i => [i.id, i]));
-  const free = rows({ kind: 'both', takes: true, group: 'proven' }, false);
+  const free = rows({ kind: 'both', takes: true, group: 'profitable' }, false);
   assert.equal(free['kind:both']!.checked, true, 'the saved choice is ticked even without Plus');
   assert.equal(free['kind:both']!.tag, 'Plus'); assert.equal(free['kind:both']!.locked, true);
   assert.equal(free['kind:liq']!.tag, undefined, 'the free choices carry no tag');
   assert.equal(free['group:all']!.tag, undefined);
   assert.equal(free.takes!.checked, true); assert.equal(free.takes!.locked, true);
-  assert.equal(free['group:proven']!.checked, true); assert.ok(!free['group:proven']!.disabled);
+  assert.equal(free['group:profitable']!.checked, true); assert.ok(!free['group:profitable']!.disabled);
+  assert.deepEqual(Object.keys(free).filter(id => id.startsWith('group:')), ['group:all', 'group:profitable'], 'Traders: everyone or the profitable traders');
   assert.ok(free['h:show']!.heading && free['h:traders']!.heading, 'group headings are not choices');
-  const member = rows({ kind: 'stops', takes: false, group: 'proven' }, true);
+  const member = rows({ kind: 'stops', takes: false, group: 'profitable' }, true);
   assert.equal(member['kind:stops']!.locked, false, 'with Plus the tag has no lock');
-  assert.ok(member['group:proven']!.disabled && member['group:all']!.disabled, 'stops have no groups: the traders are greyed');
+  assert.ok(member['group:profitable']!.disabled && member['group:all']!.disabled, 'stops have no groups: the traders are greyed');
   assert.ok(member['h:no-groups'], 'and a line says why');
   assert.ok(liqMenuItems({ kind: 'stops', takes: false, group: 'all' }, true).at(-1)!.action, 'the last line opens the Guide');
   assert.deepEqual(changeOf('kind:both', { takes: false }), { kind: 'both' });
@@ -330,7 +344,8 @@ test('the menu shows the saved choice, tags every Plus choice (locked without Pl
   assert.deepEqual(changeOf('takes', { takes: true }), { takes: false }, 'the switch flips');
   assert.equal(changeOf('h:show', { takes: false }), null);
   assert.equal(changeOf('kind:rich', { takes: false }), null);
-  assert.ok(isPlusChange({ kind: 'stops' }) && isPlusChange({ group: 'proven' }) && isPlusChange({ takes: true }));
+  assert.ok(isPlusChange({ kind: 'stops' }) && isPlusChange({ group: 'profitable' }) && isPlusChange({ takes: true }));
+  assert.equal(changeOf('group:proven', { takes: false }), null, 'a group the page does not offer is no change');
   assert.ok(!isPlusChange({ kind: 'liq' }) && !isPlusChange({ group: 'all' }) && !isPlusChange({ takes: false }), 'back towards the free view is never Plus');
 });
 
@@ -351,10 +366,6 @@ test('the note says when the orders are well behind the liquidations, and why a 
   fresh.src.ensure(BTC, () => {}, both); await tick(); fresh.src.ensure(BTC, () => {}, both); await tick();
   assert.doesNotMatch(liqNote(fresh.src, both, fresh.src.levels!.asOf), /as of/);
   assert.match(liqNote(fresh.src, both, fresh.src.levels!.asOf), / · with take profits$/);
-  // No proven list for the snapshot: said, in the column's words.
-  const proven = view({ group: 'proven' });
-  s.src.ensure(BTC, () => {}, proven); await tick();
-  assert.equal(liqWhy(s.src, s.src.asOfs().liq), 'No proven traders list for this snapshot.');
   // The orders on another grid than the liquidations: not added up, said as orders that could not be read.
   orders = { ...triggers(STOPS, TAKES), step: 5 };
   const grid = service({ [U.triggers]: () => ({ status: 200, body: orders }) }, pass);
@@ -362,4 +373,182 @@ test('the note says when the orders are well behind the liquidations, and why a 
   assert.equal(grid.src.levels, null);
   assert.equal(grid.src.state, 'unavailable');
   assert.equal(liqWhy(grid.src, grid.src.asOfs().liq), 'Stop levels could not be read.');
+});
+
+test('Liq + stops apart: each part what still stands of it, the two always adding up to the total the page shows, row by row and on the way', async () => {
+  const pass = { value: 'v1.pass.sig' as string | null };
+  // Liquidations of longs at [80, 90) and shorts at [110, 120); the orders' stops at [80, 90) and [120, 130).
+  const s = service({ [U.triggers]: { status: 200, body: triggers(STOPS, TAKES) } }, pass, () => free([[8, 0, 200, 0, 0, 2, 0, 150, 0], [11, 0, 0, 0, 80, 0, 1, 0, 80]]));
+  const both = view({ kind: 'both' });
+  s.src.ensure(BTC, () => {}, both); await tick(); s.src.ensure(BTC, () => {}, both); await tick();
+  assert.equal(s.src.state, 'ready');
+  const parts = s.src.partStandings()!, total = s.src.standing()!;
+  assert.ok(parts, 'both: the parts are there');
+  for (const [side, lo, hi] of [['long', 80, 90], ['long', 60, 100], ['short', 110, 130], ['short', 100, 125]] as const) {
+    const p = partsBetween(parts, side, lo, hi), sum = standingBelow(total, side, hi) - standingBelow(total, side, lo);
+    assert.ok(Math.abs(p.liq + p.stops - sum) < 1e-6, `${side} [${lo}, ${hi}): ${p.liq} + ${p.stops} = ${sum}`);
+  }
+  assert.deepEqual(partsBetween(parts, 'long', 80, 90), { liq: 200, stops: 400 });
+  const price = 100;
+  for (const at of [85, 70, 115, 128, 140]) {
+    const p = partsOnTheWay(parts, price, at)!, way = onTheWay(total, price, at)!;
+    assert.ok(Math.abs(p.liq + p.stops - way.usd) < 1e-6, `to ${at}`);
+  }
+  assert.equal(partsOnTheWay(parts, price, price), null, 'nothing to say at the price itself');
+  // A view of one kind has no parts.
+  s.src.ensure(BTC, () => {}, view({ kind: 'stops' })); await tick();
+  assert.equal(s.src.partStandings(), null);
+  assert.equal(splitText({ liq: 200_500_000, stops: 130_100_000 }), 'Total $330.6M = liquidations $200.5M + stops $130.1M', 'the total is the parts added');
+});
+
+test('under the column\'s button: the group where the button had no room for it, first, then that the take profits are not in the curve', () => {
+  assert.equal(takesLeftOut(), 'Take profits not included');
+  const profitable = { kind: 'liq', takes: true, group: 'profitable' } as const;
+  assert.deepEqual(columnNotes(profitable, false, true), ['Profitable traders', 'Take profits not included'], 'both: the group line first');
+  assert.deepEqual(columnNotes(profitable, true, true), ['Take profits not included'], 'the group already on the button: not said twice');
+  assert.deepEqual(columnNotes({ kind: 'both', takes: false, group: 'profitable' }, false, false), ['Profitable traders']);
+  assert.deepEqual(columnNotes({ kind: 'liq', takes: false, group: 'all' }, false, false), [], 'everyone: nothing to add');
+  assert.deepEqual(columnNotes({ kind: 'stops', takes: false, group: 'profitable' }, false, true), ['Take profits not included'], 'stops have no group');
+});
+
+test('a split writes its three amounts in the total\'s unit and precision, the parts adding up to the total as printed', () => {
+  // Sol's case: two parts of 1.04M each made "Total $2.1M = liquidations $1M + stops $1M".
+  assert.deepEqual(splitAmounts(2_080_000, 1_040_000, 1_040_000), ['2.1M', '1.1M', '1M'], 'the step left over goes to one part, the first on a tie');
+  assert.equal(splitText({ liq: 1_040_000, stops: 1_040_000 }), 'Total $2.1M = liquidations $1.1M + stops $1M');
+  // Across the units' edges: the parts take the total's unit, whatever their own size.
+  assert.deepEqual(splitAmounts(999_940, 600_000, 399_940), ['999.9K', '600K', '399.9K']);
+  assert.deepEqual(splitAmounts(999_960, 600_000, 399_960), ['1M', '0.6M', '0.4M'], '999.96K prints as 1M, so do its parts\' unit');
+  assert.deepEqual(splitAmounts(999_940_000, 500_000_000, 499_940_000), ['999.9M', '500M', '499.9M']);
+  assert.deepEqual(splitAmounts(999_960_000, 700_000_000, 299_960_000), ['1B', '0.7B', '0.3B']);
+  assert.deepEqual(splitAmounts(512, 300.4, 211.6), ['512', '300', '212'], 'whole dollars under $1,000');
+  assert.deepEqual(splitAmounts(2_100_000, 2_060_000, 40_000), ['2.1M', '2.1M', '0'], 'a part too small for the total\'s precision reads 0, never more than the total');
+  assert.deepEqual(splitAmounts(0, 0, 0), ['0', '0', '0']);
+  // Whatever the amounts, the parts read back in the total's unit add up to it exactly.
+  const read = (text: string): number => { const m = /^(\d+(?:\.\d)?)([KMBT]?)$/.exec(text)!; return Math.round(Number(m[1]) * 10); };
+  for (let i = 1; i < 4_000; i++) {
+    const a = (i * 7_919) % 1_000_003 * 1_137.7, b = (i * 104_729) % 999_983 * 911.3, [t, pa, pb] = splitAmounts(a + b, a, b);
+    if (t === '0') continue;
+    const unit = /[KMBT]$/.exec(t)?.[0] ?? '';
+    for (const part of [pa, pb]) assert.ok(part === '0' || part.endsWith(unit) && (unit !== '' || /^\d+$/.test(part)), part + ' in ' + t);
+    const n = (x: string): number => x === '0' ? 0 : read(x.replace(/[KMBT]$/, '') + unit);
+    assert.equal(n(pa) + n(pb), read(t), t + ' = ' + pa + ' + ' + pb);
+  }
+  // The total said is the figure the line above says, when there is one: the parts are its shares.
+  assert.equal(splitText({ liq: 996_000, stops: 0 }, 1_000_000), 'Total $1M = liquidations $1M + stops $0');
+});
+
+/** A levels service holding liquidations and stops on one grid, the view Liq + stops. */
+async function bothService() {
+  const pass = { value: 'v1.pass.sig' as string | null };
+  // Liquidations of longs at [80, 90) and shorts at [110, 120); stops closing longs at [80, 90) and shorts at [120, 130).
+  const stops = [[8, 1_300_000, 740_000, 0, 0, 2, 0, 1_300_000, 0], [12, 0, 0, 520_000, 520_000, 0, 3, 0, 520_000]];
+  const s = service({ [U.triggers]: { status: 200, body: triggers(stops, TAKES) } }, pass, () => free([[8, 0, 1_040_000, 0, 0, 2, 0, 900_000, 0], [11, 0, 0, 0, 2_500_000, 0, 1, 0, 2_500_000]]));
+  const both = view({ kind: 'both' });
+  s.src.ensure(BTC, () => {}, both); await tick(); s.src.ensure(BTC, () => {}, both); await tick();
+  assert.equal(s.src.state, 'ready');
+  return s.src;
+}
+const lineAfter = (lines: InfoLine[], label: string): { figure: InfoLine; next: InfoLine | undefined } => {
+  const i = lines.findIndex(l => l.label === label);
+  assert.ok(i >= 0, label);
+  return { figure: lines[i]!, next: lines[i + 1] };
+};
+
+test('the stripe\'s box and the phone\'s finger write every amount in dollars', async () => {
+  const src = await bothService(), levels = src.levels!, rows = liqRows(levels, src.taken(), 1, 0, 200);
+  const row = rows.find(r => r.p0 === 80)!;
+  // Liquidations alone (no parts): the level, the way there, the largest and the two parts, each with its "$".
+  const plain = stripeBoxLines(row, 'liq', 100, src.standing(), null, side => row[side + 'Left' as 'longLeft'] > 0);
+  for (const label of ['At this level', 'If price gets here']) assert.match(lineAfter(plain, label).figure.text, /^\$\d/, label);
+  assert.match(plain.find(l => l.label === 'Largest position')!.text, /^\$\d[\d.]*[KMB]? \(\d+%\)$/);
+  assert.match(plain.find(l => l.label === 'Isolated / cross margin')!.text, /^\$\S+ \/ \$\S+$/);
+  // A level partly gone: both of its amounts in dollars.
+  const part: LiqRow = { ...row, longLeft: row.long * 0.5 };
+  assert.match(lineAfter(stripeBoxLines(part, 'liq', 100, src.standing(), null, () => true), 'At this level').figure.text, /^\$\S+ of \$\S+$/);
+  // The phone's finger.
+  const probe = probeBoxLines({ kind: 'liq', side: 'long', at: 85, price: 100, way: 2_080_000, other: 300_000, level: 1_040_000, lo: 80, hi: 90, positions: 2, top: 900_000, parts: null });
+  for (const label of ['If price gets here', 'At this level', 'Largest position', 'Same distance, other side']) assert.match(probe.find(l => l.label === label)!.text, /^\$\d/, label);
+  assert.equal(dollars(1_040_000), '$1M');
+});
+
+test('under each total of Liq + stops, its parts add up to the figure the line above says, as printed: stripe, column, Mirror, phone', async () => {
+  const src = await bothService(), levels = src.levels!, standing = src.standing()!, parts = src.partStandings()!, price = 100;
+  const total = (split: string | undefined): string => /^Total (\$\S+) = /.exec(split ?? '')?.[1] ?? 'none';
+  // The stripe's box: under "At this level" (the figure said first) and under "If price gets here".
+  let checked = 0;
+  for (const row of liqRows(levels, src.taken(), 1, 0, 200)) {
+    const lines = stripeBoxLines(row, 'both', price, standing, parts, side => row[side + 'Left' as 'longLeft'] > 0);
+    for (const label of ['At this level', 'If price gets here']) {
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i]!.label !== label) continue;
+        const figure = lines[i]!.text.split(' ')[0]!, next = lines[i + 1];
+        assert.ok(next?.label === undefined && next.text.startsWith('Total '), 'a split under ' + label);
+        assert.equal(total(next.text), figure, label + ' at ' + row.p0); checked++;
+      }
+    }
+    // A row partly gone: the split adds up to what still stands, said first.
+    const part: LiqRow = { ...row, longLeft: row.long * 0.6, shortLeft: row.short * 0.6 };
+    const gone = stripeBoxLines(part, 'both', price, standing, parts, side => part[side + 'Left' as 'longLeft'] > 0);
+    const at = lineAfter(gone, 'At this level');
+    assert.equal(total(at.next?.text), at.figure.text.split(' ')[0], 'partly gone');
+  }
+  assert.equal(checked, 6, 'three rows, two splits each');
+  // Those figures, written out: the parts add up as printed (3.08M of 1.04M and 2.04M is $3.1M = $1M + $2.1M).
+  const first = stripeBoxLines(liqRows(levels, src.taken(), 1, 0, 200)[0]!, 'both', price, standing, parts, () => true);
+  assert.equal(lineAfter(first, 'At this level').next?.text, 'Total $3.1M = liquidations $1M + stops $2.1M');
+  // The column's reading at the pointer, at prices both ways.
+  for (const at of [70, 75, 85, 105, 115, 125, 140]) {
+    const way = onTheWay(standing, price, at)!, r = readingTexts(way, price, at, parts);
+    assert.equal(total(r.split ?? undefined), dollars(way.usd), 'reading at ' + at);
+    assert.ok(r.full.endsWith('· ' + dollars(way.usd)) && r.short.endsWith(dollars(way.usd)));
+  }
+  // The Mirror box: each side's total over the same distance both ways.
+  for (const d of [5, 15, 25, 35]) {
+    const below = Math.max(0, standingBelow(standing, 'long', price) - standingBelow(standing, 'long', price - d));
+    const above = Math.max(0, standingBelow(standing, 'short', price + d) - standingBelow(standing, 'short', price));
+    const m = mirrorSplits(parts, price, d, below, above);
+    assert.equal(total(m.long), dollars(below), 'Mirror below, ' + d); assert.equal(total(m.short), dollars(above), 'Mirror above, ' + d);
+  }
+  // The phone's finger: under "If price gets here" and under "At this level".
+  for (const at of [75, 85, 115, 125]) {
+    const side = at >= price ? 'short' : 'long', lo = Math.floor(at / 10) * 10, hi = lo + 10;
+    const way = side === 'short' ? standingBelow(standing, 'short', at) - standingBelow(standing, 'short', price) : standingBelow(standing, 'long', price) - standingBelow(standing, 'long', at);
+    const level = Math.max(0, standingBelow(standing, side, hi) - standingBelow(standing, side, lo));
+    const lines = probeBoxLines({ kind: 'both', side, at, price, way, other: 0, level, lo, hi, positions: 1, top: 0, parts });
+    const w = lineAfter(lines, 'If price gets here');
+    assert.equal(total(w.next?.text), w.figure.text, 'phone way at ' + at);
+    if (level > 0) { const l = lineAfter(lines, 'At this level'); assert.equal(total(l.next?.text), l.figure.text, 'phone level at ' + at); }
+  }
+  assert.equal(usd(0), '0');
+});
+
+test('a level partly gone says what still stands wherever that prints differently, and its split adds up to what stands, never to the whole', () => {
+  // Sol's case (round 2): a $999.94M level, 0.4 % of it gone, printed "Total $999.9M = liquidations $500M + stops $499.9M".
+  const liqLeft = 500_000_000 * 0.996, stopsLeft = 499_940_000 * 0.996;
+  const standing = (v: number): LiqStanding => ({ k: Int32Array.from([8]), step: 10, long: Float64Array.from([0, v]), short: Float64Array.from([0, 0]) });
+  const parts = { liq: standing(liqLeft), stops: standing(stopsLeft) };
+  const row = (left: number): LiqRow => ({ p0: 80, p1: 90, long: 999_940_000, longIso: 500_000_000, longWallets: 9, short: 0, shortIso: 0, shortWallets: 0, longTop: 1e8, shortTop: 0,
+    longOne: false, shortOne: false, longFirst: NaN, longGone: NaN, longLeft: left, shortFirst: NaN, shortGone: NaN, shortLeft: 0 });
+  const box = stripeBoxLines(row(liqLeft + stopsLeft), 'both', 100, null, parts, side => side === 'long');
+  const at = box.findIndex(l => l.label === 'At this level');
+  assert.equal(box[at]!.text, '$995.9M of $999.9M', 'what stands, of the whole');
+  assert.equal(box[at + 1]!.text, 'Total $995.9M = liquidations $498M + stops $497.9M', 'the parts of what stands');
+  // Gone by less than moves the printed figure: the whole is said, the split is of what stands, and it reads the same figure.
+  const sliver = 999_930_000, few = { liq: standing(sliver * 0.5), stops: standing(sliver * 0.5) };
+  const near = stripeBoxLines(row(sliver), 'both', 100, null, few, side => side === 'long'), n = near.findIndex(l => l.label === 'At this level');
+  assert.equal(near[n]!.text, '$999.9M');
+  assert.equal(near[n + 1]!.text, 'Total $999.9M = liquidations $500M + stops $499.9M');
+});
+
+test('a split never prints NaN: a part that is not a finite amount of at least nothing counts as nothing', () => {
+  assert.deepEqual(splitAmounts(100, NaN, 20), ['100', '0', '100'], 'Sol\'s probe: was 100 = 1 + 0');
+  assert.deepEqual(splitAmounts(100, Infinity, 20), ['100', '0', '100'], 'Sol\'s probe: was 100 = NaN + NaN');
+  assert.deepEqual(splitAmounts(100, -5, 20), ['100', '0', '100']);
+  assert.deepEqual(splitAmounts(2_100_000, NaN, NaN), ['2.1M', '0', '0'], 'parts of nothing stay nothing');
+  assert.deepEqual(splitAmounts(NaN, 5, 20), ['–', '5', '20'], 'no total to print: each said alone');
+  assert.deepEqual(splitAmounts(Infinity, NaN, -Infinity), ['–', '0', '0']);
+  for (const v of [NaN, Infinity, -Infinity, -1, 0, 5e6]) for (const w of [NaN, Infinity, -2, 0, 3e6]) for (const total of [NaN, 0, 8e6]) {
+    assert.ok(!splitAmounts(total, v, w).join(' ').includes('NaN'), [total, v, w].join(' '));
+    assert.ok(!splitText({ liq: v, stops: w }, total).includes('NaN'));
+  }
 });
