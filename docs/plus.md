@@ -110,8 +110,11 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
   subscription's state from Paddle's notifications.
 - **The page**: `src/app/plus/`.
   - `config.ts`: the free days, the Worker's address, Paddle's client-side token, price ids, prices and portal link.
-  - `pass.ts`: the membership as the browser holds it (`localStorage` `lmf.plus`: `{ v, key, pass, until, ended, renews, skew, next }`),
-    and its renewal.
+  - `pass.ts`: the membership as the browser holds it (`{ key, pass, until, ended, why, renews, skew, next }`): in the Plus database where
+    it opens, mirrored to `localStorage` `lmf.plus` / `lmf.plus.gen`, else in `localStorage` alone (below), and its renewal.
+  - `plus-db.ts`: the Plus database (IndexedDB `lmf-plus`, store `kv`: `seed`, `member`, `paid:<txn>`, `migrated`) and the gate that
+    builds every request that issues a key; `schedule.ts`: when a payment's key is asked for; `request-timeout.ts`: a request given up
+    after 20 s in every browser.
   - `panel.ts`: the Plus button's status pop-up (a browser with a key) and the locks' way in (`togglePlus`), which open the presentation.
   - `key.ts`, `key.css`: a key entered in the app (the pop-up, the presentation's access card) or on the Plus page: the renewal call, what
     its answer means, the form and its styles (one file the app and the page both load).
@@ -120,8 +123,8 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
   - `demo/`: the demo (made-up numbers labelled as such, its own store, never the page's settings); `demo-levels.ts` puts the page's own
     levels control on the demo's store.
   - `page.ts`, `index.html`, `page.css`, `boot.ts`: the Plus page (`plus/`), the only page with the checkout or another site's script;
-    `page-flow.ts`: its checkout's pass and its restore by receipt, taken like a key (below), when a payment waiting here is asked for
-    again and what settles it, and its Reveal and thanks rules; `paid.ts`: the payments waiting here (`lmf.plus.paid`, below).
+    `page-flow.ts`: a payment's setting-up and the restore by receipt, taken like a key (below), what settles a payment, and the page's
+    Reveal and thanks rules; `paid.ts`: the payments waiting here (`paid:<txn>` in the Plus database, below).
   - `liq-history.ts` asks for a paid day only with a pass (`LiqAccess`), and for the Plus families (groups, orders, rollups) only with
     one; `panes/lower-panes.ts` draws the closed stretch and its lock.
   - `liq-view.ts` (the choice and the view drawn), `levels-control.ts` (the Levels control), `liq-words.ts` (the words by kind).
@@ -140,31 +143,75 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
   hero, the demo (mounted once the sheet has opened, destroyed as it closes), the three feature sections, the access card (gift keys: the
   key form; once on sale: Subscribe to `https://liquiditymapper.com/plus/`, the one place Paddle's checkout runs, and "Have a key?"; a
   member: until when), what stays free, and the site's terms, privacy and refunds pages. The Plus page opens on the same hero, demo and
-  sections, above its checkout, restore and key management.
+  sections, above its key management and restore. While Plus is on sale its buy row is in the hero (Karl, 2026-11-20: one click to the
+  checkout): one thin row with the price button ("Get Plus $10 a month", `plus-monthly`, opening the checkout at once), the tax line and
+  Paddle's Merchant-of-Record line right under it, and in its place a waiting payment's note and "Set up Plus", or the words of a tab or
+  browser that cannot buy (`page-flow.ts` `topRow`); nothing is sold further down. While it is not on sale the hero keeps "Gift keys only
+  today" and "Activate a key", and the "Not on sale yet" section stays under it.
 - **A key entered in the app** or on the Plus page goes to the renewal (`POST /v1/pass/renew`), in the same masked field with Reveal (the
   page's key box is the app's form, kept through the page's redraws and fresh each time the box comes back).
-  Its grant is taken only for the membership it was sent under: the generation in `lmf.plus.gen`, bumped whenever the key held changes
-  (taken, removed), is read when the key is sent and again when the grant comes (`Plus.acceptIf`), so a removal or another tab's key
-  meanwhile wins; a form given up aborts its request and drops the answer. Try again reads what is kept first and gives up when the key
-  changed elsewhere. A key is entered once on each browser and address (the membership is kept per origin). The Plus page takes a
-  checkout's pass and a membership found by the receipt the same way (`passFor`, `restoreBy`: the generation when the payment went through
-  or the receipt was sent): one that comes after another tab stored a key, or after the key here was removed, changes nothing. A paid
-  checkout then stays waiting in this browser (`paid.ts`, `lmf.plus.paid`): one record per transaction, `{ id, at, generation, stale }`,
-  written once when its checkout completes and never dated again, and given up a day after that checkout. A reload asks for it again by
-  itself only while nothing changed since: the membership's generation is still the record's, no answer for it was dropped for a change
-  (`stale`), and Plus is not in force here (a key that had ended when it was paid can come back to life without a new generation, and is
-  not replaced unasked). Otherwise it waits, beside the membership when Plus is on, for its Try again, which asks for it for the
-  membership as it is then, and only while its record is kept (`planPayment`). Its own setting-up settles it; a key that opens Plus on the page, or a
-  restore, settles the payments that were waiting when it was sent, and only those (one paid meanwhile, in another tab, keeps its record).
-  The page's Reveal, and the showing after a checkout or a restore, hold for that key only, and so do the thanks after a checkout
-  (`besideMembership`), beside which a payment still waiting stays in sight.
+  Its grant is taken only for the membership it was sent under (`Plus.capture` when it is sent, `Plus.acceptIf` when the grant comes), so a
+  removal or another tab's key meanwhile wins; a form given up aborts its request and drops the answer. Try again reads what is kept first
+  and gives up when the key changed elsewhere. A key is entered once on each browser and address (the membership is kept per origin). The
+  Plus page takes a payment's key and a membership found by the receipt the same way (below). The page's Reveal, and the showing after a
+  checkout or a restore, hold for that key only, and so do the thanks after a checkout (`besideMembership`), beside which a payment still
+  waiting stays in sight.
+
+## The checkout's recovery (2026-11-20, Option B)
+
+The design and its reviews are in HyperLiquidMap_Plus `docs/checkout-recovery-2026-11-20/` (`page-build-spec.md` is what was built). In
+short:
+
+- **One seed per browser.** The Plus database holds a seed, 32 random bytes made once (`plus-db.ts` `readSeed`), sent with every
+  `/v1/pass` and `/v1/restore`. The Worker names the key by it (`<sub>.<HMAC(seed, sub)>`), so every request from this browser for one
+  subscription gives the same key: two tabs, a press during another tab's setting-up, a lost answer, a late request and a receipt all end
+  with it, and that key renews. The seed is never shown, never in a URL, a log, the hand-over or a backup.
+- **The modes.** Every tab with IndexedDB starts by opening the database (3 s). Once it opens, the browser moves to it for good: the marker
+  `lmf.plus.idb` first, then a one-time import of `lmf.plus` / `lmf.plus.gen`. In IDB mode the database is the authority and every write is
+  one transaction (`Plus` commit) that checks the stored baseline `{ seed, gen }` the operation began with (a reset makes a new seed, so an
+  answer from before it is never taken) and the tab's revision; `localStorage` is a mirror for synchronous reads and other tabs. Without
+  IndexedDB, or when it refuses to open and no marker is set, the membership stays in `localStorage` as before (plain mode). A tab with the
+  marker whose database is not open yet or will not open reads the mirror, renews in memory, and takes no key. A tab without the marker
+  whose open has not answered after its 3 s stays opening (the controls disabled, no message) and renews the key it shows in memory only,
+  so an open that never answers does not stop a member's renewals; a late open adopts the stored membership and stores that pass. A tab
+  enters IDB mode only after it has read the stored membership (three tries, else unusable here, showing the mirror until a reload).
+- **Who may issue.** Only a tab in IDB mode with the seed read issues: the prices, the checkout (opened only after a seed read), a payment's
+  "Set up Plus" and the receipt form. Plain mode says "Plus cannot be bought in this browser. Use another browser; a key bought elsewhere
+  works here." in the place of the prices; a tab not ready or unusable here says "Plus cannot be set up in this tab. Reload the page, or use
+  another tab." The not-on-sale page is the same in every mode. The bodies of `/v1/pass` and `/v1/restore` are built only by the gate in
+  `plus-db.ts`, from the seed read in a transaction (a source test pins it). Every operation that may write the membership (a key, a
+  receipt, a payment's grant, Remove) begins with one readwrite transaction that makes the seed if there is none, so each has an epoch; a
+  request whose seed differs from the one its operation began with sends nothing. (A browser whose storage is full and that has no seed yet
+  therefore refuses key entry in IDB mode with the "cannot be set up in this tab" text.)
+- **Nothing of Plus travels.** A hand-over from the old address and a backup never write an `lmf.plus*` key: they are skipped, and the rest
+  of the visitor's settings are taken (the old address's page deployed before 2026-11-20 still sends them).
+- **A payment's record** (`paid:<txn>` = `{ at }`) is written once when its checkout completes and waits from a day before that time to a
+  day after it. Nothing asks for it by itself: loading the page shows it with "Set up Plus" (Try again after this tab's own attempt ended
+  without Plus). Before every ask one transaction reads the seed and confirms the record still waits. The asks follow `schedule.ts`: backoff
+  3, 4, 6, 9, 13, 20, then 30 s, never sooner than a `Retry-After`, 90 s on the monotonic clock (plus a 10-minute wall-clock guard), at
+  most 8; a server wait past the deadline becomes the tab's cooldown. The grant settles its record in the commit's own transaction; a key or
+  a receipt's membership settles the records that existed when it began. A record the browser refuses to store stays in the tab, bound to
+  the seed read when its checkout opened, and is dropped once the seed differs.
+- **A membership this tab could not store** (the commit failed) is held for as long as the tab lives: the key shows with "This browser would
+  not keep Plus ...", and for a failure other than a full storage also "Plus could not be saved in this browser just now." with Try again,
+  which stores it without a request. Another tab's commit drops it.
+- **The receipt** shows while Plus is on sale or `PLUS_RESTORE` (`config.ts`) says so, and its refusal is hedged: "... A payment from the
+  last few minutes may not show yet." Set `PLUS_RESTORE` to true when the sale opens (a test fails otherwise).
+- **Accepted residual:** a key entered or removed in a tab of the previous build during the switch-over is undone as soon as a new-build tab
+  repairs the mirror (the old tab's own reload then adopts the repaired mirror); the member enters the key again in a reloaded tab. The
+  update notice offers Reload. A later pass an old tab renewed for the same key is adopted into the database while a new-build tab is open
+  to hear it. After a rollback to the previous build, its renewals live in `localStorage` only; when this build returns, the database's
+  membership stands, the mirror is written again from it, and one renewal follows if its pass is near its end (checked in Chrome,
+  2026-11-20).
 
 ## How the page behaves
 
 - **Renewal.** A pass with under six hours left is renewed with the key, at most about once a minute per tab (`next`, kept beside the
   membership, is the wait; tabs share it when they see each other's storage); after a refusal, or a pass that came already near its end
   (the last hours of a membership), the wait is an hour. A server's `Retry-After` is used between one minute and one hour, where the
-  server exposes it to the page.
+  server exposes it to the page. In IDB mode the minute is reserved in a transaction before a renewal goes, so all tabs together renew
+  about once a minute; a tab whose reservation write fails (a full storage) still renews on its own wait in memory, at most once a minute
+  by itself, so Plus does not go off because the browser will not write. Try again clears the wait, the tab's own included.
 - **One paid file first.** After the pass changes (and at the start) the history asks for one paid file, the newest closed day, and asks
   for the rest only once that one is answered: a gate that refuses every pass, even fresh ones, gets one request per new pass instead of
   every paid day of the view at once. A 4xx other than the refusal and a 429 (a day the service has no file for) counts as answered:
@@ -214,7 +261,11 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
   stand-ins (localhost only).
 - The Plus page works on the dev server (`npm run dev:client`, `http://localhost:5173/plus/`) and in the built site
   (`npm run build:site`, then `npm run preview:site`).
-- `tests/app-plus.test.mts` covers the pass and its renewal; `tests/app-liq-history.test.mts` what is asked for with and without one;
+- `tests/app-plus.test.mts` covers the pass and its renewal (plain mode); `tests/app-plus-db.test.mts` the Plus database and the
+  membership on it; `tests/app-plus-checkout-recovery.test.mts` the payment's setting-up, the receipt and the source rules, against a
+  stand-in for the Worker (`tests/plus-server-double.mts`), an in-memory IndexedDB (`tests/plus-db-fake.mts`) and tabs over it
+  (`tests/plus-browser-double.mts`); `tests/app-plus-schedule.test.mts` the asking schedule; `tests/app-liq-history.test.mts` what is asked
+  for with and without one;
   `tests/app-liq-plus.test.mts` the choice, its files and the groups; `tests/app-plus-popup.test.mts`, `app-plus-review.test.mts`,
   `app-plus-sheet.test.mts`, `app-plus-sheet-review.test.mts`, `app-plus-demo-control.test.mts` and `app-plus-page.test.mts` the pop-up,
   key entry, the presentation and the Plus page (`tests/fake-dom.mts` is the small page they run on).

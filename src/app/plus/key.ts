@@ -4,7 +4,8 @@
  * What the form says: checking, Plus on (until when), a key the server does not know, a key that no longer opens Plus, the server not
  * reached, too many tries, or a refusal that is not the server's own (a firewall's page). The key is masked as it is typed or pasted;
  * Reveal shows it. An answer that comes after the form was given up, or after the membership changed meanwhile (another tab's key, a key
- * removed), is dropped (Sol, review 2026-11-19).
+ * removed), is dropped (Sol, review 2026-11-19). A tab that takes no key (its Plus database not open while the browser's membership lives
+ * there) sends nothing and says so (the checkout recovery, 2026-11-20); a key taken settles the payments that were waiting when it was sent.
  */
 import { el } from '../dom.ts';
 import { language, t } from '../i18n.ts';
@@ -23,6 +24,8 @@ export type KeyAnswer = { kind: 'grant'; grant: Grant } | { kind: 'invalid' | 'e
 export type KeyOutcome = { kind: 'ok'; grant: Grant; kept: boolean } | Exclude<KeyAnswer, { kind: 'grant' }> | { kind: 'abandoned' } | { kind: 'stale' };
 
 export const invalidText = (): string => t('That key wasn\'t recognized. Check it and try again.');
+/** What a tab that takes no key and issues nothing says (its database not open, or unusable, while the browser's membership lives there). */
+export const cannotHere = (): string => t('Plus cannot be set up in this tab. Reload the page, or use another tab.');
 export const offlineText = (): string => t('Couldn\'t verify Plus. Check your connection.');
 
 /**
@@ -47,27 +50,42 @@ export function keyAnswer(answer: { status: number; body: unknown; retryAfter?: 
 /** A key as the browser keeps one (`readHeld`): 16 to 200 characters, no spaces. */
 export const keyShaped = (key: string): boolean => key.length >= 16 && key.length <= 200 && !/\s/.test(key);
 
-/** What `activateKey` may be given instead of the page's own: the server, its address, the membership, and a signal that gives the key up. */
-export interface ActivateDeps { post?: Post; api?: () => string; member?: Pick<Plus, 'acceptIf' | 'generation'>; signal?: AbortSignal }
+/**
+ * What `activateKey` may be given instead of the page's own: the server, its address, the membership (with `capture` where it has a
+ * database), a signal that gives the key up, and who to tell which payments a key taken settled (`settled`: the Plus page's records).
+ */
+export interface ActivateDeps {
+  post?: Post; api?: () => string; member?: Pick<Plus, 'acceptIf' | 'generation'> & Partial<Pick<Plus, 'capture'>>; signal?: AbortSignal; settled?: (ids: readonly string[]) => void;
+  /** The payments only this tab holds, as they were when the key was sent: settled with the stored ones, also through an overlay. */
+  local?: readonly string[];
+}
 /**
  * Enter `text` as this browser's key: checked for its shape, sent to the Plus server's renewal, and on a grant taken as the membership,
  * unless the key was given up meanwhile (`signal`) or the membership changed since it was sent (`Plus.acceptIf`: another tab stored a key,
- * or the key here was removed): such an answer is dropped without a word.
+ * or the key here was removed): such an answer is dropped without a word. Taken, it settles the payments that were waiting when it was sent.
  */
 export async function activateKey(text: string, deps: ActivateDeps = {}): Promise<KeyOutcome> {
   const key = text.trim();
   if (!keyShaped(key)) return { kind: 'invalid', text: invalidText() };
   const member = deps.member ?? plus(), signal = deps.signal;
-  // The membership as it stands when the key is sent: an answer for an older one is not taken.
-  const generation = member.generation();
+  // The membership as it stands when the key is sent: an answer for an older one is not taken. (Synchronous in plain mode.)
+  const began = member.capture ? member.capture() : member.generation();
+  const generation = typeof began === 'number' ? began : await began;
+  if (generation === null) return { kind: 'refused', text: cannotHere() };
   let answer: Awaited<ReturnType<Post>> | null = null;
   try { answer = await (deps.post ?? webPost)(`${(deps.api ?? plusApi)()}/pass/renew`, { key }, signal); } catch { answer = null; }
   if (signal?.aborted) return { kind: 'abandoned' };
   const said = keyAnswer(answer);
   if (said.kind !== 'grant') return said;
   const g = said.grant;
-  const taken = member.acceptIf(generation, { key, pass: g.pass, until: g.until, ...(g.renews !== undefined ? { renews: g.renews } : {}), ...(g.now !== undefined ? { now: g.now } : {}) });
-  return taken === 'stale' ? { kind: 'stale' } : { kind: 'ok', grant: g, kept: taken === 'kept' };
+  // The payments waiting when the key was sent, stored and this tab's own: settled with the key, or kept with it in the overlay so that its Try
+  // again settles them (Sol, code review C3-2).
+  const settle = typeof generation === 'number' ? [] : [...generation.waiting, ...(deps.local ?? [])];
+  const taken = await member.acceptIf(generation, { key, pass: g.pass, until: g.until, ...(g.renews !== undefined ? { renews: g.renews } : {}), ...(g.now !== undefined ? { now: g.now } : {}) }, settle);
+  if (taken === 'refused') return { kind: 'refused', text: cannotHere() };
+  if (taken === 'stale') return { kind: 'stale' };
+  if (taken === 'kept') deps.settled?.(settle);
+  return { kind: 'ok', grant: g, kept: taken === 'kept' };
 }
 
 /** What the form says after a success: Plus on, until when where the server said. */
@@ -82,13 +100,15 @@ export interface KeyEntry {
   readonly input: HTMLInputElement;
   /** Give the form up: a key being checked is dropped with its answer, and nothing more is said. */
   destroy(): void;
+  /** Draw its controls again by the rules now (a block lifted: the database opened). */
+  refresh?(): void;
 }
 /**
  * The key form: a field (masked; Reveal shows what is in it), Activate, a status line (checking, on, not recognized, not reached ...) and the
  * line that a key is entered once per browser and address. `onSuccess` runs once Plus is on (the membership's own listeners have been told by
  * then). Its controls carry `data-focus` keys, so a panel drawn again around the same form gives the keyboard back to the same control.
  */
-export function keyEntry(o: { onSuccess?: (outcome: Extract<KeyOutcome, { kind: 'ok' }>) => void; activate?: (text: string, deps: { signal: AbortSignal }) => Promise<KeyOutcome> } = {}): KeyEntry {
+export function keyEntry(o: { onSuccess?: (outcome: Extract<KeyOutcome, { kind: 'ok' }>) => void; activate?: (text: string, deps: { signal: AbortSignal }) => Promise<KeyOutcome>; blocked?: () => boolean } = {}): KeyEntry {
   const id = `plus-key-${++uid}`;
   const input = el('input', { type: 'password', id, class: 'key-in', autocomplete: 'off', spellcheck: false, placeholder: t('Paste your key') });
   input.setAttribute('autocapitalize', 'off'); input.setAttribute('aria-describedby', `${id}m ${id}n`);
@@ -105,7 +125,8 @@ export function keyEntry(o: { onSuccess?: (outcome: Extract<KeyOutcome, { kind: 
   let busy = false, gone = false, pending: AbortController | null = null;
   const mask = (shown: boolean): void => { input.type = shown ? 'text' : 'password'; show.textContent = shown ? t('Hide') : t('Reveal'); show.setAttribute('aria-pressed', String(shown)); };
   show.addEventListener('click', () => { mask(input.type === 'password'); });
-  const sync = (): void => { go.disabled = busy || !input.value.trim(); };
+  // Blocked (the tab's database still opening): disabled, with no word (Sol, code review C2-11).
+  const sync = (): void => { const stop = o.blocked?.() === true; go.disabled = busy || stop || !input.value.trim(); input.disabled = stop && !busy; };
   const say = (tone: '' | 'checking' | 'ok' | 'err', text: string, more = ''): void => {
     msg.className = `key-msg${tone ? ` ${tone}` : ''}`;
     msg.replaceChildren(...(tone ? [el('span', { class: tone === 'checking' ? 'spin' : 'key-mark', ariaHidden: 'true' }), el('span', { textContent: text })] : []));
@@ -115,7 +136,7 @@ export function keyEntry(o: { onSuccess?: (outcome: Extract<KeyOutcome, { kind: 
   form.addEventListener('submit', event => {
     event.preventDefault();
     const text = input.value.trim();
-    if (!text || busy || gone) return;
+    if (!text || busy || gone || o.blocked?.() === true) return;
     const asked = new AbortController();
     pending = asked; busy = true; input.readOnly = true; sync(); say('checking', t('Checking Plus with the server…'));
     void (o.activate ?? ((k, d) => activateKey(k, d)))(text, { signal: asked.signal }).then(outcome => {
@@ -135,5 +156,5 @@ export function keyEntry(o: { onSuccess?: (outcome: Extract<KeyOutcome, { kind: 
     });
   });
   sync();
-  return { root: form, input, destroy: () => { gone = true; pending?.abort(); pending = null; } };
+  return { root: form, input, destroy: () => { gone = true; pending?.abort(); pending = null; }, refresh: sync };
 }
