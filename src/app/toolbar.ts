@@ -15,7 +15,7 @@ import { alignRows } from './ui/fit-grid.ts';
 import { setTip } from './tip.ts';
 import { InstallButton } from './install.ts';
 import { toggleAuthor } from './author.ts';
-import { PLUS_NAME, togglePlus } from './plus/panel.ts';
+import { PLUS_NAME, pressPlus } from './plus/panel.ts';
 import { plus } from './plus/pass.ts';
 import { HELP, helpButton, setTourStarter, showGuide, showTour, type HelpId } from './help.ts';
 import { openVenueDialog } from './venue-dialog.ts';
@@ -36,7 +36,7 @@ import { ABSORPTION_LIMITS, type AbsorptionSettings } from './absorption.ts';
 import { BUBBLE_LIMITS, BUBBLE_MINIMUMS, type BubbleSettings } from './prints.ts';
 import { LIQUIDATION_LIMITS, LIQUIDATION_MINIMUMS, coverageLines, type LiquidationSettings } from './liquidations.ts';
 import { buildKeyLevelPanel } from './keylevels/panel.ts';
-import { buildLiqLevelPanel } from './liq-panel.ts';
+import { buildLiqLevelPanel, releaseLiqLevelPanel } from './liq-panel.ts';
 import type { LiqLevelsSource } from './liq-levels.ts';
 import { liqLevelsUrl } from './liq-url.ts';
 import type { AnchorSnapshot } from './traded/anchor.ts';
@@ -170,7 +170,7 @@ export class Toolbar {
    * breaking into two rows on a 1,366 px screen; the Tour is the Guide's first button and the first visit's invitation). Lit while this
    * browser has Plus; it opens what Plus is, and the way to it.
    */
-  #plus = el('button', { type: 'button', class: 'plus-btn', textContent: PLUS_NAME, tip: t('Plus: the liquidation levels\' whole history, the liquidations of HyperTracker\'s profitable traders, and stop and take-profit levels, for a monthly price that pays for the servers behind this page. Everything else stays free.'), onclick: () => { togglePlus(this.#plus); } });
+  #plus = el('button', { type: 'button', class: 'plus-btn', textContent: PLUS_NAME, tip: t('Plus: the liquidation levels\' whole history, the liquidations of HyperTracker\'s profitable traders, and stop and take-profit levels, for a monthly price that pays for the servers behind this page. Everything else stays free.'), onclick: () => { pressPlus(this.#plus); } });
   /** Says when the site serves a newer build than this tab runs (update-notice.ts): in the status bar on a computer, under the bar otherwise. */
   readonly #update = new UpdateNotice();
   #shot = el('button', { type: 'button', class: 'icon-btn', ariaLabel: t('Screenshot'), tip: t('Take a picture of the chart (keyboard: S): select an area or click a pane, draw on it, hide anything private with pixelate or blur, then copy or save it.'), onclick: () => { void lazy(() => import('./screenshot/editor.ts')).then(m => m?.startScreenshot()); } });
@@ -508,7 +508,7 @@ export class Toolbar {
     this.#liquidations.onclick = () => this.store.set(togglePatch(this.store.state, 'liquidations'));
     this.#settingsKeys.liqLevels.onclick = () => {
       const build = (tools: HTMLElement, body: HTMLElement): void => buildLiqLevelPanel(this.store, tools, body, () => this.#liqLevelPanel?.render(build), this.liqSource);
-      this.#liqLevelPanel = this.#track(togglePanel(this.#settingsKeys.liqLevels, { title: t('Liquidation levels'), width: 400, align: 'left', onClose: () => { this.#liqLevelPanel = null; } }, build), build);
+      this.#liqLevelPanel = this.#track(togglePanel(this.#settingsKeys.liqLevels, { title: t('Liquidation levels'), width: 400, align: 'left', onClose: () => { this.#liqLevelPanel = null; releaseLiqLevelPanel(); } }, build), build);
     };
     this.#liqLevels.onclick = () => this.store.set(togglePatch(this.store.state, 'liqLevels'));
     this.#alertSplits = { highlights: splitButton(this.#highlights, this.#alertKeys.highlights), sound: splitButton(this.#soundButton, this.#alertKeys.sound), waves: splitButton(this.#glass, this.#alertKeys.waves) };

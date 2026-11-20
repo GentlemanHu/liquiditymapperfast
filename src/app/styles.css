@@ -830,6 +830,31 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
 .panel .seg.liq-choice button { flex: 1 1 auto; white-space: nowrap; }
 /* The Plus panel's second tile is a button where it opens the Guide: it looks like the link beside it. */
 button.author-link.plus-tile { align-items: flex-start; height: auto; background: none; text-align: left; font: inherit; cursor: pointer; }
+/* The Plus pop-up by the toolbar's button (plus/panel.ts, a browser with a key): a status line with its mark, the key masked with Reveal and Copy,
+   Replace key and Remove (which asks first, in a box of its own), and See what Plus adds across its foot. Words wrap; nothing is cut. */
+.pp-body { display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.45; }
+.pp-status { display: flex; align-items: flex-start; gap: 8px; margin: 0; }
+.pp-status.error { color: var(--warn); }
+/* The checking spinner (.spin) and the alert mark (--mark-alert) are the key form's, in plus/key.css. */
+.pp-mark { flex: none; width: 15px; height: 15px; margin-top: 2px; background: currentColor; -webkit-mask: var(--mark-check) center / contain no-repeat; mask: var(--mark-check) center / contain no-repeat; }
+.pp-status.ok .pp-mark { color: var(--bid); }
+.pp-status.error .pp-mark { -webkit-mask-image: var(--mark-alert); mask-image: var(--mark-alert); }
+.pp-label { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.pp-keyrow { display: flex; align-items: center; gap: 6px; }
+.pp-key { flex: 1 1 auto; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); color: var(--text); font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: .02em; }
+.pp-key:focus-visible { outline: 2px solid var(--ui); outline-offset: 1px; }
+.pp-small { flex: none; min-height: 28px; white-space: nowrap; }
+.pp-small.danger { border-color: var(--warn); color: var(--warn); }
+.pp-hint { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.pp-hint:empty { display: none; }
+.pp-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pp-confirm, .pp-replace { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); }
+.pp-confirm p { margin: 0; }
+.pp-see { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 34px; padding: 0 12px; text-align: left; }
+.pp-arrow { flex: none; }
+/* Read by a screen reader, not shown (a field's name where its placeholder shows the same). The key form's own rules are in plus/key.css. */
+.vh { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+@media (pointer: coarse) { .pp-small, .pp-see { min-height: 44px; } .pp-key { height: 44px; } }
 /* The invitation to the tour (tour/invite.ts), a notice: its text takes the room, the buttons wrap under it on a narrow screen. */
 .toolbar .tour-invite { flex-wrap: wrap; row-gap: 6px; }
 .tour-invite-text { flex: 1 1 220px; min-width: 0; }
@@ -1357,3 +1382,8 @@ html:is([data-layout^="phone"], [data-bar="compact"]) .pane.heat .map-draw-phone
 .draw-editor.phone .draw-icon { width: 36px; height: 36px; }
 .draw-editor.phone .draw-swatch { width: 26px; height: 26px; }
 .draw-say.phone { left: 50%; top: auto; white-space: normal; max-width: calc(100% - 24px); }
+
+/* The Depth pane's levels button, beside its Source: named as the curve, with a chevron. */
+.pane-head .levels-btn { position: relative; max-width: 150px; padding: 1px 20px 1px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-head .levels-btn::after { content: ""; position: absolute; right: 6px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; background: currentColor; -webkit-mask: var(--mark-chevron) center / contain no-repeat; mask: var(--mark-chevron) center / contain no-repeat; }
+.pane-head .levels-btn[hidden] { display: none; }

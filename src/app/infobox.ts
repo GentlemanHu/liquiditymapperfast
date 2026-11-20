@@ -78,23 +78,35 @@ export interface InfoOptions {
   pick?: (color: InfoColor) => string;
   /** The box's edge, where it should say what kind of box it is. */
   edge?: string;
+  /** The box's top left corner where the caller has placed it already (`measureInfoBox`), kept inside `bounds`; else beside (x, y). */
+  at?: { x: number; y: number };
+  /** How wide a wrapped line may run (`INFO.wrapAt` by default), as the caller measured the box with. */
+  wrapAt?: number;
 }
 
 /** Where a box was drawn, in the canvas's own coordinates (what a tap on it is checked against). */
 export interface InfoRect { x: number; y: number; w: number; h: number }
+
+/** The size `lines` take as a box (wrapped at `wrapAt`), for a caller that places several boxes together. */
+export function measureInfoBox(ctx: CanvasRenderingContext2D, lines: readonly InfoLine[], wrapAt: number = INFO.wrapAt): { w: number; h: number } {
+  ctx.save();
+  const { width, height } = layoutInfo((text, bold, kind) => { ctx.font = fontOf(bold, kind); return ctx.measureText(text).width; }, lines, wrapAt);
+  ctx.restore();
+  return { w: width, h: height };
+}
 
 /** Draw `lines` in a box beside (x, y), kept inside `bounds`. */
 export function paintInfoBox(ctx: CanvasRenderingContext2D, lines: readonly InfoLine[], x: number, y: number, bounds: { x0: number; y0: number; x1: number; y1: number }, p: Palette, options: InfoOptions = {}): InfoRect | null {
   if (!lines.length) return null;
   const pick = options.pick ?? ((c: InfoColor): string => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'buy' ? p.candleUp : c === 'sell' ? p.candleDown : c === 'muted' ? p.muted : p.text);
   ctx.save(); ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-  const { rows, width: w, height: h } = layoutInfo((text, bold, kind) => { ctx.font = fontOf(bold, kind); return ctx.measureText(text).width; }, lines);
+  const { rows, width: w, height: h } = layoutInfo((text, bold, kind) => { ctx.font = fontOf(bold, kind); return ctx.measureText(text).width; }, lines, options.wrapAt);
   const { pad, lineH } = INFO;
   const gap = options.gap ?? 14;
-  let bx = x + gap; if (bx + w > bounds.x1) bx = x - gap - w;
+  let bx = options.at ? options.at.x : x + gap; if (!options.at && bx + w > bounds.x1) bx = x - gap - w;
   bx = Math.max(bounds.x0 + 2, Math.min(bx, bounds.x1 - w - 2));
   const placement = options.placement ?? 'center';
-  const wanted = placement === 'down' ? y + 14 : placement === 'up' ? y - 14 - h : y - h / 2;
+  const wanted = options.at ? options.at.y : placement === 'down' ? y + 14 : placement === 'up' ? y - 14 - h : y - h / 2;
   const by = Math.max(bounds.y0 + 2, Math.min(wanted, bounds.y1 - h - 2));
   // A hard 2 px shadow, as a tooltip has on an old desktop: cheaper to draw than a blur and it keeps the edge crisp.
   const chrome = chromeOf(p);

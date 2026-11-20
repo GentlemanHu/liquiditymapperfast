@@ -6,7 +6,7 @@ import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorLines, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
-import { StripHighlightMemo, coarseCandles, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, stripTimeframe, withEarlier, type StripBar } from '../measures/volume-strip.ts';
+import { StripHighlightMemo, coarseCandles, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, stripNamesTop, stripTimeframe, withEarlier, type StripBar } from '../measures/volume-strip.ts';
 import { StripOrderCache, WHOLE_RANGE_STEP, stripOrdersOf } from '../measures/strip-orders.ts';
 import { gridStepFor } from '../../shared/grid.ts';
 import { MAX_PROFILE_INSTRUMENTS, type ProfileAnswer } from '../../shared/footprint.ts';
@@ -26,7 +26,9 @@ import { cumulative, groupLevels, type Grouped } from './levels-data.ts';
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from '../scope.ts';
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText, wrapText } from '../text-fit.ts';
-import { binsPerRow, captionPlace, dollarPriceOf, liqCurves, liqProfile, onTheWay, seamStats, liqRows, paintLiqStripe, standingBelow, standingHeat, stripeLanes, TAKE_DASH, type CurvePoint, type Lane, type LiqLevels, type LiqRow, type LiqStanding } from '../liq-levels.ts';
+import { captionPlace, dollarPriceOf, laneRows, liqCurves, liqProfile, onTheWay, seamStats, standingBelow, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
+import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, type Rect, type Sub, type SubScale } from '../liq-split.ts';
+import { MAP_PLOT_FLOOR } from '../layouts/dock-model.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
 import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRowsHeld, type TradedRows } from '../traded.ts';
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
@@ -53,10 +55,11 @@ import { openMenu, type MenuItem } from '../menu.ts';
 import { blockMsOf, editScope, withEdits } from '../tpo/settings.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
-import { groupName, heldBack, kindName, liveView, plusOn, viewParts, type LiqView } from '../liq-view.ts';
-import { columnNotes, curveSentence, liqNote, liqWhy, sideTitle } from '../liq-words.ts';
-import { mirrorSplits, readingTexts, stripeBoxLines } from '../liq-box.ts';
-import { openLiqMenu } from '../liq-menu.ts';
+import { curveOf, groupName, groupTitle, heldBack, kindName, kindTitle, levelsDescription, liveAsk, liveSplit, liveView, narrowView, pairKey, plusOn, viewKey, viewParts, type LiqPair, type LiqView } from '../liq-view.ts';
+import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, sideTitle, splitName, subNames, takesLeftOut } from '../liq-words.ts';
+import { mirrorSplits, readingTexts, setBoxLines, stripeBoxLines } from '../liq-box.ts';
+import { layNote, paintStripe, stripeNote, stripeStands, type LaneCaption, type StripeHeld, type StripePainted } from '../liq-stripe.ts';
+import { toggleLevels } from '../levels-control.ts';
 import { linesToAsk } from '../sizes.ts';
 import { MAX_COUNT, chartKinds, linesCount, linesSource, profileAnchorOf, resolveZone, type LineKind, type TradedSettings } from '../traded/settings.ts';
 import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt, anchorSnapshot, anchorTag, answerFits, snapshotDue, type AnchorSnapshot, type ProfileAnchorStart } from '../traded/anchor.ts';
@@ -207,13 +210,15 @@ function axisNeed(): number {
 let COLUMNS_FIT = Infinity;
 /** Whether the map is compact (a phone's), its columns narrowed (`setCompactGutters`). */
 let COMPACT = false;
+/** The map pane's width as last laid out (`setCompactGutters`): whether a split liquidation column fits is measured on it. */
+let PANE_W = Infinity;
 /**
  * The book profile of a compact map that also shows the liquidation column: a strip whose rows hold the book's depth as the strength of their
  * side's colour (Karl, 2026-11-01: on a phone the two columns left the map too little room, and the liquidation levels are the more useful).
  */
 export const PROFILE_STRIP_W = 16;
 export function setCompactGutters(compact: boolean, paneW = Infinity): void {
-  COMPACT = compact;
+  COMPACT = compact; PANE_W = paneW;
   AXIS_W = Math.max(compact ? 58 : 64, axisNeed()); PROFILE_W = compact ? 84 : 128; TRADED_W = compact ? 0 : 96;
   COLUMNS_FIT = TRADED_W > 0 ? Math.max(1, Math.floor((paneW / 2 - AXIS_W - PROFILE_W) / TRADED_W)) : 0;
 }
@@ -300,9 +305,20 @@ const COMPACT_PANE = 520;
 export const liqColumnShown = (state: AppState): boolean => { const l = state.liqLevels as AppState['liqLevels'] | undefined; return !!l && l.on && l.column && currentCoin().coin === 'BTC' && !!liqLevelsUrl(); };
 /**
  * The width the liquidation column takes (as wide as the profile column), or 0. A compact map has it as a strip like the book's (Karl,
- * 2026-11-03: the column took a phone's map 84 px; the Liq tab holds the whole ladder): the two strips beside each other.
+ * 2026-11-03: the column took a phone's map 84 px; the Liq tab holds the whole ladder): the two strips beside each other. A split (Plus,
+ * 2026-11-19) widens it to two sub-columns where the plot the unsplit column leaves keeps the desktop's floor (`liqColumnWidth`), so it never
+ * folds a side column; with less room the column stays one, and says so (`narrowNote`).
  */
-const liqColumnW = (state: AppState): number => !liqColumnShown(state) ? 0 : COMPACT ? PROFILE_STRIP_W : PROFILE_W;
+const liqColumnW = (state: AppState): number => liqColumnWidth({ shown: liqColumnShown(state), compact: COMPACT, strip: PROFILE_STRIP_W, column: PROFILE_W, split: !!liveSplit(state.liqLevels),
+  plotUnsplit: PANE_W - (AXIS_W + PROFILE_W + profileColumnW(state) + (sideColumns(state).right.length + sideColumns(state).left.length) * TRADED_W), floor: MAP_PLOT_FLOOR });
+/** Whether the liquidation column is drawn split this frame (two sub-columns): a split chosen and drawn, and room for it. */
+export const liqSplitDrawn = (state: AppState): boolean => !COMPACT && liqColumnW(state) === SPLIT_COLUMN_W;
+/**
+ * Whether the stripe has room for a split's two lanes of Everyone | Profitable (`stripePlan`): where the column is drawn split, and on a
+ * desktop map whose liquidation column is switched off (no column falls back there, and Liquidations | Stops draws its two lanes too). Too
+ * narrow to split and on a compact map: one lane, everyone's, as the column falls back to.
+ */
+export const stripeSplitRoom = (state: AppState): boolean => liqSplitDrawn(state) || (!COMPACT && !state.liqLevels.column);
 /** The width the book profile takes: its column, the strip in a compact map beside the liquidation column (`PROFILE_STRIP_W`), or 0. */
 export function profileColumnW(state: AppState): number { return !state.show.profile ? 0 : COMPACT && liqColumnShown(state) ? PROFILE_STRIP_W : PROFILE_W; }
 export function gutter(state: AppState): number { return AXIS_W + liqColumnW(state) + profileColumnW(state) + sideColumns(state).right.length * TRADED_W; }
@@ -316,10 +332,12 @@ export function leftGutter(state: AppState): number { return sideColumns(state).
 export function gutterAt(paneW: number, state: AppState): number {
   const compact = paneW < COMPACT_PANE, axis = Math.max(compact ? 58 : 64, axisNeed()), profile = compact ? 84 : 128, traded = compact ? 0 : 96;
   const fit = traded > 0 ? Math.max(1, Math.floor((paneW / 2 - axis - profile) / traded)) : 0;
-  const liq = liqColumnShown(state), liqW = !liq ? 0 : compact ? PROFILE_STRIP_W : profile;
+  const liq = liqColumnShown(state);
   const book = !state.show.profile ? 0 : compact && liq ? PROFILE_STRIP_W : profile;
-  const sides = state.show.traded && fit > 0 ? arrangeSides(state.traded.placements, fit) : NO_SIDES;
-  return axis + liqW + book + (sides.right.length + sides.left.length) * traded;
+  const sides = state.show.traded && fit > 0 ? arrangeSides(state.traded.placements, fit) : NO_SIDES, rest = axis + book + (sides.right.length + sides.left.length) * traded;
+  // The liquidation column by the frame's own rule (`liqColumnW`), at this width: a split only where the plot keeps the floor.
+  const liqW = liqColumnWidth({ shown: liq, compact, strip: PROFILE_STRIP_W, column: profile, split: !!liveSplit(state.liqLevels), plotUnsplit: paneW - rest - profile, floor: MAP_PLOT_FLOOR });
+  return rest + liqW;
 }
 /**
  * The side of the book the map's hover names at a cell: the one holding more there, or none for a cell that holds nothing (right of the
@@ -360,13 +378,19 @@ export class HeatPane {
   /** Mirror-hover comparison for the pointer over the profile column, or null (read by tests, drawn on the profile). */
   mirror: MirrorStats | null = null;
   /** The pointer on one of the columns beside the map (the liquidation column or the profile column), for its Mirror comparison. */
-  #profileHover: { y: number; column: 'liq' | 'book' | 'seam' } | null = null;
+  #profileHover: { y: number; x?: number; column: 'liq' | 'book' | 'seam' } | null = null;
   /** Where this frame's "depth recorded from" note was printed, so the liquidation levels' note can keep clear of it. */
   #historyNote: { x0: number; x1: number; top: number } | null = null;
-  /** Liquidation levels' rows in view and what they were grouped for (#liqRowsInView). */
-  #liqRows: { key: string; rows: LiqRow[]; heat: (usd: number) => number } | null = null;
+  /** Where this frame's note under the legend (Liquidation levels') stands, laid out before the stripe's captions so they keep clear of it. */
+  #liqNoteBox: { x0: number; x1: number; top: number; bottom: number } | null = null;
+  /** Each lane of the stripe's rows in view as last painted (the levels', the take profits', a split's right set's), kept by their keys (liq-stripe.ts). */
+  readonly #liqHeld: StripeHeld = { levels: null, takes: null, right: null };
   /** The wide liquidation column as last drawn with its curves (its left and width, the curves' width, their dollars at full width), for `#paintLiqReadout`. */
   #liqScale: { x0: number; W: number; width: number; maxCum: number } | null = null;
+  /** The set the unsplit column drew this frame (the page's one series, or the sum a split too narrow falls back to), for the pointer's reading. */
+  #liqDrawnSet: LiqSet | null = null;
+  /** A split column's sub-columns as drawn this frame with their curves (left, right), for `#paintLiqReadout`; null where nothing is split. */
+  #liqSubs: { x0: number; W: number; width: number; maxCum: number; set: LiqSet }[] | null = null;
   /** The pointer over a volume profile column (its y, and which column: its side and its place there, nearest the map first), or null. */
   #tradedHover: { y: number; side: Side; i: number } | null = null;
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
@@ -374,9 +398,13 @@ export class HeatPane {
   #gutterCss = ''; #leftCss = '';
   /** What the corner tools' names were last judged on (`#fitCorner`), and the room the legend wants for its title and prices (`#paintLegend`). */
   #cornerKey = ''; #legendNeed = LEGEND_NEED_PX;
-  /** The corner tools' element and their size as last measured, with what it was measured for (`#cornerTools`). */
-  #cornerEl: HTMLElement | null = null;
-  #cornerBox: { key: string; box: { width: number; bottom: number } | null } = { key: '', box: null };
+  /** The corner buttons' elements (the desktop's row, a phone's Draw key) and their rectangle as last measured, with what it was measured for (`#cornerTools`). */
+  #cornerEls: (HTMLElement | null)[] = [null, null];
+  #cornerBox: { key: string; box: Rect | null } = { key: '', box: null };
+  /** The stripe's caption plates of this frame, their places across (`#placeLiqCaptions`), placed and painted once the map's lines and the volume strip are drawn (`#paintLiqPlates`). */
+  #liqPlates: (LaneCaption & { x: number; w: number; rank: number })[] | null = null;
+  /** Where this frame's volume strip printed its names (`paintVolumeStrip`), which the stripe's captions keep clear of. */
+  #stripNames: { x0: number; x1: number; y0: number; y1: number }[] = [];
   onStats: () => void = () => {};
   onView: () => void = () => {};
   /** Whether scripts are running and read the candles (main.ts): then the price history reaches `SCRIPT_WARM_BARS` before the view too. */
@@ -495,9 +523,13 @@ export class HeatPane {
   #liqKindFit = '';
   /** Whether the button had no room for the group it shows (it then says the kind alone, and the group goes under it: `columnNotes`). */
   #liqKindGroupOff = false;
-  /** The take profits' rows in view (their own lane of the stripe), as `#liqRows`; and where the stripe's lanes were drawn this frame. */
-  #liqTakeRows: { key: string; rows: LiqRow[]; heat: (usd: number) => number } | null = null;
-  #liqLanes: { levels: Lane; takes: Lane | null } | null = null;
+  /** Where the stripe's lanes were painted this frame (`paintStripe`), with the group each lane's reading names, for the hover box; or null. */
+  #liqLanes: StripePainted['lanes'] = null;
+  /**
+   * A split's right lane as painted this frame (the stops of the chosen traders, or the profitable traders' levels), with the right set it was
+   * painted from (its rows in `#liqHeld.right`, kept by that set's key) and the group its reading names, for the hover box.
+   */
+  #liqRightLane: StripePainted['right'] = null;
   #palette = PALETTES.light!;
   /** The palette the volume profile is drawn in (`#tradedPalette`), kept while neither the theme nor the colours chosen change. */
   #tradedPal: { key: string; base: Palette; p: Palette } | null = null;
@@ -747,7 +779,8 @@ export class HeatPane {
     this.#liveButton.hidden = true;
     this.#liveButton.addEventListener('click', () => this.jumpToNow());
     this.#liqHistory.addEventListener('click', () => this.store.set({ show: { ...this.store.state.show, depth: true }, depthSource: 'liq' }));
-    this.#liqKind.addEventListener('click', () => { openLiqMenu(this.#liqKind, this.store); });
+    this.#liqKind.setAttribute('aria-haspopup', 'dialog'); this.#liqKind.setAttribute('aria-expanded', 'false');
+    this.#liqKind.addEventListener('click', () => { toggleLevels(this.#liqKind, this.store); });
     // The pointer's layer right after the overlay: over it and under what is stacked over it, as when it was drawn into the overlay.
     this.root.append(this.#glCanvas, this.#dustCanvas, this.#pulse, this.#drawEdit, this.overlay, this.#hoverCanvas, this.#liveButton, this.#liqHistory, this.#liqKind);
     host.append(this.root);
@@ -819,7 +852,10 @@ export class HeatPane {
     const focus = state.show.bubbles ? this.#bubbleFocus(state, pw, ph) ?? '' : '';
     const pin = hv?.touch ? `${x},${y}` : '';
     const bands = this.#bands.hoverKey(state, { view: this.view, ph });
-    return `${strip}|${focus}|${pin}|${bands}|${profile ? `${profile.column},${profile.y}` : ''}|${traded ? `${traded.side},${traded.i},${traded.y}` : ''}`;
+    // On a split liquidation column Mirror reads the sub-column under the pointer (`#paintLiqSplit`): a move across the divider at one height
+    // changes what the overlay draws (Sol, review 2026-11-19).
+    const side = profile?.column === 'liq' && profile.x !== undefined && liqSplitDrawn(state) ? `,${subAt(profile.x, pw, SPLIT_COLUMN_W)}` : '';
+    return `${strip}|${focus}|${pin}|${bands}|${profile ? `${profile.column},${profile.y}${side}` : ''}|${traded ? `${traded.side},${traded.i},${traded.y}` : ''}`;
   }
   /**
    * Covered by a view of its own (the phone's Candle tab): nothing is drawn, the dust included, until it shows again, when it draws at once.
@@ -1374,9 +1410,11 @@ export class HeatPane {
       const y = v.yOf(mark, ph);
       if (y >= 0 && y <= ph) { ctx.strokeStyle = markColor; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(pw, y + 0.5); ctx.stroke(); ctx.setLineDash([]); }
     }
+    // The stripe's captions over everything drawn on the plot, so no line or bar runs across one (placed with the stripe).
+    this.#paintLiqPlates(ctx);
     // profile column, traded-volume column and price axis
     // The liquidation column, then the profile column: the book as it is now, not shown in replay, which has no book of its moment.
-    if (liqColumnShown(state)) this.#paintLiqColumn(ctx, state, pw, ph); else { this.#liqScale = null; this.#placeLiqHistory(null); this.#placeLiqKind(null, 0, state); }
+    if (liqColumnShown(state)) this.#paintLiqColumn(ctx, state, pw, ph); else { this.#liqScale = null; this.#liqSubs = null; this.#liqDrawnSet = null; this.#placeLiqHistory(null); this.#placeLiqKind(null, 0, state); }
     if (state.show.profile && !replaying()) this.#paintProfile(ctx, state, pw, ph);
     if (this.#profileHover?.column === 'seam' && !replaying()) this.#paintSeam(ctx, state, pw, ph);
     if (tradedShown(state)) this.#paintTraded(ctx, state, pw, ph);
@@ -1454,13 +1492,24 @@ export class HeatPane {
    * column's strip (a compact map) has no curve and no room: nothing there.
    */
   #paintLiqReadout(ctx: CanvasRenderingContext2D, state: AppState, ph: number): void {
-    const scale = this.#liqScale, src = this.hub.liqLevels, hv = state.hover, col = this.#profileHover;
-    if (!scale || !liqColumnShown(state) || replaying() || src.state !== 'ready') return;
+    const hv = state.hover, col = this.#profileHover;
+    if (!liqColumnShown(state) || replaying()) return;
     const y = hv?.source === 'heat' && hv.price !== null ? this.view.yOf(hv.price, ph) : col?.column === 'liq' && !state.show.mirror ? col.y : NaN;
     if (!(y >= 0 && y <= ph)) return;
-    const s = src.standing(), price = this.#liqPrice(state), at = this.view.pOf(y, ph), way = s ? onTheWay(s, price, at) : null;
+    const price = this.#liqPrice(state), at = this.view.pOf(y, ph);
+    // A split: each sub-column reads its own set at the pointer's price, on its own scale (or the shared one).
+    if (this.#liqSubs) { for (const sub of this.#liqSubs) this.#paintLiqReading(ctx, sub, sub.set, y, price, at, ph); return; }
+    const scale = this.#liqScale;
+    if (scale) this.#paintLiqReading(ctx, scale, this.#liqDrawnSet ?? this.hub.liqLevels, y, price, at, ph);
+  }
+
+  /** The reading of one column (`scale`, as drawn) at the pointer's line `y` (price `at`): what goes from the price out to it, in `set`. */
+  #paintLiqReading(ctx: CanvasRenderingContext2D, scale: { x0: number; W: number; width: number; maxCum: number }, set: LiqSet, y: number, price: number, at: number, ph: number): void {
+    if (set.state !== 'ready') return;
+    const s = set.standing(), way = s ? onTheWay(s, price, at) : null;
     if (!way) return;
-    const p = this.#palette, color = way.side === 'long' ? p.candleDown : p.candleUp, { x0, W } = scale, line = Math.round(y) + 0.5;
+    // Take profits on alone are coloured by what the orders do, as their curve is: the buys below the price in the rising colour.
+    const alone = set.levels?.kind === 'takes', p = this.#palette, color = (way.side === 'long') !== alone ? p.candleDown : p.candleUp, { x0, W } = scale, line = Math.round(y) + 0.5;
     // The dot on the curve, whole even where nothing goes yet (the curve then runs along the column's left edge), and on the dashed line.
     const x = Math.min(x0 + W - 4, Math.max(x0 + 4, x0 + Math.min(1, way.usd / scale.maxCum) * scale.width));
     ctx.save();
@@ -1470,11 +1519,13 @@ export class HeatPane {
     ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(x, line, 3.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = p.panel; ctx.stroke();
     // How far (in the precision the stripe's box and Mirror use), and what goes on the way: the distance is dropped where both do not fit.
     // Liq + stops: the total and its two parts under it, wrapped to the column ("Total $X = liquidations $Y + stops $Z").
-    const reading = readingTexts(way, price, at, src.partStandings());
+    const reading = readingTexts(way, price, at, set.partStandings());
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
     const text = ctx.measureText(reading.full).width <= W - 14 ? reading.full : reading.short;
     ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
-    const more = reading.split ? wrapText(words => ctx.measureText(words).width, reading.split, W - 14, 4) : [];
+    // Under the figure: its two parts (Liq + stops), and that the profitable traders' orders are not on the server where the view asks for them.
+    const wrapped = (words: string): string[] => wrapText(w => ctx.measureText(w).width, words, W - 14, 4);
+    const more = [...(reading.split ? wrapped(reading.split) : []), ...(set.ordersAbsent() ? wrapped(ordersAbsent()) : [])];
     const tw = Math.max(...[text, ...more].map((words, i) => { ctx.font = `${i ? '' : '600 '}10px ui-sans-serif, system-ui, sans-serif`; return ctx.measureText(words).width; }));
     // Above the line, or below it near the top, and never on the column's heading (its band hides the curve there anyway).
     const tall = 13 + 12 * more.length, right = x0 + W - 4, room = this.#liqHeadH + 8;
@@ -1642,16 +1693,18 @@ export class HeatPane {
   }
 
   /**
-   * The corner tools' width and bottom edge (px in the pane), measured again only when what sizes them can have changed: the plot's width, their
-   * names shown or folded and which of them show (`#fitCorner`'s key and the same reads, none of them layout), the frame and the arrangement.
-   * So a drawing that keeps clear of them (the take profits' caption) reads no layout.
+   * The corner buttons the map shows as one rectangle on the plot (`cornerSpan`): the desktop's row (`.map-tools`) or a phone's Draw key
+   * (`.map-draw-phone`, which the compact bar shows in the row's place; reading the row alone left a phone's captions under the key). Measured
+   * again only when what sizes them can have changed: the plot's width and the columns left of it, their names shown or folded and which of
+   * them show (`#fitCorner`'s key and the same reads, none of them layout), the frame and the arrangement. So a drawing that keeps clear of
+   * them (the stripe's captions) reads no layout.
    */
-  #cornerTools(pw: number): { width: number; bottom: number } | null {
-    if (!this.#cornerEl?.isConnected) this.#cornerEl = this.root.querySelector<HTMLElement>('.map-tools');
-    const tools = this.#cornerEl, html = document.documentElement.dataset;
-    if (!tools) return null;
-    const key = `${pw}|${this.#cornerKey}|${tools.hidden}|${tools.classList.contains('compact')}|${tools.querySelectorAll(':scope > :not([hidden])').length}|${html.frame ?? ''}|${html.layout ?? ''}|${html.bar ?? ''}`;
-    if (key !== this.#cornerBox.key) this.#cornerBox = { key, box: !tools.hidden && tools.offsetWidth > 0 ? { width: tools.offsetWidth, bottom: tools.offsetTop + tools.offsetHeight } : null };
+  #cornerTools(pw: number): Rect | null {
+    const els = this.#cornerEls, html = document.documentElement.dataset;
+    (['.map-tools', '.map-draw-phone'] as const).forEach((selector, i) => { if (!els[i]?.isConnected) els[i] = this.root.querySelector<HTMLElement>(selector); });
+    const [tools, drawKey] = els;
+    const key = `${pw}|${this.#left}|${this.#cornerKey}|${tools ? `${tools.hidden}|${tools.classList.contains('compact')}|${tools.querySelectorAll(':scope > :not([hidden])').length}` : '-'}|${drawKey ? `${drawKey.hidden}` : '-'}|${html.frame ?? ''}|${html.layout ?? ''}|${html.bar ?? ''}`;
+    if (key !== this.#cornerBox.key) this.#cornerBox = { key, box: cornerSpan(els, this.#left) };
     return this.#cornerBox.box;
   }
 
@@ -2178,97 +2231,99 @@ export class HeatPane {
    */
   #paintLiquidationLevels(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const src = this.hub.liqLevels, p = this.#palette, v = this.view, view = liveView(state.liqLevels);
-    this.#liqLanes = null;
-    src.ensure(currentCoin(), () => this.invalidate(), view);
+    // Nothing drawn answers the pointer until this frame draws it again (another coin, a replay: neither lane stands).
+    this.#liqLanes = null; this.#liqRightLane = null; this.#liqNoteBox = null;
+    const ask = liveAsk(state.liqLevels);
+    src.ensure(currentCoin(), () => this.invalidate(), ask.view, ask.right);
     // They are on unless switched off, so where they cannot be (no address, another coin, a replay) the map says nothing: the button's panel
     // says why.
     if (src.state === 'off' || src.state === 'other-coin' || replaying()) return;
-    const levels = src.levels;
     src.observe(this.#dollarPrice(state));
-    let note = levels && src.state === 'ready' ? liqNote(src, view, levels.asOf) : liqWhy(src, src.asOfs().liq) || t('Liquidation levels are loading.');
-    if (levels && src.state === 'ready') {
-      const x0 = this.#liqStripeLeft(pw);
-      if (x0 < pw - 8) {
-        // The take profits are a lane of their own by the live edge, dashed, never added to the levels (they sit on the other side of the
-        // price); the levels' lane is the one beside the liquidation column, whose curve sums them.
-        const takes = src.takesState === 'ready' ? src.takes : null, lanes = stripeLanes(x0, pw, !!takes);
-        const { rows, heat } = this.#liqRowsDrawn(levels, ph);
-        paintLiqStripe(ctx, v, lanes.levels.x0, lanes.levels.x1, ph, rows, heat, { long: p.candleDown, short: p.candleUp, text: p.text, muted: p.muted, bg: p.bg });
-        if (takes && lanes.takes) {
-          const tk = this.#liqTakeRowsDrawn(takes, ph);
-          // By what the orders do: the take profits of shorts are buys (below the price, the rising colour), those of longs sells.
-          paintLiqStripe(ctx, v, lanes.takes.x0, lanes.takes.x1, ph, tk.rows, tk.heat, { long: p.candleUp, short: p.candleDown, text: p.text, muted: p.muted, bg: p.bg }, true);
-        }
-        this.#liqLanes = lanes;
-        if (lanes.takes) this.#paintTakesCaption(ctx, lanes.takes, pw);
+    // Under a split of liquidations beside stops the stripe draws both (a lane each), so the note says both, and when their orders stood.
+    // Everyone beside the profitable traders draws a lane each where the stripe has room for them (`stripeSplitRoom`), else everyone's alone.
+    const pair = liveSplit(state.liqLevels), plan = stripePlan(pair, stripeSplitRoom(state));
+    let note = stripeNote(src, view, pair, plan);
+    const stands = stripeStands(src, plan);
+    if (stands && src.candlesLate()) note = `${note} · ${t('Hyperliquid\'s candles could not be read, so a level price has passed may still show.')}`;
+    // The note's lines first, so the captions keep clear of them: on a narrow map what it says last (stops as of, the take profits, the other
+    // group's times) goes to the next line, cut only where a short map leaves no room for another: the parts are whole phrases (`noteLines`).
+    ctx.save();
+    ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
+    // Under the legend, a line lower where the "depth recorded from" note already stands there; on a short map in fewer lines, so the
+    // captions keep their room below it (`noteMostLines`), and never down to the volume strip's names (`layNote`).
+    const under = this.#legendBox.bottom + 6, measure = (words: string): number => ctx.measureText(words).width;
+    const foot = state.show.volume && this.candlesDrawn(state).length ? stripNamesTop(ph, volumeBand(ph)) : ph;
+    const { lines, top } = layNote(measure, note, Math.max(40, pw - 24), { ph, under, foot, history: this.#historyNote });
+    ctx.restore();
+    this.#liqNoteBox = { x0: 8, x1: 8 + Math.max(0, ...lines.map(measure)), top, bottom: top + 13 * lines.length };
+    if (stands) {
+      // What was painted is all that answers the pointer and all that is captioned (liq-stripe.ts `paintStripe`).
+      const painted = paintStripe(ctx, { src, plan, pair, x0: this.#liqStripeLeft(pw), pw, ph, view: v, colors: p, held: this.#liqHeld });
+      if (painted) {
+        this.#liqLanes = painted.lanes; this.#liqRightLane = painted.right;
+        if (painted.captions) this.#placeLiqCaptions(ctx, painted.captions, pw);
+        else if (painted.takesLane) this.#placeLiqCaptions(ctx, [{ lane: painted.takesLane, words: t('Take profits'), dashed: true }], pw);
       }
-      if (src.candlesLate()) note = `${note} · ${t('Hyperliquid\'s candles could not be read, so a level price has passed may still show.')}`;
     }
     ctx.save();
     ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-    // On a narrow map what it says last (stops as of, the take profits) goes to a second line, never cut: the parts are whole phrases.
-    const measure = (words: string): number => ctx.measureText(words).width, room = Math.max(40, pw - 24), parts = note.split(' · ');
-    let first = parts[0] ?? '', i = 1;
-    while (i < parts.length && measure(`${first} · ${parts[i]}`) <= room) { first = `${first} · ${parts[i]}`; i++; }
-    const lines = [first, parts.slice(i).join(' · ')].filter(Boolean).map(line => fitText(measure, line, room)), w = measure(lines[0] ?? '');
-    // Under the legend, a line lower where the "depth recorded from" note already stands there.
-    const h = this.#historyNote, top = this.#legendBox.bottom + 6, below = h && Math.abs(h.top - top) < 12 && h.x0 < 8 + w + 6 && h.x1 > 2;
     ctx.fillStyle = p.muted; ctx.globalAlpha = 0.9;
-    lines.forEach((line, n) => ctx.fillText(line, 8, (below ? top + 13 : top) + n * 13));
+    lines.forEach((line, n) => ctx.fillText(line, 8, top + n * 13));
     ctx.restore();
   }
 
   /**
-   * A caption at the top of the take profits' lane, with a small dashed sample of their look (Karl, 2026-11-18, read that lane as the stops').
-   * The levels' lane needs none: the column's button beside it names what it holds and what the curve adds up. On a plate of the panel's
-   * colour, so it reads in every theme over whatever is drawn there; inside the lane where it fits, else ending at the lane's right edge and
-   * reaching left over the map (`captionPlace`); below the corner tools where they stand over it, and below the legend and its notes.
+   * Where the captions of the stripe's lanes stand (`items`): a caption at the top of the take profits' lane without a split (Karl,
+   * 2026-11-18, read that lane as the stops'; the levels' lane needs none, the column's button beside it names what it holds), and every
+   * lane's under a split. Each is a plate with a small sample of its look (dashed for take profits, solid for levels), inside its lane where it
+   * fits, else ending at the lane's right edge and reaching left over the map (`captionPlace`), never wider than the plot (a longer word ends
+   * in "…"), clear of the corner buttons the map shows (a phone's Draw key too), the legend, the "depth recorded from" note, the note under the
+   * legend and each other: in the rows they always stood in where those are clear, else each at the highest free place (`captionKeepOut`,
+   * `placeCaptions`). Measured here; placed and painted by `#paintLiqPlates` once the map's lines and the volume strip are drawn.
    */
-  #paintTakesCaption(ctx: CanvasRenderingContext2D, lane: Lane, pw: number): void {
-    const p = this.#palette, corner = this.#cornerTools(pw), box = this.#legendBox;
-    const tools = corner ? { x0: pw - 8 - corner.width - 4, bottom: corner.bottom + 4 } : null;
+  #placeLiqCaptions(ctx: CanvasRenderingContext2D, items: readonly LaneCaption[], pw: number): void {
+    ctx.save();
+    ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
+    const wide = (words: string): number => ctx.measureText(words).width, SAMPLE = 12;
+    // The take profits' plate goes first where not every plate has room (rank 1): the split's own lanes keep theirs.
+    this.#liqPlates = items.map(item => ({ ...item, ...captionPlace(item.lane, Math.min(Math.max(40, pw - 16), Math.ceil(SAMPLE + wide(item.words) + 10))), rank: item.dashed ? 1 : 0 }));
+    ctx.restore();
+  }
+
+  /**
+   * The stripe's caption plates of this frame, placed (`captionKeepOut`, `placeCaptions`: the volume strip's names are known by now, and a
+   * plate with no room above the plot's foot is left out) and painted on plates of the panel's colour so they read in every theme, after the
+   * map's lines, bars and candles (the price line, the VWAP and key levels, the volume strip), none of which is drawn across one (2026-11-19:
+   * on a phone held sideways a dashed line ran across the take profits' plate and the volume bars over it).
+   */
+  #paintLiqPlates(ctx: CanvasRenderingContext2D): void {
+    const plates = this.#liqPlates, p = this.#palette, pw = this.plotW;
+    this.#liqPlates = null;
+    if (!plates?.length) return;
+    const keep = captionKeepOut({ corner: this.#cornerTools(pw), legend: this.#legendBox, history: this.#historyNote, note: this.#liqNoteBox, names: this.#stripNames });
+    const ys = placeCaptions(plates, keep, 6, 15, this.plotH);
     ctx.save();
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-    const wide = (words: string): number => ctx.measureText(words).width, SAMPLE = 12, words = t('Take profits');
-    // Never wider than the plot: a longer word ends in "…".
-    const { x, w } = captionPlace(lane, Math.min(Math.max(40, pw - 16), Math.ceil(SAMPLE + wide(words) + 10)));
-    let y = 6;
-    if (tools && x + w > tools.x0) y = Math.max(y, tools.bottom);
-    if (x < box.right + 8) y = Math.max(y, box.bottom + 36);
-    // And under the "depth recorded from" note, which stands under the corner tools too.
-    const note = this.#historyNote;
-    if (note && note.top + 12 > y && note.top < y + 15 && x < note.x1 + 4 && x + w > note.x0 - 4) y = note.top + 15;
-    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x, y, w, 15);
-    ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 14);
-    ctx.strokeStyle = p.text; ctx.lineWidth = 3; ctx.setLineDash(TAKE_DASH as number[]); ctx.lineDashOffset = 0;
-    ctx.beginPath(); ctx.moveTo(x + 4, y + 7.5); ctx.lineTo(x + 4 + SAMPLE - 2, y + 7.5); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = p.text; ctx.fillText(fitText(wide, words, w - SAMPLE - 10), x + 6 + SAMPLE, y + 8);
+    const wide = (words: string): number => ctx.measureText(words).width, SAMPLE = 12;
+    plates.forEach(({ x, w, words, dashed }, i) => {
+      const y = ys[i];
+      if (y === null || y === undefined) return;
+      ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x, y, w, 15);
+      ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 14);
+      ctx.strokeStyle = p.text; ctx.lineWidth = 3; ctx.setLineDash(dashed ? TAKE_DASH as number[] : []); ctx.lineDashOffset = 0;
+      ctx.beginPath(); ctx.moveTo(x + 4, y + 7.5); ctx.lineTo(x + 4 + SAMPLE - 2, y + 7.5); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = p.text; ctx.fillText(fitText(wide, words, w - SAMPLE - 10), x + 6 + SAMPLE, y + 8);
+    });
     ctx.restore();
   }
 
   /** Where the liquidation stripe begins: the live edge (the plot's left edge when that is off to the left). */
   #liqStripeLeft(pw: number): number { return Math.max(0, Math.round(this.view.xOf(pageNow(), pw))); }
 
-  /** The rows in view with their colour scale, as drawn; grouped again only when the levels, what price has taken or the rows on screen change. */
-  #liqRowsDrawn(levels: LiqLevels, ph: number): { rows: LiqRow[]; heat: (usd: number) => number } {
-    const v = this.view, per = binsPerRow(levels.step, v, ph), span = per * levels.step, g0 = Math.floor(v.p0 / span), g1 = Math.ceil(v.p1 / span);
-    const key = `${this.hub.liqLevels.key()}|${per}|${g0}|${g1}`;
-    if (this.#liqRows?.key !== key) {
-      const rows = liqRows(levels, this.hub.liqLevels.taken(), per, g0 * span, g1 * span);
-      this.#liqRows = { key, rows, heat: standingHeat(rows) };
-    }
-    return this.#liqRows;
-  }
+  /** The rows in view with their colour scale, as drawn; grouped again only when the levels, what price has taken or the rows on screen change (`laneRows`). */
+  #liqRowsDrawn(levels: LiqLevels, ph: number): LaneRows { return this.#liqHeld.levels = laneRows(this.hub.liqLevels, 'levels', levels, this.view, ph, this.#liqHeld.levels); }
   /** The same for the take profits' lane (their own colour scale). */
-  #liqTakeRowsDrawn(levels: LiqLevels, ph: number): { rows: LiqRow[]; heat: (usd: number) => number } {
-    const v = this.view, per = binsPerRow(levels.step, v, ph), span = per * levels.step, g0 = Math.floor(v.p0 / span), g1 = Math.ceil(v.p1 / span);
-    const key = `${this.hub.liqLevels.takesKey()}|${per}|${g0}|${g1}`;
-    if (this.#liqTakeRows?.key !== key) {
-      const rows = liqRows(levels, this.hub.liqLevels.takesTaken(), per, g0 * span, g1 * span);
-      this.#liqTakeRows = { key, rows, heat: standingHeat(rows) };
-    }
-    return this.#liqTakeRows;
-  }
+  #liqTakeRowsDrawn(levels: LiqLevels, ph: number): LaneRows { return this.#liqHeld.takes = laneRows(this.hub.liqLevels, 'takes', levels, this.view, ph, this.#liqHeld.takes); }
 
   /** The chart's price when it is in dollars (a dollar or a dollar stablecoin), else NaN: Liquidation levels compare it with Hyperliquid's. */
   #dollarPrice(state: AppState): number { return dollarPriceOf(state); }
@@ -2281,12 +2336,16 @@ export class HeatPane {
 
   /**
    * What a level under the pointer holds, for the hover box: only on the stripe, on a row strong enough to be drawn there (the levels' lane,
-   * or the take profits' by the live edge); what the box says is `stripeBoxLines`'s.
+   * the take profits' by the live edge, or a split's right lane, which stands on its own set); what the box says is `stripeBoxLines`'s, with
+   * the lane's group where the plan names one (everyone beside the profitable traders).
    */
   #liquidationLines(state: AppState, x: number, y: number, pw: number, ph: number, touch: boolean): InfoLine[] {
-    const src = this.hub.liqLevels, lanes = this.#liqLanes, v = this.view;
-    if (!lanes || replaying() || src.state !== 'ready') return [];
-    const inTakes = !!lanes.takes && x >= lanes.takes.x0 && x < lanes.takes.x1, levels = inTakes ? src.takes : x >= lanes.levels.x0 ? src.levels : null;
+    const src = this.hub.liqLevels, lanes = this.#liqLanes, v = this.view, right = this.#liqRightLane;
+    if (replaying()) return [];
+    const held = this.#liqHeld.right;
+    if (right && held && x >= right.lane.x0 && x < right.lane.x1) return this.#laneLines(state, right.set, held, y, ph, touch, right.whose);
+    if (!lanes || src.state !== 'ready') return [];
+    const inTakes = !!lanes.takes && x >= lanes.takes.x0 && x < lanes.takes.x1, levels = inTakes ? src.takes : x >= lanes.levels.x0 && x < lanes.levels.x1 ? src.levels : null;
     if (!levels) return [];
     const { rows, heat } = inTakes ? this.#liqTakeRowsDrawn(levels, ph) : this.#liqRowsDrawn(levels, ph), slop = touch ? 6 : 2;
     const shown = (r: LiqRow, side: 'long' | 'short'): boolean => r[`${side}Left`] > 0 && heat(r[`${side}Left`]) > 0;
@@ -2299,7 +2358,31 @@ export class HeatPane {
     }
     if (!row) return [];
     const found = row, kind = levels.kind;
-    return stripeBoxLines(found, kind, this.#liqPrice(state), inTakes ? src.takesStanding() : src.standing(), kind === 'both' ? src.partStandings() : null, side => shown(found, side));
+    const lines = stripeBoxLines(found, kind, this.#liqPrice(state), inTakes ? src.takesStanding() : src.standing(), kind === 'both' ? src.partStandings() : null, side => shown(found, side),
+      inTakes ? lanes.takesWhose : lanes.whose);
+    // The profitable traders' orders the view asks for are not on the server: said where a level is read, never drawn from everyone's.
+    return src.ordersAbsent() ? [...lines, { text: ordersAbsent(), color: 'muted', wrap: true, rule: true }] : lines;
+  }
+
+  /**
+   * What a row of a split's right lane holds under the pointer, for the hover box, from its own set and the rows drawn of it (as
+   * `#liquidationLines` reads the levels' lane), its group named where `whose` gives one; measured from the price the levels' lane uses, else
+   * (no left levels held) Hyperliquid's as the set's own levels last saw it.
+   */
+  #laneLines(state: AppState, set: LiqSet, drawn: LaneRows, y: number, ph: number, touch: boolean, whose: string | null = null): InfoLine[] {
+    const levels = set.levels, v = this.view, slop = touch ? 6 : 2;
+    if (!levels || set.state !== 'ready') return [];
+    const shown = (r: LiqRow, side: 'long' | 'short'): boolean => r[`${side}Left`] > 0 && drawn.heat(r[`${side}Left`]) > 0;
+    let row: LiqRow | null = null, best = Infinity;
+    for (const r of drawn.rows) {
+      const top = v.yOf(r.p1, ph), bottom = v.yOf(r.p0, ph);
+      if (y < top - slop || y > bottom + slop || !(shown(r, 'long') || shown(r, 'short'))) continue;
+      const d = Math.abs(y - (top + bottom) / 2);
+      if (d < best) { best = d; row = r; }
+    }
+    if (!row) return [];
+    const found = row, at = this.#liqPrice(state);
+    return setBoxLines(found, set, at > 0 ? at : this.hub.liqLevels.lastPriceOf(levels), side => shown(found, side), whose);
   }
 
   #paintLayers(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
@@ -2333,7 +2416,7 @@ export class HeatPane {
    * the dashed line is that threshold, and a faint column behind an anomalous bar marks its time slot all the way up the chart.
    */
   #paintVolume(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, narrowing: number): void {
-    this.#strip = null;
+    this.#strip = null; this.#stripNames = [];
     if (!state.show.volume || !this.candlesDrawn(state).length) return;
     const chartTf = TIMEFRAMES[state.timeframe] ?? 3_600_000, v = this.view, p = this.#palette;
     // Zoomed out until the chart's bars would be narrower than STRIP_MIN_PX, the strip's are of a longer timeframe: what the venues traded
@@ -2395,8 +2478,10 @@ export class HeatPane {
     const hovered = hy >= top && hy <= ph ? bars.findIndex(b => Math.abs(hx - b.x) <= Math.max(b.w, slot) / 2) : -1;
     // The candles' part named ≈ while any of its bars is an estimate (its volume at its typical price), plainly where all are as reported.
     const estimated = bars.some(b => b.source === 'candle' && !b.exact);
-    paintVolumeStrip(ctx, bars, { pw, ph, height, palette: this.#tradedPalette(state), bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
-      recorded: `${t('Volume')} · ${tfName}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: tfName }) : t('{market} {tf} candles', { market, tf: tfName }), hovered });
+    this.#stripNames = paintVolumeStrip(ctx, bars, { pw, ph, height, palette: this.#tradedPalette(state), bars: state.traded.bars, emphasis: state.traded.emphasis, highlights,
+      recorded: `${t('Volume')} · ${tfName}`, candles: estimated ? t('≈ {market} {tf} candles', { market, tf: tfName }) : t('{market} {tf} candles', { market, tf: tfName }), hovered,
+      // The note under the legend, where a short map's one line reaches the names (`layNote`): a name under it is left out.
+      clear: state.liqLevels.on && this.#liqNoteBox ? { x0: this.#liqNoteBox.x0 - 4, x1: this.#liqNoteBox.x1 + 4, y0: this.#liqNoteBox.top, y1: this.#liqNoteBox.bottom } : null });
     this.#strip = { bars, rows, ids, tf, top, market, tfName, reports: binance, total };
   }
 
@@ -3989,19 +4074,28 @@ export class HeatPane {
   #placeLiqKind(x: number | null, W: number, state: AppState): void {
     const button = this.#liqKind;
     if (x === null) { if (!button.hidden) button.hidden = true; return; }
-    const s = state.liqLevels, view = liveView(s), held = heldBack(s, plusOn()), room = liqRoom(W), html = document.documentElement.dataset;
+    const s = state.liqLevels, view = liveView(s), held = heldBack(s, plusOn()), room = liqRoom(W), html = document.documentElement.dataset, pair = liveSplit(s);
     // Fitted again for another frame or material too: their fonts differ (the Bevel frame's is Tahoma at 11 px), and what fits with one may
     // not with another, so the group is always on the button or under it, never cut.
-    const fit = `${view.kind}|${view.group}|${view.takes}|${held}|${room}|${html.frame ?? ''}|${html.material ?? ''}`;
-    if (fit !== this.#liqKindFit) {
+    const fit = `${viewKey(view)}|${pairKey(pair)}|${held}|${room}|${html.frame ?? ''}|${html.material ?? ''}`;
+    if (fit !== this.#liqKindFit && pair) {
+      // A split: its name ("Liq | Stops", "Everyone | Profitable"); the tip says what each column holds and what they share.
+      this.#liqKindFit = fit;
+      button.classList.remove('locked');
+      button.style.maxWidth = `${room}px`;
+      const tip = `${pairDescription(pair)} ${t('Press to choose what the levels show.')}`;
+      button.dataset.tip = tip; button.setAttribute('aria-label', tip);
+      if (button.hidden) button.hidden = false;
+      button.textContent = splitName(pair.split);
+      this.#liqKindGroupOff = false;
+    } else if (fit !== this.#liqKindFit) {
       this.#liqKindFit = fit;
       button.classList.toggle('locked', held);
       button.style.maxWidth = `${room}px`;
-      const kind = kindName(view.kind), group = view.kind !== 'stops' && view.group !== 'all' ? groupName(view.group) : '';
-      const shown = held ? t('Shown: {what}. Your choice is part of Plus and comes back with it. Press to choose what the levels show.', { what: viewParts(view).join(' · ') })
-        : t('Shown: {what}. Press to choose what the levels show: liquidations, stops or both, take profits, and whose.', { what: viewParts(view).join(' · ') });
-      // With take profits on, what the curve leaves out, for a newcomer.
-      const tip = view.takes ? `${shown} ${curveSentence()}` : shown;
+      const kind = kindName(curveOf(view)), group = view.group !== 'all' ? groupName(view.group) : '';
+      // Everything drawn, for the tip and a screen reader: what the curve sums, the take-profit bars beside it, whose.
+      const tip = held ? t('Shown: {what}. Your choice is part of Plus and comes back with it. Press to choose what the levels show.', { what: viewParts(view).join(' · ') })
+        : `${levelsDescription(view)} ${t('Press to choose what the levels show.')}`;
       button.dataset.tip = tip; button.setAttribute('aria-label', tip);
       // The longest words that fit, measured once for these words and this width (a change of language rebuilds the page).
       if (button.hidden) button.hidden = false;
@@ -4025,9 +4119,15 @@ export class HeatPane {
    * it is empty.
    */
   #paintLiqColumn(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    this.#liqScale = null;
+    this.#liqScale = null; this.#liqSubs = null;
     const p = this.#palette, v = this.view, src = this.hub.liqLevels, x0 = pw, W = liqColumnW(state), strip = W < PROFILE_W;
-    const s = src.levels && src.state === 'ready' && !replaying() ? src.standing() : null;
+    // A split chosen and drawn: two sub-columns where there is room (`#paintLiqSplit`). Where there is none the column draws what the split
+    // falls back to (`narrowView`: liquidations and stops added up, or everyone's levels) and says so under its button (`narrowNote`).
+    const pair = liveSplit(state.liqLevels);
+    if (pair && !strip && W === SPLIT_COLUMN_W) { this.#paintLiqSplit(ctx, state, pw, ph, pair); return; }
+    const set: LiqSet = pair?.split === 'kinds' ? src.setOf(narrowView(pair)) : src;
+    this.#liqDrawnSet = set;
+    const s = set.levels && set.state === 'ready' && !replaying() ? set.standing() : null;
     // The heading's button whenever the wide column is drawn (what is shown can be chosen in a replay too: the Depth pane's history follows it);
     // the History link on the wide column while it has levels, unless the Depth pane already shows their history.
     this.#placeLiqKind(strip ? null : x0, W, state);
@@ -4038,14 +4138,15 @@ export class HeatPane {
     const wide = (words: string): number => ctx.measureText(words).width;
     // Under the button, which names what the curve adds up, as part of its caption: the group where the button had no room for it, then that
     // the take profits are not in the curve while they show; at most two lines each.
-    const notes = s && !strip ? columnNotes(liveView(state.liqLevels), !this.#liqKindGroupOff, takesShown) : [];
-    const left = notes.flatMap(note => wrapText(wide, note, liqRoom(W), 2));
+    const notes = s && !strip ? [...(pair ? [narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all'))] : []),
+      ...columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent())] : [];
+    const left = notes.flatMap(note => wrapText(wide, note, liqRoom(W), 3));
     const head = LIQ_HEAD_H + 12 * left.length;
     this.#placeLiqHistory(s && !strip && !(state.show.depth && state.depthSource === 'liq') ? x0 : null, head);
     // The strip has no room for words: until the levels are there it is empty (the Liq tab says why).
     if (!s && strip) { ctx.restore(); ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke(); return; }
     if (!s) {
-      const why = replaying() ? t('Liquidation levels show the live market only.') : liqWhy(src, src.asOfs().liq) || t('Liquidation levels are loading.');
+      const why = replaying() ? t('Liquidation levels show the live market only.') : liqWhy(set, set.asOfs().liq) || t('Liquidation levels are loading.');
       // The reason, word-wrapped to the column's width, under the heading's button.
       ctx.fillStyle = p.muted;
       let line = '', y = LIQ_KIND_TOP + LIQ_KIND_H + 4;
@@ -4066,8 +4167,10 @@ export class HeatPane {
     // The cumulative curves (the wide column only: the strip has no room for one), as CoinMarketCap's liquidation map draws them turned
     // upright: lightly filled behind the rows' bars, their edge drawn over them, so "this much goes if price gets here" reads at every price.
     const curves = strip ? null : liqCurves(prof, price), xOf = (q: CurvePoint): number => x0 + Math.min(1, q.usd / maxCum) * width;
-    const sides = curves ? ([[curves.long, p.candleDown], [curves.short, p.candleUp]] as const).filter(([pts]) => pts.length > 1) : [];
-    for (const [pts, color] of sides) {
+    // Take profits on alone are the curve: dashed, never filled, the buys below the price in the rising colour and the sells above in the falling one.
+    const alone = set.levels?.kind === 'takes', below = alone ? p.candleUp : p.candleDown, above = alone ? p.candleDown : p.candleUp;
+    const sides = curves ? ([[curves.long, below], [curves.short, above]] as const).filter(([pts]) => pts.length > 1) : [];
+    for (const [pts, color] of alone ? [] : sides) {
       ctx.beginPath(); ctx.moveTo(x0, v.yOf(pts[0]!.p, ph));
       for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
       ctx.lineTo(x0, v.yOf(pts[pts.length - 1]!.p, ph)); ctx.closePath();
@@ -4082,11 +4185,20 @@ export class HeatPane {
         // shorts above, in the candles' colours as in the column. By the logarithm, not the book's square root: the levels are a few spikes
         // (one of 24M made a 100K row 19 % strong, too faint to see), and this gives that row about 40 %.
         const level = Math.max(long, short);
-        if (level > 0) { ctx.globalAlpha = 0.22 + 0.78 * Math.log1p(level / (maxLevel / 1000)) / Math.log1p(1000); ctx.fillStyle = long >= short ? p.candleDown : p.candleUp; ctx.fillRect(x0 + 1, y0, W - 1, hgt); }
+        if (level > 0) { ctx.globalAlpha = 0.22 + 0.78 * Math.log1p(level / (maxLevel / 1000)) / Math.log1p(1000); ctx.fillStyle = long >= short ? below : above; ctx.fillRect(x0 + 1, y0, W - 1, hgt); }
         continue;
       }
-      if (long > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleDown; ctx.fillRect(x0, y0, Math.max(1, long / maxLevel * width), hgt); }
-      if (short > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleUp; ctx.fillRect(x0, y0, Math.max(1, short / maxLevel * width), hgt); }
+      if (alone) {
+        // Their bars dashed as beside the others, but from the left edge, where the levels' bars stand.
+        for (const [value, color] of [[long, below], [short, above]] as const) {
+          if (!(value > 0)) continue;
+          ctx.globalAlpha = 0.95; ctx.strokeStyle = color; ctx.lineWidth = hgt; ctx.setLineDash(TAKE_DASH as number[]); ctx.lineDashOffset = 0;
+          ctx.beginPath(); ctx.moveTo(x0, y0 + hgt / 2); ctx.lineTo(x0 + Math.max(3, value / maxLevel * width), y0 + hgt / 2); ctx.stroke(); ctx.setLineDash([]);
+        }
+      } else {
+        if (long > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleDown; ctx.fillRect(x0, y0, Math.max(1, long / maxLevel * width), hgt); }
+        if (short > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleUp; ctx.fillRect(x0, y0, Math.max(1, short / maxLevel * width), hgt); }
+      }
       if (tprof && r < tprof.long.length) {
         // From the right edge, dashed, the dashes on one pattern from that edge: the take profits of shorts are buys (the rising colour),
         // those of longs sells.
@@ -4099,12 +4211,13 @@ export class HeatPane {
       }
     }
     ctx.globalAlpha = 0.95; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    if (alone) ctx.setLineDash(TAKE_DASH as number[]);
     for (const [pts, color] of sides) {
       ctx.beginPath(); ctx.moveTo(xOf(pts[0]!), v.yOf(pts[0]!.p, ph));
       for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
       ctx.strokeStyle = color; ctx.stroke();
     }
-    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.lineJoin = 'miter';
+    ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.lineJoin = 'miter';
     // The pointer's layer reads the curve where the pointer is (`#paintLiqReadout`), on this scale.
     this.#liqScale = curves ? { x0, width, maxCum, W } : null;
     if (!strip) {
@@ -4117,15 +4230,141 @@ export class HeatPane {
       ctx.fillText(fitText(wide, t('LEVEL MAX {value}', { value: usd(maxLevel) }), liqRoom(W)), x0 + LIQ_PAD, y); ctx.fillText(fitText(wide, t('CUM MAX {value}', { value: usd(maxCum) }), liqRoom(W)), x0 + LIQ_PAD, y + 12);
     }
     this.#profileBox = null;
-    this.#paintLiqColumnMirror(ctx, state, s, price, x0, ph, W);
+    this.#paintLiqColumnMirror(ctx, state, s, price, x0, ph, W, set);
     ctx.restore(); ctx.textBaseline = 'middle';
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
-      paintMirrorBox(ctx, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, c => c === 'above' ? p.candleUp : c === 'below' ? p.candleDown : c === 'muted' ? p.muted : p.text, box.placement);
+      paintMirrorBox(ctx, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, c => c === 'above' ? (alone ? p.candleDown : p.candleUp) : c === 'below' ? (alone ? p.candleUp : p.candleDown) : c === 'muted' ? p.muted : p.text, box.placement);
       ctx.textBaseline = 'middle';
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
+  }
+
+  /**
+   * The liquidation column split in two (Plus, 2026-11-19; `liqSplitDrawn`): liquidations beside stops of the chosen traders, on one dollar
+   * scale (a bar compares across the divider), or everyone's levels beside the profitable traders', each on its own (everyone's are many times
+   * larger). Each sub-column draws as the column does (`#paintLiqSub`): what still stands of each row and the curve from the price out, under
+   * its caption and, on scales of their own, its LEVEL MAX and CUM MAX (`splitHeads`); on one shared scale the two maxima are said once,
+   * across. The take profits go with the left column, dashed bars from its right edge, as they go with the left set everywhere. A sub-column
+   * with nothing to draw says why under the heading. The button names the split; the lines under it say whose levels both columns are, or
+   * what both add up, and what the curves leave out.
+   */
+  #paintLiqSplit(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number, pair: LiqPair): void {
+    const p = this.#palette, v = this.view, src = this.hub.liqLevels, x0 = pw, W = SPLIT_COLUMN_W, live = !replaying();
+    this.#placeLiqKind(x0, W, state);
+    this.#liqDrawnSet = null;
+    const sets: [LiqSet, LiqSet | null] = [src, src.right];
+    const standingOf = (set: LiqSet | null): LiqStanding | null => set && set.levels && set.state === 'ready' && live ? set.standing() : null;
+    const stands: [LiqStanding | null, LiqStanding | null] = [standingOf(sets[0]), standingOf(sets[1])];
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
+    ctx.fillStyle = p.panel; ctx.fillRect(x0, 0, W, ph);
+    const size = pw < NARROW_PLOT ? 9.5 : 10, takesShown = !!stands[0] && src.takesState === 'ready' && !!src.takesStanding();
+    ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    const wide = (words: string): number => ctx.measureText(words).width;
+    const subs = subColumns(x0, W), subRoom = (sub: Sub): number => sub.w - LIQ_PAD - 4;
+    // Under the button: whose levels both columns are (liquidations beside stops of the profitable traders) or what both add up (everyone
+    // beside the profitable traders), that the take profits are not in the curve, and that the profitable traders' orders are not on the server.
+    const absent = sets.some(set => !!set && set.ordersAbsent());
+    const notes = [...(pair.split === 'kinds' && pair.left.group !== 'all' ? [groupTitle(pair.left.group)] : []), ...(pair.split === 'groups' ? [kindTitle(curveOf(pair.left))] : []),
+      ...(takesShown ? [takesLeftOut()] : []), ...(absent ? [ordersAbsent()] : [])].flatMap(note => wrapText(wide, note, liqRoom(W), 3));
+    // The profiles, and the scales they are drawn on: one shared (liquidations beside stops), or one each.
+    const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);
+    const profs = [stands[0] ? liqProfile(stands[0], step, v.p0, v.p1, price) : null, stands[1] ? liqProfile(stands[1], step, v.p0, v.p1, price) : null] as const;
+    const ts = takesShown ? src.takesStanding() : null, tprof = ts ? liqProfile(ts, step, v.p0, v.p1, price) : null;
+    const scales = splitScales({ maxLevel: Math.max(profs[0]?.maxLevel ?? 0, tprof?.maxLevel ?? 0), maxCum: profs[0]?.maxCum ?? 0 },
+      { maxLevel: profs[1]?.maxLevel ?? 0, maxCum: profs[1]?.maxCum ?? 0 }, pair.split === 'kinds');
+    const maxima = (sc: SubScale): [string, string] => [t('LEVEL MAX {value}', { value: usd(sc.maxLevel) }), t('CUM MAX {value}', { value: usd(sc.maxCum) })];
+    const heads = splitHeads(wide, { captions: subNames(pair), shared: pair.split === 'kinds', subRoom: subRoom(subs[0]), wholeRoom: liqRoom(W),
+      maxima: pair.split === 'kinds' ? maxima(scales[0]) : [maxima(scales[0]), maxima(scales[1])] });
+    const head = LIQ_KIND_TOP + LIQ_KIND_H + 3 + 12 * (notes.length + heads.rows) + 2;
+    this.#placeLiqHistory(stands[0] && !(state.show.depth && state.depthSource === 'liq') ? x0 : null, head);
+    // Each sub-column's bars and curve, or why it has none.
+    const drawn: { x0: number; W: number; width: number; maxCum: number; set: LiqSet }[] = [];
+    subs.forEach((sub, i) => {
+      const prof = profs[i as 0 | 1], set = sets[i as 0 | 1], scale = scales[i as 0 | 1];
+      if (prof && set) { this.#paintLiqSub(ctx, prof, i === 0 ? tprof : null, sub, scale, step, price, ph); drawn.push({ x0: sub.x0, W: sub.w, width: sub.w - 6, maxCum: scale.maxCum, set }); return; }
+      const why = !live ? t('Liquidation levels show the live market only.') : (set ? liqWhy(set, set.asOfs().liq) : '') || t('Liquidation levels are loading.');
+      ctx.globalAlpha = 1; ctx.fillStyle = p.muted;
+      wrapText(wide, why, subRoom(sub), 8).forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, head + 4 + 12 * n));
+    });
+    this.#liqSubs = drawn;
+    // The divider, then the heading band over the rows: the button (a page element), the notes, each column's caption and its scale (or the
+    // one scale both share, across).
+    ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(subs[1].x0 + 0.5, 0); ctx.lineTo(subs[1].x0 + 0.5, ph); ctx.stroke();
+    ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, this.#liqHeadH); ctx.globalAlpha = 1;
+    let y = LIQ_KIND_TOP + LIQ_KIND_H + 3;
+    ctx.fillStyle = p.text;
+    for (const line of notes) { ctx.fillText(line, x0 + LIQ_PAD, y); y += 12; }
+    const top = y;
+    subs.forEach((sub, i) => {
+      const h = heads.subs[i as 0 | 1];
+      ctx.font = `600 ${size}px ui-sans-serif, system-ui, sans-serif`; ctx.fillStyle = p.text;
+      h.caption.forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, top + 12 * n));
+      ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.fillStyle = p.muted;
+      h.scale.forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, top + 12 * (h.caption.length + n)));
+    });
+    const below = top + 12 * (heads.rows - heads.across.length);
+    ctx.fillStyle = p.muted;
+    heads.across.forEach((line, n) => ctx.fillText(line, x0 + LIQ_PAD, below + 12 * n));
+    // Mirror on the sub-column under the pointer, its band and box on that column's set.
+    this.#profileBox = null;
+    const hv = this.#profileHover, at: 0 | 1 = hv?.x !== undefined ? subAt(hv.x, x0, W) : 0, ms = stands[at], mset = sets[at];
+    if (ms && mset) this.#paintLiqColumnMirror(ctx, state, ms, price, subs[at].x0, ph, subs[at].w, mset);
+    ctx.restore(); ctx.textBaseline = 'middle';
+    const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
+    if (box) {
+      this.#profileBox = null;
+      paintMirrorBox(ctx, box.lines, subs[at].x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, c => c === 'above' ? p.candleUp : c === 'below' ? p.candleDown : c === 'muted' ? p.muted : p.text, box.placement);
+      ctx.textBaseline = 'middle';
+    }
+    ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
+  }
+
+  /**
+   * One sub-column of a split (`sub`), as the column draws its rows (`#paintLiqColumn`): the curves of what goes from the price out, lightly
+   * filled behind the bars and edged over them; the bars of what still stands, longs in the falling colour and shorts in the rising one; and
+   * the take profits (`tprof`, the left column only), dashed bars from its right edge, never in the curve. Never take profits on alone: a split
+   * always has liquidations or stops to draw.
+   */
+  #paintLiqSub(ctx: CanvasRenderingContext2D, prof: ReturnType<typeof liqProfile>, tprof: ReturnType<typeof liqProfile> | null, sub: Sub, scale: SubScale, step: number, price: number, ph: number): void {
+    const p = this.#palette, v = this.view, x0 = sub.x0, width = sub.w - 6, maxLevel = scale.maxLevel, maxCum = scale.maxCum;
+    const curves = liqCurves(prof, price), xOf = (q: CurvePoint): number => x0 + Math.min(1, q.usd / maxCum) * width;
+    const sides = ([[curves.long, p.candleDown], [curves.short, p.candleUp]] as const).filter(([pts]) => pts.length > 1);
+    for (const [pts, color] of sides) {
+      ctx.beginPath(); ctx.moveTo(x0, v.yOf(pts[0]!.p, ph));
+      for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
+      ctx.lineTo(x0, v.yOf(pts[pts.length - 1]!.p, ph)); ctx.closePath();
+      ctx.globalAlpha = 0.16; ctx.fillStyle = color; ctx.fill();
+    }
+    for (let r = 0; r < prof.long.length; r++) {
+      const lo = (prof.row0 + r) * step, y1 = v.yOf(lo, ph), y0 = v.yOf(lo + step, ph);
+      if (y1 < 0 || y0 > ph) continue;
+      const hgt = Math.max(1, y1 - y0 - 0.5), long = prof.long[r]!, short = prof.short[r]!;
+      if (long > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleDown; ctx.fillRect(x0, y0, Math.max(1, long / maxLevel * width), hgt); }
+      if (short > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.candleUp; ctx.fillRect(x0, y0, Math.max(1, short / maxLevel * width), hgt); }
+    }
+    if (tprof) {
+      // From the sub-column's right edge, dashed: the take profits of shorts are buys (the rising colour), those of longs sells.
+      for (let r = 0; r < tprof.long.length; r++) {
+        const lo = (tprof.row0 + r) * step, y1 = v.yOf(lo, ph), y0 = v.yOf(lo + step, ph);
+        if (y1 < 0 || y0 > ph) continue;
+        const hgt = Math.max(1, y1 - y0 - 0.5);
+        for (const [value, color] of [[tprof.long[r]!, p.candleUp], [tprof.short[r]!, p.candleDown]] as const) {
+          if (!(value > 0)) continue;
+          const len = Math.max(3, value / maxLevel * width), right = x0 + sub.w;
+          ctx.globalAlpha = 0.95; ctx.strokeStyle = color; ctx.lineWidth = hgt; ctx.setLineDash(TAKE_DASH as number[]); ctx.lineDashOffset = 0;
+          ctx.beginPath(); ctx.moveTo(right, y0 + hgt / 2); ctx.lineTo(right - len, y0 + hgt / 2); ctx.stroke(); ctx.setLineDash([]);
+        }
+      }
+    }
+    ctx.globalAlpha = 0.95; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    for (const [pts, color] of sides) {
+      ctx.beginPath(); ctx.moveTo(xOf(pts[0]!), v.yOf(pts[0]!.p, ph));
+      for (const q of pts) ctx.lineTo(xOf(q), v.yOf(q.p, ph));
+      ctx.strokeStyle = color; ctx.stroke();
+    }
+    ctx.globalAlpha = 1; ctx.lineWidth = 1; ctx.lineJoin = 'miter';
   }
 
   /**
@@ -4134,11 +4373,13 @@ export class HeatPane {
    * would be liquidated (the bids against the longs below, the asks against the shorts above), in the band and over the columns on screen;
    * the rank correlation of level size with book size over the rows that hold liquidations; and at the largest levels, whether the book
    * stands as a wall or thins to a void. The liquidations are Hyperliquid's alone and some 40 minutes old; the book is every enabled
-   * venue's, now: the box says so.
+   * venue's, now: the box says so. It weighs what the column beside it draws (`#liqDrawnSet`: under a split too narrow to draw, liquidations
+   * and stops added up); beside a drawn split, the left set, as the Depth pane does (2026-11-19).
    */
   #paintSeam(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    const hv = this.#profileHover, src = this.hub.liqLevels, frame = state.levels, s = src.levels && src.state === 'ready' ? src.standing() : null;
-    if (!hv || hv.column !== 'seam' || !frame || !s || !liqColumnShown(state) || !state.show.profile) return;
+    const hv = this.#profileHover, src: LiqSet = this.#liqDrawnSet ?? this.hub.liqLevels, frame = state.levels, s = src.levels && src.state === 'ready' ? src.standing() : null;
+    // The seam weighs the book against what would be forced out; take profits alone are resting orders like the book's own, so there is none.
+    if (!hv || hv.column !== 'seam' || !frame || !s || !liqColumnShown(state) || !state.show.profile || src.levels?.kind === 'takes') return;
     const p = this.#palette, v = this.view, step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);
     if (!(price > 0)) return;
     const g = groupLevels(this.kernels, frame, this.#enabledIds(), step, v.p0, v.p1), prof = liqProfile(s, step, v.p0, v.p1, price);
@@ -4191,7 +4432,7 @@ export class HeatPane {
   }
 
   /** Mirror hover on the liquidation column: the longs that go if price falls to the pointer against the shorts that go if it rises as far. */
-  #paintLiqColumnMirror(ctx: CanvasRenderingContext2D, state: AppState, s: LiqStanding, price: number, x0: number, ph: number, W: number): void {
+  #paintLiqColumnMirror(ctx: CanvasRenderingContext2D, state: AppState, s: LiqStanding, price: number, x0: number, ph: number, W: number, set: LiqSet = this.hub.liqLevels): void {
     const hv = this.#profileHover, p = this.#palette, v = this.view;
     if (!hv || hv.column !== 'liq' || !state.show.mirror || !(price > 0)) return;
     const at = v.pOf(hv.y, ph), d = Math.abs(at - price);
@@ -4204,7 +4445,7 @@ export class HeatPane {
     const wide = W >= PROFILE_W;
     dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.6);
     paintBand(ctx, p, x0, W, { y: top, color: p.candleUp, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: p.candleDown, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
-    const src = this.hub.liqLevels, kind = src.levels?.kind ?? 'liq', parts = kind === 'both' ? src.partStandings() : null;
+    const kind = set.levels?.kind ?? 'liq', parts = kind === 'both' ? set.partStandings() : null;
     const empty = kind === 'liq' ? { none: t('No liquidation levels in this range'), onlyThis: t('Only this side has liquidation levels'), onlyOpposite: t('Only the opposite side has liquidation levels') }
       : { none: t('No levels in this range'), onlyThis: t('Only this side has levels'), onlyOpposite: t('Only the opposite side has levels') };
     const lines = mirrorLines(stats, { above: sideTitle(kind, 'short'), below: sideTitle(kind, 'long') }, undefined, empty);
@@ -4737,7 +4978,7 @@ export class HeatPane {
       this.#profileHover = null;
       this.store.set({ hover: { t: v.tOf(p.x, pw), price: v.pOf(p.y, ph), y: p.y, source: 'heat', touch: true } });
     } else if (this.#besideAt(p.x) && p.y >= 0 && p.y <= ph) {
-      this.#profileHover = { y: p.y, column: this.#besideAt(p.x)! }; this.store.set({ hover: null });
+      this.#profileHover = { y: p.y, x: p.x, column: this.#besideAt(p.x)! }; this.store.set({ hover: null });
     } else if (column && p.y >= 0 && p.y <= ph) {
       this.#profileHover = null; this.#tradedHover = { y: p.y, side: column.side, i: column.i }; this.store.set({ hover: null });
     } else { this.#pin = null; this.#profileHover = null; this.store.set({ hover: null }); }
@@ -4921,7 +5162,7 @@ export class HeatPane {
       if (x >= 0 && x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
       else this.store.set({ hover: null });
       const beside = this.#besideAt(x), column = this.#columnAt(x);
-      this.#profileHover = !this.#drag && beside && y >= 0 && y <= this.plotH ? { y, column: beside } : null;
+      this.#profileHover = !this.#drag && beside && y >= 0 && y <= this.plotH ? { y, x, column: beside } : null;
       this.#tradedHover = !this.#drag && column && y >= 0 && y <= this.plotH ? { y, side: column.side, i: column.i } : null;
       this.invalidateHover();
     });

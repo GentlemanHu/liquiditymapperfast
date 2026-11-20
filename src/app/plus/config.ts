@@ -1,7 +1,8 @@
 /**
  * Plus, the paid tier (2026-11): what the page has to know about it. The page stays free and open source; Plus pays for the servers behind
- * it and opens what they store. What is free and what is Plus is decided by the server (a Worker in front of the levels service, the
- * `HyperLiquidMap_Plus` project): the page only knows the rule so that it can say it, and never asks for what it would be refused.
+ * it and opens what they store. What is free and what is Plus is decided by the server (the levels service, which checks each pass itself;
+ * the `HyperLiquidMap_Plus` Worker only signs the passes): the page only knows the rule so that it can say it, and never asks for what it
+ * would be refused.
  */
 
 export const DAY_MS = 86_400_000;
@@ -16,12 +17,13 @@ export const PLUS_API = 'https://plus.hiverust.dev/v1';
 /**
  * Paddle's side of the checkout (Paddle is the seller of record): the client-side token and the price ids are public by design. While the
  * token or the monthly price is empty Plus is not on sale, and the pages say so instead of offering a checkout. `usd` is each price before
- * tax, written on the Plus page (the checkout shows the buyer's own currency and tax); `portal` is Paddle's page where a subscriber ends
- * the subscription or changes the card.
+ * tax, written on the Plus page (the checkout shows the buyer's own currency and tax); the monthly one is written there before the sale
+ * opens too, so the page says what Plus will cost (Karl, 2026-11-20: $10 a month; the yearly price is still open); `portal` is Paddle's
+ * page where a subscriber ends the subscription or changes the card.
  */
 export interface PlusPrice { readonly id: string; readonly usd: number }
 export const PADDLE: { readonly environment: 'sandbox' | 'production'; readonly token: string; readonly portal: string; readonly monthly: PlusPrice; readonly yearly: PlusPrice } = {
-  environment: 'sandbox', token: '', portal: '', monthly: { id: '', usd: 0 }, yearly: { id: '', usd: 0 },
+  environment: 'sandbox', token: '', portal: '', monthly: { id: '', usd: 10 }, yearly: { id: '', usd: 0 },
 };
 export const plusOnSale = (): boolean => PADDLE.token !== '' && PADDLE.monthly.id !== '';
 /** How many keys a subscription holds at most (the server's limit): a newer one replaces the oldest, and no more are given within a day. */

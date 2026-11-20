@@ -24,7 +24,10 @@ import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, liqCardLines, ltCardLines, oiCardLines, oiTail, readAt, slotAt } from './pane-cards.ts';
 import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
 import { TAKE_DASH } from '../liq-levels.ts';
-import { groupApplies, groupTitle, liveView, viewKey, type LiqView } from '../liq-view.ts';
+import { curveOf, groupTitle, kindName, levelsDescription, liveDepthView, liveSplit, viewKey, type LiqView } from '../liq-view.ts';
+import { toggleLevels } from '../levels-control.ts';
+import { ordersAbsent, readFailed } from '../liq-words.ts';
+import { wrapText } from '../text-fit.ts';
 import { FREE_DAYS, freeFrom, plusOnSale } from '../plus/config.ts';
 import { plus } from '../plus/pass.ts';
 import { togglePlus } from '../plus/panel.ts';
@@ -380,6 +383,8 @@ type LiqSeries = {
   closed: { from: number; to: number } | null;
   /** What it shows (`liq-view.ts`), how long a row stands without a later one (90 minutes; a rollup's four hours and that), whether it is the rollups. */
   view: LiqView; holdMs: number; wide: boolean;
+  /** The profitable traders' orders the view shows are not on the server for some of this stretch (`LiqHistory.ordersAbsent`): said, never borrowed. */
+  absent: boolean;
   /** The take profits, a layer of their own (a dashed line), in the same shape: per column and band, below the price (`bid`) and above. */
   takes: { bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; rowAt: Int32Array } | null;
 };
@@ -419,7 +424,7 @@ export class DepthPane extends TimePane {
     if (state.depthSource !== 'liq') return depthHeldKey('book', bookIds(state), bandsOf(state.depthBands));
     // Liquidation levels: what they show, and the bands the pane draws: those within the history's reach once it is known, or as last drawn
     // for this view and these bands (the rollups have bands of their own: `#liqSeries`).
-    const reach = this.#liqReach, bands = bandsOf(state.liqBands), view = viewKey(liveView(state.liqLevels)), drawn = this.#liqDrawn;
+    const reach = this.#liqReach, bands = bandsOf(state.liqBands), view = viewKey(liveDepthView(state.liqLevels)), drawn = this.#liqDrawn;
     const radii = drawn?.key === `${view}|${bands.join(',')}` ? drawn.radii : reach === null ? bands : bands.filter(r => r <= reach * (1 + 1e-9));
     return depthHeldKey('liq', [], radii, view);
   }
@@ -453,6 +458,8 @@ export class DepthPane extends TimePane {
   readonly #units = document.createElement('select');
   readonly #tableBox = document.createElement('input');
   readonly #source = document.createElement('select');
+  /** With the levels as the source, what they show, named as the curve is, and pressed to choose it (the levels control). */
+  readonly #levelsButton = el('button', { type: 'button', class: 'levels-btn', hidden: true });
   #bellLabel: HTMLElement | null = null;
   /** Whose books the bands add up (book-markets.ts), one choice with the Liquidity Tracker's. */
   readonly #venues: BookVenues;
@@ -476,9 +483,11 @@ export class DepthPane extends TimePane {
     this.head.querySelector('strong')!.after(helpButton('depthPane'));
     // What the bands add up: the order book's resting orders, or the liquidation levels of Hyperliquid's BTC positions.
     const source = el('label', { class: 'ctl', tip: t('What the bands add up: the order book\'s resting bids and asks, or the liquidation levels of Hyperliquid\'s BTC positions (longs below the price, shorts above), from HyperTracker about every 30 minutes.') }, t('Source'));
-    this.#source.append(new Option(t('Order book'), 'book'), new Option(t('Liquidation levels'), 'liq'));
+    this.#source.append(new Option(t('Order book'), 'book'), new Option(t('Levels'), 'liq'));
     this.#source.onchange = () => this.store.set({ depthSource: this.#source.value === 'liq' ? 'liq' : 'book' });
     source.append(this.#source);
+    this.#levelsButton.setAttribute('aria-haspopup', 'dialog'); this.#levelsButton.setAttribute('aria-expanded', 'false');
+    this.#levelsButton.onclick = () => { toggleLevels(this.#levelsButton, this.store); };
     // Whose books: the venues switched on, the chart market's, or the markets chosen (shared with the Liquidity Tracker).
     this.#venues = new BookVenues(store);
     // The bands: a preset, or the person's own (Edit… opens them in a panel).
@@ -511,7 +520,7 @@ export class DepthPane extends TimePane {
     bell.append(this.#bell, t('Sound')); setTip(bell, panelSwitchTip('depthPane'));
     this.#bellLabel = bell;
     // The switches last, the table's at the right end (as on every pane).
-    this.head.append(source, this.#venues.root, group, scale, units, bell, table);
+    this.head.append(source, this.#levelsButton, this.#venues.root, group, scale, units, bell, table);
     this.syncSound(); this.#sync();
     // On a phone the source stays in the row and the rest waits behind the key (pane-tune.ts); on a desktop the venues fold last.
     addTune(this.head, [this.#venues.root, group, scale, units, bell, table], t('Depth'), { fold: true });
@@ -546,9 +555,15 @@ export class DepthPane extends TimePane {
   #sync(): void {
     const liq = this.store.state.depthSource === 'liq', s = this.#settings();
     this.#source.value = liq ? 'liq' : 'book';
-    // The second source is what the levels show, as the page's one choice says (`liq-view.ts`): its name follows it.
-    const kind = liveView(this.store.state.liqLevels).kind, option = this.#source.options[1], name = kind === 'stops' ? t('Stop levels') : kind === 'both' ? t('Liquidation and stop levels') : t('Liquidation levels');
-    if (option && option.text !== name) option.text = name;
+    // The levels show what the page's one choice says (`liq-view.ts`) as with no split (`depthView`): the button beside the Source names the
+    // curve and opens the choice.
+    const view = liveDepthView(this.store.state.liqLevels), caption = kindName(curveOf(view));
+    this.#levelsButton.hidden = !liq;
+    if (this.#levelsButton.textContent !== caption) this.#levelsButton.textContent = caption;
+    // Split is the column's and the stripe's (owner's rule, 2026-11-20): Liquidations | Stops draws here as Liq + stops, and Everyone |
+    // Profitable as everyone's levels, which the tip says.
+    const split = liveSplit(this.store.state.liqLevels)?.split === 'groups' ? `${t("Under Everyone | Profitable the Depth pane draws everyone's levels.")} ` : '';
+    setTip(this.#levelsButton, `${split}${levelsDescription(view)} ${t('Press to choose what the levels show.')}`);
     // The depth sound and the venues are the order book's: they have nothing to say about liquidation levels.
     if (this.#bellLabel) this.#bellLabel.hidden = liq;
     this.#venues.root.hidden = liq; this.#venues.sync();
@@ -607,7 +622,7 @@ export class DepthPane extends TimePane {
    */
   #liqSeries(pw: number, asked: readonly number[]): string | LiqSeries {
     let radii = asked;
-    const v = this.view, now = Date.now(), view = liveView(this.store.state.liqLevels), vk = viewKey(view);
+    const v = this.view, now = Date.now(), view = liveDepthView(this.store.state.liqLevels), vk = viewKey(view);
     this.#history.ensure(v.t0, v.t1, now, () => this.invalidate(), view);
     const index = this.#history.index, shape = this.#history.shape(view);
     if (!shape.wide) {
@@ -615,7 +630,9 @@ export class DepthPane extends TimePane {
       if (index.first === null) return t('No liquidation levels recorded yet.');
     }
     const edges = shape.edges;
-    if (!edges) return t('The liquidation levels\' history is loading…');
+    // A wide view with no buckets to read: a rollup it needs that could not be read is said so (round 3), their orders alone not on the server
+    // too (round 2); only a read still to come is loading (Sol, review 2026-11-19).
+    if (!edges) return shape.failed ? readFailed(shape.failed, view) : this.#history.ordersAbsent(view, v.t0, v.t1) ? ordersAbsent() : t('The liquidation levels\' history is loading…');
     // The history's buckets end at its last edge (±25 %): a wider band would leave out what lies past it, so it is not drawn. The rollups'
     // thirteen buckets end on the presets' bands: a band between two of their edges would read a narrower one, so it is not drawn either.
     const reach = edges[edges.length - 1]! / 100, bucket = (r: number): number => shape.wide ? bandOnEdge(edges, r) : bandIndex(edges, r);
@@ -653,7 +670,7 @@ export class DepthPane extends TimePane {
     };
     const main = build(s.rows);
     this.#liq = { key, series: { t0, t1, w, radii, answer: { k, bid: main.bid, ask: main.ask, bidCoin: main.bidCoin, askCoin: main.askCoin } }, rowAt: main.rowAt, rows: s.rows, idx, omitted, closed,
-      view, holdMs: s.holdMs, wide: s.wide, takes: s.takes ? build(s.takes) : null };
+      view, holdMs: s.holdMs, wide: s.wide, absent: s.ordersAbsent, takes: s.takes ? build(s.takes) : null };
     return this.#liq;
   }
 
@@ -706,14 +723,14 @@ export class DepthPane extends TimePane {
       // of its span change.
       const sameLiq = (): boolean => !!was && !!rows && !!was.rows && was.source === 'liq' && was.key === depthHeldKey('liq', [], s.radii, liqHeld ? viewKey(liqHeld.view) : '') && was.rows.length === rows.length && rows.every((r, i) => r === was.rows![i])
         && was.radii.join(',') === s.radii.join(',') && Math.floor(was.t0 / MINUTE) === Math.floor(s.t0 / MINUTE) && Math.floor(was.t1 / MINUTE) === Math.floor(s.t1 / MINUTE)
-        && was.t1 >= pageNow();
+        && was.t1 >= pageNow() && (was.ordersAbsent ?? false) === (liqHeld?.absent ?? false);
       if (!was || (was.bid !== s.answer.bid && !sameLiq()) || was.coins !== coins || was.focus !== top || was.coin !== coin) {
         const ids = liqHeld ? [] : (this.#series?.ids ?? []);
         this.#publish({ key: depthHeldKey(liqHeld ? 'liq' : 'book', ids, s.radii, liqHeld ? viewKey(liqHeld.view) : ''), source: liqHeld ? 'liq' : 'book', ids, t0: s.t0, t1: s.t1, w: s.w, radii: s.radii,
           bid: s.answer.bid, ask: s.answer.ask, bidCoin: s.answer.bidCoin, askCoin: s.answer.askCoin, present: liqHeld ? null : s.answer.present ?? null,
           centred: liqHeld ? null : s.answer.centred ?? null, stepMs: liqHeld ? 0 : s.answer.stepMs ?? MINUTE, answeredAt: liqHeld ? Infinity : this.#series?.answeredAt ?? 0,
           rows, buckets: liqHeld ? liqHeld.idx : null, omitted: liqHeld ? liqHeld.omitted : [], coins, coin, focus: top, ...(liqHeld?.closed ? { closedFrom: liqHeld.closed.from, closedTo: liqHeld.closed.to } : {}),
-          ...(liqHeld ? { view: liqHeld.view, holdMs: liqHeld.holdMs, wide: liqHeld.wide } : {}) });
+          ...(liqHeld ? { view: liqHeld.view, holdMs: liqHeld.holdMs, wide: liqHeld.wide, ordersAbsent: liqHeld.absent } : {}) });
       }
     }
     // A column holds something where the book had depth, or (liquidation levels) where a snapshot is in force, money in its bands or not.
@@ -732,8 +749,10 @@ export class DepthPane extends TimePane {
     const closed = liqHeld?.closed ?? null, closedX = closed ? Math.min(pw, v.xOf(closed.to, pw)) : 0;
     if (liq && lastX < 0) {
       if (closed) { say(t('This stretch of the liquidation levels\' history is part of Plus.')); this.#lockAt = closedX; return; }
-      const kind = liqHeld?.view.kind;
-      say(kind === 'stops' ? t('No stop levels recorded for this stretch of time.') : kind === 'both' ? t('No snapshot with both liquidations and stops in this stretch of time.')
+      const kind = liqHeld ? curveOf(liqHeld.view) : 'liq';
+      // The profitable traders' orders the server does not have yet: said so, never everyone's drawn under their name.
+      if (liqHeld?.absent) { say(ordersAbsent()); return; }
+      say(kind === 'takes' ? t('No take-profit levels recorded for this stretch of time.') : kind === 'stops' ? t('No stop levels recorded for this stretch of time.') : kind === 'both' ? t('No snapshot with both liquidations and stops in this stretch of time.')
         : t('No liquidation levels recorded for this stretch of time.'));
       return;
     }
@@ -741,8 +760,10 @@ export class DepthPane extends TimePane {
     if (liq) {
       const b = bid[at(lastX, top)]!, a = ask[at(lastX, top)]!, row = rowOf(lastX), view = liqHeld!.view, r = sideRatio(b, a);
       // Whose levels (the Source names which), and the take profits beside them: the sells that close longs above, the buys that close shorts below.
-      const whose = groupApplies(view.kind) && view.group !== 'all' ? `${groupTitle(view.group)} · ` : '';
-      const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('longs') : t('shorts')} ${ratioFigure(r.ratio)}</b>` : '';
+      const whose = view.group !== 'all' ? `${groupTitle(view.group)} · ` : '';
+      // Take profits on alone are resting orders: the buys below the price are bids, the sells above asks.
+      const alone = curveOf(view) === 'takes', names = alone ? [t('bids'), t('asks')] : [t('longs'), t('shorts')];
+      const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? names[0] : names[1]} ${ratioFigure(r.ratio)}</b>` : '';
       const tp = takeBid && takeAsk && takes!.rowAt[lastX]! >= 0 ? ` · ${t('take profits')} <b class="ask">▲${amountText(takeAsk[at(lastX, top)]!, coins)}</b> <b class="bid">▼${amountText(takeBid[at(lastX, top)]!, coins)}</b>` : '';
       setHtml(readout, `${whose}±${bandText(s.radii[top]!)}% L <b class="bid">${amountText(b, coins)}</b> S <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${larger}${tp}${row ? ` · ${t('positions as of {time}', { time: clock(row.asOf) })}` : ''}`);
     } else if (lastX >= 0) {
@@ -839,6 +860,15 @@ export class DepthPane extends TimePane {
     ctx.fillText(amountText(max, coins), axisX, mid - half); ctx.fillText(amountText(max, coins), axisX, mid + half);
     if (half > 40) { ctx.fillText(amountText(halfValue, coins), axisX, mid - half / 2); ctx.fillText(amountText(halfValue, coins), axisX, mid + half / 2); }
     ctx.fillText('0', axisX, mid);
+    // The profitable traders' orders the view shows are not on the server for some of this stretch: said over what is drawn (their liquidations
+    // alone, or nothing beside them), on a plate so it reads over the bands, on up to three lines as the column says it (Sol, review 2026-11-19,
+    // round 2).
+    if (liqHeld?.absent) {
+      const measure = (text: string): number => ctx.measureText(text).width, lines = wrapText(measure, ordersAbsent(), Math.max(40, pw - 24), 3);
+      ctx.save(); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(8, 4, Math.max(0, ...lines.map(measure)) + 8, 2 + 14 * lines.length);
+      ctx.globalAlpha = 1; ctx.fillStyle = p.muted; lines.forEach((line, i) => ctx.fillText(line, 12, 11 + 14 * i)); ctx.restore();
+    }
     const rows = Array.from({ length: k }, (_, j) => ({ r: s.radii[j]!, bid: readX >= 0 ? bid[at(readX, j)]! : NaN, ask: readX >= 0 ? ask[at(readX, j)]! : NaN }));
     const readRow = liq ? rowOf(readX) : null;
     const foot = liq ? (readRow ? t('positions as of {time}', { time: clock(readRow.asOf, true) }) : '') : Number.isFinite(readTime) ? (pointed ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';

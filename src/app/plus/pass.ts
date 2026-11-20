@@ -11,6 +11,12 @@ import { plusApi } from './config.ts';
 
 /** Where the membership is kept (`{ v, key, pass, until, ended, why, renews, skew, next }`). */
 export const PLUS_STORE = 'lmf.plus';
+/**
+ * The membership's generation: a count bumped whenever the key held in this browser changes (a key taken, a key removed), kept beside it so
+ * every tab and the Plus page share it. An answer to a key sent under an older generation is not taken (`acceptIf`), and nothing but a new
+ * key is written over a generation this tab has not read (Sol, review 2026-11-19: a late answer undid a Remove, or wrote over another tab's key).
+ */
+export const PLUS_GEN_STORE = 'lmf.plus.gen';
 /** A pass with less than this left is renewed. */
 const RENEW_BEFORE_MS = 6 * 3_600_000;
 /** A pass counts while it has at least this long to run, so a request sent now is not refused on arrival. */
@@ -103,14 +109,16 @@ export function readGrant(raw: unknown): Grant | null {
 const skewOf = (serverNow: number | undefined, now: number): number => serverNow !== undefined && Math.abs(serverNow - now) > CLOCK_SLACK_MS ? serverNow - now : 0;
 
 /** A request to the Plus server: its status, its body, and how long the server asked to wait (`Retry-After`, in seconds) when it did. */
-export type Post = (url: string, body: unknown) => Promise<{ status: number; body: unknown; retryAfter?: number }>;
+export type Post = (url: string, body: unknown, signal?: AbortSignal) => Promise<{ status: number; body: unknown; retryAfter?: number }>;
 type Kept = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 
 /** The error code of a JSON answer (`{"error":"…"}`), or ''. */
 export const errorOf = (body: unknown): string => { const e = body && typeof body === 'object' ? (body as { error?: unknown }).error : null; return typeof e === 'string' ? e : ''; };
 
-export const webPost: Post = async (url, body) => {
-  const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(POST_TIMEOUT_MS) : undefined;
+export const webPost: Post = async (url, body, given) => {
+  // Given up by the caller (a key form closed) or after POST_TIMEOUT_MS, whichever comes first.
+  const timeout = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(POST_TIMEOUT_MS) : undefined;
+  const signal = given && timeout && typeof AbortSignal.any === 'function' ? AbortSignal.any([given, timeout]) : given ?? timeout;
   const answer = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store', ...(signal ? { signal } : {}) });
   let parsed: unknown = null;
   try { parsed = await answer.json(); } catch { /* an answer without a JSON body says enough with its status */ }
@@ -133,19 +141,45 @@ export class Plus {
   #renewing: string | null = null;
   /** Whether Plus was in force when the listeners were last told (`tick`). */
   #wasOn = false;
+  /**
+   * The last renewal did not reach the server or found it busy or down (no answer, a 5xx, a 429): the membership could not be verified, which
+   * says nothing about the key. Cleared by any answer of the server's own and by `retry`.
+   */
+  #unverified = false;
+  /** The generation this tab last read (or wrote, with a key); where the browser keeps nothing, this tab's own count. */
+  #seenGen = 0;
+  #memGen = 0;
   constructor(private storage: Kept | null = kept(), private post: Post = webPost, private now: () => number = Date.now, private api: () => string = () => plusApi()) {
     this.#held = this.#read() ?? null;
+    this.#seenGen = this.#readGen();
     this.#wasOn = this.#valid(this.now());
   }
+  /** The generation as kept now (this tab's own count where the browser keeps nothing). */
+  #readGen(): number {
+    if (!this.storage) return this.#memGen;
+    try { const v = Number(this.storage.getItem(PLUS_GEN_STORE) ?? 0); return Number.isSafeInteger(v) && v >= 0 ? v : 0; } catch { return this.#memGen; }
+  }
+  /** Another key held from now on (taken or removed): a new generation, read by this tab as it writes it. */
+  #bumpGen(): void {
+    const next = Math.max(this.#readGen(), this.#memGen) + 1;
+    this.#memGen = next; this.#seenGen = next;
+    try { this.storage?.setItem(PLUS_GEN_STORE, String(next)); } catch { /* this tab's own count stands */ }
+  }
+  /** The membership's generation now, read again from where it is kept: what a key sent now is checked against when its answer comes (`acceptIf`). */
+  generation(): number { return this.#readGen(); }
   /** What is kept: the membership, null for none, undefined when it could not be read (what this tab holds then stands). */
   #read(): Held | null | undefined {
     if (!this.storage) return null;
     try { return readHeld(this.storage.getItem(PLUS_STORE)); } catch { return undefined; }
   }
-  /** Whether what is held was written where it is kept (false: a browser that will not keep it; the membership lasts as long as this tab). */
-  #write(): boolean {
+  /**
+   * Whether what is held was written where it is kept (false: a browser that will not keep it, the membership lasting as long as this tab; or,
+   * for anything but a new key, another tab changed the key since this tab read it: then nothing is written and this tab takes the other's).
+   */
+  #write(newKey = false): boolean {
     try {
       if (!this.storage) return false;
+      if (!newKey && this.#readGen() !== this.#seenGen) { this.reload(); return false; }
       if (this.#held) this.storage.setItem(PLUS_STORE, JSON.stringify({ v: 1, ...this.#held }));
       else this.storage.removeItem(PLUS_STORE);
       return true;
@@ -179,16 +213,46 @@ export class Plus {
   get renews(): boolean | null { return this.#held?.renews ?? null; }
   /** The key, for its owner to copy to another device. */
   get key(): string | null { return this.#held?.key ?? null; }
+  /** Whether a renewal is under way for the key held. */
+  get renewing(): boolean { return this.#held !== null && this.#renewing === this.#held.key; }
+  /** Whether the last renewal could not reach the server (or found it busy or down): Plus could not be verified, the key may be fine. */
+  get unverified(): boolean { return this.#unverified; }
+  /**
+   * "Try again": a renewal now, whatever wait the last one left (one at a time still: none while one is under way). What is kept is read first:
+   * a key another tab removed or replaced meanwhile is not tried again, nor written back (Sol, review 2026-11-19).
+   */
+  retry(): void {
+    const was = this.#held?.key ?? null;
+    this.reload();
+    const held = this.#held;
+    if (!held || held.key !== was || this.#renewing === held.key) return;
+    this.#held = { ...held, next: 0 }; this.#write();
+    if (this.#unverified) { this.#unverified = false; this.#changed(); }
+    this.renew();
+  }
+  /** Tell the listeners when the verification's state changes (it changes no pass). */
+  #verified(unverified: boolean): void { if (this.#unverified !== unverified) { this.#unverified = unverified; this.#changed(); } }
 
   /** A checkout, a restore or a key typed in gave this browser a membership. False when the browser would not keep it (it lasts as long as this tab). */
   accept(grant: { key: string; pass: string; until: number; renews?: boolean; now?: number }): boolean {
     const now = this.now();
     this.#held = { key: grant.key, pass: parsePass(grant.pass) ? grant.pass : '', until: grant.until, ended: false, why: '', renews: grant.renews ?? null, skew: skewOf(grant.now, now), next: 0 };
-    const stored = this.#write(); this.#changed();
+    this.#unverified = false;
+    this.#bumpGen();
+    const stored = this.#write(true); this.#changed();
     return stored;
   }
+  /**
+   * A key's grant taken only while the membership is the one the key was sent under (`generation` when it was sent): a key another tab stored
+   * meanwhile, or the key here removed, wins, and the grant is dropped (`stale`). Else as `accept`: `kept`, or `unkept` (this tab only).
+   */
+  acceptIf(generation: number, grant: { key: string; pass: string; until: number; renews?: boolean; now?: number }): 'kept' | 'unkept' | 'stale' {
+    this.reload();
+    if (this.#readGen() !== generation) return 'stale';
+    return this.accept(grant) ? 'kept' : 'unkept';
+  }
   /** This browser lets its membership go (the subscription itself is not touched). */
-  forget(): void { if (!this.#held) return; this.#held = null; this.#write(); this.#changed(); }
+  forget(): void { if (!this.#held) return; this.#held = null; this.#unverified = false; this.#bumpGen(); this.#write(true); this.#changed(); }
   /**
    * The server refused a pass it was sent (`pass`: which one; a late answer about a pass since replaced says nothing about the new one).
    * It is dropped and a new one asked for, within the one-a-minute rule: a server that refuses even the pass it has just given (its two
@@ -209,6 +273,7 @@ export class Plus {
   reload(): void {
     const next = this.#read(), was = this.#held;
     if (next === undefined) return;
+    this.#seenGen = this.#readGen();
     if (next && was && next.key === was.key) next.next = Math.max(next.next, was.next);
     this.#held = next;
     if (next?.key === was?.key && next?.pass === was?.pass && next?.until === was?.until && next?.ended === was?.ended && next?.renews === was?.renews && next?.why === was?.why) return;
@@ -242,23 +307,26 @@ export class Plus {
         // and an hour (a membership paid again meanwhile is seen before the pass runs out); one that comes already run out, in an hour.
         const wait = left >= RENEW_BEFORE_MS + CLOCK_SLACK_MS ? RETRY_MS : left > 0 ? Math.min(LONG_RETRY_MS, Math.max(SHORT_PASS_RETRY_MS, left / 2)) : LONG_RETRY_MS;
         this.#held = { key, pass: grant.pass, until: grant.until, ended: false, why: '', renews: grant.renews ?? null, skew, next: at + wait };
+        this.#unverified = false;
         this.#write(); this.#changed(); return;
       }
       // The server's refusal: the subscription is not in good standing, or the key was replaced. The key stays (a subscription paid again
       // may renew with it); the pass goes. Any other 403 (a firewall's page, a challenge) says nothing about the membership.
       if (answer.status === 403 && errorOf(answer.body) === 'not_active') {
         if (newer) return;
-        const why = reason((answer.body as { status?: unknown }).status), news = cur.pass !== '' || !cur.ended || cur.why !== why;
+        const why = reason((answer.body as { status?: unknown }).status), news = cur.pass !== '' || !cur.ended || cur.why !== why || this.#unverified;
         this.#held = { ...cur, pass: '', ended: true, why, next: at + LONG_RETRY_MS };
+        this.#unverified = false;
         this.#write(); if (news) this.#changed();
         return;
       }
       // Busy or down (429, 5xx): again when it said, within a minute and an hour. Turned down for another reason (another 4xx, a page that
-      // is not the server's): the pass is kept and the server asked again in an hour.
+      // is not the server's): the pass is kept and the server asked again in an hour. Either way Plus could not be verified.
       const busy = answer.status === 429 || answer.status >= 500;
       const wait = busy ? Math.min(LONG_RETRY_MS, Math.max(RETRY_MS, (answer.retryAfter ?? 0) * 1_000)) : LONG_RETRY_MS;
       this.#held = { ...cur, next: Math.max(cur.next, at + wait) }; this.#write();
-    }, () => { /* not reached (or given up): the minute already set stands */ }).finally(() => { if (this.#renewing === key) this.#renewing = null; });
+      this.#verified(true);
+    }, () => { if (this.#held?.key === key) this.#verified(true); /* not reached (or given up): the minute already set stands */ }).finally(() => { if (this.#renewing === key) this.#renewing = null; });
   }
   /** Told whenever the membership here changes (a pass came, went, or was replaced). */
   subscribe(listener: () => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }

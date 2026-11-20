@@ -182,9 +182,9 @@ test('only a local service may stand in for the configured address, and a save f
   assert.equal(liqLevelsUrl('?levels=http://localhost:8790/x.json'), 'http://localhost:8790/x.json');
   assert.equal(liqLevelsUrl('?levels=https://evil.example/x.json'), LIQ_LEVELS_URL);
   assert.equal(liqLevelsUrl('?levels=javascript:alert(1)'), LIQ_LEVELS_URL);
-  assert.deepEqual(readLiqLevels(undefined), { on: true, column: true, kind: 'liq', takes: false, group: 'all' });
-  assert.deepEqual(readLiqLevels({ on: false }), { on: false, column: true, kind: 'liq', takes: false, group: 'all' });
-  assert.deepEqual(readLiqLevels({ on: 'yes', column: false }), { on: true, column: false, kind: 'liq', takes: false, group: 'all' });
+  assert.deepEqual(readLiqLevels(undefined), { on: true, column: true, liq: true, stops: false, takes: false, group: 'all', split: 'none' });
+  assert.deepEqual(readLiqLevels({ on: false }), { on: false, column: true, liq: true, stops: false, takes: false, group: 'all', split: 'none' });
+  assert.deepEqual(readLiqLevels({ on: 'yes', column: false }), { on: true, column: false, liq: true, stops: false, takes: false, group: 'all', split: 'none' });
 });
 
 test('the source asks for the file, says when it cannot, retries sooner, keeps the newest snapshot and stays away from other coins', async () => {
@@ -453,7 +453,9 @@ test('the stripe\'s lanes: the take profits by the live edge, the levels beside 
   assert.deepEqual(narrow, { takes: { x0: 1000, x1: 1010 }, levels: { x0: 1012, x1: 1020 } }, 'under 30 px: half each');
   for (let w = 0; w < 80; w += 3) {
     const l = stripeLanes(500, 500 + w, true);
-    assert.ok(l.takes!.x1 <= l.levels.x0 && l.levels.x0 <= l.levels.x1 && l.levels.x1 === 500 + w, `width ${w}`);
+    // Under 7 px the two lanes cannot each be painted (LANE_MIN_W): the take profits' lane goes and the levels take the stripe (the map
+    // draws the stripe only from 9 px).
+    assert.ok((w < 7 ? l.takes === null : !!l.takes && l.takes.x1 <= l.levels.x0) && l.levels.x0 <= l.levels.x1 && l.levels.x1 === 500 + w, `width ${w}`);
   }
 });
 
