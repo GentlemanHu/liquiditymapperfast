@@ -18,15 +18,38 @@ import { colourRamp, RAMP_STEPS } from '../traded/emphasis.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { liquidationBuckets, type StatInput } from './bar-stats.ts';
 import { readAt } from './pane-cards.ts';
-import { TimePane, oiSourceText, setText } from './lower-panes.ts';
-import type { HeatPane } from './heat-pane.ts';
+import { TimePane, oiSourceText, setText, tableSigned, tableText } from './lower-panes.ts';
+import { AXIS_W, leftGutter, type HeatPane } from './heat-pane.ts';
+import { PaneTable, ratioCell, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import type { LiquidationDays } from '../liq-days.ts';
+import { el } from '../dom.ts';
+import type { Palette } from '../theme.ts';
 import { alphaOf, buildHistory, cardLines, emphasis, heightOf, preRollMs, rowCap, shareDot, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
 
 /** The gap between the two rows of context (liquidations, open interest) and the six size rows, in px. */
 const GROUP_GAP = 8;
 /** The share dot's radius, and the thinnest row that has room for it beside its bar (a phone held sideways has thinner ones, without dots). */
 const DOT_R = 1.75, DOT_R_MIN = 0.9, DOT_ROW_MIN = 12;
+
+/**
+ * The pane's table at slot `i` (pane-table.ts): a row each of the pane's rows, in its order. The liquidations as forced buys and sells (shorts and
+ * longs liquidated, which the pane draws up and down), ≈ where that candle's day was cut at 5,000; open interest's change in Δ alone; each size
+ * band's buys and sells at market, their difference, its share of the candle's market orders and ×. A dash where an amount is not known, nothing
+ * where a column does not apply. Dollars, as the foot says.
+ */
+export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'total' | 'liqCut'>, i: number, p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
+  const dash: TableCell = { text: '–' }, none: TableCell = { text: '' };
+  const signed = (v: number): TableCell => Number.isFinite(v) ? { text: tableSigned(v), color: v ? tableInk(v > 0 ? p.bid : p.ask, p) : undefined } : dash;
+  const sides = (buy: number, sell: number, share: TableCell): TableCell[] => Number.isFinite(buy) && Number.isFinite(sell)
+    ? [{ text: tableText(buy), color: tableInk(p.bid, p) }, { text: tableText(sell), color: tableInk(p.ask, p) }, signed(buy - sell), share, ratioCell(buy, sell, p)]
+    : [dash, dash, dash, share.text ? dash : none, dash];
+  return model.rows.map(row => {
+    if (row.kind === 'liq') return [{ text: model.liqCut[i] === 1 ? `≈${row.label}` : row.label }, ...sides(row.parts[0]!.values[i]!, row.parts[1]!.values[i]!, none)];
+    if (row.kind === 'oi') return [{ text: row.label }, none, none, signed(row.parts[0]!.values[i]!), none, none];
+    const side = model.sides[row.band!]!, buy = side.buy[i]!, sell = side.sell[i]!, all = model.total[i]!;
+    return [{ text: row.label }, ...sides(buy, sell, Number.isFinite(buy) && Number.isFinite(sell) && all > 0 ? { text: `${Math.round((buy + sell) / all * 100)}%`, color: p.muted } : dash)];
+  });
+}
 
 /**
  * The Flow history pane (Karl, 2026-11-20): per candle of the chart's timeframe, the liquidations, the change of open interest and the
@@ -41,6 +64,9 @@ export class SizeHistoryPane extends TimePane {
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #bars = document.createElement('select');
+  readonly #tableBox = document.createElement('input');
+  /** Every row at the candle read, on the pane (pane-table.ts), and under them what the card of the row pointed at says that its row does not. */
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
   /** What the rows were worked out from last, and the result: a pointer move draws them again without working them out. */
   #held: { key: unknown[]; times: number[]; model: HistoryModel } | null = null;
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
@@ -63,19 +89,25 @@ export class SizeHistoryPane extends TimePane {
     for (const [value, text] of [['delta', t('Delta')], ['split', t('Buys and sells')]] as const) this.#bars.append(new Option(text, value));
     this.#bars.value = store.state.sizeBars;
     this.#bars.onchange = () => store.set({ sizeBars: this.#bars.value === 'split' ? 'split' : 'delta' });
-    label.append(this.#bars); this.head.append(label);
-    // One slim row on a phone (and where the figures would get too little room): the choice waits behind the settings key (pane-tune.ts).
-    addTune(this.head, [label], t('Flow history'), { fold: true });
+    // The rows at the candle read, in a table on the pane: its switch at the right end, as on every pane with one.
+    const table = el('label', { class: 'ctl', tip: `${t('Every row in a table on the pane, for the candle under the pointer or the newest: each size\'s buys and sells at market, their difference and its share of the candle; the liquidations as forced buys (shorts liquidated) and sells (longs liquidated); open interest\'s change.')} ${t('× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.')}` });
+    this.#tableBox.type = 'checkbox'; this.#tableBox.checked = store.state.sizesTable; this.#tableBox.onchange = () => store.set({ sizesTable: this.#tableBox.checked });
+    table.append(this.#tableBox, t('Table'));
+    label.append(this.#bars); this.head.append(label, table);
+    // One slim row on a phone (and where the figures would get too little room): the choices wait behind the settings key (pane-tune.ts).
+    addTune(this.head, [label, table], t('Flow history'), { fold: true });
     liqDays.listen(() => this.invalidate());
   }
 
   /** Reflect the settings in the header and draw again. */
-  settingsChanged(): void { if (this.#bars.value !== this.store.state.sizeBars) this.#bars.value = this.store.state.sizeBars; this.invalidate(); }
+  settingsChanged(): void { if (this.#bars.value !== this.store.state.sizeBars) this.#bars.value = this.store.state.sizeBars; this.#tableBox.checked = this.store.state.sizesTable; this.invalidate(); }
 
-  protected override undrawn(): void { this.#lines = null; this.#card.hide(); }
+  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); }
+  protected override ownsPoint(x: number): boolean { return this.#table.owns(x, this.pointer); }
 
   protected draw(): void {
     this.#lines = null;
+    this.#table.clear();
     this.#paint();
     const at = this.pointer;
     if (this.#lines && at) this.#card.show(this.#lines, at.x, at.y); else this.#card.hide();
@@ -214,7 +246,17 @@ export class SizeHistoryPane extends TimePane {
     }
     ctx.restore();
     // The card of the row and candle under this pane's pointer (or a finger's pin).
-    if (hoverIdx >= 0 && hoverRow >= 0 && this.pointer) this.#lines = this.#cardFor(model, hoverRow, hoverIdx, times, tfMs, now, live, perps, state, oiHeld?.coins);
+    const card = hoverIdx >= 0 && hoverRow >= 0 && this.pointer ? this.#cardFor(model, hoverRow, hoverIdx, times, tfMs, now, live, perps, state, oiHeld?.coins) : null;
+    this.#lines = card;
+    // Every row at the candle read (the pointer's, else the newest in view), the row pointed at lit, and under them what its card says that its row
+    // does not (how unusual it is, its baseline, how the size rows stand together): a table that holds all of it takes the card's place, as on every
+    // pane with one; beside a table that cannot, the card stays.
+    if (state.sizesTable) {
+      const read = hoverIdx >= 0 ? hoverIdx : last, room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null };
+      const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} USD`;
+      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card) });
+      if (placed?.complete) this.#lines = null;
+    }
   }
 
   #cardFor(model: HistoryModel, r: number, i: number, times: readonly number[], tfMs: number, now: number, live: boolean, perps: boolean, state: AppState, coins?: ReadonlyMap<number, number>): InfoLine[] {

@@ -318,13 +318,18 @@ export interface CardContext {
   oiCoins?: { value: number; coin: string } | null;
 }
 
-/** The card of row `r` at slot `i`: its amounts, how unusual each side is, and how the candle's size rows stand together. Pure, so a test reads the words. */
+/**
+ * The card of row `r` at slot `i`: its amounts, how unusual each side is, and how the candle's size rows stand together. Pure, so a test reads the
+ * words. The pane's table (size-history-pane.ts `sizeTableRows`) says each row's amounts at the candle and its time in its foot: the lines that
+ * repeat them, and the dot's meaning (the help says it), are marked for the table to leave out (`InfoLine.table`).
+ */
 export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardContext): InfoLine[] {
   const row = model.rows[r]!, partial = model.partial[i] === 1, out: InfoLine[] = [];
   // What the share dot says, under the judgement and what it is judged against (so the two stay together).
   let dotNote: InfoLine | null = null;
   out.push({ text: row.kind === 'size' ? t('Market orders {band}', { band: row.label }) : row.kind === 'liq' ? t('Liquidations') : t('Open interest change'), bold: true });
-  out.push({ label: t('Candle'), text: ctx.live ? `${ctx.time} · ${t('in progress: amounts so far')}` : ctx.time });
+  // The table's foot says the time; a candle under way says so in the table too.
+  out.push({ label: t('Candle'), text: ctx.live ? `${ctx.time} · ${t('in progress: amounts so far')}` : ctx.time, ...(ctx.live ? {} : { table: false as const }) });
   const judgedParts: Part[] = [];
   const judged = (p: Part, label: string | null, isPartial: boolean): void => {
     if (!ctx.judging) return;
@@ -337,8 +342,8 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
     const sides = model.sides[row.band!]!, b = sides.buy[i]!, s = sides.sell[i]!;
     if (!Number.isFinite(b) || !Number.isFinite(s)) { out.push({ text: t('Nothing recorded for this candle.'), color: 'muted', rule: true }); return out; }
     const net = b - s;
-    out.push({ label: t('Buys / sells'), text: `${plainUsd(b)} / ${plainUsd(s)}`, rule: true });
-    out.push({ label: t('Net'), text: signedUsd(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text' });
+    out.push({ label: t('Buys / sells'), text: `${plainUsd(b)} / ${plainUsd(s)}`, rule: true, table: false });
+    out.push({ label: t('Net'), text: signedUsd(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text', table: false });
     if (b + s > 0) out.push({ label: t('Buy share'), text: `${Math.round(b / (b + s) * 100)}%` });
     // Its share of the candle, and where it was unusual, what it usually is (the dot, where the bar is not already lit): of the volume with Buys
     // and sells bars, of the six sizes' nets counted without their signs with Delta bars, said on a line of its own.
@@ -349,25 +354,28 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
       const text = `${(value * 100).toFixed(digits)}%`;
       return marked ? { label, text: `${text} · ${t('unusual: usually {share}%', { share: (usual * 100).toFixed(digits) })}`, bold: true, wrap: true } : { label, text };
     };
-    if (all > 0) out.push(model.shareKind === 'volume' ? shareLine(t('Share of volume'), (b + s) / all) : { label: t('Share of volume'), text: `${Math.round((b + s) / all * 100)}%` });
+    // The share of volume is the table's Share; where it is unusual, what it usually is is the card's alone.
+    const volume = (line: InfoLine): InfoLine => line.bold ? line : { ...line, table: false };
+    if (all > 0) out.push(volume(model.shareKind === 'volume' ? shareLine(t('Share of volume'), (b + s) / all) : { label: t('Share of volume'), text: `${Math.round((b + s) / all * 100)}%` }));
     if (model.shareKind === 'net' && mark && Number.isFinite(mark.value[i]!)) out.push(shareLine(t('Share of the net'), mark.value[i]!));
     if (row.parts.length === 1) judged(row.parts[0]!, null, partial);
     else { judged(row.parts[0]!, t('Buys'), partial); judged(row.parts[1]!, t('Sells'), partial); }
-    if (ctx.judging && ctx.dots !== false && shareDot(model, row, i, ctx.mult)) dotNote = ({ text: model.shareKind === 'net' ? t('The dot: this size\'s net was an unusually large part of the six sizes\' nets counted without their signs, on a candle with at least the usual net trading.') : t('The dot: this size\'s buys and sells were an unusually large part of the candle\'s market orders, on a candle at least as busy as usual.'), color: 'muted', wrap: true });
+    if (ctx.judging && ctx.dots !== false && shareDot(model, row, i, ctx.mult)) dotNote = ({ text: model.shareKind === 'net' ? t('The dot: this size\'s net was an unusually large part of the six sizes\' nets counted without their signs, on a candle with at least the usual net trading.') : t('The dot: this size\'s buys and sells were an unusually large part of the candle\'s market orders, on a candle at least as busy as usual.'), color: 'muted', wrap: true, table: false });
   } else if (row.kind === 'liq') {
     const [shorts, longs] = row.parts as [Part, Part], s = shorts.values[i]!, l = longs.values[i]!, cut = model.liqCut[i] === 1;
     if (ctx.liqNote === 'spot') { out.push({ text: t('Only spot markets are counted: they have no liquidations.'), color: 'muted', wrap: true, rule: true }); return out; }
     if (!Number.isFinite(s) || !Number.isFinite(l)) { out.push({ text: t('Not known for this candle: the record does not reach it.'), color: 'muted', rule: true }); return out; }
     const at = (v: number): string => cut ? `≥ ${plainUsd(v)}` : plainUsd(v);
-    out.push({ label: t('Shorts liquidated'), text: at(s), color: 'buy', rule: true });
-    out.push({ label: t('Longs liquidated'), text: at(l), color: 'sell' });
+    out.push({ label: t('Shorts liquidated'), text: at(s), color: 'buy', rule: true, table: false });
+    out.push({ label: t('Longs liquidated'), text: at(l), color: 'sell', table: false });
     judged(shorts, t('Shorts'), false); judged(longs, t('Longs'), false);
     if (cut) out.push({ text: t('≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.'), color: 'muted', wrap: true });
   } else {
     const [oi] = row.parts as [Part], v = oi.values[i]!;
     if (ctx.oiNote === 'spot') { out.push({ text: t('Only spot markets are counted: they have no open interest.'), color: 'muted', wrap: true, rule: true }); return out; }
     if (!Number.isFinite(v)) { out.push({ text: t('Not known for this candle.'), color: 'muted', rule: true }); return out; }
-    out.push({ label: t('Change'), text: ctx.oiCoins ? `${signedUsd(v)} · ${coinText(ctx.oiCoins.value, ctx.oiCoins.coin)}` : signedUsd(v), color: v > 0 ? 'buy' : v < 0 ? 'sell' : 'text', rule: true });
+    // The table's Δ is the dollars: the line stays there for the coins beside them.
+    out.push({ label: t('Change'), text: ctx.oiCoins ? `${signedUsd(v)} · ${coinText(ctx.oiCoins.value, ctx.oiCoins.coin)}` : signedUsd(v), color: v > 0 ? 'buy' : v < 0 ? 'sell' : 'text', rule: true, ...(ctx.oiCoins ? {} : { table: false as const }) });
     if (ctx.oiSource) out.push({ label: t('Markets'), text: ctx.oiSource });
     if (ctx.oiNote === 'minute') out.push({ text: t('Not judged on a one-minute chart: some venues report open interest every few minutes, which puts several minutes of change into one.'), color: 'muted', wrap: true });
     else judged(oi, null, false);

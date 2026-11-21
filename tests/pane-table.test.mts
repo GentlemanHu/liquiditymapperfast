@@ -113,9 +113,9 @@ test('the pointer over a table: a row lit and chosen by a click or a tap, the cl
 
 test('the tables are on by default, for a save or a layout from before them, and stay off once switched off', () => {
   const on = readSettings({});
-  assert.deepEqual([on.fundingTable, on.oiTable, on.lsTable, on.ltTable, on.deltaTable], [true, true, true, true, true]);
-  const off = readSettings({ fundingTable: false, oiTable: false, lsTable: false, ltTable: false, deltaTable: false });
-  assert.deepEqual([off.fundingTable, off.oiTable, off.lsTable, off.ltTable, off.deltaTable], [false, false, false, false, false]);
+  assert.deepEqual([on.fundingTable, on.oiTable, on.lsTable, on.ltTable, on.deltaTable, on.sizesTable], [true, true, true, true, true, true]);
+  const off = readSettings({ fundingTable: false, oiTable: false, lsTable: false, ltTable: false, deltaTable: false, sizesTable: false });
+  assert.deepEqual([off.fundingTable, off.oiTable, off.lsTable, off.ltTable, off.deltaTable, off.sizesTable], [false, false, false, false, false, false]);
 });
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 6, 0), MIN = 60_000;
