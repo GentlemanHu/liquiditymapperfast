@@ -546,14 +546,15 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   assert.deepEqual(said(fundingCardLines({ time: 0, venue: 'Hyperliquid', row: { t: H, rate: 1e-4 / 8, per8h: 1e-4, hours: 1 }, forming: true, premium: -4e-4, opens, coin: 'BTC', continuous: false })), ['Each settlement', 'Settles at', 'Buyers opened', 'New longs', 'New shorts']);
   // Every venue: all of it is the rows.
   assert.deepEqual(said(fundingAllCardLines({ time: 0, need: 2, median: { per8h: 1e-4 }, venues: [{ id: 'binance', name: 'Binance', per8h: 1e-4, forming: true }, { id: 'okx', name: 'OKX', per8h: null, forming: false }] })), []);
-  // Long/Short: why a venue has no reading (a dash in its row says only that it has none) and who each line counts; the readings are the rows.
+  // Long/Short: why a venue has no reading (a dash in its row says only that it has none); the readings are the rows, who each line counts the header's Series.
   const series = [
     { id: 'binance:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.556 }] },
     { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'failed', points: [] },
     { id: 'okx:BTC-USDT-SWAP', population: 'accounts', periodMs: H, status: 'ok', points: [] },
   ] as unknown as LsSeries[];
   const ls = tableLines(lsCardLines(series, T + 30 * MIN, '1h'));
-  assert.deepEqual(ls.map(line => line.label ?? line.text), ['Bybit', 'Binance, Bybit, OKX: all accounts']);
+  assert.deepEqual(ls.map(line => line.label ?? line.text), ['Bybit']);
+  assert.deepEqual(tableLines(lsCardLines(series.filter(s => s.status === 'ok'), T + 30 * MIN, '1h')), [], 'every venue read: nothing the rows and the header do not say');
   assert.deepEqual([ls[0]!.text, ls[0]!.mark], ['could not be read', undefined]);
 });
 

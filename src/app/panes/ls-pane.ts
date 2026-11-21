@@ -60,7 +60,7 @@ export function shareText(long: number): string {
 
 /**
  * The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. The table says the readings and a dash for
- * none in its rows: it keeps why a venue has none, the notes on earlier readings and Bitget's, and who each line counts.
+ * none in its rows, and the header's Series who each line counts: it keeps why a venue has none and the notes on earlier readings and Bitget's.
  */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
   const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true, table: false }];
@@ -81,7 +81,9 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
   // Who each line counts, the venues of one population together: "Binance: top traders, by positions · Bybit, OKX: all accounts".
   const groups = new Map<LsPopulation, string[]>();
   for (const s of series) if (s.population) groups.set(s.population, [...(groups.get(s.population) ?? []), venueLabel(s.id)]);
-  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true });
+  // The header's Series says it (Binance, OKX, Bitget and Gate follow it, Bybit publishes one, as its tip and the help say), so the table leaves it
+  // out: carried, it never fitted under a table of normal height, and the card came back beside every Long/Short table (review 2026-11-21).
+  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true, table: false });
   // What a ratio means follows who is counted: accounts, or (Binance's top traders by positions) the size they hold.
   if (series.some(s => s.population && s.population !== 'topPositions')) lines.push({ text: t('Accounts as each exchange counts them, not coins: L/S 1.25 is 1.25 long accounts for each short one, not 25 % more BTC long. In coins the two sides are always equal.'), color: 'muted', wrap: true, table: false });
   if (series.some(s => s.population === 'topPositions')) lines.push({ text: t('By positions: the share of the top traders\' position size that is long, not of accounts. L/S 1.25 is 1.25 times as much held long as short among them; across the whole market the two sides are always equal.'), color: 'muted', wrap: true, table: false });
