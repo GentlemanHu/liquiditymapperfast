@@ -1528,12 +1528,14 @@ export class HeatPane {
       ctx.fillStyle = p.text; ctx.textAlign = 'center'; ctx.fillText(emptyScope, pw / 2, ph / 2); ctx.textAlign = 'left'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     }
     this.#paintRange(ctx, state, pw, ph);
+    if (!this.#columnBoxes.length) this.#paintRangeLabel(ctx, state, pw, ph);   // with a column box, after it (below)
     this.#paintBookRow(ctx, state, pw, ph);
     this.#paintLiqReadout(ctx, state, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
     this.#paintAnchorPreview(ctx, state, pw, ph);
-    // The column boxes last, over both canvases (`#columnBoxes`), with a plain solid pen whatever was drawn before them.
-    if (this.#columnBoxes.length) { ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1; for (const paint of this.#columnBoxes) paint(ctx); }
+    // The column boxes over both canvases (`#columnBoxes`), with a plain solid pen whatever was drawn before them; then only the size tag of
+    // a Range being dragged, which a drag on a volume profile column has beside that column's box.
+    if (this.#columnBoxes.length) { ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1; for (const paint of this.#columnBoxes) paint(ctx); this.#paintRangeLabel(ctx, state, pw, ph); }
   }
 
   /**
@@ -1713,28 +1715,43 @@ export class HeatPane {
    * tag beside it gives its size (minutes, and a box's height as a share of its price).
    */
   #paintRange(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    const sel = state.range; if (!sel) return;
-    const v = this.view, p = this.#palette, box = sel.p0 !== null && sel.p1 !== null;
-    const x0 = Math.max(-2, v.xOf(sel.t0, pw)), x1 = Math.min(pw + 2, v.xOf(sel.t1, pw));
-    if (x1 < 0 || x0 > pw) return;
-    const y0 = box ? Math.max(-2, v.yOf(sel.p1!, ph)) : -2, y1 = box ? Math.min(ph + 2, v.yOf(sel.p0!, ph)) : ph + 2;
-    if (y1 < 0 || y0 > ph) return;
+    const r = this.#rangeRect(state, pw, ph); if (!r) return;
+    const p = this.#palette, { x0, x1, y0, y1 } = r;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     ctx.fillStyle = p.text; ctx.globalAlpha = 0.07; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.globalAlpha = 1;
     // A light edge under the dashes, so the box reads over dark cells, bright walls and bubbles alike.
     const rect = [Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.max(1, Math.round(x1 - x0) - 1), Math.max(1, Math.round(y1 - y0) - 1)] as const;
     ctx.strokeStyle = p.panel; ctx.lineWidth = 3; ctx.globalAlpha = 0.85; ctx.strokeRect(...rect); ctx.globalAlpha = 1;
     ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.strokeRect(...rect); ctx.setLineDash([]);
-    if (sel.draft) {
-      const label = draftLabel(sel);
-      ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-      const w = ctx.measureText(label).width + 12, tx = Math.min(pw - w - 2, Math.max(2, x0)), ty = y0 > 24 ? y0 - 22 : Math.min(ph - 22, y1 + 4);
-      ctx.fillStyle = p.panel; ctx.globalAlpha = 0.94; ctx.fillRect(tx, ty, w, 18); ctx.globalAlpha = 1;
-      ctx.strokeStyle = p.line; ctx.strokeRect(tx + 0.5, ty + 0.5, w - 1, 17);
-      ctx.fillStyle = p.text; ctx.fillText(label, tx + 6, ty + 9);
-      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
-    }
     ctx.restore();
+  }
+
+  /**
+   * The size tag of a Range being dragged, after the column boxes (`#columnBoxes`) as the last thing on the pointer's layer: a drag on a
+   * volume profile column keeps its row's box beside the pointer, where it covered the tag (Sol, review 2026-11-21). The Range's box itself
+   * stays under the column boxes (`#paintRange`).
+   */
+  #paintRangeLabel(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    const r = this.#rangeRect(state, pw, ph); if (!r || !r.sel.draft) return;
+    const p = this.#palette, { x0, y0, y1 } = r, label = draftLabel(r.sel);
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
+    ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.lineWidth = 1; ctx.setLineDash([]);
+    const w = ctx.measureText(label).width + 12, tx = Math.min(pw - w - 2, Math.max(2, x0)), ty = y0 > 24 ? y0 - 22 : Math.min(ph - 22, y1 + 4);
+    ctx.fillStyle = p.panel; ctx.globalAlpha = 0.94; ctx.fillRect(tx, ty, w, 18); ctx.globalAlpha = 1;
+    ctx.strokeStyle = p.line; ctx.strokeRect(tx + 0.5, ty + 0.5, w - 1, 17);
+    ctx.fillStyle = p.text; ctx.fillText(label, tx + 6, ty + 9);
+    ctx.restore();
+  }
+
+  /** Where the Range lies on the plot (its corners, held a hair past the plot's edges, the full height for one with no prices), or null where none shows. */
+  #rangeRect(state: AppState, pw: number, ph: number): { sel: NonNullable<AppState['range']>; x0: number; x1: number; y0: number; y1: number } | null {
+    const sel = state.range; if (!sel) return null;
+    const v = this.view, box = sel.p0 !== null && sel.p1 !== null;
+    const x0 = Math.max(-2, v.xOf(sel.t0, pw)), x1 = Math.min(pw + 2, v.xOf(sel.t1, pw));
+    if (x1 < 0 || x0 > pw) return null;
+    const y0 = box ? Math.max(-2, v.yOf(sel.p1!, ph)) : -2, y1 = box ? Math.min(ph + 2, v.yOf(sel.p0!, ph)) : ph + 2;
+    if (y1 < 0 || y0 > ph) return null;
+    return { sel, x0, x1, y0, y1 };
   }
 
   /** A point of the map for the Range tool, held inside the plot. */

@@ -187,7 +187,13 @@ test('every column box is drawn last, on the pointer\'s layer: no column edge, b
   assert.ok(reset > 0 && reset < overlay.indexOf('this.#paintLiqColumn(') && reset < overlay.indexOf('this.#paintTraded('));
   const hover = body('#paintHoverLayer'), last = hover.indexOf('for (const paint of this.#columnBoxes) paint(ctx);');
   for (const before of ['this.#paintLegend(', 'this.#paintRange(', 'this.#paintBookRow(', 'this.#paintLiqReadout(', 'this.#paintCrosshair(', 'this.#paintAnchorPreview(']) assert.ok(hover.indexOf(before) > 0 && hover.indexOf(before) < last, before);
-  assert.doesNotMatch(hover.slice(last), /\.(stroke|fill|fillRect|fillText|strokeRect)\(|this\.#paint/, 'nothing after the boxes');
+  // Nothing after the boxes but the size tag of a Range being dragged (a drag on a volume profile column keeps that column's box; Sol, review
+  // round 2), which otherwise keeps its place right after the Range's box, under the crosshair's box.
+  const after = hover.slice(last);
+  assert.doesNotMatch(after, /\.(stroke|fill|fillRect|fillText|strokeRect)\(/, 'nothing drawn after the boxes');
+  assert.deepEqual(after.match(/this\.#paint\w+\(/g), ['this.#paintRangeLabel('], 'only the dragged Range\'s size tag after them');
+  assert.match(hover, /this\.#paintRange\(ctx, state, pw, ph\);\n\s+if \(!this\.#columnBoxes\.length\) this\.#paintRangeLabel\(ctx, state, pw, ph\);/);
+  assert.doesNotMatch(body('#paintRange'), /draftLabel|fillText/, 'the Range\'s box alone, under the column boxes');
 });
 
 test('the map draws these boxes: the profile from its row and band, the band from the price when scrolled away, the split\'s right half in its frame', () => {
