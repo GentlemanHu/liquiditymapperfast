@@ -61,12 +61,19 @@ test('the Panels deck holds twelve switches, none for the candles or Mirror, in 
   assert.deepEqual(keys, ['cvd', 'book', 'profile', 'depth', 'oi', 'sizes', 'ls', 'stats', 'volume', 'delta', 'lt', 'funding']);
   assert.match(css, /\.toolbar\.cockpit \.deck-panels \.seg\.toggles button \{ padding-left: 3px; padding-right: 3px; \}/, "the names' sides that keep 1,366 px one row");
   // The rule (0,5,1) outranks the padding the frames give every bar button, the bevel's (chrome.css, 0,4,1) and text-mode's (styles.css,
-  // 0,3,2), as Chrome showed. Pinned here: no other rule sets the sides of a toggles segment's buttons outside the phone's Settings (comments
-  // left out; a top or bottom padding does not count).
-  const rules = (sheet: string) => [...sheet.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap(m => m[1]!.split(',').map(sel => ({ sel: sel.trim().replace(/\s+/g, ' '), body: m[2]! })));
+  // 0,3,2), as Chrome showed. Pinned here: no other rule sets the sides of buttons it reaches through the toggles or the Panels deck, unless
+  // it is the phone's Settings' alone (comments left out; each selector of a list apart, a comma inside :is() kept; :not() names nothing; a
+  // top or bottom padding does not count).
+  const rules = (sheet: string) => [...sheet.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .flatMap(m => m[1]!.split(/,(?![^()]*\))/).map(sel => ({ sel: sel.trim().replace(/\s+/g, ' '), body: m[2]! })));
   const sides = /(?:^|;)\s*padding(?:-(?:left|right|inline(?:-start|-end)?))?\s*:/;
+  const names = (sel: string, cls: string) => new RegExp(`\\.${cls}(?![\\w-])`).test(sel);
+  const reaches = (sel: string) => {
+    const s = sel.replace(/:not\([^)]*\)/g, '');
+    return (names(s, 'toggles') || names(s, 'deck-panels')) && /\bbutton\b/.test(s) && !(names(s, 'sheet') && !names(s, 'toolbar') && !names(s, 'deck-panels'));
+  };
   const toggleSides = ['src/app/styles.css', 'src/app/chrome.css', 'src/app/mobile.css'].flatMap(f => rules(fs.readFileSync(f, 'utf8'))
-    .filter(r => r.sel.includes('.toggles') && /\bbutton\b/.test(r.sel) && !r.sel.includes('.sheet') && sides.test(r.body)).map(r => `${f}: ${r.sel}`));
+    .filter(r => reaches(r.sel) && sides.test(r.body)).map(r => `${f}: ${r.sel}`));
   assert.deepEqual(toggleSides, ['src/app/styles.css: .toolbar.cockpit .deck-panels .seg.toggles button'], "only the 3 px rule sets the sides of the top bar's toggles");
   assert.ok(!keys.includes('candles'), 'the Chart type menu shows and hides the price');
   assert.ok(!keys.includes('mirror'), "Mirror's switch is in the order book's Cues panel");
