@@ -566,3 +566,14 @@ test('the Funding table marks a rate still accruing where some rates have settle
   assert.equal(fundingAllNow([{ name: 'Median', per8h: 1e-4, premium: null }]), false, 'nothing a venue reads: nothing to say');
   assert.equal(fundingAllNow([{ name: 'Binance', per8h: 1e-4, premium: null, forming: false }]), false);
 });
+
+test('a table anchored at the top stands 2 px down, the pane under it left to the card\'s lines; anchored or not, the lines never move it', () => {
+  // Eight rows (Flow history's) and a card of eight lines in a pane 300 high: in the middle the rows end at 225 and 73 px is not enough.
+  const eight = { ...spec(8), lines: Array.from({ length: 8 }, (_, i): InfoLine => ({ label: `Line ${i}`, text: 'value', ...(i === 6 ? { rule: true } : {}) })) };
+  const middle = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), eight)!, top = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...eight, anchor: 'top' })!;
+  assert.deepEqual([middle.y0, middle.complete], [75, false]);
+  assert.deepEqual([top.y0, top.first, top.complete, top.summary.length], [2, 17, true, 8]);
+  assert.ok(top.y0 + top.height + top.summaryH <= 298);
+  assert.deepEqual(rowsBlock(placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...eight, lines: [], anchor: 'top' })), rowsBlock(top), 'no lines: the same rows in the same place');
+  assert.deepEqual({ ...rowsBlock(top)!, y0: 0, first: 0 }, { ...rowsBlock(middle)!, y0: 0, first: 0 }, 'only the height it stands at differs');
+});
