@@ -92,6 +92,15 @@ export const PALETTES: Record<string, Palette> = {
 export const THEME_ORDER = ['light', 'classic', 'latte', 'parchment', 'newsprint', 'blush', 'daylight', 'maxlight', 'dark', 'darker', 'midnight', 'mocha', 'slate', 'velvet',
   'ember', 'heather', 'deepteal', 'charcoal', 'colorblind', 'maxcontrast', 'terminal', 'amber', 'bluemode'] as const;
 
+/**
+ * The theme a page opens in, on a desktop, and on a phone set to light, until one is picked: Colour-blind safe, light (Karl, 2026-11-21:
+ * "currently it's the light theme, and I want it to be the colorblind safe light version"). It was Light from 2026-10-17 to 2026-11-21. The app
+ * (store.ts `autoTheme`) and the Plus page both read it here.
+ */
+export const DEFAULT_THEME = 'daylight';
+/** The theme a phone set to dark opens in, and the dark one its light-or-dark key brings first (Karl, 2026-11-01). */
+export const PHONE_DARK_THEME = 'terminal';
+
 /** Ids written by earlier builds, mapped to the current ones so a saved choice survives the rename. */
 const THEME_ALIASES: Readonly<Record<string, string>> = { legacyLight: 'light', darkSurf: 'dark', darkTerminal: 'terminal', darkerDark: 'darker' };
 /**

@@ -323,7 +323,7 @@ test('saved settings of any shape open the page: only saved keys, from an object
       (globalThis as { window?: unknown }).window = { innerWidth: 1600, localStorage: { getItem: () => text, setItem: () => {} } };
       const state = initialState(false, false);
       assert.equal(typeof state.heat.contrast, 'number', text);
-      assert.equal(state.theme, 'light', text);
+      assert.equal(state.theme, 'daylight', text);
     }
   } finally {
     if (real === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real;
@@ -334,9 +334,9 @@ test('the light-or-dark key follows a theme of one\'s own across kinds, and forg
   const made = newTheme('light', [], copyWord, 1)!;
   registerCustomThemes([made]);
   assert.deepEqual(slotsFor({ light: made.id, dark: 'terminal' }, made.id), { light: made.id, dark: 'terminal' });
-  // Its background made dark: it moves to the dark slot, and the light slot goes back to Light.
+  // Its background made dark: it moves to the dark slot, and the light slot goes back to the default light theme (Colour-blind safe, light).
   registerCustomThemes([{ ...made, colors: { ...made.colors, bg: '#101418', panel: '#141a20' } }]);
-  assert.deepEqual(slotsFor({ light: made.id, dark: 'terminal' }, made.id), { light: 'light', dark: made.id });
+  assert.deepEqual(slotsFor({ light: made.id, dark: 'terminal' }, made.id), { light: 'daylight', dark: made.id });
   // Deleted: both slots that held it go back to the defaults.
   registerCustomThemes([]);
   assert.deepEqual(slotsFor({ light: 'latte', dark: made.id }, 'latte'), { light: 'latte', dark: 'terminal' });
