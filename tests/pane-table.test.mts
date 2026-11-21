@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PaneTable, headed, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
+import { PaneTable, REST_HOLD_MS, REST_STAND_MS, headed, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
 import { fundingAt, type FundingNow, type FundingRow } from '../src/app/funding.ts';
 import { fundingAllCardLines, fundingAllNow, fundingCardLines, fundingTableRows } from '../src/app/panes/funding-pane.ts';
 import { lsCardLines, lsTableRows } from '../src/app/panes/ls-pane.ts';
@@ -368,33 +368,48 @@ function placedBefore(measure: (text: string) => number, room: TableRoom, spec: 
   return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0, complete: titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n)) };
 }
 
-/** What of a placed table the card's lines must never move: the rows, their columns, their place and their height. */
+/** What of a placed table the moment's lines must never move: the rows, their columns, their place and their height. */
 const rowsBlock = (at: ReturnType<typeof placeTable>) => at && { rowH: at.rowH, titles: at.titles, foot: at.foot, cols: at.cols, left: at.left, plate: at.plate, width: at.width, y0: at.y0, first: at.first, rights: at.rights, height: at.height };
 
-test('the rows go exactly where they went before the card\'s lines, with lines or without; complete only with titles, foot, the card\'s columns and every line', () => {
+test('the rows go where they went before the card\'s lines but for their height, which the lines said at rest set and the moment\'s lines never do; complete only with titles, foot, the card\'s columns and every line', () => {
   let seed = 7;
   const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647, int = (lo: number, hi: number): number => lo + Math.floor(rnd() * (hi - lo + 1));
   const words = ['Open interest', 'Δ', 'Candle before', 'Rank in view', 'Unusual', 'New longs', 'Shorts closed', 'Buy share', 'Its baseline'];
+  const someLines = (): InfoLine[] => Array.from({ length: int(0, 7) }, (_, j) => rnd() < 0.2 ? { text: 'note '.repeat(int(1, 12)).trim(), wrap: true, ...(rnd() < 0.3 ? { label: words[j % words.length]! } : {}) } : { label: words[int(0, words.length - 1)]!, text: 'v'.repeat(int(1, 14)), bold: rnd() < 0.3, rule: rnd() < 0.2 });
+  let centred = 0;
   for (let i = 0; i < 20_000; i++) {
     const n = int(2, 6), k = int(1, 9), minCols = int(2, n), plateMin = rnd() < 0.5 ? undefined : int(-1, n + 2), cardCols = rnd() < 0.5 ? undefined : int(0, n + 1);
     const heads = Array.from({ length: n }, (_, c) => c ? 'H'.repeat(int(1, 6)) : '');
     const rows = Array.from({ length: k }, () => Array.from({ length: n }, () => ({ text: 'x'.repeat(int(1, 9)) })));
-    const lines: InfoLine[] = Array.from({ length: int(0, 7) }, (_, j) => rnd() < 0.2 ? { text: 'note '.repeat(int(1, 12)).trim(), wrap: true, ...(rnd() < 0.3 ? { label: words[j % words.length]! } : {}) } : { label: words[int(0, words.length - 1)]!, text: 'v'.repeat(int(1, 14)), bold: rnd() < 0.3, rule: rnd() < 0.2 });
+    // The moment's lines, another moment's, and those said at rest: often the moment's own (the table at rest reads the newest, as it does under a pointer on it).
+    const lines = someLines(), other = someLines(), rest = rnd() < 0.3 ? lines : someLines();
     const r: TableRoom = { w: int(150, 1200), h: int(20, 400), plotW: int(80, 800), axisW: 60, pointing: rnd() < 0.5 };
     const s = { heads, rows, minCols, ...(plateMin === undefined ? {} : { plateMin }), ...(cardCols === undefined ? {} : { cardCols }) };
-    const before = placedBefore(measure, r, s), bare = placeTable(measure, r, s), got = placeTable(measure, r, { ...s, lines });
-    const tag = JSON.stringify({ r, n, k, minCols, plateMin, cardCols, lines: lines.length });
-    assert.deepEqual(bare, before, tag);
-    assert.deepEqual(rowsBlock(got), rowsBlock(before), tag);
-    if (!got) continue;
-    if (!got.complete) { assert.equal(got.summary.length, 0, tag); continue; }
-    assert.ok(got.titles && got.foot, tag);
+    const before = placedBefore(measure, r, s), got = placeTable(measure, r, { ...s, lines }, rest), old = placeTable(measure, r, { ...s, lines });
+    const tag = JSON.stringify({ r, n, k, minCols, plateMin, cardCols, lines: lines.length, rest: rest.length });
+    // Nothing said at rest: exactly where the rows went before the card's lines, with lines or without.
+    assert.deepEqual(placeTable(measure, r, s), before, tag);
+    assert.deepEqual(rowsBlock(old), rowsBlock(before), tag);
+    // The moment's lines move nothing: another moment's, or none, leave the rows where they are.
+    assert.deepEqual(rowsBlock(placeTable(measure, r, { ...s, lines: other }, rest)), rowsBlock(got), tag);
+    assert.deepEqual(rowsBlock(placeTable(measure, r, s, rest)), rowsBlock(got), tag);
+    if (!before) { assert.equal(got, null, tag); continue; }
+    // What is said at rest sets the rows' height in the pane and nothing else (whether there is a table, its rows, columns and place across), and
+    // only lifts them, so it never takes room the moment's lines had: a table complete without it is complete with it, and the card stays hidden.
+    assert.deepEqual({ ...rowsBlock(got)!, y0: 0, first: 0 }, { ...rowsBlock(before)!, y0: 0, first: 0 }, tag);
+    assert.ok(got!.y0 <= before.y0 && got!.y0 >= 0 && got!.first - got!.y0 === before.first - before.y0, tag);
+    if (old!.complete) assert.ok(got!.complete, tag);
+    if (!got!.complete) { assert.equal(got!.summary.length, 0, tag); continue; }
+    assert.ok(got!.titles && got!.foot, tag);
     if (lines.length) {
-      assert.ok(got.summary.length > 0 && got.y0 + got.height + got.summaryH <= r.h - 2, tag);
-      assert.ok(got.summaryW >= got.width && got.summaryW <= (got.plate ? r.plotW * 0.6 : r.w - r.axisW - r.plotW - 4), tag);
-      assert.ok(got.summary.every(row => (row.label !== undefined ? measure(row.label) + (row.text ? 14 + measure(row.text) : 0) : measure(row.text)) <= got.summaryW - 10), tag);
+      assert.ok(got!.summary.length > 0 && got!.y0 + got!.height + got!.summaryH <= r.h - 2, tag);
+      assert.ok(got!.summaryW >= got!.width && got!.summaryW <= (got!.plate ? r.plotW * 0.6 : r.w - r.axisW - r.plotW - 4), tag);
+      assert.ok(got!.summary.every(row => (row.label !== undefined ? measure(row.label) + (row.text ? 14 + measure(row.text) : 0) : measure(row.text)) <= got!.summaryW - 10), tag);
+      // Where the moment says what is said at rest, the table and those lines stand in the middle of the pane.
+      if (rest === lines) { assert.ok(Math.abs(got!.y0 + (got!.height + got!.summaryH) / 2 - r.h / 2) <= 0.5, tag); centred++; }
     }
   }
+  assert.ok(centred > 300, `the centred case was reached ${centred} times`);
 });
 
 /** Some of an Open Interest card's lines, as a table gets them: figures with labels, a plain status line and the first of a group with its hairline. */
@@ -413,6 +428,15 @@ test('the card\'s lines hang under the foot where the pane has room below the ro
   }
   // From 247 the 174 px of rows and lines fit with the rows in the middle (from 71 to 176, the lines to 245).
   assert.deepEqual([246, 247].map(h => placeTable(measure, room({ w: 400 + 60 + 130, h }), { ...spec(), lines: OI_LINES })!.complete), [false, true]);
+  // Where they are what the table says at rest, the rows and the lines stand in the middle together: in 300 from 63 to 237 (the rows 35 px higher),
+  // and they fit from 178 (2 to 176) instead of 247.
+  const still = placeTable(measure, room({ w: 400 + 60 + 130, h: 300 }), { ...spec(), lines: OI_LINES }, OI_LINES)!;
+  assert.deepEqual([still.y0, still.first, still.complete, still.y0 + still.height + still.summaryH], [63, 78, true, 237]);
+  assert.deepEqual([177, 178].map(h => placeTable(measure, room({ w: 400 + 60 + 130, h }), { ...spec(), lines: OI_LINES }, OI_LINES)!.complete), [false, true]);
+  // Lines that would not be drawn at rest (too many for the pane, or a table without its titles) leave the rows in the middle alone.
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 130, h: 177 }), { ...spec(), lines: OI_LINES }, OI_LINES)!.y0, Math.round(177 / 2 - 105 / 2));
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 130, h: 87 }), { ...spec(), lines: [] }, OI_LINES)!.y0, Math.round(87 / 2 - 6 * 13 / 2), 'five rows and the foot at 13 px, no titles');
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 110, h: 300 }), { ...spec(), lines: [] }, [{ label: 'Δ', text: '−431' }])!.y0, 98, 'a column the card needs left out: one line would fit, but is never drawn');
   // A column left out is not complete, lines or none; every column with its titles and foot and no lines is.
   assert.equal(placeTable(measure, room({ w: 400 + 60 + 110, h: 300 }), { ...spec(), lines: OI_LINES })!.complete, false);
   assert.equal(placeTable(measure, room({ w: 400 + 60 + 110 }), spec())!.complete, false);
@@ -426,10 +450,10 @@ test('the rows never move for the card\'s lines: two moments with more lines and
   // Funding on Hyperliquid: an old hour says three lines, the newest (the pointer gone onto the table) six. The rows a click chooses stay put.
   const three: InfoLine[] = [{ text: 'Hyperliquid', bold: true }, { label: 'Each settlement', text: '+0.00041% / 1 h' }, { label: 'Settled at', text: 'Nov 21 09:00', color: 'muted' }];
   const six: InfoLine[] = [...three, { label: 'Buyers opened', text: '61%', bold: true, rule: true }, { label: 'New longs', text: '+12 BTC' }, { label: 'New shorts', text: '+7 BTC' }];
-  for (const h of [260, 360, 520]) {
-    const at = (lines: InfoLine[]) => placeTable(measure, room({ w: 400 + 60 + 200, h }), { ...spec(6), lines });
-    assert.deepEqual(rowsBlock(at(three)), rowsBlock(at(six)), `h ${h}`);
-    assert.deepEqual(rowsBlock(at(six)), rowsBlock(at([])), `h ${h}`);
+  for (const h of [260, 360, 520]) for (const rest of [[], three, six]) {
+    const at = (lines: InfoLine[]) => placeTable(measure, room({ w: 400 + 60 + 200, h }), { ...spec(6), lines }, rest);
+    assert.deepEqual(rowsBlock(at(three)), rowsBlock(at(six)), `h ${h}, ${rest.length} said at rest`);
+    assert.deepEqual(rowsBlock(at(six)), rowsBlock(at([])), `h ${h}, ${rest.length} said at rest`);
   }
   // The lines are never the table's for the pointer: it reads the time there, so drawing them or not changes nothing it owns.
   const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
@@ -442,6 +466,61 @@ test('the rows never move for the card\'s lines: two moments with more lines and
   const owned = [table.owns(withLines.left + 3, { y: underFoot }), table.owns(withLines.left + 3, { y: overRow })];
   table.draw(ctx, palette, r, { ...spec(6), foot: 'then', focus: -1, lines: [] });
   assert.deepEqual([...owned, table.owns(withLines.left + 3, { y: underFoot }), table.owns(withLines.left + 3, { y: overRow })], [false, true, false, true]);
+});
+
+test('a table stands in the middle with the lines it says at rest, holds them while a pointer reads another moment or rests on the pane, and lets the newest moment\'s lines come and go without moving', () => {
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const palette = { panel: 'P', line: 'L', text: 'T', muted: 'M' };
+  let t = 0;
+  const table = new PaneTable(host, null, () => t);
+  const draw = (lines: InfoLine[], over: Partial<TableRoom> = {}, s: Partial<TableSpec> = {}) => table.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 300, ...over }), { ...spec(), foot: 'then', focus: -1, lines, ...s });
+  // No frame at rest yet: the rows alone in the middle, as before the lines (from 98).
+  assert.equal(draw(OI_LINES)!.y0, 98);
+  // The first frame at rest: the rows and their lines in the middle together at once (174 px from 63, so 150 is their middle).
+  const still = draw(OI_LINES, { rest: true })!;
+  assert.deepEqual([still.y0, still.complete, still.y0 + (still.height + still.summaryH) / 2], [63, true, 150]);
+  // A pointer on the map reads another candle, with fewer lines, more, or none: the rows stay where they stand.
+  const two = OI_LINES.slice(0, 2), five = [...OI_LINES, { label: 'Shorts closed', text: '+5 BTC' }];
+  assert.deepEqual([draw(two)!.y0, draw(five)!.y0, draw([])!.y0], [63, 63, 63]);
+  // The pointer onto the table: no pointer reads a moment there (it reads the newest) but one is on the pane, and the newest says a line more
+  // meanwhile, for long: still nothing moves under it.
+  t = 10_000; assert.equal(draw(five, { rest: true, pointing: true })!.y0, 63);
+  t = 30_000; assert.equal(draw(five, { rest: true, pointing: true })!.y0, 63);
+  // At rest a new candle says less: held while the four lines were said within REST_HOLD_MS, then the rows come down (two lines, 35 px: from 80).
+  t = 40_000; assert.equal(draw(two, { rest: true })!.y0, 63);
+  t = REST_HOLD_MS; assert.equal(draw(two, { rest: true })!.y0, 63);
+  t = REST_HOLD_MS + 1; assert.equal(draw(two, { rest: true })!.y0, 80);
+  // More lines said for a moment (a note in a candle's first second) move nothing; once they have stood REST_STAND_MS, the rows go up (84 px: from 56).
+  t += 1_000; assert.equal(draw(five, { rest: true })!.y0, 80);
+  t += 16; assert.equal(draw(two, { rest: true })!.y0, 80);
+  t += 1_000; assert.equal(draw(five, { rest: true })!.y0, 80);
+  t += REST_STAND_MS - 1; assert.equal(draw(five, { rest: true })!.y0, 80);
+  t += 1; assert.equal(draw(five, { rest: true })!.y0, 56);
+  // The newest coming and going between four and five lines after that moves nothing either.
+  for (let i = 0; i < 20; i++) { t += 3_000; assert.equal(draw(i % 2 ? five : OI_LINES, { rest: true })!.y0, 56, `step ${i}`); }
+  // Another table starts afresh, its lines at once: other titles, or another heading (a venue, a band), or the pane resized.
+  assert.equal(draw(two, { rest: true }, { heads: ['', 'A', 'B', 'C'] })!.y0, 80);
+  assert.equal(draw([{ text: 'Binance', bold: true }, ...two], { rest: true })!.y0, Math.round(150 - (105 + 50) / 2));
+  assert.equal(draw(two, { rest: true, h: 310 })!.y0, Math.round(155 - (105 + 35) / 2));
+  // Kept through clear() and through a frame at rest where no table could be drawn: a plate, drawn under a pointer only, stands with them.
+  const narrow = new PaneTable(host, null, () => t), at = (lines: InfoLine[], over: Partial<TableRoom>) => narrow.draw(ctx, palette, room({ w: 400 + 60 + 90, h: 300, ...over }), { ...spec(), foot: 'then', focus: -1, lines });
+  assert.equal(at(OI_LINES, { rest: true }), null, 'no room beside the plot and no pointer: no table');
+  narrow.clear();
+  const plate = at(two, { pointing: true })!;
+  assert.deepEqual([plate.plate, plate.y0], [true, 63], 'the lines said at rest (four), not the moment\'s (two)');
+});
+
+test('Depth\'s table and its three lines stand in the middle of its pane (Karl, 2026-11-21: they stood 25 px low in a pane 272 px high)', () => {
+  // Five bands with the titles and the foot (105 px at 15), then the band, its balance and its rank (a hairline and three lines, 50 px).
+  const lines: InfoLine[] = [{ text: '±20%', bold: true }, { label: 'Imbalance', text: 'bids +8.1%', color: 'below', bold: true }, { label: 'Rank in view', text: '525 of 593' }];
+  const depth = { heads: ['', 'Bid', 'Ask', 'Δ', '×'], minCols: 3, rows: Array.from({ length: 5 }, () => cells('±1.25%', '663M', '747M', '−83.2M', '1.13×')), lines };
+  const r = room({ w: 1800, h: 272, plotW: 1200, axisW: 60 });
+  const before = placeTable(measure, r, depth)!, after = placeTable(measure, r, depth, lines)!;
+  const middle = (at: typeof after) => at.y0 + (at.height + at.summaryH) / 2 - 136;
+  assert.deepEqual([before.y0, before.complete, middle(before)], [84, true, 25.5], 'the rows in the middle, the lines under them');
+  assert.deepEqual([after.y0, after.complete, middle(after)], [59, true, 0.5], 'the rows 25 px higher, the whole in the middle');
 });
 
 test('the card\'s lines may be wider than the rows: the columns keep their places and the lines\' values end at their own edge; a sentence wraps', () => {

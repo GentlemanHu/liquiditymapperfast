@@ -262,7 +262,7 @@ export class FundingPane extends TimePane {
    * `lines`: what the card says that the rows do not (one venue: when it settles, who opened), under the rows.
    */
   #drawTable(venue: FundingVenue | null, shown: FundingView | null, tf: number, at: number, now: number, pointed: boolean, all?: { views: ReadonlyMap<FundingVenue, FundingView>; venues: readonly VenueFunding[]; median: { per8h: number } | null }, lines: readonly InfoLine[] = []): ReturnType<PaneTable['draw']> {
-    const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null };
+    const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null, rest: !pointed };
     const listed = FUNDING_VENUES.filter(x => coin.markets[x]), heads = ['', t('Funding'), 'APR', t('Premium')], minCols = 2;
     // One venue: a row that repeats the header; no table, and the popup stays.
     if (listed.length < 2) return null;
