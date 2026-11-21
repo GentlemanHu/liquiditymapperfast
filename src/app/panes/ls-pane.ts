@@ -60,8 +60,8 @@ export function shareText(long: number): string {
 
 /**
  * The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. The table says the readings and a dash for
- * none in its rows, the header's Series who each line counts and the header a venue a page cannot read: it keeps why a venue has no reading at a
- * moment (still being read, not read) and the notes on earlier readings and Bitget's.
+ * none in its rows, the header's Series who each line counts, the header a venue a page cannot read, a muted row earlier readings, and the help
+ * Bitget's 30 readings: it keeps why a venue has no reading at a moment (still being read, not read).
  */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
   const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true, table: false }];
@@ -76,10 +76,11 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
     if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
     if (!p && s.id.startsWith('bitget:')) noBitget = true;
     lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, table: false });
-    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true });
+    // Its row is muted, as its readout is, and the help says what muted means: the table leaves the sentence to the card.
+    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, table: false });
   }
   // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
-  if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true });
+  if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true, table: false });
   // Who each line counts, the venues of one population together: "Binance: top traders, by positions · Bybit, OKX: all accounts".
   const groups = new Map<LsPopulation, string[]>();
   for (const s of series) if (s.population) groups.set(s.population, [...(groups.get(s.population) ?? []), venueLabel(s.id)]);

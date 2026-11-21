@@ -557,6 +557,10 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   assert.deepEqual(tableLines(lsCardLines(series.filter(s => s.status === 'ok'), T + 30 * MIN, '1h')), [], 'every venue read: nothing the rows and the header do not say');
   const page = [...series, { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'serverOnly', points: [] }] as unknown as LsSeries[];
   assert.deepEqual(tableLines(lsCardLines(page, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'a venue a page cannot read: the header says so');
+  const older = [...series, { id: 'bitget:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T + 10 * H, long: 0.6 }] }, { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];
+  const card = lsCardLines(older, T + 30 * MIN, '1h').map(line => line.text);
+  assert.ok(card.some(text => /newest 30 readings/.test(text)) && card.some(text => /earlier readings/.test(text)), 'the card says both');
+  assert.deepEqual(tableLines(lsCardLines(older, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'Bitget\'s 30 readings and a muted row are the help\'s and the row\'s');
   assert.deepEqual([ls[0]!.text, ls[0]!.mark], ['could not be read', undefined]);
 });
 
