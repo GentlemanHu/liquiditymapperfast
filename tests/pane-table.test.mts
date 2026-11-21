@@ -342,7 +342,7 @@ test('the × column is the first to go beside the plot in the Liquidity Tracker 
 });
 
 /** The placement before the card's lines came under the rows (2026-11-18), for tables without them: where they go must not move. */
-function placedBefore(measure: (text: string) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin'>) {
+function placedBefore(measure: (text: string) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'cardCols'>) {
   const GAP = 7, PAD = 5, k = spec.rows.length, n = spec.heads.length;
   let rowH = 0, titles = true, foot = true;
   fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
@@ -364,19 +364,20 @@ function placedBefore(measure: (text: string) => number, room: TableRoom, spec: 
   const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
   const rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
-  return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, summary: [], height, complete: cols === n };
+  // Complete: with the columns the card needs (all of them unless the table says fewer).
+  return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, summary: [], height, complete: cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n)) };
 }
 
-test('a table without card lines goes exactly where it went before, and is complete exactly when it keeps every column', () => {
+test('a table without card lines goes exactly where it went before, and is complete exactly when it keeps the columns its card needs', () => {
   let seed = 7;
   const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647, int = (lo: number, hi: number): number => lo + Math.floor(rnd() * (hi - lo + 1));
   for (let i = 0; i < 20_000; i++) {
-    const n = int(2, 6), k = int(1, 9), minCols = int(2, n), plateMin = rnd() < 0.5 ? undefined : int(-1, n + 2);
+    const n = int(2, 6), k = int(1, 9), minCols = int(2, n), plateMin = rnd() < 0.5 ? undefined : int(-1, n + 2), cardCols = rnd() < 0.5 ? undefined : int(0, n + 1);
     const heads = Array.from({ length: n }, (_, c) => c ? 'H'.repeat(int(1, 6)) : '');
     const rows = Array.from({ length: k }, () => Array.from({ length: n }, () => ({ text: 'x'.repeat(int(1, 9)) })));
     const r: TableRoom = { w: int(150, 1200), h: int(20, 300), plotW: int(80, 800), axisW: 60, pointing: rnd() < 0.5 };
-    const s = { heads, rows, minCols, ...(plateMin === undefined ? {} : { plateMin }) };
-    assert.deepEqual(placeTable(measure, r, s), placedBefore(measure, r, s), JSON.stringify({ r, n, k, minCols, plateMin }));
+    const s = { heads, rows, minCols, ...(plateMin === undefined ? {} : { plateMin }), ...(cardCols === undefined ? {} : { cardCols }) };
+    assert.deepEqual(placeTable(measure, r, s), placedBefore(measure, r, s), JSON.stringify({ r, n, k, minCols, plateMin, cardCols }));
   }
 });
 
@@ -423,6 +424,18 @@ test('on a plate the whole table goes where it fits in 60 % of the plot, else th
   // The rows alone beside the plot win over a whole table on a plate: the table does not jump to the left when the pointer comes.
   const beside = placeTable(measure, room({ w: 400 + 60 + 110, h: 300, pointing: true }), { ...spec(), lines: OI_LINES })!;
   assert.deepEqual([beside.plate, beside.cols, beside.complete], [false, 3, false]);
+});
+
+test('a table whose card speaks of the total (cardCols 1) stays complete when its own last columns go, never below minCols', () => {
+  // The lines need 124 (see above); four columns 126, three 99. A strip of 128 holds three columns with the lines.
+  const strip = room({ w: 400 + 60 + 128, h: 300 });
+  const three = placeTable(measure, strip, { ...spec(), lines: OI_LINES, cardCols: 1 })!;
+  assert.deepEqual([three.cols, three.complete, three.summary.length, three.width], [3, true, 4, 124], 'the × first: the card has nothing in it');
+  const partial = placeTable(measure, strip, { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([partial.cols, partial.complete, partial.summary.length], [3, false, 0], 'by default every column says something of the card');
+  assert.equal(placeTable(measure, strip, { ...spec(5, 4), lines: OI_LINES, cardCols: 1 }), null, 'minCols 4 holds: no whole table of three, and no plate without a pointer');
+  const rowsOnly = placeTable(measure, room({ w: 400 + 60 + 110 }), { ...spec(), cardCols: 1 })!;
+  assert.deepEqual([rowsOnly.cols, rowsOnly.complete], [3, true], 'no lines: the columns it keeps are enough');
 });
 
 test('a card\'s lines in a table: those it leaves out are gone, venue marks and pieces too, and a heading stands only over lines', () => {

@@ -40,6 +40,12 @@ export interface TableSpec {
    * or empty, where the rows say all the card does.
    */
   lines?: readonly InfoLine[];
+  /**
+   * The fewest columns a complete table keeps: those that say something the card says (Funding's APR and premium, Long/Short's shares, Depth's
+   * bands and ×), by default all of them. A table whose card's figures are all in its lines (Open Interest, the Liquidity Tracker and Delta, whose
+   * card speaks of the total) gives 1: the columns after it are the table's own, and one that goes (the × first) leaves the table complete.
+   */
+  cardCols?: number;
 }
 
 /** The pane's room, in plot coordinates: its width and height, the plot's width, the price axis's and whether a pointer (or a finger) is on the pane. */
@@ -111,12 +117,15 @@ export function ratioCell(first: number, second: number, p: Pick<Palette, 'bid' 
 
 /**
  * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face).
- * First the whole table, every column with the card's lines under the rows, beside the plot; else the rows alone beside the plot, as many columns
- * as fit; else, under a pointer, the whole table on a plate; else the rows alone on a plate, down to `plateMin` columns. Only the whole table is
- * complete. The rows' height is the same rule with the lines or without: the titles, then the foot, go where the pane is short.
+ * First the whole table beside the plot: the card's lines under the rows and as many columns as fit, never fewer than `cardCols` (or `minCols`);
+ * else the rows alone beside the plot, as many columns as fit; else, under a pointer, the whole table on a plate (keeping the columns a plate
+ * keeps); else the rows alone on a plate, down to `plateMin` columns. Only a whole table is complete. The rows' height is the same rule with the
+ * lines or without: the titles, then the foot, go where the pane is short.
  */
-export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines'>): TablePlace | null {
+export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>): TablePlace | null {
   const k = spec.rows.length, n = spec.heads.length, lines = spec.lines ?? [];
+  // The fewest columns a complete table keeps: those that say something the card says, and never fewer than the table needs to be one.
+  const need = Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
   type Fit = { rowH: number; titles: boolean; foot: boolean };
   // `more` rows and `px` pixels under the rows (the card's lines and their hairlines) besides the table's own.
   const fit = (more: number, px: number): Fit | null => {
@@ -137,24 +146,36 @@ export function placeTable(measure: (text: string, bold?: boolean) => number, ro
     for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]! + (c === 0 ? w - width(cols) : 0); rights.push(x); x += GAP; }
     return { rowH: f.rowH, titles: f.titles, foot: f.foot, cols, left, plate, width: w, y0, first, rights, summary, height, complete };
   };
-  // The whole table: every column and the card's lines, at least as wide as the widest line that does not wrap (a label, its value and two gaps
-  // between), the sentences wrapped to that width.
-  let whole: { w: number; summary: InfoRow[]; px: number; f: Fit } | null = { w: width(n), summary: [], px: 0, f: rowsFit };
-  if (lines.length) {
-    const natural = Math.max(0, ...lines.filter(line => line.wrap !== true).map(line => (line.label !== undefined ? measure(line.label) + 2 * GAP : 0) + measure(line.text, line.bold === true)));
-    const w = Math.max(width(n), natural + 2 * PAD), summary = layoutInfo((text, bold) => measure(text, bold), lines, w - 2 * PAD).rows;
+  // The whole table with `cols` columns: at least as wide as the widest line that does not wrap (a label, its value and two gaps between), its
+  // sentences wrapped to that width; its rows' height, or null where the pane is too short for the lines.
+  const natural = Math.max(0, ...lines.filter(line => line.wrap !== true).map(line => (line.label !== undefined ? measure(line.label) + 2 * GAP : 0) + measure(line.text, line.bold === true)));
+  const wide = (cols: number): number => Math.max(width(cols), lines.length ? natural + 2 * PAD : 0);
+  const whole = (w: number): { summary: InfoRow[]; px: number; f: Fit } | null => {
+    if (!lines.length) return { summary: [], px: 0, f: rowsFit };
+    const summary = layoutInfo((text, bold) => measure(text, bold), lines, w - 2 * PAD).rows;
     // The first line's hairline is the one under the rows.
     const px = SEP + summary.filter((row, i) => row.rule && i > 0).length * RULE, f = fit(summary.length, px);
-    whole = f ? { w, summary, px, f } : null;
-  }
-  if (whole && whole.w <= free - 4) return at(n, room.plotW + 4, false, whole.w, whole.f, whole.summary, whole.px, true);
+    return f ? { summary, px, f } : null;
+  };
+  // The most columns that fit `space` with the lines, down to `fewest`; a narrower table only wraps more, so the first too short for its lines ends it.
+  const wholeIn = (space: number, fewest: number, left: number, plate: boolean): TablePlace | null => {
+    for (let cols = n; cols >= fewest; cols--) {
+      const w = wide(cols); if (w > space) continue;
+      const it = whole(w);
+      return it ? at(cols, left, plate, w, it.f, it.summary, it.px, true) : null;
+    }
+    return null;
+  };
+  const beside = wholeIn(free - 4, need, room.plotW + 4, false);
+  if (beside) return beside;
   let cols = n;
   while (cols >= spec.minCols && width(cols) > free - 4) cols--;
   if (cols >= spec.minCols) return at(cols, room.plotW + 4, false, width(cols), rowsFit, [], 0, false);
   if (!room.pointing) return null;
-  if (whole && whole.w <= room.plotW * 0.6) return at(n, 6, true, whole.w, whole.f, whole.summary, whole.px, true);
   // On a plate the last columns go first too, down to `plateMin` (every column unless the table says otherwise).
   const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
+  const plate = wholeIn(room.plotW * 0.6, Math.max(least, need), 6, true);
+  if (plate) return plate;
   for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
   if (width(cols) > room.plotW * 0.6) return null;
   return at(cols, 6, true, width(cols), rowsFit, [], 0, false);

@@ -1383,7 +1383,7 @@ export class OiPane extends TimePane {
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
-      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines })?.complete) this.#lines = null;
+      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines })?.complete) this.#lines = null;
     }
     say(`${t('base')} <b>${fmtPrice(bar[4], 1)}</b> Δ <b class="${d > 0 ? 'bid' : d < 0 ? 'ask' : ''}">${sign}${fmtPrice(Math.abs(d), 1)}</b>${whoText(who?.get(bar[0]), d)}${sigma}${source}${stale ? ` <span class="ask">${t('last sample {n} min ago', { n: Math.round(age / 60_000) })}</span>` : ''}`);
   }
@@ -1634,7 +1634,7 @@ export class LtPane extends TimePane {
       const foot = `${s.estimated ? '≈ ' : ''}${state.hover ? clock(s.times[at]!, true) : `${t('newest')} ${clock(s.times[at]!)}`}`;
       // Per level is what the series was worked out with (its parts carry the weights), not the setting, which a new series may still be on its way for.
       const heads = ltHeads(parts), lines = headed(t('Total'), tableLines(over === at && this.#lines ? this.#lines : cardAt(at)));
-      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, plateMin: heads.length - 1, focus: -1, foot, rows: ltTableRows(rows, p), lines })?.complete) this.#lines = null;
+      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines })?.complete) this.#lines = null;
     }
   }
 }
