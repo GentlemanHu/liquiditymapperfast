@@ -77,9 +77,10 @@ const GAP = 7, PAD = 5;
 const ROW_HEIGHTS = [15, 14, 13, 12] as const;
 /**
  * The lines a table says at rest change with the newest moment: on a one-minute chart the Open Interest card says six lines as a candle opens and
- * nine before it closes (who opened and closed comes in), and a note flashes for a frame; the Liquidity Tracker's Ratio line comes and goes at 1.00×
- * (measured at rest over 40 minutes, 2026-11-21). The rows stand with the largest block of lines that stood `REST_STAND_MS` within the last
- * `REST_HOLD_MS`: a larger one lifts them once it has stood, a smaller one lets them down only once the larger has not been said for that long.
+ * up to nine before it closes (who opened and closed comes in), and a note flashes for a frame; the Liquidity Tracker's Ratio line comes and goes at
+ * 1.00× (watched at rest, 2026-11-21: held to each moment's lines, Open Interest's rows moved 97 times in 22 minutes). The rows stand with the largest
+ * block of lines that stood `REST_STAND_MS` within the last `REST_HOLD_MS`: a larger one lifts them once it has stood, a smaller one lets them down
+ * only once the larger has not been said for that long.
  */
 export const REST_STAND_MS = 2_000, REST_HOLD_MS = 180_000;
 /** The room under the rows for the hairline that sets the card's lines apart, and for each hairline of the card's own between them. */
