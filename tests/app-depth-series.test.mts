@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { depthBands, depthSeries, touchOf, type DepthStore } from '../src/app/depth-series.ts';
+import { depthBands, depthNow, depthSeries, freshBooks, touchOf, type DepthStore } from '../src/app/depth-series.ts';
 
 const MIN = 60_000, STEP = 1;
 /** One instrument's minutes: each a book of `bids` and `asks` as [price, usd], on a grid of `STEP`. */
@@ -92,4 +92,33 @@ test('each pixel column counts the books that had a column there: a book with no
   const bands = depthBands([a, b], MIN, 0, 2 * MIN, 2, [0.01]);
   assert.deepEqual([...bands.present], [2, 1]);
   assert.equal(depthBands([], MIN, 0, MIN, 3, [0.01]).present.length, 3);
+});
+
+test('the books now (the Depth table at the live edge, at any zoom): their live columns, every band measured from the median of their touches', () => {
+  const minute = 50 * MIN, radii = [0.002, 0.02], at = minute + 17_000;
+  // Three live books, one far off on its own (a stale venue): the median touch, 1,002, keeps the bands where the other two are.
+  const books = [store([bookAt(minute, 1_000)]), store([bookAt(minute, 1_002)]), store([bookAt(minute, 1_100)])];
+  const now = depthNow(books, minute, radii, at);
+  assert.ok(now);
+  // ±0.2 % of 1,002 is 999.996 to 1,004.004: the first book's asks at 1,001 and 1,003 (700), the second's bid at 1,001 (500) and ask at 1,003 (500).
+  assert.deepEqual([...now.bid], [500, 1_600], 'bids: 500 inside ±0.2 %, both books\' 800 inside ±2 % (981.96 to 1,022.04)');
+  assert.deepEqual([...now.ask], [1_200, 1_600], 'asks: 700 + 500 inside ±0.2 %, 800 + 800 inside ±2 %');
+  assert.ok(Math.abs(now.bidCoin[0]! - 500 / 1_001) < 1e-6, 'coins: each bin\'s dollars over its own price (single precision)');
+  assert.equal(now.present, 3, 'the book off on its own is counted as held, with nothing inside the bands');
+  assert.equal(now.at, at, 'and when the live frame came, which the pane checks before trusting it');
+  // A book of another minute (one whose feed stopped) is not counted: two books, and the bands as theirs alone.
+  const mixed = depthNow([store([bookAt(minute, 1_000)]), store([bookAt(minute, 1_002)]), store([bookAt(minute - MIN, 1_002)])], minute, radii, at);
+  assert.ok(mixed);
+  assert.equal(mixed.present, 2);
+  assert.deepEqual([...mixed.ask], [1_200, 1_600], 'the middle of two touches is the upper one (1,002): the same bins inside');
+  // No book, or none with both sides, gives no reading.
+  assert.equal(depthNow([store([bookAt(minute - MIN, 1_000)])], minute, radii, at), null);
+  assert.equal(depthNow([], minute, radii, at), null);
+  assert.equal(depthNow([store([{ t: minute, bids: [[999, 500]], asks: [] }])], minute, radii, at), null);
+});
+
+test('the books now count a book no older than the recorder would sample, by the frame\'s own clock', () => {
+  const stamps = new Map([['a', 1_000_000], ['b', 1_000_000 - 45_000], ['c', 1_000_000 - 45_001], ['d', 1_000_000 - 170_000]]);
+  assert.deepEqual(freshBooks(['a', 'b', 'c', 'd', 'e'], stamps, 1_000_000, 45_000), ['a', 'b'], 'up to 45 s old; a frame carries books up to 180 s old; one with no time is not counted');
+  assert.deepEqual(freshBooks(['d', 'a'], stamps, 1_000_000, 45_000), ['a'], 'in the order asked');
 });

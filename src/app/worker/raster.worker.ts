@@ -1,10 +1,11 @@
 import { loadKernels, type Kernels } from '../kernels.ts';
 import { gridStepFor } from '../../shared/grid.ts';
+import { STALE_MS } from '../../shared/recorder.ts';
 import type { ColumnSet, LiveBook } from '../wire.ts';
 import { ltSeries, type LtParams, type LtParts, type LtStore } from '../lt.ts';
 import { LT_FIELDS } from '../../shared/lt-sample.ts';
 import { shareInCell, type CellShare } from '../cell-sources.ts';
-import { depthBands } from '../depth-series.ts';
+import { depthBands, depthNow, freshBooks, type DepthNow } from '../depth-series.ts';
 import { dropAbsent } from './membership.ts';
 import { RecordedColumns, type ColumnStore as Store } from './column-store.ts';
 
@@ -19,7 +20,7 @@ export type WorkerIn =
   | { type: 'columnsUse'; stepMs: number }
   /** Forget these instruments' columns at this step, or all of its (`ids` null). */
   | { type: 'columnsDrop'; stepMs: number; ids: string[] | null }
-  | { type: 'live'; books: LiveBook[]; now: number }
+  | { type: 'live'; books: LiveBook[]; now: number; asOf?: number }
   | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean }
   | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; radii: number[] }
   | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams; /** Read the lane's trackers (`ltLane`) in place of the columns'. */ lane?: boolean; /** Each market's own part too (`LtParts`, in the order of `enabled`). */ parts?: boolean }
@@ -32,7 +33,7 @@ export interface RasterStats { p15: number; p50: number; p96: number; max: numbe
 export type WorkerOut =
   | { type: 'ready' }
   | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number }
-  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; stepMs: number }
+  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; stepMs: number; newest: DepthNow | null }
   | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number; parts?: LtParts; approx?: Uint8Array }
   | { type: 'cell'; id: number; items: CellShare[] }
   | { type: 'error'; message: string };
@@ -49,6 +50,9 @@ const recorded = new RecordedColumns(COLUMN_MS);
 let lane = new Map<string, LtStore>();
 let laneStepMs = COLUMN_MS;
 const live = new Map<string, Store & { minute: number }>();
+/** Each live book's own time (`LiveBook.timestamp`), and the last frame's: its time on the page's clock and on its source's (`LevelsFrame.asOf`). */
+const liveStamps = new Map<string, number>();
+let liveFrame = { now: -Infinity, asOf: -Infinity };
 const steps = new Map<string, number>();
 
 /** Convert the current book of one instrument into a single sparse column on the instrument's grid. */
@@ -137,8 +141,12 @@ function depth(message: Extract<WorkerIn, { type: 'depth' }>): void {
   const held = recorded.current;
   const stores = message.enabled.map(id => held.get(id)).filter((rec): rec is Store => rec !== undefined);
   const { k, bid, ask, bidCoin, askCoin, present, centred } = depthBands(stores, recorded.stepMs, message.t0, message.t1, message.w, message.radii);
+  // The books as they stand now (their live columns), which the table reads at the live edge whatever the zoom: those the recorder would
+  // sample, no older than its STALE_MS by the frame's own clock (a frame carries books up to four times that old).
+  const lives = freshBooks(message.enabled, liveStamps, liveFrame.asOf, STALE_MS).map(id => live.get(id)).filter((rec): rec is Store & { minute: number } => rec !== undefined);
+  const newest = lives.length ? depthNow(lives, Math.max(...lives.map(rec => rec.minute)), message.radii, liveFrame.now) : null;
   // `present` counts the books held (a market with none at all is not among the stores): the pane compares it with the markets it asked for.
-  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin, present, centred, stepMs: recorded.stepMs }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer, present.buffer, centred.buffer]);
+  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin, present, centred, stepMs: recorded.stepMs, newest }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer, present.buffer, centred.buffer]);
 }
 
 /** Which instruments make up one cell of the map, so the popup can say where the liquidity under the pointer comes from. */
@@ -190,6 +198,10 @@ scope.onmessage = event => {
     else if (message.type === 'columnsDrop') recorded.drop(message.stepMs, message.ids);
     else if (message.type === 'live') {
       dropAbsent(live, message.books.map(book => book.id));
+      dropAbsent(liveStamps, message.books.map(book => book.id));
+      // A source that sends no time of its own: its newest book's, on the same clock as the books' own times.
+      const newestBook = message.books.reduce((at, book) => Math.max(at, Number.isFinite(book.timestamp) ? book.timestamp : -Infinity), -Infinity);
+      liveFrame = { now: message.now, asOf: Number.isFinite(message.asOf) ? message.asOf! : Number.isFinite(newestBook) ? newestBook : message.now };
       for (const book of message.books) {
         let step = steps.get(book.id);
         if (!step) {
@@ -199,6 +211,7 @@ scope.onmessage = event => {
         }
         const column = liveColumn(book, step, message.now);
         if (column) live.set(book.id, column); else live.delete(book.id);
+        liveStamps.set(book.id, book.timestamp);
       }
     } else if (message.type === 'ltLane') {
       laneStepMs = message.stepMs;

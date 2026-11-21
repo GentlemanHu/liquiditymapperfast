@@ -49,6 +49,71 @@ export function readAt(found: number, time: number, newest: number, newestT: num
   return newest >= 0 && newestT !== undefined && time >= newestT ? newest : -1;
 }
 
+/** The last of `rows` (ordered by fetch time) fetched at or before `time`, or -1. */
+function fetchedBy(rows: readonly { fetchedAt: number }[], time: number): number {
+  let lo = 0, hi = rows.length - 1, at = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (rows[mid]!.fetchedAt <= time) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+  return at;
+}
+
+/**
+ * Which liquidation levels row each of `w` equal columns over [t0, t1] draws (-1: none): the row in force at the column's end (the newest
+ * fetched by then, while it stands, `holdMs`), the column holding `until` (now, or the replay's moment) at `until` itself, and none past it.
+ * So the newest column holds the newest snapshot at any zoom. Read at its middle, a column of a zoomed-out view (about 40 minutes over three
+ * weeks) left the newest snapshot out until half a column had passed, and the table, which read that column, showed the snapshot before it
+ * (Karl, 2026-11-21). Nothing of what is closed to this visitor (Plus, before `closedTo`, the boundary itself and not as far as the view
+ * reaches) is drawn: no column read before it, and no row fetched before it, which a lapsed pass may still hold.
+ */
+export function liqColumnRows(rows: readonly { fetchedAt: number }[], t0: number, t1: number, w: number, until: number, holdMs: number, closedTo = -Infinity): Int32Array {
+  const rowAt = new Int32Array(Math.max(0, w)).fill(-1), span = t1 - t0;
+  if (!(span > 0)) return rowAt;
+  for (let x = 0, i = 0; x < w; x++) {
+    if (t0 + x / w * span >= until) break;
+    const time = Math.min(t0 + (x + 1) / w * span, until);
+    if (time < closedTo) continue;
+    while (i + 1 < rows.length && rows[i + 1]!.fetchedAt <= time) i++;
+    const row = rows[i];
+    if (!row || row.fetchedAt > time || time - row.fetchedAt > holdMs || row.fetchedAt < closedTo) continue;
+    rowAt[x] = i;
+  }
+  return rowAt;
+}
+
+/** How old the books now may be, and how far before now the view may end, for them to be read. */
+const LIVE_FRESH_MS = 2 * 60_000;
+/**
+ * Whether the Depth pane reads the books now (the worker's live reading, `DepthNow`) rather than a column, in its header (`header`) and its
+ * table (`table`). The header: whenever there is a reading under two minutes old (a dropped stream leaves the worker its last books), the view
+ * reaches the live edge (its end at most two minutes before now) and no replay runs. The table: then too, with no pointer, a pointer at or
+ * past the start of the column holding now (that column is a mean of the minutes in it), or one past the newest column with data.
+ */
+export function readsBooksNow(o: { liveAt: number | null; until: number; t1: number; replay: boolean; pointer: number | null; nowColumnStart: number; pastNewest: boolean }): { header: boolean; table: boolean } {
+  const header = !o.replay && o.liveAt !== null && o.until - o.liveAt <= LIVE_FRESH_MS && o.t1 >= o.until - LIVE_FRESH_MS;
+  return { header, table: header && (o.pointer === null || o.pointer >= o.nowColumnStart || o.pastNewest) };
+}
+
+/** The row of `rows` in force at `time` (the newest fetched by then, while it stands: `holdMs`), or -1. */
+export function liqRowAt(rows: readonly { fetchedAt: number }[], time: number, holdMs: number): number {
+  const i = fetchedBy(rows, time);
+  return i >= 0 && time - rows[i]!.fetchedAt <= holdMs ? i : -1;
+}
+
+/**
+ * What the Depth table, its header and its card read of the liquidation levels, from the rows themselves, never from the columns, so the
+ * same at any zoom (`liqColumnRows`). With the pointer short of `until` (now, or the replay's moment): the row in force at its time, strictly,
+ * so a pointer in a gap reads nothing whatever the view. With no pointer, or one at or past `until`: the newest moment in view (the view's end,
+ * or `until`), where the newest row fetched by then is kept past its hold (the snapshots stopped: its positions time says how old it is).
+ * The take profits are read at the same moment, strictly: an orders file that lags is not printed beside fresher levels. Nothing before
+ * `closedTo` (Plus): neither a moment nor a row fetched before it. `at`: the moment read.
+ */
+export function liqReading(rows: readonly { fetchedAt: number }[], takes: readonly { fetchedAt: number }[] | null, o: { pointer: number | null; t1: number; until: number; holdMs: number; closedTo?: number }): { row: number; take: number; at: number } {
+  const { pointer, t1, until, holdMs } = o, closedTo = o.closedTo ?? -Infinity;
+  const newest = pointer === null || pointer >= until, at = newest ? Math.min(until, t1) : pointer;
+  if (at < closedTo) return { row: -1, take: -1, at };
+  const open = (list: readonly { fetchedAt: number }[], i: number): number => i >= 0 && list[i]!.fetchedAt >= closedTo ? i : -1;
+  return { row: open(rows, newest ? fetchedBy(rows, at) : liqRowAt(rows, at, holdMs)), take: takes ? open(takes, liqRowAt(takes, at, holdMs)) : -1, at };
+}
+
 /** The bar of `bars` (each starting with its start time, sorted) the time falls in: the last one that has started. The newest holds on past its own slot (its level is the latest known until the next sample), so it answers for any later time. */
 export function barAt(bars: ArrayLike<ArrayLike<number>>, tf: number, time: number): number {
   let found = -1;

@@ -21,16 +21,18 @@ import { readAt } from './pane-cards.ts';
 import { TimePane, oiSourceText, setText } from './lower-panes.ts';
 import type { HeatPane } from './heat-pane.ts';
 import type { LiquidationDays } from '../liq-days.ts';
-import { alphaOf, buildHistory, cardLines, emphasis, heightOf, preRollMs, rowCap, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
+import { alphaOf, buildHistory, cardLines, emphasis, heightOf, preRollMs, rowCap, shareDot, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
 
 /** The gap between the two rows of context (liquidations, open interest) and the six size rows, in px. */
 const GROUP_GAP = 8;
+/** The share dot's radius, and the thinnest row that has room for it beside its bar (a phone held sideways has thinner ones, without dots). */
+const DOT_R = 1.75, DOT_R_MIN = 0.9, DOT_ROW_MIN = 12;
 
 /**
  * The Flow history pane (Karl, 2026-11-20): per candle of the chart's timeframe, the liquidations, the change of open interest and the
  * market orders in six size bands, one row each on the map's time axis, with the most unusual amounts standing out (size-history/model.ts).
  * It counts the markets the footprint and the Bar stats count, and reads the footprint's bars (one load for the three, from the Highlights'
- * length before the view while this pane shows), the liquidations the Bar stats read (one loader, liq-days.ts) and the OI pane's open
+ * length before the view, at least 36 candles and six hours, while this pane shows), the liquidations the Bar stats read (one loader, liq-days.ts) and the OI pane's open
  * interest. Switched on from the flow column's settings, the Bar stats' settings and, on a phone, Settings; never from the top bar.
  */
 export class SizeHistoryPane extends TimePane {
@@ -43,6 +45,10 @@ export class SizeHistoryPane extends TimePane {
   #held: { key: unknown[]; times: number[]; model: HistoryModel } | null = null;
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #usd: { oi: unknown; parts: unknown; starts: string; price: number; tfMs: number; value: { usd: Map<number, number>; coins: Map<number, number> } } | null = null;
+  /** The share dot's radius as last drawn (0: none, the candles too narrow). */
+  #dotR = 0;
+  /** Whether a row this tall gets share dots as last drawn: the one rule for the drawing and the card. */
+  #dotsOn(rowH: number): boolean { return this.#dotR > 0 && rowH >= DOT_ROW_MIN; }
   /** The rows as last drawn, top to bottom (where the pointer's height falls). */
   #layout: { row: number; y: number; h: number }[] = [];
 
@@ -146,6 +152,9 @@ export class SizeHistoryPane extends TimePane {
     let y = top;
     this.#layout = rows.map((_, r) => { if (r === 2) y += gap; const at = { row: r, y, h: rowH }; y += rowH; return at; });
     const slot = pw * tfMs / (v.t1 - v.t0), bw = Math.max(1, Math.min(12, 0.7 * slot)), on = h.on;
+    // The share dot shrinks with the candles and goes where they are too narrow for it (it would cover its neighbours).
+    const dotR = Math.min(DOT_R, (slot - 1) / 2.5) >= DOT_R_MIN ? Math.min(DOT_R, (slot - 1) / 2.5) : 0;
+    this.#dotR = dotR;
     // Under the pointer: the candle (any pane's pointer names it, the axis being shared) and, from this pane's own pointer, the row.
     const hv = state.hover, under = hv ? visible.find(i => hv.t >= times[i]! && hv.t < times[i]! + tfMs) ?? -1 : -1;
     const last = visible[visible.length - 1]!, hoverIdx = hv && this.pointer && hv.source === 'sizes' ? readAt(under, hv.t, last, times[last]!) : under;
@@ -161,6 +170,9 @@ export class SizeHistoryPane extends TimePane {
       const band = this.#layout[r]!, mid = Math.round(band.y + band.h / 2) + 0.5, half = Math.max(2, band.h / 2 - 2), cap = rowCap(row, visible);
       ctx.save(); ctx.globalAlpha = 0.6; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(pw, mid); ctx.stroke(); ctx.restore();
       if (r === hoverRow) { ctx.save(); ctx.fillStyle = p.text; ctx.globalAlpha = p.dark ? 0.05 : 0.04; ctx.fillRect(0, band.y, pw, band.h); ctx.restore(); }
+      // A size band that took an unusually large part of its candle (model.share) gets a dot past its bar's tip, the taller one's with Buys and
+      // sells: only where the bar is not already lit (brightness says its own amount), only on a whole candle, never on too thin a row.
+      const marks = row.kind === 'size' && model.share && this.#dotsOn(band.h) ? model.share[row.band!]! : null, tips = new Map<number, { y: number; up: boolean; h: number }>();
       for (const part of row.parts) {
         for (const i of visible) {
           const value = part.values[i]!;
@@ -174,7 +186,19 @@ export class SizeHistoryPane extends TimePane {
           else { ctx.fillStyle = on ? ramp[Math.round(e * (RAMP_STEPS - 1))]! : ramp[0]!; ctx.fillRect(x, by, bw, barH); }
           ctx.globalAlpha = 1;
           if (cut && barH > BAR_CUT_PX + BAR_CUT_H + 1) cutGap(ctx, x, up ? by + BAR_CUT_PX : by + barH - BAR_CUT_PX - BAR_CUT_H, bw);
+          const taller = tips.get(i);
+          if (marks && marks.flag[i] === 1 && (!taller || taller.h < barH)) tips.set(i, { y: up ? by : by + barH, up, h: barH });
         }
+      }
+      if (marks) {
+        // In the text's ink, cased in the panel's colour so it reads over a bar the row's edge pushed it onto.
+        ctx.save(); ctx.fillStyle = p.text; ctx.strokeStyle = p.panel; ctx.lineWidth = 1;
+        for (const [i, tip] of tips) {
+          if (!shareDot(model, row, i, h.mult)) continue;
+          const cx = v.xOf(times[i]!, pw) + slot / 2, cy = Math.min(band.y + band.h - dotR - 1, Math.max(band.y + dotR + 1, tip.up ? tip.y - dotR - 2 : tip.y + dotR + 2));
+          ctx.beginPath(); ctx.arc(cx, cy, dotR, 0, Math.PI * 2); ctx.stroke(); ctx.fill();
+        }
+        ctx.restore();
       }
     });
     ctx.restore();
@@ -196,6 +220,7 @@ export class SizeHistoryPane extends TimePane {
     const row: HistoryRow = model.rows[r]!, coin = state.markets.find(m => (m.instrumentId ?? m.id) === state.marketId)?.base ?? '', inCoins = coins?.get(times[i]!);
     return cardLines(model, r, i, {
       time: clock(times[i]!, true), live: live && times[i]! + tfMs > now, judging: state.highlight.on, mult: state.highlight.mult,
+      dots: this.#dotsOn(this.#layout.find(b => b.row === r)?.h ?? 0),
       oiSource: row.kind === 'oi' ? oiSourceText(state) : null, oiNote: row.kind !== 'oi' ? null : !perps ? 'spot' : tfMs <= 60_000 ? 'minute' : null,
       oiCoins: row.kind === 'oi' && inCoins !== undefined ? { value: inCoins, coin } : null,
     });

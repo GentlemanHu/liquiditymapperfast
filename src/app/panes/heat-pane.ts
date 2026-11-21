@@ -3,7 +3,7 @@ import { heatRenderer } from '../heatmap/canvas.ts';
 import { buildLut } from '../heatmap/lut.ts';
 import { colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
 import { isCoarse, isPhone } from '../device.ts';
-import { dimOutside, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
+import { dimOutside, mirrorFrame, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
 import { ensureDeltaFlow } from '../delta/flows.ts';
 import { StripHighlightMemo, coarseCandles, joinRows, paintVolumeStrip, stripBars, stripHistoryFrom, stripLines, stripNamesTop, stripTimeframe, withEarlier, type StripBar } from '../measures/volume-strip.ts';
@@ -28,7 +28,7 @@ import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText, wrapText } from '../text-fit.ts';
 import { LIQ_PROFILE_ROWS, binsBetween, captionPlace, dollarPriceOf, laneRows, liqCurves, liqProfile, liqStanding, onTheWay, partsBetween, seamStats, standingBelow, standingBins, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
-import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, type Rect, type Sub, type SubScale } from '../liq-split.ts';
+import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, ownScales, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, whyLines, type Rect, type Sub, type SubScale } from '../liq-split.ts';
 import { MAP_PLOT_FLOOR } from '../layouts/dock-model.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
 import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRowsHeld, type TradedRows } from '../traded.ts';
@@ -45,7 +45,7 @@ import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
 import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
-import { layoutInfo, measureInfoBox, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
+import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, fitPrices, focusWindow, followPrice, holdPixel, limitFactor, liveEdgeShown, priceAtEdge, priceHeldAfter, priceRef, regionAt, wheelZoom, zoomedView } from './heat-zoom.ts';
@@ -1323,7 +1323,7 @@ export class HeatPane {
     const markets = this.footprintMarkets(state);
     if (!markets.length) this.#footprint.clear();
     // The table's running sums from each day's start need the bars from the start of the day the left edge falls in, and the Flow history's
-    // baselines the Highlights' length of candles before the view (at least six hours: size-history/model.ts).
+    // baselines the Highlights' length of candles before the view (at least 36 candles and six hours: size-history/model.ts).
     let from = v.t0;
     if (state.show.stats && state.barStatOptions.cvdFrom === 'day') from = Math.min(from, dayStartOf(v.t0, resolveZone('page', state.timeZone)));
     if (state.show.sizes && state.highlight.on) from = Math.min(from, v.t0 - preRollMs(state.highlight.length, tfMs));
@@ -4058,7 +4058,7 @@ export class HeatPane {
     if (box) {
       // The comparison pops up beside the profile column, pointing at it, and only while the pointer is on the column (`profileBoxFrame`).
       this.#profileBox = null;
-      const frame = profileBoxFrame(state, pw, ph, this.#liqHeadH, measureInfoBox(ctx, box.lines).h);
+      const frame = mirrorFrame(ctx, box.lines, h => profileBoxFrame(state, pw, ph, this.#liqHeadH, h));
       paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'muted' ? p.muted : p.text, box.placement);
       ctx.textBaseline = 'middle';
     }
@@ -4298,8 +4298,8 @@ export class HeatPane {
    * The liquidation column split in two (Plus, 2026-11-19; `liqSplitDrawn`): liquidations beside stops of the chosen traders, on one dollar
    * scale (a bar compares across the divider), or everyone's levels beside the profitable traders', each on its own (everyone's are many times
    * larger). Each sub-column draws as the column does (`#paintLiqSub`): what still stands of each row and the curve from the price out, under
-   * its caption and, on scales of their own, its LEVEL MAX and CUM MAX (`splitHeads`); on one shared scale the two maxima are said once,
-   * across. The take profits go with the left column, dashed bars from its right edge, as they go with the left set everywhere. A sub-column
+   * its caption and its own LEVEL MAX and CUM MAX (`ownScales`, `splitHeads`); on one shared scale a line across says so, in words only. The
+   * take profits go with the left column, dashed bars from its right edge, as they go with the left set everywhere. A sub-column
    * with nothing to draw says why under the heading. The button names the split; the lines under it say whose levels both columns are, or
    * what both add up, and what the curves leave out.
    */
@@ -4325,11 +4325,11 @@ export class HeatPane {
     const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);
     const profs = [stands[0] ? liqProfile(stands[0], step, v.p0, v.p1, price) : null, stands[1] ? liqProfile(stands[1], step, v.p0, v.p1, price) : null] as const;
     const ts = takesShown ? src.takesStanding() : null, tprof = ts ? liqProfile(ts, step, v.p0, v.p1, price) : null;
-    const scales = splitScales({ maxLevel: Math.max(profs[0]?.maxLevel ?? 0, tprof?.maxLevel ?? 0), maxCum: profs[0]?.maxCum ?? 0 },
-      { maxLevel: profs[1]?.maxLevel ?? 0, maxCum: profs[1]?.maxCum ?? 0 }, pair.split === 'kinds');
-    const maxima = (sc: SubScale): [string, string] => [t('LEVEL MAX {value}', { value: usd(sc.maxLevel) }), t('CUM MAX {value}', { value: usd(sc.maxCum) })];
-    const heads = splitHeads(wide, { captions: subNames(pair), shared: pair.split === 'kinds', subRoom: subRoom(subs[0]), wholeRoom: liqRoom(W),
-      maxima: pair.split === 'kinds' ? maxima(scales[0]) : [maxima(scales[0]), maxima(scales[1])] });
+    const shared = pair.split === 'kinds', own = ownScales(profs[0], tprof, profs[1]), none: SubScale = { maxLevel: 0, maxCum: 0 };
+    const scales = splitScales(own[0] ?? none, own[1] ?? none, shared);
+    const maxima = (sc: SubScale | null): [string, string] | null => sc && [t('LEVEL MAX {value}', { value: usd(sc.maxLevel) }), t('CUM MAX {value}', { value: usd(sc.maxCum) })];
+    const heads = splitHeads(wide, { captions: subNames(pair), maxima: [maxima(own[0]), maxima(own[1])], across: shared ? t('Both columns on one dollar scale') : null,
+      subRoom: subRoom(subs[0]), wholeRoom: liqRoom(W) });
     const head = LIQ_KIND_TOP + LIQ_KIND_H + 3 + 12 * (notes.length + heads.rows) + 2;
     this.#placeLiqHistory(stands[0] && !(state.show.depth && state.depthSource === 'liq') ? x0 : null, head);
     // Each sub-column's bars and curve, or why it has none.
@@ -4338,12 +4338,15 @@ export class HeatPane {
       const prof = profs[i as 0 | 1], set = sets[i as 0 | 1], scale = scales[i as 0 | 1];
       if (prof && set) { this.#paintLiqSub(ctx, prof, i === 0 ? tprof : null, sub, scale, step, price, ph); drawn.push({ x0: sub.x0, W: sub.w, width: sub.w - 6, maxCum: scale.maxCum, set }); return; }
       const why = !live ? t('Liquidation levels show the live market only.') : (set ? liqWhy(set, set.asOfs().liq) : '') || t('Liquidation levels are loading.');
+      // Under the heading band (`#liqHeadH`, the History link's row included), which is painted over the rows at 0.9: the first lines were
+      // drawn under it and veiled until 2026-11-21.
+      const from = this.#liqHeadH;
       ctx.globalAlpha = 1; ctx.fillStyle = p.muted;
-      wrapText(wide, why, subRoom(sub), 8).forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, head + 4 + 12 * n));
+      wrapText(wide, why, subRoom(sub), whyLines(ph, from)).forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, from + 4 + 12 * n));
     });
     this.#liqSubs = drawn;
-    // The divider, then the heading band over the rows: the button (a page element), the notes, each column's caption and its scale (or the
-    // one scale both share, across).
+    // The divider, then the heading band over the rows: the button (a page element), the notes, each column's caption and its own maxima,
+    // then, where both share one scale, the words that say so, across.
     ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(subs[1].x0 + 0.5, 0); ctx.lineTo(subs[1].x0 + 0.5, ph); ctx.stroke();
     ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, this.#liqHeadH); ctx.globalAlpha = 1;
     let y = LIQ_KIND_TOP + LIQ_KIND_H + 3;
@@ -4357,18 +4360,20 @@ export class HeatPane {
       ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.fillStyle = p.muted;
       h.scale.forEach((line, n) => ctx.fillText(line, sub.x0 + LIQ_PAD, top + 12 * (h.caption.length + n)));
     });
-    const below = top + 12 * (heads.rows - heads.across.length);
-    ctx.fillStyle = p.muted;
-    heads.across.forEach((line, n) => ctx.fillText(line, x0 + LIQ_PAD, below + 12 * n));
     // Mirror on the sub-column under the pointer, its band and box on that column's set.
     this.#profileBox = null;
     const hv = this.#profileHover, at: 0 | 1 = hv?.x !== undefined ? subAt(hv.x, x0, W) : 0, ms = stands[at], mset = sets[at];
     if (ms && mset) this.#paintLiqColumnMirror(ctx, state, ms, price, subs[at].x0, ph, subs[at].w, mset);
+    // The words across both columns, after the Mirror: its dimming outside the band covers the hovered column's heading, and over half of
+    // this line it split the sentence in brightness at the divider.
+    const below = top + 12 * (heads.rows - heads.across.length);
+    ctx.globalAlpha = 1; ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
+    heads.across.forEach((line, n) => ctx.fillText(line, x0 + LIQ_PAD, below + 12 * n));
     ctx.restore(); ctx.textBaseline = 'middle';
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
-      const frame = liqSubBoxFrame(at, subs[at].x0, pw, ph, this.#liqHeadH, measureInfoBox(ctx, box.lines).h);
+      const frame = mirrorFrame(ctx, box.lines, h => liqSubBoxFrame(at, subs[at].x0, pw, ph, this.#liqHeadH, h));
       paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.candleUp : c === 'below' ? p.candleDown : c === 'muted' ? p.muted : p.text, box.placement);
       ctx.textBaseline = 'middle';
     }
@@ -4471,8 +4476,9 @@ export class HeatPane {
   /**
    * Mirror hover on the liquidation column (Karl's pick of 2026-11-20): the band of the longs that go if price falls to the pointer against
    * the shorts that go if it rises as far, framed with its totals on the pills, and a card for the row under the pointer, as the column draws
-   * its rows (`liqCardLines`): what still stands there, how many positions or orders the snapshot puts there and the largest, then the band as
-   * longs over shorts, with its totals where no pill shows them (a strip, a split's sub-column, an edge off the screen).
+   * its rows (`liqCardLines`): what still stands there, how many positions or orders the snapshot puts there and the largest, then which side
+   * of the band is heavier and how many times the other (`liqBandVerdict`), with its totals where no pill shows them (a strip, a split's
+   * sub-column, an edge off the screen).
    */
   #paintLiqColumnMirror(ctx: CanvasRenderingContext2D, state: AppState, s: LiqStanding, price: number, x0: number, ph: number, W: number, set: LiqSet = this.hub.liqLevels): void {
     const hv = this.#profileHover, p = this.#palette, v = this.view;
