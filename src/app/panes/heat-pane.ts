@@ -418,6 +418,14 @@ export class HeatPane {
   /** The pointer over a volume profile column (its y, and which column: its side and its place there, nearest the map first), or null. */
   #tradedHover: { y: number; side: Side; i: number } | null = null;
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
+  /**
+   * This overlay frame's column boxes (the profile column's, the liquidation column's or a split's, the seam's, a volume profile column's),
+   * drawn last on the pointer's layer (`#paintHoverLayer`) so that nothing drawn after them crosses them: a column's edge, the badge of what
+   * had no room, a saved Range, the legend (Karl, 2026-11-21: the liquidation column's edge ran through the Stops box). Each overlay frame
+   * sets them and every pointer-only frame after it draws them again; the column under the pointer is part of the hover key (`#hoverKey`),
+   * so a pointer moving on a column draws the overlay, and these, again.
+   */
+  #columnBoxes: ((ctx: CanvasRenderingContext2D) => void)[] = [];
   /** The last values given to --gutter and --gutter-left on the pane, so a frame that changes nothing writes nothing. */
   #gutterCss = ''; #leftCss = '';
   /** What the corner tools' names were last judged on (`#fitCorner`), and the room the legend wants for its title and prices (`#paintLegend`). */
@@ -1394,7 +1402,7 @@ export class HeatPane {
     ctx.stroke(); ctx.globalAlpha = 1;
     const market = state.markets.find(m => (m.instrumentId ?? m.id) === state.marketId);
     paintWatermark(ctx, p, pw, ph, [market?.base && market.quote ? `${market.base}/${market.quote}` : '', state.timeframe].filter(Boolean).join(' · '));
-    this.mirror = null;
+    this.mirror = null; this.#columnBoxes = [];
     this.#paintHistoryStart(ctx, pw, ph, p);
     this.#paintTapeStart(ctx, state, pw, ph, p);
     this.#paintProfileAnchor(ctx, pw, ph, this.#tradedPalette(state));
@@ -1524,6 +1532,8 @@ export class HeatPane {
     this.#paintLiqReadout(ctx, state, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
     this.#paintAnchorPreview(ctx, state, pw, ph);
+    // The column boxes last, over both canvases (`#columnBoxes`), with a plain solid pen whatever was drawn before them.
+    if (this.#columnBoxes.length) { ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1; for (const paint of this.#columnBoxes) paint(ctx); }
   }
 
   /**
@@ -3851,8 +3861,8 @@ export class HeatPane {
     const sides = sideColumns(state);
     for (const side of ['right', 'left'] as const) sides[side].forEach((p, i) => { const b = this.#paintColumn(ctx, state, pw, ph, p.metric, side, i, this.#columnX(side, i)); if (b) box = { ...b, side }; });
     if (box) {
-      const b: ColumnBox & { side: Side } = box;
-      paintInfoBox(ctx, b.lines, b.side === 'right' ? this.#columnX('right', 0) : 0, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, this.#palette, { placement: b.placement ?? 'center' }); ctx.textBaseline = 'middle';
+      const b: ColumnBox & { side: Side } = box, x = b.side === 'right' ? this.#columnX('right', 0) : 0, palette = this.#palette;
+      this.#columnBoxes.push(c => { paintInfoBox(c, b.lines, x, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, palette, { placement: b.placement ?? 'center' }); });
     }
   }
 
@@ -4072,8 +4082,7 @@ export class HeatPane {
       // The comparison pops up beside the profile column, pointing at it, and only while the pointer is on the column (`profileBoxFrame`).
       this.#profileBox = null;
       const frame = mirrorFrame(ctx, box.lines, h => profileBoxFrame(state, pw, ph, this.#liqHeadH, h));
-      paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, frame.x, box.y, frame.bounds, p, k => k === 'above' ? p.ask : k === 'below' ? p.bid : k === 'muted' ? p.muted : p.text, box.placement); });
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
   }
@@ -4301,8 +4310,7 @@ export class HeatPane {
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
-      paintMirrorBox(ctx, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, c => c === 'above' ? (alone ? p.candleDown : p.candleUp) : c === 'below' ? (alone ? p.candleUp : p.candleDown) : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, k => k === 'above' ? (alone ? p.candleDown : p.candleUp) : k === 'below' ? (alone ? p.candleUp : p.candleDown) : k === 'muted' ? p.muted : p.text, box.placement); });
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
   }
@@ -4383,15 +4391,13 @@ export class HeatPane {
     ctx.globalAlpha = 1; ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
     heads.across.forEach((line, n) => ctx.fillText(line, x0 + LIQ_PAD, below + 12 * n));
     ctx.restore(); ctx.textBaseline = 'middle';
-    // The column's edge against the map, before the box: the right sub-column's box stands over the left one and the map's edge (Karl,
-    // 2026-11-21: stroked after it, this line ran through the Stops box's figures).
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
+    // The right sub-column's box stands over the left one and the map's edge: drawn last, on the pointer's layer (`#columnBoxes`).
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
       const frame = mirrorFrame(ctx, box.lines, h => liqSubBoxFrame(at, subs[at].x0, pw, ph, this.#liqHeadH, h));
-      paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.candleUp : c === 'below' ? p.candleDown : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, frame.x, box.y, frame.bounds, p, k => k === 'above' ? p.candleUp : k === 'below' ? p.candleDown : k === 'muted' ? p.muted : p.text, box.placement); });
     }
   }
 
@@ -4485,7 +4491,8 @@ export class HeatPane {
       reach: { bid: booksReaching(frame, g.ids, price, bidRow, step, 'bid'), ask: booksReaching(frame, g.ids, price, askRow, step, 'ask'), of: g.ids.length },
       minutes: { positions: asOfs.liq ? (now - asOfs.liq) / 60_000 : null, orders: asOfs.orders ? (now - asOfs.orders) / 60_000 : null }, clipped });
     // On a phone the box also keeps below the legend, whose buttons lie over the canvas and would hide its first lines.
-    paintMirrorBox(ctx, lines, x0, hv.y, { x0: 0, y0: COMPACT ? Math.min(this.#legendBox.bottom + 4, ph / 3) : 0, x1: COMPACT ? pw + W : pw, y1: ph }, p, c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'buy' ? p.candleUp : c === 'sell' ? p.candleDown : c === 'muted' ? p.muted : p.text, hv.y < ph / 2 ? 'down' : 'up');
+    const bounds = { x0: 0, y0: COMPACT ? Math.min(this.#legendBox.bottom + 4, ph / 3) : 0, x1: COMPACT ? pw + W : pw, y1: ph }, y = hv.y;
+    this.#columnBoxes.push(c => { paintMirrorBox(c, lines, x0, y, bounds, p, k => k === 'above' ? p.ask : k === 'below' ? p.bid : k === 'buy' ? p.candleUp : k === 'sell' ? p.candleDown : k === 'muted' ? p.muted : p.text, y < ph / 2 ? 'down' : 'up'); });
   }
 
   /**

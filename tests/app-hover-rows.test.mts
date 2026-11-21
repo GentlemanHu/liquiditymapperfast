@@ -170,14 +170,24 @@ test('the right half of a split liquidation column has its box against its own e
   assert.equal(liqSubBoxFrame(1, x1, pw, 160, 97, 72).bounds.y0, 0, 'a map too short for that: from the top');
 });
 
-test('the split column\'s edge against the map is drawn before the right half\'s box, which may stand across it (Karl, 2026-11-21: the line ran through the Stops box)', () => {
+test('every column box is drawn last, on the pointer\'s layer: no column edge, badge, saved Range or legend crosses it (Karl, 2026-11-21: a line ran through the Stops box)', () => {
   const pw = 487, ph = 876;
   assert.ok(liqSubBoxFrame(1, pw + 100, pw, ph, 97, 72).bounds.x0 < pw, 'the right half\'s box may reach past the left half onto the map');
-  // Line endings as in git (a checkout that writes CRLF would hide the method's end from the search; Sol, review 2026-11-21).
-  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8').replace(/\r\n/g, '\n'), start = heat.indexOf('  #paintLiqSplit('), split = heat.slice(start, heat.indexOf('\n  }\n', start));
-  const edge = split.lastIndexOf('ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();'), box = split.indexOf('paintMirrorBox(');
-  assert.ok(start > 0 && edge > 0 && box > edge, 'the edge first, then the box');
-  assert.doesNotMatch(split.slice(box), /\.stroke\(|\.fill(Rect|Text)?\(/, 'nothing of the column drawn over the box');
+  // Line endings as in git (a checkout that writes CRLF would hide a method's end from the search; Sol, review 2026-11-21).
+  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8').replace(/\r\n/g, '\n');
+  const body = (name: string): string => { const start = heat.indexOf(`  ${name}(`); assert.ok(start > 0, name); return heat.slice(start, heat.indexOf('\n  }\n', start)); };
+  // The overlay's five column boxes are kept for the pointer's layer, never painted on the overlay, where later strokes cross them.
+  for (const name of ['#paintTraded', '#paintProfile', '#paintLiqColumn', '#paintLiqSplit', '#paintSeam']) {
+    const b = body(name);
+    assert.match(b, /this\.#columnBoxes\.push\(c => \{ paint(Mirror|Info)Box\(c, /, `${name} keeps its box`);
+    assert.doesNotMatch(b, /paint(Mirror|Info)Box\(ctx, /, `${name} paints no box on the overlay`);
+  }
+  // Each overlay frame starts them afresh before any column is painted; the pointer's layer paints them after everything else it draws.
+  const overlay = body('#paintOverlay'), reset = overlay.indexOf('this.#columnBoxes = [];');
+  assert.ok(reset > 0 && reset < overlay.indexOf('this.#paintLiqColumn(') && reset < overlay.indexOf('this.#paintTraded('));
+  const hover = body('#paintHoverLayer'), last = hover.indexOf('for (const paint of this.#columnBoxes) paint(ctx);');
+  for (const before of ['this.#paintLegend(', 'this.#paintRange(', 'this.#paintBookRow(', 'this.#paintLiqReadout(', 'this.#paintCrosshair(', 'this.#paintAnchorPreview(']) assert.ok(hover.indexOf(before) > 0 && hover.indexOf(before) < last, before);
+  assert.doesNotMatch(hover.slice(last), /\.(stroke|fill|fillRect|fillText|strokeRect)\(|this\.#paint/, 'nothing after the boxes');
 });
 
 test('the map draws these boxes: the profile from its row and band, the band from the price when scrolled away, the split\'s right half in its frame', () => {
