@@ -173,8 +173,14 @@ export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, l
  * else 0. `PaneTable` works it out at rest only and holds it; `placeTable` takes it as it is.
  */
 export function restLift(measure: Measure, room: TableRoom, spec: PlaceSpec, rest: readonly InfoLine[]): number {
-  const at = rowsIn(measure, room, spec), laid = at?.framed && rest.length ? at.under(rest) : null;
-  return at && laid && leaves(room, at.height, laid.summaryH) ? laid.summaryH : 0;
+  const at = rowsIn(measure, room, spec);
+  return at ? liftUnder(at, room, rest) : 0;
+}
+
+/** `restLift` for rows already placed. */
+function liftUnder(at: NonNullable<ReturnType<typeof rowsIn>>, room: TableRoom, rest: readonly InfoLine[]): number {
+  const laid = at.framed && rest.length ? at.under(rest) : null;
+  return laid && leaves(room, at.height, laid.summaryH) ? laid.summaryH : 0;
 }
 
 /** Whether rows `height` px high, centred with `lift` px under them, stand inside the pane. */
@@ -303,6 +309,8 @@ export class PaneTable {
   #saying: { lift: number; since: number; last: number } | null = null;
   /** The table those were said by (the pane's height, the titles, `TableSpec.restKey`): another starts afresh. */
   #restKey = '';
+  /** Since when, at rest, the rows have not left the largest room held (more rows came in), or null while they do. */
+  #misfit: number | null = null;
 
   constructor(private readonly host: TableHost, private readonly onRow: ((row: number) => void) | null = null, private readonly now: () => number = () => performance.now()) {
     if (!onRow) return;
@@ -367,21 +375,26 @@ export class PaneTable {
    * column short, a pane too low) counts once it has stood `REST_STAND_MS` (at once where none has), and the largest that stood within `REST_HOLD_MS` is
    * the room the rows keep. What the frame before asked for stood until this frame where it had stood by then, as far as frames tell (none came between,
    * however long: a pointer on the pane for minutes), and what is asked for again goes on standing. A room the rows at rest no longer leave (more of
-   * them came in: the Liquidity Tracker's markets as they load) goes at once, as those lines could not be drawn under them: held, it kept a table
-   * at the top of its pane with nothing under it (2026-11-21). Another table (a pane resized, other titles, another `restKey`: a coin, a timeframe, a
-   * venue, a band) starts afresh; a block of no lines is only a smaller one (Funding says nothing for a moment as an hour turns, before that hour's row
-   * comes in: 2026-11-21 22:00Z).
+   * them came in: the Liquidity Tracker's markets as they load) goes once they have not left it for `REST_STAND_MS`, as those lines could not be drawn
+   * under them: held, it kept a table at the top of its pane with nothing under it (2026-11-21); a single frame with a row more only twitches the rows
+   * inside the pane (review round 2: dropped at once, it moved them 45 px and back). Another table (a pane resized, other titles, another `restKey`:
+   * a coin, a timeframe, a venue, a band) starts afresh; a block of no lines is only a smaller one (Funding says nothing for a moment as an hour turns,
+   * before that hour's row comes in: 2026-11-21 22:00Z).
    */
   #takeRest(measure: Measure, room: TableRoom, spec: TableSpec): void {
-    const lines = spec.lines ?? [], now = this.now(), pointed = { ...room, pointing: true };
+    const lines = spec.lines ?? [], now = this.now(), rows = rowsIn(measure, { ...room, pointing: true }, spec);
     const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${spec.restKey ?? ''}`;
-    if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; }
-    const lift = restLift(measure, pointed, spec, lines), said = this.#saying;
+    if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; this.#misfit = null; }
+    const lift = rows ? liftUnder(rows, room, lines) : 0, said = this.#saying;
     if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
     this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
-    // Gone: what has not stood for the hold, and a room the rows here no longer leave (a smaller one after it may: the rooms only shrink down the line).
-    const stood = this.#stood, rows = rowsIn(measure, pointed, spec);
-    while (stood.length && (stood[0]!.at < now - REST_HOLD_MS || (rows && !leaves(room, rows.height, stood[0]!.lift)))) stood.shift();
+    const stood = this.#stood;
+    while (stood.length && stood[0]!.at < now - REST_HOLD_MS) stood.shift();
+    // A room the rows here have not left for REST_STAND_MS goes, and any after it they do not leave either (the rooms only shrink down the line).
+    if (rows && stood.length && !leaves(room, rows.height, stood[0]!.lift)) {
+      this.#misfit ??= now;
+      if (now - this.#misfit >= REST_STAND_MS) { while (stood.length && !leaves(room, rows.height, stood[0]!.lift)) stood.shift(); this.#misfit = null; }
+    } else this.#misfit = null;
     if (!stood.length) this.#stand(lift, now);
     this.#lift = stood[0]!.lift;
   }

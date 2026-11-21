@@ -569,10 +569,23 @@ test('nothing of a moment moves the rows, not even a column its figures make too
   // More rows come in at rest (the Liquidity Tracker's markets as they load): a room held from fewer rows that these no longer leave goes at once, and
   // the rows stand alone in the middle (held, it kept the table at the top of its pane with nothing under it). Two rows and four lines take 129 px of
   // 200 (from 36); eight rows take 150, and 69 more do not fit.
+  const rowsOn = (table: PaneTable, k: number, over: Partial<TableRoom> = {}, w = 400 + 60 + 130) => table.draw(ctx, palette, room({ w, h: 200, ...over }), { ...spec(k), foot: 'then', focus: -1, lines: OI_LINES });
   const e = fresh(); t = 0;
-  const loading = (k: number, over: Partial<TableRoom> = {}) => e.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 200, ...over }), { ...spec(k), foot: 'then', focus: -1, lines: OI_LINES })!;
-  assert.equal(loading(2, { rest: true }).y0, 36);
-  t = 1_000; assert.equal(loading(8, { rest: true }).y0, 25);
+  assert.equal(rowsOn(e, 2, { rest: true })!.y0, 36);
+  t = 1_000; assert.equal(rowsOn(e, 8, { rest: true })!.y0, 0, 'eight rows for a moment: the room held, the rows kept inside the pane');
+  t = 1_000 + REST_STAND_MS; assert.equal(rowsOn(e, 8, { rest: true })!.y0, 25, 'still eight after REST_STAND_MS: the room goes');
+  // One frame with a row more (a market at the end of its carry, a row while loading) drops nothing: the rows twitch inside the pane and come back
+  // (dropped at once, the room took 2 s to stand again and the rows moved 45 px and back: review round 2).
+  const blip = fresh(); t = 0;
+  assert.equal(rowsOn(blip, 2, { rest: true })!.y0, 36);
+  t = 16; assert.equal(rowsOn(blip, 8, { rest: true })!.y0, 0);
+  t = 32; assert.equal(rowsOn(blip, 2, { rest: true })!.y0, 36);
+  // Where only a plate fits (no table at rest), the rows are measured where a pointer would put them, and the room goes all the same.
+  const plated = fresh(); t = 0;
+  assert.equal(rowsOn(plated, 2, { rest: true }, 400 + 60 + 90), null);
+  t = 1_000; rowsOn(plated, 8, { rest: true }, 400 + 60 + 90); t = 1_000 + REST_STAND_MS; rowsOn(plated, 8, { rest: true }, 400 + 60 + 90);
+  const plate = rowsOn(plated, 8, { pointing: true }, 400 + 60 + 90)!;
+  assert.deepEqual([plate.plate, plate.y0], [true, 25]);
   // While a pointer reads a moment with more rows than the room was worked out for, the room stays as held, the rows kept inside the pane.
   const f = new PaneTable(host, null, () => t);
   f.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 200, rest: true }), { ...spec(2), foot: 'then', focus: -1, lines: OI_LINES });
@@ -598,6 +611,9 @@ test('a pane that draws no table at rest (Funding, where its table would not fit
   const pointed = new PaneTable(host, null, () => 0);
   pointed.observe(ctx, { ...r, rest: true, pointing: true }, { ...spec(), foot: '', focus: -1, lines: OI_LINES });
   assert.equal(plateOf(pointed).y0, 98, 'a pointer on the pane: nothing taken');
+  const reading = new PaneTable(host, null, () => 0);
+  reading.observe(ctx, { ...r, rest: false }, { ...spec(), foot: '', focus: -1, lines: OI_LINES });
+  assert.equal(plateOf(reading).y0, 98, 'a pointer elsewhere reading a moment: nothing taken');
 });
 
 test('frames at random: while anything reads a moment or a pointer is on the pane, rows of one height stand at one height, whatever the moment shows', () => {

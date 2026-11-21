@@ -931,7 +931,7 @@ export class DepthPane extends TimePane {
     }
     // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
     const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines, `${liq ? 'liq' : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
     if (pointed && card && !placed?.complete) this.#lines = card;
   }
 
@@ -1386,7 +1386,7 @@ export class OiPane extends TimePane {
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
-      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.oiChange}` })?.complete) this.#lines = null;
+      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.oiChange}\u0001${highlight.on}` })?.complete) this.#lines = null;
     }
     say(`${t('base')} <b>${fmtPrice(bar[4], 1)}</b> Δ <b class="${d > 0 ? 'bid' : d < 0 ? 'ask' : ''}">${sign}${fmtPrice(Math.abs(d), 1)}</b>${whoText(who?.get(bar[0]), d)}${sigma}${source}${stale ? ` <span class="ask">${t('last sample {n} min ago', { n: Math.round(age / 60_000) })}</span>` : ''}`);
   }
