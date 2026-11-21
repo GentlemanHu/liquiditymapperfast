@@ -479,7 +479,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'maximize', title: 'Maximize a chart',
     blocks: [
-      { t: 'p', text: '**Maximize** gives one chart the whole screen between the top bar and the status bar: the map itself, or one of the panels under it (Depth, Open interest, Delta, Long/Short, Funding, LT, Bar stats or Scripts). The other panels, the flow column and the order book fold away, keep their places and sizes, and come back as they were.' },
+      { t: 'p', text: '**Maximize** gives one chart the whole screen between the top bar and the status bar: the map itself, or one of the panels under it (Depth, Open interest, Delta, Long/Short, Funding, LT, Bar stats, Flow history or Scripts). The other panels, the flow column and the order book fold away, keep their places and sizes, and come back as they were.' },
       { t: 'list', items: [
         '**Double-click** the chart or the panel to maximize it, and again to bring the other panels back.',
         '**The four-corner button** does the same: on the title bar of each panel under the map, beside its ⋯ menu, and last among the map\'s corner buttons. It is lit while its chart is maximized, and the ⋯ menu offers the same.',
