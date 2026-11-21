@@ -570,6 +570,11 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   // A gap inside what it read (readings either side, none at the time read past the hold): the same two lines, never "could not be read".
   const gap = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 10 * H, long: 0.5 }, { t: T + 10 * H, long: 0.5 }] }] as unknown as LsSeries[];
   assert.deepEqual(tableLines(lsCardLines(gap, T, '1h')).map(line => line.text === 'no reading' ? line.text : /last update/.test(line.text) ? 'sentence' : line.text), ['no reading', 'sentence']);
+  // Bitget whose last update failed, at a time before its readings: the same two lines in the table; its 30-readings limit stays the card's (review 5).
+  const bitgetGone = [...series.filter(s => s.status === 'ok'), { id: 'bitget:BTCUSDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T + 10 * H, long: 0.6 }] }] as unknown as LsSeries[];
+  const bitgetCard = lsCardLines(bitgetGone, T, '1h');
+  assert.deepEqual(tableLines(bitgetCard).map(line => line.text === 'no reading' ? line.text : /last update/.test(line.text) ? 'sentence' : line.text), ['no reading', 'sentence']);
+  assert.ok(bitgetCard.some(line => /newest 30 readings/.test(line.text)), 'the card keeps Bitget\'s limit');
   assert.deepEqual(lsTableRows(gone, T + 30 * MIN, PALETTE)[2]!.slice(1).map(cell => cell.text), ['–', '–', '–'], 'its row: dashes, as any venue without a reading');
   // Who each line counts: the header's Series says it while every line counts the same people, not Bybit's accounts beside top traders' positions.
   const mixed = [{ ...series[0]!, population: 'topPositions' }, { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];

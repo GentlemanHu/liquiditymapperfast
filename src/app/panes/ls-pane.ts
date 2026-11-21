@@ -80,9 +80,9 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
     // the table leaves both lines to the card. Where it has none, its dashes are any venue's: "no reading" and the sentence stay with the table
     // (review rounds 3 and 4). Not "could not be read": the series keeps no record of the window its earlier read covered, so a time it did
     // cover (a gap in the venue's readings, Bitget older than its 30) cannot be told from one its failed round missed; both lines are true of both.
-    const stale = s.status === 'stale', kept = stale && !p ? {} : { table: false as const };
-    lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, ...kept });
-    if (stale) lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, ...kept });
+    const stale = s.status === 'stale', inTable = stale && !p, scope = inTable ? {} : { table: false as const };
+    lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, ...scope });
+    if (stale) lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, ...scope });
   }
   // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
   if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true, table: false });
