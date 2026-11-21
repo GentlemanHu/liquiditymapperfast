@@ -402,6 +402,19 @@ export function binsIn(levels: LiqLevels, side: 'long' | 'short', lo: number, hi
   return { positions, top };
 }
 
+/**
+ * `binsIn` by bin number: the positions of a side in the bins [kLo, kHi) and the largest. The liquidation card asks by number so a price that
+ * divides back to 42.99999 never counts the bin before (Sol, review 2026-11-20).
+ */
+export function binsBetween(levels: LiqLevels, side: 'long' | 'short', kLo: number, kHi: number): { positions: number; top: number } {
+  let positions = 0, top = 0;
+  for (let i = lowerBound(levels.k, kLo); i < levels.k.length && levels.k[i]! < kHi; i++) {
+    positions += side === 'long' ? levels.longWallets[i]! : levels.shortWallets[i]!;
+    top = Math.max(top, side === 'long' ? levels.longTop[i]! : levels.shortTop[i]!);
+  }
+  return { positions, top };
+}
+
 /** What still stands of each side, added up bin by bin from the lowest (sums with a leading 0), for the profile column. */
 export interface LiqStanding { k: Int32Array; step: number; long: Float64Array; short: Float64Array }
 
@@ -412,6 +425,12 @@ export function liqStanding(levels: LiqLevels, taken: { long: Taken; short: Take
     short[i + 1] = short[i]! + (levels.shortIso[i]! + levels.shortCross[i]!) * (1 - (taken?.short.frac[i] ?? 0));
   }
   return { k: levels.k, step: levels.step, long, short };
+}
+
+/** What stands of one side in the whole bins [kLo, kHi) (bin numbers of the standing's own step), read off the running sums: no proration. */
+export function standingBins(s: LiqStanding, side: 'long' | 'short', kLo: number, kHi: number): number {
+  const sums = s[side];
+  return kHi > kLo ? Math.max(0, sums[lowerBound(s.k, kHi)]! - sums[lowerBound(s.k, kLo)]!) : 0;
 }
 
 /** The dollars of one side standing below `price`; a bin the price cuts counts in proportion, its dollars spread evenly over it. */
@@ -453,8 +472,11 @@ export function partsOnTheWay(parts: LiqParts, price: number, at: number): { liq
  */
 export interface LiqProfile { row0: number; step: number; long: Float64Array; short: Float64Array; cumLong: Float64Array; cumShort: Float64Array; maxLevel: number; maxCum: number }
 
+/** The most rows one profile holds (more is cut off at the top): a caller that groups wider must stay within it (the seam, `HeatPane.#paintSeam`). */
+export const LIQ_PROFILE_ROWS = 5_000;
+
 export function liqProfile(s: LiqStanding, step: number, p0: number, p1: number, price: number): LiqProfile {
-  const row0 = Math.floor(p0 / step), n = Math.max(0, Math.min(5_000, Math.floor(p1 / step) - row0 + 1));
+  const row0 = Math.floor(p0 / step), n = Math.max(0, Math.min(LIQ_PROFILE_ROWS, Math.floor(p1 / step) - row0 + 1));
   const out: LiqProfile = { row0, step, long: new Float64Array(n), short: new Float64Array(n), cumLong: new Float64Array(n), cumShort: new Float64Array(n), maxLevel: 0, maxCum: 0 };
   const longAtPrice = standingBelow(s, 'long', price), shortAtPrice = standingBelow(s, 'short', price);
   let longBelow = standingBelow(s, 'long', row0 * step), shortBelow = standingBelow(s, 'short', row0 * step);

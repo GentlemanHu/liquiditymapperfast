@@ -119,6 +119,7 @@ export const SECTIONS: readonly Section[] = [
     id: 'profile', title: 'The profile', part: 'Resting liquidity',
     blocks: [
       { t: 'p', text: 'The bars at the right edge of the chart are the heatmap collapsed into one moment: for every price, the total size waiting there right now. Long bars are walls; pink above the price are asks, green below are bids. It is the quickest way to see the shape of the book, and what **Mirror** works on.' },
+      { t: 'p', text: 'Point at a row and a box says how much rests in it, the two books holding most of it, and how many books send data that far. Each exchange sends its book only so far from the price (some under 1 %, others past 10 %), so far from the price only the books that reach there are counted.' },
     ],
   },
   {
@@ -140,7 +141,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'mirror', title: 'Mirror: which side has more?',
     blocks: [
-      { t: 'p', text: 'Mirror answers one question: *is there more on this side of the price, or the other?* Point at a price in the profile or the order book. The band between the price and your pointer is outlined, and so is the equal band on the other side. A box adds up both and says which is bigger. Move outward and watch the balance change with distance.' },
+      { t: 'p', text: 'Mirror answers one question: *is there more on this side of the price, or the other?* Point at a price in the profile or the order book. The band between the price and your pointer is outlined, and so is the equal band on the other side, with each band\'s total on its edge. The order book\'s box says which is bigger; the profile\'s, under what is in your row, gives bids over asks as one number (above 1, more bids). Move outward and watch the balance change with distance.' },
       { t: 'fig', id: 'mirror', caption: 'The pointer moves away from the price. The box compares the two bands as they grow.' },
       { t: 'note', kind: 'warn', text: 'Mirror only shows while you hover, and it is on unless you switch it off. Its switch is **Mirror** in the order book\'s **Cues** panel (the Cues key in the book\'s title bar; on a phone, behind the book\'s settings key): if hovering stops showing the box, check it there, as its state is saved between visits. On a touch screen, tap the profile or the order book to pin the box there, and tap again to let go.' },
     ],
@@ -165,8 +166,8 @@ export const SECTIONS: readonly Section[] = [
       { t: 'p', text: '**Three switches**, one for each kind, choose what is drawn: any of them together, and one always stays on. The curve adds up the liquidations and the stops that are on, and the button over the column names what it adds up.' },
       { t: 'p', text: '**Take profits** close a position once price has gone its way: a long takes its profit with a sell above the price, a short with a buy below it. That is the other way round, so they are never added to the rest. Beside liquidations or stops they are a layer of their own, always dashed: a lane of their own next to the newest candle, named at its top, bars from the liquidation column\'s right edge, bars on the phone\'s Liq tab, and a line in the Depth pane. On alone, they get a dashed curve of their own: what would be filled on the way to each price. Their colour says what they do: sells in the falling colour, buys in the rising one.' },
       { t: 'p', text: 'An order counts for its own size, except a stop or take profit set to close the whole position: that one takes its size from the position at the snapshot. A wallet\'s stops never count for more than its position: the ones nearest the price count first, and what would go past the position is left out. Its take profits are capped the same way.' },
-      { t: 'p', text: '**Traders** chooses whose levels are shown, for every kind: everyone\'s, or the **profitable traders**: the wallets HyperTracker counts as profitable, its four cohorts with a positive all-time perp profit. Their stops and take profits come from files of their own; where there are none yet, the page says they are **not available yet** and draws nothing in their place.' },
-      { t: 'p', text: 'With Plus, **Split** draws the liquidation column as two columns side by side. **Liquidations | Stops** puts the liquidations beside the stops of the chosen traders, on one dollar scale so a bar compares across the divider; choosing it turns both on; switching either off draws one column until it is on again, and the split comes back with it. **Everyone | Profitable** puts everyone\'s levels beside the profitable traders\', each on a scale of its own, since everyone\'s are many times larger; Traders has no say while it is on. Each column says what it holds, and the take profits stay with the left one. On the stripe each column gets a lane of its own, captioned the same way: liquidations beside stops, or everyone\'s levels beside the profitable traders\', each on its own scale, and pointing at a level there names whose it is. Where the map is too narrow for two columns, the column says so and draws liquidations and stops added up, or everyone\'s levels; under Everyone | Profitable the stripe then shows everyone\'s alone. The phone\'s Liq tab splits into two halves when it is wide enough. The Depth pane is not split: it draws the levels as without a split, Liquidations | Stops as Liq + stops and Everyone | Profitable as everyone\'s levels.' },
+      { t: 'p', text: '**Traders** chooses whose levels are shown, for every kind: everyone\'s, or the **+PnL traders**: the wallets in HyperTracker\'s four cohorts with a positive all-time perp profit. Their stops and take profits come from files of their own; where there are none yet, the page says they are **not available yet** and draws nothing in their place.' },
+      { t: 'p', text: 'With Plus, **Split** draws the liquidation column as two columns side by side. **Liquidations | Stops** puts the liquidations beside the stops of the chosen traders, on one dollar scale so a bar compares across the divider; choosing it turns both on; switching either off draws one column until it is on again, and the split comes back with it. **Everyone | +PnL** puts everyone\'s levels beside the +PnL traders\', each on a scale of its own, since everyone\'s are many times larger; Traders has no say while it is on. Each column says what it holds, and the take profits stay with the left one. On the stripe each column gets a lane of its own, captioned the same way: liquidations beside stops, or everyone\'s levels beside the +PnL traders\', each on its own scale, and pointing at a level there names whose it is. Where the map is too narrow for two columns, the column says so and draws liquidations and stops added up, or everyone\'s levels; under Everyone | +PnL the stripe then shows everyone\'s alone. The phone\'s Liq tab splits into two halves when it is wide enough. The Depth pane is not split: it draws the levels as without a split, Liquidations | Stops as Liq + stops and Everyone | +PnL as everyone\'s levels.' },
       { t: 'p', text: 'The orders are read with a snapshot of the positions, but not every snapshot gets its orders read: they come about once an hour. When the orders drawn are more than about two hours older than the liquidations beside them, the note under the legend says when they are from. In the Depth pane *Liq + stops* draws only the snapshots that have both, so it has about half as many.' },
       { t: 'note', kind: 'warn', text: 'An order can be moved or cancelled at any moment. These levels say where orders rest and where positions would be closed, not where price will go.' },
     ],
@@ -238,7 +239,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'bar-stats', title: 'Bar stats: a number per candle',
     blocks: [
-      { t: 'p', text: 'The **Bar stats** table under the chart (the **Stats** button in the Panels deck) has one row for each statistic and one cell for each candle, shaded by size. It starts with volume, delta and cumulative delta (cvd). **Stats** in its header opens a list of dozens more, in groups: volume, footprint rows, trades, and candle, open interest and liquidations. Choose the ones you want, drag them into order, or pick a preset (Default, Order flow, All, None).' },
+      { t: 'p', text: 'The **Bar stats** table under the chart (the **Stats** button in the Panels deck) has one row for each statistic and one cell for each candle, shaded by size. It starts with volume, delta and cumulative delta (cvd). The **settings key** at the end of its header (the sliders) opens a list of dozens more, in groups: volume, footprint rows, trades, and candle, open interest and liquidations. Choose the ones you want, drag them into order, or pick a preset (Default, Order flow, All, None).' },
       { t: 'p', text: 'Rows read from the candles and open interest fill candles from before the recording too. Rows read from executions are drawn faint where the recording holds only part of a candle, and the **rec %** row says how much.' },
       { t: 'list', items: [
         '**Click a candle** to pin a card with every statistic for it. [[Shift]] + click pins up to five to read side by side, and [[Esc]] lets go.',
@@ -246,6 +247,24 @@ export const SECTIONS: readonly Section[] = [
         '**Cells** can be shaded by size, by how unusual each is against its own recent candles (*Unusual*), drawn as lines, or left as coloured text. **Group rows by kind** folds the rows under headers, and **Export CSV** saves the candles in view.',
       ] },
       { t: 'note', kind: 'tip', text: 'Marks such as “delta vs candle” and “oi × delta” are readings, not proof: open interest cannot say who is long and who is short.' },
+    ],
+  },
+  {
+    id: 'flow-history', title: 'Flow history: order sizes candle by candle',
+    blocks: [
+      { t: 'p', text: 'The **Flow history** pane puts the order sizes of the flow column on the chart\'s time axis: a row for each kind of flow, a bar for each candle. Switch it on in the flow column\'s settings (its sliders key), in the **Bar stats** settings, or on a phone in **Settings** under Panels; its × closes it.' },
+      { t: 'list', items: [
+        '**Liquidations**: shorts liquidated drawn up, longs liquidated drawn down, as the venues that publish them report them.',
+        '**OI change**: how open interest changed over the candle, up where it rose, in one neutral colour (the OI pane\'s markets).',
+        '**Market orders by size**, six rows from under $25K to $5M and over (smaller sizes for smaller coins): each candle\'s buys less its sells, or with **Bars: Buys and sells** its buys up and its sells down.',
+      ] },
+      { t: 'p', text: 'Every row has its own scale, and a bar\'s height grows with the square root of its amount, so small candles stay visible beside a large one. A bar too tall for its row reaches the edge with a gap near its end.' },
+      { t: 'p', text: '**Brightness says how unusual.** Each bar is compared with the earlier candles of its row that had any such amount, with the Highlights\' sensitivity and baseline. An ordinary bar is faint; it brightens as its amount climbs past what its row usually does, and is fully bright where the Highlights would mark it. Candles with nothing in a row are left out of its baseline: most candles have no order of $5M or more, and one would otherwise look unusual every time.' },
+      { t: 'list', items: [
+        'Point at a bar (tap it on a touch screen) for its buys and sells, its share of the candle\'s volume, how many standard deviations it stands from its baseline, and how many of the candle\'s size rows were unusual.',
+        'Where the recording holds only part of a candle, its size bars are outlines and not judged. On a day with more than 5,000 liquidations the record keeps the 5,000 largest, so the row is marked ≈ and its figures are at least what they say.',
+      ] },
+      { t: 'note', kind: 'tip', text: 'Several rows lit in one candle usually means the whole market traded heavily, not that one kind of trader acted: an order\'s size is not who placed it.' },
     ],
   },
   {
@@ -359,6 +378,7 @@ export const SECTIONS: readonly Section[] = [
         '**Long/Short** shows the share of each exchange\'s accounts that is net long.',
         '**Funding** shows a perpetual\'s funding and premium.',
         '**Bar stats** and **Scripts**, described above, also stand here.',
+        '**Flow history**, described above, stands here too; it has no Panels button: the flow column\'s and the Bar stats\' settings switch it on.',
       ] },
       { t: 'p', text: 'Where a pane has several things of one kind at one moment, such as every band or every exchange, it reads them in a **table** at the pointer\'s time, or the newest: beside the plot where there is room, otherwise over its left end while you point at the pane. The Table switch in its header hides it.' },
       { t: 'p', text: 'Where there are more of them than the pane has rows for, as with the exchanges of the Liquidity Tracker and of Delta, the largest get a row each and the rest are added up in the last row.' },
@@ -548,7 +568,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'plus', title: 'Plus: what it opens',
     blocks: [
-      { t: 'p', text: '**Plus** is the paid part of this page. It pays for the servers behind it and opens what they store: the whole history of the liquidation levels in the Depth pane, the levels of HyperTracker\'s profitable traders, and the stop and take-profit levels (see “Liquidations, stops and take profits”). Everything else on the page is free and stays free, the live liquidation levels of all traders and the last 7 days of their history included.' },
+      { t: 'p', text: '**Plus** is the paid part of this page. It pays for the servers behind it and opens what they store: the whole history of the liquidation levels in the Depth pane, the levels of HyperTracker\'s +PnL traders, and the stop and take-profit levels (see “Liquidations, stops and take profits”). Everything else on the page is free and stays free, the live liquidation levels of all traders and the last 7 days of their history included.' },
       { t: 'p', text: 'Without Plus the choices that are part of it wear a small lock, and pressing one opens the presentation of what Plus adds, with a demo to try on made-up numbers. A choice made with Plus is kept, and comes back with it.' },
       { t: 'p', text: 'Without Plus the Depth pane draws the last 7 days of that history; the days before are hatched, and a lock stands where they end. With Plus it draws them all, back to the first snapshot recorded, a new one about every half hour.' },
       { t: 'p', text: 'There is no account. The checkout is on a page of its own, the **Plus page**, and is run by Paddle, the seller of record. After it this browser holds a **key**. Entering the key on another device brings Plus to that device too, on the Plus page or right here in the page: enter it once on each browser and address you use. If the key is lost, the email you paid with and the invoice number on the receipt bring it back.' },

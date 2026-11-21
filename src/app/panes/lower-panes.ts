@@ -14,10 +14,12 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, DAY_MS, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type LiquidationDay, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
-import { LIQUIDATIONS_PER_ANSWER, LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
+import { LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
+import type { LiquidationDays } from '../liq-days.ts';
+import { flowHistoryRows } from '../size-history/switch.ts';
 import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
@@ -33,7 +35,7 @@ import { plus } from '../plus/pass.ts';
 import { togglePlus } from '../plus/panel.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
-import { addTune } from '../pane-tune.ts';
+import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, ratioCell, ratioFigure, sideRatio, tableInk, tableRowCap, type TableCell, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { niceTicks } from '../cvd/hero.ts';
@@ -116,7 +118,7 @@ export abstract class TimePane {
    */
   #pan: { id: number; x0: number; x: number; moved: boolean } | null = null;
   #pinned: Pt | null = null;
-  #source: 'depth' | 'oi' | 'lt' | 'bars' | 'delta' | 'ls' | 'funding' | 'script';
+  #source: 'depth' | 'oi' | 'lt' | 'bars' | 'delta' | 'ls' | 'funding' | 'script' | 'sizes';
   /** Where the pointer (or the pinned finger) is, in the page, for a popup that is a page element rather than canvas drawing. */
   protected pointer: { x: number; y: number } | null = null;
   /** The Range tool (set by the page), and a stretch of time being selected here: where the drag began, and where a finger last was. */
@@ -131,7 +133,7 @@ export abstract class TimePane {
     new ResizeObserver(() => this.#resize()).observe(this.canvas);
     // A pane that is not shown keeps its canvas of no size: drawing it would draw nothing.
     sharpens({ resize: () => this.#resize(), paint: () => { if (!this.#covered && this.canvas.getBoundingClientRect().width > 0) this.#prepare(); } });
-    const source = this.#source = cls as 'depth' | 'oi' | 'lt' | 'bars' | 'delta' | 'ls' | 'funding' | 'script';
+    const source = this.#source = cls as 'depth' | 'oi' | 'lt' | 'bars' | 'delta' | 'ls' | 'funding' | 'script' | 'sizes';
     // A drag across a pane selects a stretch of time for the Range tool while it is armed, or with Ctrl (Cmd on a Mac) held. Otherwise a drag with
     // the main button moves the time axis the panes share with the map, as a finger's does: not from a table's rows it chooses (`ownsPress`), and
     // only once it has gone DRAG_MIN_PX, so a click (a table's row, a Bar stats candle) and a double click (maximize) stay what they were.
@@ -562,7 +564,7 @@ export class DepthPane extends TimePane {
     if (this.#levelsButton.textContent !== caption) this.#levelsButton.textContent = caption;
     // Split is the column's and the stripe's (owner's rule, 2026-11-20): Liquidations | Stops draws here as Liq + stops, and Everyone |
     // Profitable as everyone's levels, which the tip says.
-    const split = liveSplit(this.store.state.liqLevels)?.split === 'groups' ? `${t("Under Everyone | Profitable the Depth pane draws everyone's levels.")} ` : '';
+    const split = liveSplit(this.store.state.liqLevels)?.split === 'groups' ? `${t("Under Everyone | +PnL the Depth pane draws everyone's levels.")} ` : '';
     setTip(this.#levelsButton, `${split}${levelsDescription(view)} ${t('Press to choose what the levels show.')}`);
     // The depth sound and the venues are the order book's: they have nothing to say about liquidation levels.
     if (this.#bellLabel) this.#bellLabel.hidden = liq;
@@ -1655,7 +1657,7 @@ export function bookNames(ids: readonly string[], markets: AppState['markets']):
   return names.map((name, i) => (count.get(name)! > 1 && kindOf(markets, ids[i]!) === 'spot' && !/spot/i.test(name) ? `${name} ${t('Spot')}` : name));
 }
 
-/** Strip under the chart with the enabled per-candle statistics, aligned to the candle slots (footprint on); the Stats button chooses, orders and configures them. */
+/** Strip under the chart with the enabled per-candle statistics, aligned to the candle slots (footprint on); its settings key chooses, orders and configures them. */
 export class BarStatsPane extends TimePane {
   /** A table: the pointer's height is a row, not a value, so it takes no horizontal line. */
   protected override crossY = false;
@@ -1675,16 +1677,7 @@ export class BarStatsPane extends TimePane {
   #pins: number[] = [];
   #pinsOn = '';
   #pinContext(state: AppState): string { return `${state.marketId}|${state.timeframe}|${this.heat.footprintMarkets(state).join(',')}`; }
-  /**
-   * Liquidations of the markets counted, every size the record keeps, by UTC day: each day asked on its own, so an answer holds a whole day
-   * (BTC: 900 to 3,500) rather than the largest 5,000 of a week; the day under way asked again every half minute; two at a time, the newest first.
-   */
-  #liqDays = new Map<number, LiquidationDay & { at: number }>();
-  #liqIds = '';
-  #liqLoading = new Set<number>();
-  #liqVersion = 0;
-  /** A day whose question failed is asked again after its own pause, the others meanwhile. */
-  #liqRetry = new Map<number, number>();
+  /** The liquidations by candle, worked out from the days the shared loader holds (`LiquidationDays`, liq-days.ts) while neither changes. */
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #button = document.createElement('button');
   #panel: Panel | null = null;
@@ -1698,11 +1691,17 @@ export class BarStatsPane extends TimePane {
     this.#usd = { oi: state.oi, parts, candles: state.candles, price: state.oiPrice, tfMs, map };
     return map;
   }
-  constructor(host: HTMLElement, store: Store, view: View, private heat: HeatPane, private hub: Hub) {
+  /** `liqDays`: the liquidations by UTC day, one loader shared with the Flow history pane (liq-days.ts). */
+  constructor(host: HTMLElement, store: Store, view: View, private heat: HeatPane, private hub: Hub, private readonly liqDays: LiquidationDays) {
     super(host, store, view, 'bars');
+    liqDays.listen(() => this.invalidate());
     this.head.innerHTML = `<strong>${t('Bar stats')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('stats'));
-    this.#button.textContent = t('Stats'); setTip(this.#button, t('Choose, order and configure the statistics shown for each candle'));
+    // The settings key, drawn as the sliders every settings key in the page wears (the flow column's, a pane's, the top bar's split keys), at
+    // the end of the header: a button reading "Stats" beside the name "Bar stats" read as part of the name (Karl, 2026-11-20).
+    this.#button.type = 'button'; this.#button.className = 'icon-btn stats-gear'; this.#button.setAttribute('aria-label', `${t('Settings')}: ${t('Bar stats')}`);
+    this.#button.innerHTML = settingsIcon(15);
+    setTip(this.#button, t('Choose, order and configure the statistics shown for each candle'));
     this.#button.onclick = () => { this.#panel = togglePanel(this.#button, { title: t('Bar stats'), width: 440, align: 'right', onClose: () => { this.#panel = null; } }, (tools, body) => this.#build(tools, body)); };
     this.head.append(this.#button);
     this.canvas.addEventListener('click', e => this.#click(e));
@@ -1722,6 +1721,8 @@ export class BarStatsPane extends TimePane {
     tools.append(el('span', { class: 'muted', textContent: t('{shown} of {total} shown', { shown: chosen.length, total: BAR_STATS.length }) }));
 
     body.append(heading(t('Sound')), panelSwitchRow(this.store, 'bars'));
+    // The market orders by size, liquidations and open interest candle by candle as bars, in a pane of their own (the flow column's switch too).
+    body.append(...flowHistoryRows(this.store));
     // Whose orders the table counts: the footprint's setting, so the two never need two loads and agree when both show.
     const fp = state.footprint, setMarkets = (markets: typeof fp.markets) => this.store.set({ footprint: { ...this.store.state.footprint, markets } });
     body.append(heading(t('Markets')),
@@ -1817,41 +1818,23 @@ export class BarStatsPane extends TimePane {
     this.invalidate();
   }
 
-  /**
-   * Ask for the UTC days of [from, to) not held, and again a day not answered to its end (the day under way, or one asked before its midnight)
-   * once what is held of it is half a minute old.
-   */
-  #ensureLiquidations(ids: string, from: number, to: number): void {
-    const source = this.hub.source; if (!source.liquidations) return;
-    // Other markets counted: what is held is not theirs, and an answer still out for the old ones is dropped when it comes.
-    if (ids !== this.#liqIds) { this.#liqIds = ids; this.#liqDays = new Map(); this.#liqRetry = new Map(); this.#liqVersion++; }
-    const now = Date.now();
-    for (let day = Math.floor((to - 1) / DAY_MS) * DAY_MS; day >= Math.floor(from / DAY_MS) * DAY_MS && this.#liqLoading.size < 2; day -= DAY_MS) {
-      const held = this.#liqDays.get(day);
-      if (this.#liqLoading.has(day) || now < (this.#liqRetry.get(day) ?? 0) || (held && (held.to >= day + DAY_MS || now - held.at < 30_000))) continue;
-      this.#liqLoading.add(day);
-      const asked = Date.now();
-      source.liquidations(day, day + DAY_MS).then(rows => {
-        if (ids !== this.#liqIds) return;
-        this.#liqRetry.delete(day);
-        this.#liqDays.set(day, { rows, cut: rows.length >= LIQUIDATIONS_PER_ANSWER, to: Math.min(day + DAY_MS, asked), at: Date.now() }); this.#liqVersion++;
-      }, () => { if (ids === this.#liqIds) this.#liqRetry.set(day, Date.now() + 15_000); })
-        // Drawn again whatever came back: the slot it held is free for the next day, an answer dropped for other markets included.
-        .finally(() => { this.#liqLoading.delete(day); this.invalidate(); });
-    }
-    // Only the days around the window are kept.
-    for (const day of [...this.#liqDays.keys()]) if (day + DAY_MS < from - DAY_MS || day > to + DAY_MS) this.#liqDays.delete(day);
-  }
-
   /** The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change). */
   #liquidationsFor(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
-    if (ids.join(',') !== this.#liqIds) return undefined;
+    const held = this.liqDays;
+    if (ids.join(',') !== held.ids) return undefined;
     // By the minute too: the candle under way counts once the minute it starts in has been asked about.
-    const key = `${this.#liqVersion}|${this.#liqIds}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
     if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const value = liquidationBuckets(this.#liqDays, ids, times, tfMs, coverFrom, Date.now());
+    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now());
     this.#liqBuckets = { key, value };
     return value;
+  }
+
+  /** A message in place of the table, on up to three lines of the plot's width (two in a pane of the least height), about its middle: a phone's is narrower than most languages' sentences. */
+  #say(text: string): void {
+    const { ctx } = this, measure = (line: string): number => ctx.measureText(line).width, lines = wrapText(measure, text, Math.max(40, this.plotW - 24), this.h >= 56 ? 3 : 2);
+    ctx.save(); ctx.fillStyle = this.palette.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    lines.forEach((line, i) => ctx.fillText(line, 12, this.h / 2 + (i - (lines.length - 1) / 2) * 14)); ctx.restore();
   }
 
   #strip(): { lines: InfoLine[]; x: number; y: number }[] {
@@ -1866,7 +1849,7 @@ export class BarStatsPane extends TimePane {
     const rowSize = data.step > 0 ? ` · ${t('rows of {step}', { step: `$${fmtPrice(data.step, data.step)}` })}` : '';
     setText(readout, (markets.length > 1 ? `${t('{n} markets', { n: markets.length })} · ${stats}` : stats) + rowSize);
     this.#viewSpan = null; this.#layout = [];
-    if (!defs.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No statistics selected: use Stats to add some.'), 12, ph / 2); this.#table = null; this.#held = null; return []; }
+    if (!defs.length) { this.#say(t('No statistics selected: use the settings key to add some.')); this.#table = null; this.#held = null; return []; }
     // Replay: only the candles that ended by its moment (a candle under way would carry its future executions).
     // The candles of the view and one each side (what the footprint asks for), not every bar it still holds: the running sums (cvd) start at the
     // view, whatever was looked at before; from each day's start, at the start of the day the left edge falls in (loaded whole for it).
@@ -1878,7 +1861,7 @@ export class BarStatsPane extends TimePane {
     for (const c of state.candles) if (near(c[0])) starts.add(c[0]);
     for (const b of data.bars.values()) if (near(b.t)) starts.add(b.t);
     const times = [...starts].sort((a, b) => a - b);
-    if (!times.length) { ctx.fillStyle = p.muted; ctx.fillText(t('Bar stats appear once executions are recorded for the visible candles.'), 12, ph / 2); this.#table = null; this.#held = null; return []; }
+    if (!times.length) { this.#say(t('Bar stats appear once executions are recorded for the visible candles.')); this.#table = null; this.#held = null; return []; }
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
     // The exchange's own candles (Binance's): the candle delta and the fills read them.
     const taker = defs.some(def => def.id === 'takerDelta' || def.id === 'fills' || def.id === 'avgFill') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
@@ -1889,7 +1872,7 @@ export class BarStatsPane extends TimePane {
     const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = Math.max(Math.ceil((Date.now() - retention) / 60_000) * 60_000, this.hub.recordedSince > 0 ? this.hub.recordedSince : 0);
     let liquidations: StatInput['liquidations'];
     if (this.hub.source.liquidations && defs.some(def => def.id === 'liq' || def.id === 'liqNet') && markets.length) {
-      this.#ensureLiquidations(markets.join(','), Math.max(times[0]!, liqCover), liqTo);
+      this.liqDays.ensure('bars', markets.join(','), Math.max(times[0]!, liqCover), liqTo);
       liquidations = this.#liquidationsFor(markets, times, tfMs, liqCover);
     }
     const restart = daily ? resetKeys(times, 'day', zone) : undefined;
@@ -1926,7 +1909,7 @@ export class BarStatsPane extends TimePane {
     const layout = this.#layout = bands.map(band => { const h = band.kind === 'head' ? HEAD_H : rowH, at = { band, y: y0, h }; y0 += h; return at; });
     const gridBottom = y0, slot = pw * tfMs / (v.t1 - v.t0), cells = options.cells, filled = cells === 'filled' || cells === 'unusual';
     const visible = times.map((_, i) => i).filter(i => times[i]! + tfMs > v.t0 && times[i]! < v.t1);
-    if (!visible.length) { ctx.fillStyle = p.muted; ctx.fillText(t('No executions recorded for the candles in view.'), 12, ph / 2); return []; }
+    if (!visible.length) { this.#say(t('No executions recorded for the candles in view.')); return []; }
     // A candle the recording holds only in part: the rows read from executions are drawn faint there (rec % says how much).
     const partial = all.map((bar, i) => { const share = bar ? coverageOf(bar, times[i]!, tfMs, now) : null; return share !== null && share < 0.95; });
     // Under the pointer: the candle (any pane's pointer says which, the time axis being shared) and, from this pane's own pointer, the band; or,

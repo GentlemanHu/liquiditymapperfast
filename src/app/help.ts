@@ -11,7 +11,7 @@ import { t } from './i18n.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes';
 
 export interface HelpTopic {
   title: string;
@@ -28,7 +28,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     title: t('Profile'), guide: 'profile',
     tip: t('The column at the right edge of the chart: how much liquidity is resting at each price right now, added up over the enabled venues. Pink are asks (sellers waiting above), green are bids (buyers waiting below).'),
     body: [t('The profile is the heatmap collapsed into one moment: for every price, the total size of the orders waiting there right now, summed over the enabled venues. Long bars are walls.'),
-      t('Hover it and the Mirror comparison appears (switch that off with Mirror in the order book\'s Cues panel).')],
+      t('Hover it for the row under the pointer: how much rests there, the two books holding most of it and how many books send data that far. With Mirror on (in the order book\'s Cues panel) it also compares the stretch from the price to the pointer with the same stretch on the other side.')],
   },
   traded: {
     title: t('Volume profile'), guide: 'volume-profile',
@@ -159,7 +159,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   mirror: {
     title: t('Mirror'), guide: 'mirror',
-    tip: t('Hover comparison: pointing at the order book, the profile column or the liquidation column compares what stands between the price and your pointer with the equal stretch on the other side, and says which side has more. Nothing changes until you hover.'),
+    tip: t('Hover comparison: pointing at the order book, the profile column or the liquidation column compares what stands between the price and your pointer with the equal stretch on the other side. On the two columns the box first says what is in the row under the pointer. Nothing changes until you hover.'),
     body: [],
   },
   volume: {
@@ -187,9 +187,9 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
       t('A snapshot describes the positions about 40 minutes before it can be read, and every level price has traded through since then is gone, even if that happened before the page was opened. Positions opened since come with the next snapshot.'),
       t('They are drawn as a stripe right of the newest candle, so the heatmap keeps its own colours, and their own column beside the profile column adds them up: in each row what still stands, and a curve of everything from the price out to each price, the dollars that go if price gets there. On a computer, point anywhere on the map and the column reads the curve at that price; hover the column itself to compare the longs below with the shorts as far above.'),
       t('Only Hyperliquid\'s positions are known, and only for BTC. A trade can reach a level a few basis points before the mark price that liquidates it, and a position can be closed or topped up before price gets there, so a level is where forced orders could start, not a promise that they will.'),
-      t('Point at the line between the liquidation column and the profile column to weigh the book against the liquidations: what rests against what would be liquidated on each side, how level size and book size rank together, and whether the book stands as a wall or thins to a void at the largest levels.'),
-      t('With Plus, the button at the top of the liquidation column opens the Levels control (the Liq levels panel, the Depth pane\'s levels button and the phone\'s Liq tab title open the same one): three switches, liquidations, stops and take profits, any of them together and one always on, and whose levels they are, everyone\'s or the profitable traders\': the wallets HyperTracker counts as profitable, its four cohorts with a positive all-time perp profit. Take profits are always dashed: beside the others a lane of their own next to the newest candle and bars from the column\'s right edge, on alone a curve of their own. Where the profitable traders\' stops and take profits are not on the server yet, the page says they are not available yet and draws nothing in their place. The Depth pane\'s history follows the same choice.'),
-      t('Split (Plus) draws the column as two: liquidations beside stops on one scale, or everyone beside the profitable traders each on its own. The stripe gives each column a lane of its own, captioned the same way; pointing at a level of everyone\'s or the profitable traders\' lane names whose it is. Too narrow for two, it draws liquidations and stops added up, or everyone\'s levels (everyone\'s alone on the stripe too), and says so. The phone\'s Liq tab splits into halves when it is wide enough. A kind the split needs switched off draws one column until it is on again. The Depth pane is not split: it draws as without a split, everyone\'s levels under Everyone | Profitable.'),
+      t('Point at the line between the liquidation column and the profile column to weigh the book against the liquidations: on each side, what rests in the book against what would be liquidated, from the price out to the pointer and as far the other way, how many books send data that far, and how old the levels are.'),
+      t('With Plus, the button at the top of the liquidation column opens the Levels control (the Liq levels panel, the Depth pane\'s levels button and the phone\'s Liq tab title open the same one): three switches, liquidations, stops and take profits, any of them together and one always on, and whose levels they are, everyone\'s or the +PnL traders\': the wallets in HyperTracker\'s four cohorts with a positive all-time perp profit. Take profits are always dashed: beside the others a lane of their own next to the newest candle and bars from the column\'s right edge, on alone a curve of their own. Where the +PnL traders\' stops and take profits are not on the server yet, the page says they are not available yet and draws nothing in their place. The Depth pane\'s history follows the same choice.'),
+      t('Split (Plus) draws the column as two: liquidations beside stops on one scale, or everyone beside the +PnL traders each on its own. The stripe gives each column a lane of its own, captioned the same way; pointing at a level of everyone\'s or the +PnL traders\' lane names whose it is. Too narrow for two, it draws liquidations and stops added up, or everyone\'s levels (everyone\'s alone on the stripe too), and says so. The phone\'s Liq tab splits into halves when it is wide enough. A kind the split needs switched off draws one column until it is on again. The Depth pane is not split: it draws as without a split, everyone\'s levels under Everyone | +PnL.'),
       t('The curve totals the liquidations and stops that are on. Take profits are dashed bars beside it, or, on alone, a dashed curve of their own.')],
   },
   highlights: {
@@ -261,13 +261,22 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   stats: {
     title: t('Bar stats'), guide: 'bar-stats',
-    tip: t('A table under the chart: one row per statistic, one cell per candle (volume, delta, cumulative delta and more). Press Stats in its header to choose the rows.'),
+    tip: t('A table under the chart: one row per statistic, one cell per candle (volume, delta, cumulative delta and more). Press the settings key in its header to choose the rows.'),
     body: [t('Each row is one statistic, one cell per candle, shaded by size. The defaults are volume, delta (buy volume minus sell volume) and cvd (the running sum of delta).'),
-      t('Press Stats to add statistics such as the point of control, stacked imbalances or market orders by size. These come from the executions recorded while the page was open, so they start empty and fill with time.'),
+      t('Press the settings key to add statistics such as the point of control, stacked imbalances or market orders by size. These come from the executions recorded while the page was open, so they start empty and fill with time.'),
       t("It has its own switch and counts the markets the footprint counts (set in either panel). Its point of control and imbalances are read on rows of the size its header shows: the footprint's at this zoom, whether the footprint shows or not."),
       t('The View column, right of the table under the price axis, gives each row over the candles in view: a sum, the newest value of a running sum, or a figure worked out from those candles added together. Point at it to see which.'),
       t('Rows read from the candles and open interest (range, close in range, vol / bp, oi chg, candle delta) fill the candles before the recording too. Rows read from executions are drawn faint where the recording holds only part of a candle (rec % says how much). Order flow picks the rows an order-flow reading starts from; Export CSV saves the candles in view.'),
       t("Click a candle to pin it: a card lists every statistic for that candle until it is clicked again or Esc is pressed. Shift+click pins more candles to compare them side by side (up to five). Cells can be shaded by how unusual each candle is against its own recent ones (Unusual, the Highlights' baseline) or drawn as lines, and rows can be grouped by kind under headers that fold away. CVD from each day's start makes the running sums start again at every day in the chart's time zone.")],
+  },
+  sizes: {
+    title: t('Flow history'), guide: 'flow-history',
+    tip: t("Liquidations, open interest's change and market orders in six size bands, one row each, candle by candle under the chart. Quiet bars are faint; the more unusual an amount is for its row, the brighter its bar."),
+    body: [t('The rows: liquidations (shorts liquidated up, longs liquidated down), the change of open interest (up where it rose), then market orders in six size bands from under $25K to $5M and over (smaller sizes for smaller coins). Bars shows each size row as its buys less its sells (Delta) or as its buys up and its sells down.'),
+      t("Every row has its own scale, and a bar's height grows with the square root of its amount, so small candles stay visible next to large ones. A bar too tall for its row is drawn to the edge with a gap near its end. Point at a bar for its amounts."),
+      t("How bright a bar is says how unusual its amount is for its own row: it is compared with the earlier candles of that row that had any such amount, with the Highlights' sensitivity and baseline (Settings). Faint is ordinary; full brightness is where the Highlights would mark it. Candles with nothing in a row (often the largest orders) are left out of its baseline, so one large order is not called unusual only because most candles have none."),
+      t("Where the recording holds only part of a candle, its size bars are outlines and not judged. Liquidations come from the venues that publish them; on a day with more than 5,000 the record keeps its 5,000 largest, so the row says ≈ and a figure is at least that. Open interest is the OI pane's markets; it has no row values when only spot markets are counted, and is not judged on a one-minute chart."),
+      t("It counts the markets the footprint and the Bar stats count (set in either panel). Switch it on in the flow column's settings, in the Bar stats' settings or, on a phone, in Settings. It reads the history before the view that its comparisons need, so a bar's brightness can change a little once older candles have loaded.")],
   },
   cvd: {
     title: t('Flow'), guide: 'flow',
