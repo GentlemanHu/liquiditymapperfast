@@ -3429,7 +3429,7 @@
  "longs": "лонги",
  "shorts": "шорты",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "× в таблице показывает, во сколько раз большая сторона больше меньшей, её цветом: 2.50× — в два с половиной раза больше на этой стороне; ∞ — на другой стороне ничего нет.",
- "While the table is drawn it takes the popup's place; switch Table off to see the popup.": "Пока таблица нарисована, она заменяет всплывающее окно; выключите «Таблица», чтобы увидеть всплывающее окно.",
+ "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "Под строками бирж таблица также показывает то, что всплывающее окно сказало бы о выбранной бирже: когда выплата и, на Hyperliquid, кто открывал. Где всё это помещается, таблица заменяет всплывающее окно; где нет, окно остаётся.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "Один вид остаётся включённым. Чтобы скрыть уровни, используйте «Уровни ликв.» в верхней панели.",
  "How levels work": "Как работают уровни",
  "{name}, Plus required": "{name}, нужен Plus",

@@ -3151,7 +3151,7 @@
  "longs": "多头",
  "shorts": "空头",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "表中的 × 表示较大一侧是较小一侧的几倍，以该侧的颜色显示：2.50× 表示该侧是另一侧的 2.5 倍；∞ 表示另一侧为零。",
- "While the table is drawn it takes the popup's place; switch Table off to see the popup.": "绘制表格时，表格会取代弹窗；关闭“表格”即可看到弹窗。",
+ "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "表格还会在各交易所的行下面给出弹窗对当前交易所的说明：何时结算，以及在 Hyperliquid 上谁在开仓。能全部放下时，表格取代弹窗；放不下时，弹窗照常显示。",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "其中一种保持开启。要隐藏价位，请使用顶部栏中的“强平价位”。",
  "How levels work": "价位如何运作",
  "{name}, Plus required": "{name}，需要 Plus",

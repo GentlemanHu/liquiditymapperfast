@@ -3151,7 +3151,7 @@
  "longs": "롱",
  "shorts": "숏",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "표의 ×는 큰 쪽이 작은 쪽의 몇 배인지를 그쪽 색으로 보여 줍니다. 2.50×는 그쪽이 2.5배라는 뜻이고, ∞는 반대쪽이 0이라는 뜻입니다.",
- "While the table is drawn it takes the popup's place; switch Table off to see the popup.": "표가 그려져 있는 동안에는 표가 팝업을 대신합니다. 팝업을 보려면 표를 끄세요.",
+ "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "표는 거래소 행 아래에 표시 중인 거래소에 대해 팝업이 알려 주는 내용(언제 정산되는지, Hyperliquid에서는 누가 열었는지)도 보여 줍니다. 모두 들어가면 표가 팝업을 대신하고, 들어가지 않으면 팝업도 함께 표시됩니다.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "한 종류는 켜진 채로 남습니다. 레벨을 숨기려면 위쪽 막대의 ‘청산 레벨’을 사용하세요.",
  "How levels work": "레벨의 작동 방식",
  "{name}, Plus required": "{name}, Plus 필요",

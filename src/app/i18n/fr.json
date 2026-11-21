@@ -3381,7 +3381,7 @@
  "longs": "longs",
  "shorts": "shorts",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "× dans le tableau indique combien de fois le côté le plus grand fait le plus petit, dans sa couleur : 2.50× signifie deux fois et demie plus de ce côté ; ∞, l'autre côté n'a rien.",
- "While the table is drawn it takes the popup's place; switch Table off to see the popup.": "Tant que le tableau est affiché, il remplace la fenêtre ; désactivez Tableau pour voir la fenêtre.",
+ "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "Sous les plateformes, le tableau dit aussi ce que la fenêtre dirait de la plateforme affichée : quand a lieu le règlement et, sur Hyperliquid, qui a ouvert. Là où il tient tout cela, il remplace la fenêtre ; sinon, la fenêtre reste.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "Un type reste activé. Pour masquer les niveaux, utilisez Niveaux liq. dans la barre du haut.",
  "How levels work": "Comment fonctionnent les niveaux",
  "{name}, Plus required": "{name}, Plus requis",

@@ -3151,7 +3151,7 @@
  "longs": "ロング",
  "shorts": "ショート",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "表の×は、大きい側が小さい側の何倍かを、その側の色で示します。2.50×はその側が2.5倍あること、∞は反対側がゼロであることを表します。",
- "While the table is drawn it takes the popup's place; switch Table off to see the popup.": "表が描かれている間は、表がポップアップの代わりになります。ポップアップを見るには「表」をオフにしてください。",
+ "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "表は取引所の行の下に、表示中の取引所についてポップアップが示す内容（いつ精算されるか、Hyperliquidでは誰が建てたか）も表示します。すべて収まるときは表がポップアップの代わりになり、収まらないときはポップアップも表示されます。",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "1 種類はオンのままです。レベルを非表示にするには、上部バーの「清算レベル」を使ってください。",
  "How levels work": "レベルの仕組み",
  "{name}, Plus required": "{name}、Plus が必要",
