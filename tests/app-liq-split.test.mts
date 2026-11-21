@@ -76,6 +76,11 @@ test('the split column\'s heading: each caption over its column with its own max
   assert.deepEqual(groups.subs[1].scale, ['LEVEL MAX', '$1.2M', 'CUM MAX $9.0M']);
   assert.equal(groups.rows, 1 + 4);
   for (const line of [...kinds.subs, ...groups.subs].flatMap(s => [...s.caption, ...s.scale]).concat(kinds.across)) assert.ok(!line.includes('…'), `never cut: ${line}`);
+  // The map's split names each sub-column on its button, over its own (map-top.ts): no caption lines, so every column's figures start on one line.
+  const named = splitHeads(measure, { captions: null, maxima: [maxima(own[0]), maxima(own[1])], across: 'Both columns on one dollar scale', subRoom: 89, wholeRoom: 189 });
+  assert.deepEqual(named.subs.map(sub => sub.caption), [[], []]);
+  assert.deepEqual(named.subs[0].scale, kinds.subs[0].scale, 'the same figures');
+  assert.equal(named.rows, 4 + 2, 'one caption line fewer');
   // The map feeds each heading its column's own figures (not the shared scale's), and says the one scale in words only where it is shared.
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   assert.match(heat, /own = ownScales\(profs\[0\], tprof, profs\[1\]\)/);
@@ -93,7 +98,7 @@ test('a sub-column\'s why-text never runs past the plot\'s foot under a taller h
   // Drawn under the heading band (the History link's row included), not under its text rows, where the band veiled its first lines; and the
   // words across both columns painted after the Mirror, whose dimming would split the sentence at the divider.
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
-  assert.match(heat, /const from = this\.#liqHeadH;\n.*\n\s+wrapText\(wide, why, subRoom\(sub\), whyLines\(ph, from\)\)\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ LIQ_PAD, from \+ 4 \+ 12 \* n\)\)/);
+  assert.match(heat, /const from = this\.#liqHeadH;\n.*\n\s+wrapText\(wide, why, subRoom\(sub\), whyLines\(ph, from\)\)\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ HEAD_INSET, from \+ 4 \+ 12 \* n\)\)/);
   assert.ok(heat.indexOf('heads.across.forEach') > heat.indexOf('if (ms && mset) this.#paintLiqColumnMirror(ctx, state, ms, price, subs[at].x0'), 'the words across after the Mirror');
 });
 

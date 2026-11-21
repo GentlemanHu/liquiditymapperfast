@@ -11,7 +11,7 @@ import { controlListeners, paidPart, popoverPlace, pressGroup, pressPart, shownC
 import { holdPanelControl, releaseLiqLevelPanel } from '../src/app/liq-panel.ts';
 import { Store, initialState, readSettings } from '../src/app/store.ts';
 import { carriedSettings } from '../src/app/layouts/layouts.ts';
-import { columnNotes, liqNote, liqWhy, ordersAbsent, readFailed, splitAmounts, splitText, takesLeftOut } from '../src/app/liq-words.ts';
+import { columnNotes, liqNote, liqWhy, ordersAbsent, readFailed, splitAmounts, splitNotes, splitText, takesLeftOut } from '../src/app/liq-words.ts';
 import { dollars, mirrorSplits, probeBoxLines, readingTexts, stripeBoxLines } from '../src/app/liq-box.ts';
 import { usd } from '../src/app/format.ts';
 import { DepthRangeSummary, depthHeldKey, type DepthPaneHeld } from '../src/app/range/depth-lines.ts';
@@ -443,7 +443,7 @@ test('where the server has no profitable orders (404 or 503) they are not availa
     assert.equal(s.src.state, 'ready'); assert.equal(s.src.levels!.kind, 'liq'); assert.deepEqual([...s.src.levels!.k], [7]);
     assert.ok(s.src.ordersAbsent()); assert.equal(s.src.takes, null); assert.equal(s.src.takesState, 'missing');
     assert.ok(liqNote(s.src, all, AS_OF).includes(ordersAbsent()), 'the note under the legend says it');
-    assert.deepEqual(columnNotes(all, true, false, s.src.ordersAbsent()), [ordersAbsent()], 'and the column under its button');
+    assert.deepEqual(columnNotes(all, true, false, s.src.ordersAbsent()), [{ text: ordersAbsent(), role: 'warn' }], 'and the column\'s heading, as a warning');
     // Everyone's view is untouched by it.
     s.src.ensure(BTC, () => {}, view({ liq: true, stops: true })); await tick();
     assert.equal(s.src.levels!.kind, 'both'); assert.ok(!s.src.ordersAbsent());
@@ -615,14 +615,22 @@ test('Liq + stops apart: each part what still stands of it, the two always addin
   assert.equal(splitText({ liq: 200_500_000, stops: 130_100_000 }), 'Total $330.6M = liquidations $200.5M + stops $130.1M', 'the total is the parts added');
 });
 
-test('under the column\'s button: the group where the button had no room for it, first, then that the take profits are not in the curve', () => {
+test('the column\'s heading after its figures: the group where the button had no room for it, first, then that the take profits are not in the curve, each in its role', () => {
   assert.equal(takesLeftOut(), 'Take profits not included');
+  const texts = (lines: readonly { text: string }[]): string[] => lines.map(line => line.text);
   const profitable = { liq: true, stops: false, takes: true, group: 'profitable' } as const;
-  assert.deepEqual(columnNotes(profitable, false, true), ['+PnL traders', 'Take profits not included'], 'both: the group line first');
-  assert.deepEqual(columnNotes(profitable, true, true), ['Take profits not included'], 'the group already on the button: not said twice');
-  assert.deepEqual(columnNotes({ liq: true, stops: true, takes: false, group: 'profitable' }, false, false), ['+PnL traders']);
+  assert.deepEqual(columnNotes(profitable, false, true), [{ text: '+PnL traders', role: 'name' }, { text: 'Take profits not included', role: 'note' }], 'both: the group line first, a name, then a note');
+  assert.deepEqual(texts(columnNotes(profitable, true, true)), ['Take profits not included'], 'the group already on the button: not said twice');
+  assert.deepEqual(texts(columnNotes({ liq: true, stops: true, takes: false, group: 'profitable' }, false, false)), ['+PnL traders']);
   assert.deepEqual(columnNotes({ liq: true, stops: false, takes: false, group: 'all' }, false, false), [], 'everyone: nothing to add');
-  assert.deepEqual(columnNotes({ liq: false, stops: true, takes: false, group: 'profitable' }, false, true), ['+PnL traders', 'Take profits not included'], "the profitable traders' stops are theirs too");
+  assert.deepEqual(texts(columnNotes({ liq: false, stops: true, takes: false, group: 'profitable' }, false, true)), ['+PnL traders', 'Take profits not included'], "the profitable traders' stops are theirs too");
+  // A split chosen with no room for it says so first, a note; a group's orders missing is a warning, last.
+  assert.deepEqual(columnNotes(profitable, false, true, true, 'Too narrow to split: Liq + stops'), [{ text: 'Too narrow to split: Liq + stops', role: 'note' }, { text: '+PnL traders', role: 'name' },
+    { text: 'Take profits not included', role: 'note' }, { text: ordersAbsent(), role: 'warn' }]);
+  // A drawn split: whose both columns are (a name), what both add up under Everyone | +PnL (a name), then the notes.
+  const kinds = splitPair({ liq: true, stops: true, takes: true, group: 'profitable', split: 'kinds' }, true)!, groups = splitPair({ liq: true, stops: true, takes: false, group: 'all', split: 'groups' }, true)!;
+  assert.deepEqual(splitNotes(kinds, true, true), [{ text: '+PnL traders', role: 'name' }, { text: 'Take profits not included', role: 'note' }, { text: ordersAbsent(), role: 'warn' }]);
+  assert.deepEqual(splitNotes(groups, false, false), [{ text: 'Liquidation and stop levels', role: 'name' }], 'Everyone | +PnL: what both curves add up');
 });
 
 test('a split writes its three amounts in the total\'s unit and precision, the parts adding up to the total as printed', () => {
@@ -845,7 +853,7 @@ test('the liquidation column follows the order family both ways: its curve, its 
     assert.equal(prof.long[4], amount, `${group}: the liquidations' bar`); assert.equal(liqCurves(prof, 100).long.at(-1)!.usd, amount, `${group}: the curve`);
     assert.equal(tprof.short[9], amount, `${group}: take profits of longs`); assert.equal(tprof.long[1], amount, `${group}: take profits of shorts`);
     assert.equal(readingTexts(onTheWay(s.src.standing()!, 100, 85)!, 100, 85, null).short, `▼ ${dollars(amount)}`, `${group}: the reading`);
-    assert.deepEqual(columnNotes(view({ liq: true, takes: true, group }), true, true, s.src.ordersAbsent()), ['Take profits not included']);
+    assert.deepEqual(columnNotes(view({ liq: true, takes: true, group }), true, true, s.src.ordersAbsent()), [{ text: 'Take profits not included', role: 'note' }]);
   }
 });
 

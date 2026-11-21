@@ -9,6 +9,7 @@ import type { LevelsKind, LiqLevelsSource, LiqSet } from './liq-levels.ts';
 import type { LiqFamily } from './liq-history.ts';
 import { curveOf, groupName, groupTitle, kindName, kindTitle, takesBeside, type LiqPair, type LiqView } from './liq-view.ts';
 import type { LiqSplit } from './liq-url.ts';
+import type { HeadLine } from './map-top.ts';
 
 /** What a side of a set of levels is called. Take profits are held with their sides swapped: the long side is the take profits of shorts. */
 export function sideTitle(kind: LevelsKind, side: 'long' | 'short'): string {
@@ -76,16 +77,28 @@ export function readFailed(family: LiqFamily, view: Pick<LiqView, 'stops'>): str
   return family === 'orders' || family === 'orderGroups' ? (view.stops ? t('Stop levels could not be read.') : t('Take-profit levels could not be read.')) : t('Liquidation levels could not be read.');
 }
 
-/** Said under the liquidation column's button (which names what its curve adds up) while take profits are shown. */
+/** Said in the liquidation column's heading (its button names what the curve adds up) while take profits are shown. */
 export const takesLeftOut = (): string => t('Take profits not included');
 
 /**
- * The lines under the liquidation column's button, as part of its caption: whose liquidations, where a group is shown and the button had no
- * room for it (`groupOnButton` false: at 11 px the column's 128 px hold "Liquidations" but not "Liquidations · Profitable"), then that the take
- * profits are not in the curve while they show.
+ * The lines the liquidation column's heading adds after its figures (map-top.ts), each in its role: that a split chosen has no room and what the
+ * one column adds up instead (`narrow`, a note); whose levels, where a group is shown and the button had no room for it (`groupOnButton`
+ * false: at 11 px the column's 128 px hold "Liquidations" but not "Liquidations · +PnL traders"; a name); that the take profits are not in
+ * the curve while they show (a note); that the group's orders are not on the server (a warning).
  */
-export function columnNotes(view: LiqView, groupOnButton: boolean, takesShown: boolean, absent = false): string[] {
-  return [...(view.group !== 'all' && !groupOnButton ? [groupTitle(view.group)] : []), ...(takesShown ? [takesLeftOut()] : []), ...(absent ? [ordersAbsent()] : [])];
+export function columnNotes(view: LiqView, groupOnButton: boolean, takesShown: boolean, absent = false, narrow: string | null = null): HeadLine[] {
+  return [...(narrow ? [{ text: narrow, role: 'note' as const }] : []), ...(view.group !== 'all' && !groupOnButton ? [{ text: groupTitle(view.group), role: 'name' as const }] : []),
+    ...(takesShown ? [{ text: takesLeftOut(), role: 'note' as const }] : []), ...(absent ? [{ text: ordersAbsent(), role: 'warn' as const }] : [])];
+}
+/**
+ * The lines a split column's heading adds after its figures and the words across: whose levels both columns are (liquidations beside stops
+ * of the +PnL traders) or what both add up (everyone beside the +PnL traders), each a name; that the take profits are not in the curve (a
+ * note); that a group's orders are not on the server (a warning).
+ */
+export function splitNotes(pair: LiqPair, takesShown: boolean, absent: boolean): HeadLine[] {
+  return [...(pair.split === 'kinds' && pair.left.group !== 'all' ? [{ text: groupTitle(pair.left.group), role: 'name' as const }] : []),
+    ...(pair.split === 'groups' ? [{ text: kindTitle(curveOf(pair.left)), role: 'name' as const }] : []),
+    ...(takesShown ? [{ text: takesLeftOut(), role: 'note' as const }] : []), ...(absent ? [{ text: ordersAbsent(), role: 'warn' as const }] : [])];
 }
 /** What the curve adds up and leaves out, for a newcomer: in the levels control, the help and the column's tip while take profits show. */
 export const curveSentence = (): string => t('The curve totals the liquidations and stops that are on. Take profits are dashed bars beside it, or, on alone, a dashed curve of their own.');

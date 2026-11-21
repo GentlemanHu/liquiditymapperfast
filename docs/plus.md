@@ -41,7 +41,7 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   `liq-levels.ts`): beside the others a lane of their own by the live edge (`stripeLanes`: the levels' lane is the one beside the
   liquidation column, whose curve sums them), bars from the column's right edge, bars on the Liq tab, a line in the Depth pane; on alone
   they are the curve, dashed and never filled. Coloured by what they do: sells in the falling colour. The take profits' lane carries a
-  caption ("Take profits"); while take profits show beside the curve, a note under the column's button says they are not in it.
+  caption ("Take profits"); while take profits show beside the curve, a note in the column's heading, after its figures, says they are not in it.
 - **The +PnL traders** are one group for every kind: the wallets in HyperTracker's four cohorts with a positive
   all-time perp profit. Their liquidations come from the groups files, their stops and take profits from `triggers-groups.json` and the
   group history files only, never everyone's under their name. A 404 or 503 for those says they are **not available yet** (the note
