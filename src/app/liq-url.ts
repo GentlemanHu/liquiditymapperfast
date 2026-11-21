@@ -37,7 +37,8 @@ export function splitFor(split: LiqSplit, kinds: { liq: boolean; stops: boolean 
 }
 
 /**
- * A saved setting, checked, whichever form it was saved in (settings, a layout or a layouts file, a backup: all go through here). What a save from before the feature lacks reads as on (new features start on). The three switches as saved, where at
+ * A saved setting, checked, whichever form it was saved in (settings, a layout or a layouts file, a backup: all go through here). What a
+ * save from before the feature lacks reads as on (new features start on). The three switches as saved, where at
  * least one is on; a save of one kind and a take-profit switch (before 2026-11-19) as that kind: `liq` liquidations, `stops` stops, `both`
  * the two, its take profits kept. A switch present in either form that is not a boolean, and anything else, a save from before the Plus
  * choices included, reads as the free view: liquidations of everyone, no take profits. Any other group value reads as everyone's (`all`).

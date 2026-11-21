@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { PALETTES, THEME_ORDER, chromeFor, contrastRatio, isThemeId, paletteOf, resolveThemeId, setCustomPalettes, themeKey, themeVars } from '../src/app/theme.ts';
 import { COLOR_KEYS, MAX_FILE_CHARS, MAX_THEMES, MUTED_RATIO, TEXT_RATIO, customPalette, exportThemes, importThemes, isDarkBackground, loadCustomThemes, mergeThemes, newTheme, putTheme, readCustomTheme, readCustomThemes, readable, registerCustomThemes, storeCustomThemes, themeWarnings, type CustomTheme } from '../src/app/custom-themes.ts';
 import { BACKUP_FORMAT, MAX_BACKUP_CHARS, PENDING_KEY, backupFile, collectItems, queueRestore, readBackup, replaceAll, restoreResult, takeRestore } from '../src/app/backup.ts';
@@ -9,7 +10,7 @@ import { newGalleryState } from '../src/app/layouts/gallery.ts';
 import { keepsSettings } from '../src/app/layouts/layouts.ts';
 import { savedFields } from '../src/app/store.ts';
 import { textSurfaces, surfacesClash } from '../src/app/custom-themes.ts';
-import { RESTORED_KEY, backedKey } from '../src/app/backup.ts';
+import { RESTORED_KEY, backedKey, ownKey, plusKey } from '../src/app/backup.ts';
 
 /** A seeded random source, so a failure can be run again. */
 function rng(seed: number): () => number { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 2 ** 32; }; }
@@ -227,6 +228,33 @@ test('a backup holds the page\'s own keys only, and reads back only a backup', (
   // Another browser's recording dates are never read from a file (they would delete this browser's recordings).
   assert.deepEqual(readBackup(JSON.stringify({ format: BACKUP_FORMAT, version: 1, items: { ...items, 'lmf.coins.opened': '{"SOL":1}' } })), { items, savedAt: 0 });
   assert.equal(backedKey('lmf.coins.opened'), false); assert.equal(backedKey(RESTORED_KEY), false); assert.equal(backedKey('hlm-app-v2'), true);
+});
+
+test('a backup\'s keys are the page\'s own: never the cached coin list, the stale marks or the old hand-over\'s marker', () => {
+  for (const key of ['hlm-app-v2', 'hlm-drawings-v1', 'hlm-scripts-v1', 'lmf.coin', 'lmf.coin.saved', 'lmf.venues.known', `hlm-${'x'.repeat(80)}`]) assert.ok(ownKey(key), key);
+  for (const key of ['lmf.coins', 'lmf.plus', 'lmf.plus.paid', 'hlm-stale', 'hlm-stale-reload', 'hlm-handover-v1', 'other', 'HLM-app', 'hlm-', 'lmf.', `hlm-${'x'.repeat(81)}`, '__proto__']) assert.equal(ownKey(key), false, key);
+});
+
+/** Every Plus key this browser may hold (the membership, its generation, payment records old and new, the database's marker, a seed). */
+const PLUS_KEYS = ['lmf.plus', 'lmf.plus.gen', 'lmf.plus.paid', 'lmf.plus.paid.txn_01hzaaaaaaaaaaaaaaaaaaaaaa', 'lmf.plus.idb', 'lmf.plus.seed'];
+
+test('no Plus key ever travels: a backup leaves out lmf.plus and every lmf.plus.* (the checkout recovery, 2026-11-20)', () => {
+  for (const key of PLUS_KEYS) { assert.equal(plusKey(key), true, key); assert.equal(ownKey(key), false, key); assert.equal(backedKey(key), false, key); }
+  for (const key of ['lmf.plusx', 'lmf.coin', 'hlm-plus']) { assert.equal(plusKey(key), false, key); assert.equal(ownKey(key), true, key); }
+});
+
+test('a backup never holds a Plus key nor anything of the Plus database, and an older backup holding lmf.plus.gen is read without it', () => {
+  const entries: [string, string][] = [['hlm-app-v2', '{"theme":"dark"}'], ['lmf.coin', '"ETH"'], ...PLUS_KEYS.map((k): [string, string] => [k, 'mine'])];
+  const storage = { length: entries.length, key: (i: number) => entries[i]?.[0] ?? null, getItem: (k: string) => entries.find(e => e[0] === k)?.[1] ?? null };
+  const items = collectItems(storage);
+  assert.deepEqual(Object.keys(items).sort(), ['hlm-app-v2', 'lmf.coin']);
+  const file = backupFile(items, 1_800_000_000_000);
+  assert.ok(!/lmf\.plus|lmf-plus/.test(file), 'no trace in the file');
+  const older = JSON.stringify({ format: BACKUP_FORMAT, version: 1, savedAt: 1, items: { ...items, 'lmf.plus.gen': '4' } });
+  assert.deepEqual(readBackup(older), { items, savedAt: 1 }, 'read, the Plus key left out');
+  assert.deepEqual(readBackup(JSON.stringify({ format: BACKUP_FORMAT, version: 1, items: { 'lmf.plus.gen': '4' } })), { error: 'empty' });
+  const source = readFileSync('src/app/backup.ts', 'utf8');
+  assert.ok(!/indexedDB|plus-db|plusDb|'lmf-plus'/.test(source.replace(/\/\*[\s\S]*?\*\//g, '')), 'the backup never opens the Plus database');
 });
 
 test('a restore replaces the page\'s keys exactly, all or none, and leaves other keys alone', () => {
