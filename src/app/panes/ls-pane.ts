@@ -74,12 +74,14 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
     const p = s.status === 'failed' ? null : lsAt(s.points, time, s.periodMs);
     // A venue still being read (`pending`) has no reading here yet: said so, not "no reading" or "could not be read".
     if (!p && s.pending) { lines.push({ label, text: t('being read'), color: 'muted', mark: s.id }); continue; }
-    if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
+    // A venue that could not be read, or whose last update failed and that has no reading at this moment (a window its failed round never covered,
+    // or past its hold): its dashes are any venue's, so the table says why (review round 3; "these are its earlier readings" fits no dash).
+    if (s.status === 'failed' || (s.status === 'stale' && !p)) { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
     if (!p && s.id.startsWith('bitget:')) noBitget = true;
     lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, table: false });
-    // Where it has a reading, its row is muted, as its readout is, and the help says what muted means: the table leaves the sentence to the card.
-    // Where it has none (a window its failed round never covered, or past its hold), its dashes are any venue's: the sentence stays (review 3).
-    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, ...(p ? { table: false as const } : {}) });
+    // Its row is muted (it has a reading here: one without is "could not be read" above), as its readout is, and the help says what muted means:
+    // the table leaves the sentence to the card.
+    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, table: false });
   }
   // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
   if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true, table: false });
