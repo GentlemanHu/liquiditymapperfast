@@ -12,7 +12,7 @@ export const SITE = 'https://liquiditymapper.com/';
 export const SITE_PLUS = `${SITE}plus/`;
 export const SITE_LEGAL = { terms: `${SITE}terms/`, privacy: `${SITE}privacy/`, refunds: `${SITE}refunds/` } as const;
 /** The source code. */
-export const SOURCE = 'https://github.com/liquiditymapperfast/liquiditymapperfast.github.io';
+export const SOURCE = 'https://github.com/Karlheinzniebuhr/liquiditymapperfast.github.io';
 
 const money = (usd: number): string => new Intl.NumberFormat(language(), { style: 'currency', currency: 'USD', maximumFractionDigits: Number.isInteger(usd) ? 0 : 2 }).format(usd);
 /** What the hero's pill says Plus is today: its monthly price while it is on sale, else that gift keys alone open it. */

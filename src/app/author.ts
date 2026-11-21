@@ -8,7 +8,7 @@ export const AUTHOR = Object.freeze({
   line: t('I love building things.'),
   x: 'https://x.com/karlbooklover',
   xHandle: '@karlbooklover',
-  github: 'https://github.com/liquiditymapperfast/liquiditymapperfast.github.io',
+  github: 'https://github.com/Karlheinzniebuhr/liquiditymapperfast.github.io',
   /** Where the page is published: what a screenshot carries in its corner. */
   site: 'https://liquiditymapper.com/',
 });
