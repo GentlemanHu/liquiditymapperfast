@@ -60,6 +60,8 @@ test('the Panels deck holds twelve switches, none for the candles or Mirror, in 
   // row at 0.85 (measured in Chrome, 2026-11-21; at 4 px, or in another place, the bar broke into two rows there).
   assert.deepEqual(keys, ['cvd', 'book', 'profile', 'depth', 'oi', 'sizes', 'ls', 'stats', 'volume', 'delta', 'lt', 'funding']);
   assert.match(css, /\.toolbar\.cockpit \.deck-panels \.seg\.toggles button \{ padding-left: 3px; padding-right: 3px; \}/, "the names' sides that keep 1,366 px one row");
+  // No frame's stylesheet gives the deck's buttons other sides (the rule outranks the bevel's and text-mode's button padding).
+  for (const f of ['src/app/chrome.css', 'src/app/mobile.css']) assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /\.deck-panels[^{]*\{[^}]*padding/, `${f} pads the Panels deck's buttons`);
   assert.ok(!keys.includes('candles'), 'the Chart type menu shows and hides the price');
   assert.ok(!keys.includes('mirror'), "Mirror's switch is in the order book's Cues panel");
   // A switch more or fewer changes the grid: its columns and the outlines' overlap are written for six.

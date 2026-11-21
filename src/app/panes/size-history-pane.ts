@@ -56,7 +56,8 @@ export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'tota
  * market orders in six size bands, one row each on the map's time axis, with the most unusual amounts standing out (size-history/model.ts).
  * Its size rows count the markets the footprint and the Bar stats count, and read the footprint's bars (one load for the three, from the Highlights'
  * length before the view, at least 36 candles and six hours, while this pane shows); its liquidations are the Bar stats' (one loader, liq-days.ts:
- * the perpetuals whatever the Spot / Perp filter) and its open interest the OI pane's. Switched on from the flow column's settings, the Bar stats' settings and, on a phone, Settings; never from the top bar.
+ * the perpetuals whatever the Spot / Perp filter) and its open interest the OI pane's. Switched on from its button in the top bar's Panels deck (toolbar.ts
+ * `PANE_TOGGLES`, which a phone's or tablet's Settings lists too), the flow column's settings and the Bar stats' settings.
  */
 export class SizeHistoryPane extends TimePane {
   /** Rows, not values: the pointer's height says which row, so it takes no horizontal line. */
