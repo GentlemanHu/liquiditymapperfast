@@ -562,12 +562,14 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   assert.ok(card.some(text => /newest 30 readings/.test(text)) && card.some(text => /earlier readings/.test(text)), 'the card says both');
   assert.deepEqual(tableLines(lsCardLines(older, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'Bitget\'s 30 readings and a muted row are the help\'s and the row\'s');
   // A venue whose last update failed and that has no reading at the moment read (a window its failed round never covered, or past its hold):
-  // its row's dashes are any venue's, so the table says it could not be read, as for a venue that failed (review round 3), and not that the
-  // dashes are its earlier readings.
+  // its row's dashes are any venue's, so the table says it has no reading here and that its last update failed (review rounds 3 and 4); not
+  // "could not be read", which a gap in its readings inside what it read would make false.
   const gone = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 48 * H, long: 0.5 }] }] as unknown as LsSeries[];
-  const goneCard = lsCardLines(gone, T + 30 * MIN, '1h');
-  assert.deepEqual(tableLines(goneCard).map(line => line.text), ['could not be read']);
-  assert.ok(!goneCard.some(line => /earlier readings/.test(line.text)), 'no sentence about earlier readings above a row of dashes');
+  const goneLines = tableLines(lsCardLines(gone, T + 30 * MIN, '1h'));
+  assert.equal(goneLines.length, 2); assert.equal(goneLines[0]!.text, 'no reading'); assert.ok(goneLines[0]!.label); assert.match(goneLines[1]!.text, /last update could not be read/);
+  // A gap inside what it read (readings either side, none at the time read past the hold): the same two lines, never "could not be read".
+  const gap = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 10 * H, long: 0.5 }, { t: T + 10 * H, long: 0.5 }] }] as unknown as LsSeries[];
+  assert.deepEqual(tableLines(lsCardLines(gap, T, '1h')).map(line => line.text === 'no reading' ? line.text : /last update/.test(line.text) ? 'sentence' : line.text), ['no reading', 'sentence']);
   assert.deepEqual(lsTableRows(gone, T + 30 * MIN, PALETTE)[2]!.slice(1).map(cell => cell.text), ['–', '–', '–'], 'its row: dashes, as any venue without a reading');
   // Who each line counts: the header's Series says it while every line counts the same people, not Bybit's accounts beside top traders' positions.
   const mixed = [{ ...series[0]!, population: 'topPositions' }, { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];
