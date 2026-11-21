@@ -245,9 +245,9 @@ test('a restore waits for the reload and is written before the page reads anythi
   const local = new MemoryStorage({ 'hlm-app-v2': 'old', 'hlm-drawings-v1': 'mine' }), session = new MemoryStorage();
   assert.equal(queueRestore(session, backupFile(items, 1)), true);
   assert.equal(takeRestore(local, session), true);
-  const { [RESTORED_KEY]: mark, 'hlm-handover-v1': handed, ...restoredItems } = local.obj();
-  assert.deepEqual(restoredItems, items);
-  assert.ok(Number(mark) > 0, 'other tabs hear of it'); assert.ok(Number(handed) > 0, 'the old address hands nothing over it later');
+  const { [RESTORED_KEY]: mark, ...restoredItems } = local.obj();
+  assert.deepEqual(restoredItems, items, 'the backup\'s keys and the restore\'s mark, nothing else');
+  assert.ok(Number(mark) > 0, 'other tabs hear of it');
   assert.equal(session.getItem(PENDING_KEY), null);
   assert.equal(restoreResult(session), 'ok'); assert.equal(restoreResult(session), null, 'said once');
   assert.equal(takeRestore(local, session), false, 'nothing waits now');

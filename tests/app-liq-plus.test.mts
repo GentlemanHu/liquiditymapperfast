@@ -368,7 +368,7 @@ test('a saved choice in an older form reads as the three switches; anything else
   assert.deepEqual(readLiqLevels({ liq: 'yes', stops: 1 }), freeView);
   assert.deepEqual(readLiqLevels('garbage'), freeView);
   assert.deepEqual(readLiqLevels({ liq: false, stops: false, takes: true }), { ...on, liq: false, stops: false, takes: true, group: 'all', split: 'none' }, 'take profits alone are a choice');
-  // A saved page, a saved layout or a layouts file (readSettings), and a backup or the old address's hand-over (they write the save, then the page reads it).
+  // A saved page, a saved layout or a layouts file (readSettings), and a backup (it writes the save, then the page reads it).
   assert.deepEqual(readSettings({ liqLevels: { kind: 'both', takes: true } }).liqLevels, { ...on, liq: true, stops: true, takes: true, group: 'all', split: 'none' });
   assert.deepEqual(carriedSettings({ liqLevels: { kind: 'stops' } } as never).liqLevels, { ...on, liq: false, stops: true, takes: false, group: 'all', split: 'none' });
   assert.deepEqual(readSettings({ liqLevels: { liq: false, stops: false, takes: false } }).liqLevels, freeView);

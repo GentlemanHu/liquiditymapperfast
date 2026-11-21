@@ -1,6 +1,6 @@
-# Publishes the page to Cloudflare Pages (liquiditymapper.com) and the old address's page (moved-site/) to GitHub Pages
-# (liquiditymapperfast.github.io), which sends visitors on to the new address with what their browser saved there. The page needs no
-# server: it reads the exchanges' public feeds from the visitor's browser.
+# Publishes the page to Cloudflare Pages (liquiditymapper.com). The page needs no server: it reads the exchanges' public feeds from the
+# visitor's browser. Until 2026-11-21 it also published the old address's page to GitHub Pages (liquiditymapperfast.github.io); the
+# repository's move to Karlheinzniebuhr ended that address.
 name: Pages
 
 on:
@@ -14,8 +14,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -45,26 +43,8 @@ jobs:
         with:
           name: site
           path: dist
-      # The old address's page, for GitHub Pages (since 2026-11-14 the github.io address only sends visitors on: docs/moved-site.md).
-      # Removing moved-site/ means removing this step and the deploy job too, or the build fails and Cloudflare is not published.
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: moved-site
 
-  # GitHub Pages serves the old address's page only from the account it started on (liquiditymapperfast.github.io); a copy of the
-  # repository anywhere else publishes to Cloudflare alone.
-  deploy:
-    needs: build
-    if: github.repository_owner == 'liquiditymapperfast'
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
-
-  # The same files on Cloudflare Pages (project liquiditymapper, served at liquiditymapper.com). It runs only where the repository has
+  # The built files on Cloudflare Pages (project liquiditymapper, served at liquiditymapper.com). It runs only where the repository has
   # the CLOUDFLARE_API_TOKEN secret (a token allowed "Cloudflare Pages: Edit" on one account) and the CLOUDFLARE_ACCOUNT_ID secret: such a
   # token cannot read the account memberships wrangler would otherwise ask for. The first run creates the project with master as its
   # production branch, so every deploy from here lands in production.

@@ -165,7 +165,7 @@ short:
 - **One seed per browser.** The Plus database holds a seed, 32 random bytes made once (`plus-db.ts` `readSeed`), sent with every
   `/v1/pass` and `/v1/restore`. The Worker names the key by it (`<sub>.<HMAC(seed, sub)>`), so every request from this browser for one
   subscription gives the same key: two tabs, a press during another tab's setting-up, a lost answer, a late request and a receipt all end
-  with it, and that key renews. The seed is never shown, never in a URL, a log, the hand-over or a backup.
+  with it, and that key renews. The seed is never shown, never in a URL, a log or a backup.
 - **The modes.** Every tab with IndexedDB starts by opening the database (3 s). Once it opens, the browser moves to it for good: the marker
   `lmf.plus.idb` first, then a one-time import of `lmf.plus` / `lmf.plus.gen`. In IDB mode the database is the authority and every write is
   one transaction (`Plus` commit) that checks the stored baseline `{ seed, gen }` the operation began with (a reset makes a new seed, so an
@@ -183,8 +183,8 @@ short:
   receipt, a payment's grant, Remove) begins with one readwrite transaction that makes the seed if there is none, so each has an epoch; a
   request whose seed differs from the one its operation began with sends nothing. (A browser whose storage is full and that has no seed yet
   therefore refuses key entry in IDB mode with the "cannot be set up in this tab" text.)
-- **Nothing of Plus travels.** A hand-over from the old address and a backup never write an `lmf.plus*` key: they are skipped, and the rest
-  of the visitor's settings are taken (the old address's page deployed before 2026-11-20 still sends them).
+- **Nothing of Plus travels.** A backup never writes an `lmf.plus*` key: it is skipped, and the rest of the visitor's settings are taken
+  (a backup made before 2026-11-20 may hold `lmf.plus.gen`). The old address's hand-over, which skipped them too, ended on 2026-11-21.
 - **A payment's record** (`paid:<txn>` = `{ at }`) is written once when its checkout completes and waits from a day before that time to a
   day after it. Nothing asks for it by itself: loading the page shows it with "Set up Plus" (Try again after this tab's own attempt ended
   without Plus). Before every ask one transaction reads the seed and confirms the record still waits. The asks follow `schedule.ts`: backoff
