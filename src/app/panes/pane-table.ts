@@ -61,9 +61,10 @@ export interface TableRoom { w: number; h: number; plotW: number; axisW: number;
 
 /**
  * Where a table goes: the row height, what of it fits, its left edge and width, whether it is on a plate, its top, its first row, each column's right edge
- * and its height (titles, rows and foot), all as they are without the card's lines but for the top and the first row, which stand where the lines said at
- * rest leave the whole in the middle (`placeTable`'s `rest`); the card's lines of the moment read as laid out under the foot (none where they were left
- * out), the width they take (never narrower than the rows) and the height (their hairline included); and whether it is complete.
+ * and its height (titles, rows and foot), all as they are without the card's lines but for the top and the first row, which stand where the room held
+ * for the lines said at rest leaves the whole in the middle (`placeTable`'s `lift`); the card's lines of the moment read as laid out under the foot
+ * (none where they were left out), the width they take (never narrower than the rows) and the height (their hairline included); and whether it is
+ * complete.
  */
 export interface TablePlace {
   rowH: number; titles: boolean; foot: boolean; cols: number; left: number; plate: boolean; width: number; y0: number; first: number; rights: number[]; height: number;
@@ -78,9 +79,9 @@ const ROW_HEIGHTS = [15, 14, 13, 12] as const;
 /**
  * The lines a table says at rest change with the newest moment: on a one-minute chart the Open Interest card says six lines as a candle opens and
  * up to nine before it closes (who opened and closed comes in), and a note flashes for a frame; the Liquidity Tracker's Ratio line comes and goes at
- * 1.00× (watched at rest, 2026-11-21: held to each moment's lines, Open Interest's rows moved 97 times in 22 minutes). The rows stand with the largest
- * block of lines that stood `REST_STAND_MS` within the last `REST_HOLD_MS`: a larger one lifts them once it has stood, a smaller one lets them down
- * only once the larger has not been said for that long.
+ * 1.00× (watched at rest, 2026-11-21: held to each moment's lines, Open Interest's rows moved 97 times in 22 minutes); its figures widen and narrow,
+ * and with them its columns. The rows keep the largest room for lines that stood `REST_STAND_MS` within the last `REST_HOLD_MS` (`PaneTable#takeRest`):
+ * a larger one lifts them once it has stood, a smaller one lets them down only once the larger has not been asked for that long.
  */
 export const REST_STAND_MS = 2_000, REST_HOLD_MS = 180_000;
 /** The room under the rows for the hairline that sets the card's lines apart, and for each hairline of the card's own between them. */
@@ -133,19 +134,51 @@ export function ratioCell(first: number, second: number, p: Pick<Palette, 'bid' 
   return { text: ratioFigure(r.ratio), color: r.lead ? tableInk(r.lead > 0 ? p.bid : p.ask, p) : p.muted };
 }
 
+type Measure = (text: string, bold?: boolean) => number;
+type PlaceSpec = Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>;
+
 /**
  * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face). The rows
  * go where they went before the card's lines: beside the plot where the columns right of it leave room (as many columns as fit, down to `minCols`), else,
  * under a pointer, on a plate over the plot's left end (down to `plateMin` columns), their titles and then their foot left out where it is short. They
- * stand in the middle of the pane's height with `rest` under them, the lines the table says at rest (`PaneTable` holds them), where those fit as the
- * moment's lines must, else alone: so a table and its lines stand in the middle at rest (Karl, 2026-11-21: with its lines under it a table stood low),
- * and the moment read, whatever lines it has, moves nothing; `rest` changes the rows' height in the pane and nothing else. The lines go under the foot
+ * stand in the middle of the pane's height with `lift` px kept under them: room for the lines the table says at rest, as `PaneTable` holds it
+ * (`restLift`), taken as it is, so that a table and its lines stand in the middle at rest (Karl, 2026-11-21: with its lines under it a table stood low)
+ * and nothing of the moment read (its lines, its figures' widths and so its columns) moves the rows; kept inside the pane. The lines go under the foot
  * where the pane has room below and, beside the plot, the strip (on a plate, 60 % of the plot) has room across: as wide as the widest one that does not
  * wrap and never narrower than the rows, their sentences wrapped to that. Complete: the titles, the foot and the columns the card needs (`cardCols`),
  * with every line.
  */
-export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>, rest: readonly InfoLine[] = []): TablePlace | null {
-  const k = spec.rows.length, n = spec.heads.length, lines = spec.lines ?? [];
+export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, lift = 0): TablePlace | null {
+  const at = rowsIn(measure, room, spec);
+  if (!at) return null;
+  const { rowH, titles, foot, cols, left, plate, widths, width, height, framed, under } = at, lines = spec.lines ?? [];
+  const y0 = lift > 0 ? Math.max(0, Math.round(room.h / 2 - (height + lift) / 2)) : Math.round(room.h / 2 - height / 2);
+  const first = y0 + (titles ? rowH : 0), rights: number[] = [];
+  for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
+  const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, summary: [], summaryW: width, summaryH: 0 };
+  if (!lines.length || !framed) return { ...rowsOnly, complete: framed && !lines.length };
+  const laid = under(lines);
+  if (!laid || y0 + height + laid.summaryH > room.h - 2) return { ...rowsOnly, complete: false };
+  return { ...rowsOnly, ...laid, complete: true };
+}
+
+/**
+ * How much room a table keeps under its rows so that they and `rest`, the lines it says at rest, stand in the middle of the pane together: the height
+ * those lines take where they would be drawn with the rows so placed (the titles, the foot, the columns the card needs, room across and in the height),
+ * else 0. `PaneTable` works it out at rest only and holds it; `placeTable` takes it as it is.
+ */
+export function restLift(measure: Measure, room: TableRoom, spec: PlaceSpec, rest: readonly InfoLine[]): number {
+  const at = rowsIn(measure, room, spec), laid = at?.framed && rest.length ? at.under(rest) : null;
+  if (!at || !laid) return 0;
+  return Math.round(room.h / 2 - (at.height + laid.summaryH) / 2) + at.height + laid.summaryH <= room.h - 2 ? laid.summaryH : 0;
+}
+
+/**
+ * The rows of a table in `room` as `placeTable` places them but for their height in the pane: the row height, what of it fits, its columns and place
+ * across, its height, whether it is framed as a complete table must be, and how lines would be laid out under it. Null where no table fits.
+ */
+function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
+  const k = spec.rows.length, n = spec.heads.length;
   let rowH = 0, titles = true, foot = true;
   fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
     for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
@@ -178,17 +211,7 @@ export function placeTable(measure: (text: string, bold?: boolean) => number, ro
     // The first line's hairline is the one over them.
     return { summary, summaryW, summaryH: SEP + summary.length * rowH + summary.filter((row, i) => row.rule && i > 0).length * RULE };
   };
-  // In the middle of the pane's height, every pane's table alike: with the lines it says at rest under it where they would be drawn, else alone.
-  let y0 = Math.round(room.h / 2 - height / 2);
-  const basis = framed && rest.length ? under(rest) : null;
-  if (basis) { const y = Math.round(room.h / 2 - (height + basis.summaryH) / 2); if (y + height + basis.summaryH <= room.h - 2) y0 = y; }
-  const first = y0 + (titles ? rowH : 0), rights: number[] = [];
-  for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
-  const rowsOnly = { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0 };
-  if (!lines.length || !framed) return { ...rowsOnly, complete: framed && !lines.length };
-  const laid = under(lines);
-  if (!laid || y0 + height + laid.summaryH > room.h - 2) return { ...rowsOnly, complete: false };
-  return { ...rowsOnly, ...laid, complete: true };
+  return { rowH, titles, foot, cols, left, plate, widths, width: width(cols), height, framed, under };
 }
 
 /** The heavier face of a canvas font ("11px sans" -> "600 11px sans"), for the card's bold lines. */
@@ -251,16 +274,17 @@ export class PaneTable {
   /** When a finger last chose a row: the click the browser sends after that tap is the same choice, not a second one. */
   #tappedAt = -Infinity;
   /**
-   * The lines the table says at rest (`TableRoom.rest`, and no pointer on the pane), which its rows stand in the middle with (`placeTable`): the
-   * largest block that stood lately (`REST_HOLD_MS`), so that the newest moment's lines coming and going do not move the rows at rest either, and
-   * kept as they are while a pointer reads another moment or rests on the pane, so that neither that moment's lines nor what the newest comes to say
-   * meanwhile moves a row under it. Kept where no table was drawn and through `clear()`: a plate is drawn under a pointer only.
+   * The room kept under the rows (px) for the lines the table says at rest (`TableRoom.rest`, and no pointer on the pane), so that its rows and those
+   * lines stand in the middle (`restLift`, `placeTable`): the largest that stood lately (`REST_HOLD_MS`), so that the newest moment's lines and figures
+   * coming and going do not move the rows at rest either, and kept as it is while a pointer reads another moment or rests on the pane, so that nothing
+   * of that moment (its lines, its columns) nor what the newest comes to say meanwhile moves a row under it. Worked out where a pointer would put the
+   * table, so a plate (drawn under a pointer only) has it too; kept through `clear()`.
    */
-  #rest: readonly InfoLine[] = [];
-  /** The blocks said at rest that stood, largest first, each with when it last stood: the largest of the last `REST_HOLD_MS` is the first. */
-  #stood: { lines: readonly InfoLine[]; at: number }[] = [];
-  /** The block said at rest at the last frame at rest, and since when one of as many lines has been said. */
-  #saying: { lines: readonly InfoLine[]; since: number } | null = null;
+  #lift = 0;
+  /** The room that stood at rest, largest first, each with when it last stood: the largest of the last `REST_HOLD_MS` is the first. */
+  #stood: { lift: number; at: number }[] = [];
+  /** The room the last frame at rest asked for, since when that much has been asked for, and when it was last asked for. */
+  #saying: { lift: number; since: number; last: number } | null = null;
   /** The table those were said by (its height, its titles and its lines' heading): another starts afresh. */
   #restKey = '';
   /** The heading of the last block that said something (a block of no lines names no table: it is the same one saying less for now). */
@@ -281,7 +305,7 @@ export class PaneTable {
 
   /**
    * Draw it where it fits; where it went, or null where it does not. The card's bold lines are measured in the font's heavier face. At rest its lines
-   * are the ones its rows are centred with from then on (`#rest`).
+   * set the room its rows keep under them from then on (`#lift`).
    */
   draw(ctx: CanvasRenderingContext2D, p: TablePalette, room: TableRoom, spec: TableSpec): TablePlace | null {
     const base = ctx.font, heavy = boldFont(String(base));
@@ -290,8 +314,8 @@ export class PaneTable {
       ctx.font = heavy; const width = ctx.measureText(text).width; ctx.font = base;
       return width;
     };
-    if (room.rest === true && !room.pointing) this.#takeRest(room, spec);
-    const at = placeTable(measure, room, spec, this.#rest);
+    if (room.rest === true && !room.pointing) this.#takeRest(measure, room, spec);
+    const at = placeTable(measure, room, spec, this.#lift);
     this.#at = at; this.#rows = spec.rows.length;
     if (at) paintTable(ctx, p, at, spec, this.#hover);
     return at;
@@ -322,24 +346,32 @@ export class PaneTable {
   }
 
   /**
-   * A frame at rest: the lines it says join those the rows may stand with once they have stood `REST_STAND_MS` (at once where none has), and the
-   * largest that stood within `REST_HOLD_MS` is the one they stand with. Lines are counted, not measured: a block of as many lines replaces the one
-   * before (the newest words of it). Another table (a pane resized, other titles, another heading: a venue, a band) starts afresh; a block of no lines
-   * keeps the heading before it (Funding says nothing for a moment as an hour turns, before that hour's row comes in: 2026-11-21 22:00Z).
+   * A frame at rest: the room its lines ask for (`restLift`, where a pointer would put the table, so a plate too; 0 where they would not be drawn: a
+   * column short, a pane too low) counts once it has stood `REST_STAND_MS` (at once where none has), and the largest that stood within `REST_HOLD_MS` is
+   * the room the rows keep. What the frame before asked for stood until this frame where it had stood by then, as far as frames tell (none came between,
+   * however long: a pointer on the pane for minutes), and what is asked for again goes on standing. Another table (a pane resized, other titles,
+   * another heading: a venue, a band) starts afresh; a block of no lines keeps the heading before it (Funding says nothing for a moment as an hour
+   * turns, before that hour's row comes in: 2026-11-21 22:00Z).
    */
-  #takeRest(room: TableRoom, spec: TableSpec): void {
+  #takeRest(measure: Measure, room: TableRoom, spec: TableSpec): void {
     const lines = spec.lines ?? [], now = this.now(), head = lines[0];
     if (head) this.#restHead = head.label ?? head.text;
     const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${this.#restHead}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; }
-    this.#saying = this.#saying?.lines.length === lines.length ? { lines, since: this.#saying.since } : { lines, since: now };
+    const lift = restLift(measure, { ...room, pointing: true }, spec, lines), said = this.#saying;
+    if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
+    this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
     const stood = this.#stood;
     while (stood.length && stood[0]!.at < now - REST_HOLD_MS) stood.shift();
-    if (!stood.length || now - this.#saying.since >= REST_STAND_MS) {
-      while (stood.length && stood[stood.length - 1]!.lines.length <= lines.length) stood.pop();
-      stood.push({ lines, at: now });
-    }
-    this.#rest = stood[0]!.lines;
+    if (!stood.length) this.#stand(lift, now);
+    this.#lift = stood[0]!.lift;
+  }
+
+  /** `lift` stood until `at`: it outlasts the smaller rooms before it, which can no longer be the largest of a span it is in. */
+  #stand(lift: number, at: number): void {
+    const stood = this.#stood;
+    while (stood.length && stood[stood.length - 1]!.lift <= lift) stood.pop();
+    stood.push({ lift, at });
   }
 
   #light(row: number): void { if (row !== this.#hover) { this.#hover = row; this.host.invalidate(); } }
