@@ -561,6 +561,16 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   const card = lsCardLines(older, T + 30 * MIN, '1h').map(line => line.text);
   assert.ok(card.some(text => /newest 30 readings/.test(text)) && card.some(text => /earlier readings/.test(text)), 'the card says both');
   assert.deepEqual(tableLines(lsCardLines(older, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'Bitget\'s 30 readings and a muted row are the help\'s and the row\'s');
+  // A venue whose last update failed and that has no reading at the moment read (a window its failed round never covered, or past its hold):
+  // its row's dashes are any venue's, so the sentence saying its update failed stays with the table (review round 3).
+  const gone = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 48 * H, long: 0.5 }] }] as unknown as LsSeries[];
+  const goneLines = tableLines(lsCardLines(gone, T + 30 * MIN, '1h')).map(line => line.text);
+  assert.equal(goneLines.length, 1); assert.match(goneLines[0]!, /last update could not be read/);
+  assert.deepEqual(lsTableRows(gone, T + 30 * MIN, PALETTE)[2]!.slice(1).map(cell => cell.text), ['–', '–', '–'], 'its row: dashes, as any venue without a reading');
+  // Who each line counts: the header's Series says it while every line counts the same people, not Bybit's accounts beside top traders' positions.
+  const mixed = [{ ...series[0]!, population: 'topPositions' }, { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];
+  const mixedLines = tableLines(lsCardLines(mixed, T + 30 * MIN, '1h')).map(line => line.text);
+  assert.equal(mixedLines.length, 1); assert.match(mixedLines[0]!, /^Binance: .+ · Bybit: /);
   assert.deepEqual([ls[0]!.text, ls[0]!.mark], ['could not be read', undefined]);
 });
 

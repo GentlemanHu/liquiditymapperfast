@@ -60,8 +60,9 @@ export function shareText(long: number): string {
 
 /**
  * The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. The table says the readings and a dash for
- * none in its rows, the header's Series who each line counts, the header a venue a page cannot read, a muted row earlier readings, and the help
- * Bitget's 30 readings: it keeps why a venue has no reading at a moment (still being read, not read).
+ * none in its rows, the header's Series who each line counts (when they all count the same people), the header a venue a page cannot read, a
+ * muted row earlier readings, and the help Bitget's 30 readings: it keeps why a venue has no reading at a moment (still being read, not read,
+ * its last update failed), and who each line counts where they differ.
  */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
   const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true, table: false }];
@@ -76,17 +77,19 @@ export function lsCardLines(series: readonly LsSeries[], time: number, tf: strin
     if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
     if (!p && s.id.startsWith('bitget:')) noBitget = true;
     lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, table: false });
-    // Its row is muted, as its readout is, and the help says what muted means: the table leaves the sentence to the card.
-    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, table: false });
+    // Where it has a reading, its row is muted, as its readout is, and the help says what muted means: the table leaves the sentence to the card.
+    // Where it has none (a window its failed round never covered, or past its hold), its dashes are any venue's: the sentence stays (review 3).
+    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, ...(p ? { table: false as const } : {}) });
   }
   // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
   if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true, table: false });
   // Who each line counts, the venues of one population together: "Binance: top traders, by positions · Bybit, OKX: all accounts".
   const groups = new Map<LsPopulation, string[]>();
   for (const s of series) if (s.population) groups.set(s.population, [...(groups.get(s.population) ?? []), venueLabel(s.id)]);
-  // The header's Series says it (Binance, OKX, Bitget and Gate follow it, Bybit publishes one, as its tip and the help say), so the table leaves it
-  // out: carried, it never fitted under a table of normal height, and the card came back beside every Long/Short table (review 2026-11-21).
-  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true, table: false });
+  // Where every line counts the same people, the header's Series says who, so the table leaves it out: carried, it never fitted under a table of
+  // normal height, and the card came back beside every Long/Short table (review 2026-11-21). Where they differ (Bybit's accounts beside the top
+  // traders' positions, an older server's Bitget), the Series does not say it, and the table carries it (review 3).
+  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true, ...(groups.size === 1 ? { table: false as const } : {}) });
   // What a ratio means follows who is counted: accounts, or (Binance's top traders by positions) the size they hold.
   if (series.some(s => s.population && s.population !== 'topPositions')) lines.push({ text: t('Accounts as each exchange counts them, not coins: L/S 1.25 is 1.25 long accounts for each short one, not 25 % more BTC long. In coins the two sides are always equal.'), color: 'muted', wrap: true, table: false });
   if (series.some(s => s.population === 'topPositions')) lines.push({ text: t('By positions: the share of the top traders\' position size that is long, not of accounts. L/S 1.25 is 1.25 times as much held long as short among them; across the whole market the two sides are always equal.'), color: 'muted', wrap: true, table: false });
