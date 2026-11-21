@@ -60,14 +60,16 @@ export function shareText(long: number): string {
 
 /**
  * The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. The table says the readings and a dash for
- * none in its rows, and the header's Series who each line counts: it keeps why a venue has none and the notes on earlier readings and Bitget's.
+ * none in its rows, the header's Series who each line counts and the header a venue a page cannot read: it keeps why a venue has no reading at a
+ * moment (still being read, not read) and the notes on earlier readings and Bitget's.
  */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
   const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true, table: false }];
   let noBitget = false;
   for (const s of series) {
     const label = venueLabel(s.id);
-    if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id }); continue; }
+    // A venue a web page cannot read: its row's dash and the header ("not readable here") say it, at every moment, so the table leaves it out.
+    if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id, table: false }); continue; }
     const p = s.status === 'failed' ? null : lsAt(s.points, time, s.periodMs);
     // A venue still being read (`pending`) has no reading here yet: said so, not "no reading" or "could not be read".
     if (!p && s.pending) { lines.push({ label, text: t('being read'), color: 'muted', mark: s.id }); continue; }

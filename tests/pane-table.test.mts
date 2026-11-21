@@ -555,6 +555,8 @@ test('each pane\'s card gives its table what the rows do not say, and nothing it
   const ls = tableLines(lsCardLines(series, T + 30 * MIN, '1h'));
   assert.deepEqual(ls.map(line => line.label ?? line.text), ['Bybit']);
   assert.deepEqual(tableLines(lsCardLines(series.filter(s => s.status === 'ok'), T + 30 * MIN, '1h')), [], 'every venue read: nothing the rows and the header do not say');
+  const page = [...series, { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'serverOnly', points: [] }] as unknown as LsSeries[];
+  assert.deepEqual(tableLines(lsCardLines(page, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'a venue a page cannot read: the header says so');
   assert.deepEqual([ls[0]!.text, ls[0]!.mark], ['could not be read', undefined]);
 });
 
