@@ -16,7 +16,7 @@ import { LABEL_FLOOR, ageAlpha, ageRanks, carriedLines, runPieces, type CarriedL
 import { LabelBoard } from '../labels.ts';
 import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
-import { PALETTES, rgb, textOn, type Palette, paletteOf } from '../theme.ts';
+import { CAUTION, PALETTES, chromeFor, rgb, textOn, type Palette, paletteOf } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
 import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, usd, zoneName } from '../format.ts';
 import { timeAxis } from '../time-axis.ts';
@@ -106,7 +106,7 @@ import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { TpoLayer, type TpoFrame } from '../tpo/layer.ts';
 import type { TpoInfo } from '../tpo/panel.ts';
-import { CAUTION, HEAD_ALPHA, HEAD_INSET, HEAD_PITCH, TOOLS_TOP, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, type HeadLine } from '../map-top.ts';
+import { HEAD_ALPHA, HEAD_INSET, HEAD_PITCH, TOOLS_TOP, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, type HeadLine } from '../map-top.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -560,6 +560,13 @@ export class HeatPane {
    */
   #liqRightLane: StripePainted['right'] = null;
   #palette = PALETTES.light!;
+  /** The heading lines' inks for this palette (map-top.ts `roleInk`): its text and muted colours and its caution words colour, worked out once a palette. */
+  #headInk = { palette: null as Palette | null, ink: { text: '', muted: '', caution: '' } };
+  #inks(): { text: string; muted: string; caution: string } {
+    const p = this.#palette, held = this.#headInk;
+    if (held.palette !== p) { held.palette = p; held.ink = { text: p.text, muted: p.muted, caution: chromeFor(p).caution }; }
+    return held.ink;
+  }
   /** The palette the volume profile is drawn in (`#tradedPalette`), kept while neither the theme nor the colours chosen change. */
   #tradedPal: { key: string; base: Palette; p: Palette } | null = null;
   /**
@@ -4089,7 +4096,12 @@ export class HeatPane {
       if (a > 0) { ctx.globalAlpha = 0.85; ctx.fillStyle = p.ask; ctx.fillRect(x0, y0, Math.max(1, a / maxLevel * width), hgt); }
     }
     ctx.globalAlpha = 1;
-    if (!strip) {
+    if (!strip && COMPACT) {
+      // A compact map (a phone's): no corner tools' row to stand on and 84 px across, so its two figure lines stay at the top.
+      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, 28); ctx.globalAlpha = 1;
+      ctx.fillStyle = p.muted; ctx.font = bodyFont(pw < NARROW_PLOT ? 9.5 : 10); ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText(t('LEVEL MAX {value}', { value: usd(maxLevel) }), x0 + 4, 4); ctx.fillText(t('CUM MAX {value}', { value: usd(maxCum) }), x0 + 4, 16);
+    } else if (!strip) {
       // The heading (map-top.ts): the column's name on the tools' row, its figures from the line every column's figures stand on.
       const look = document.documentElement.dataset.frame, headSize = pw < NARROW_PLOT ? 9.5 : 10, first = firstLine(look);
       const fit = (words: string): string => fitText(w => ctx.measureText(w).width, words, W - HEAD_INSET - 4);
@@ -4197,6 +4209,12 @@ export class HeatPane {
         second.style.left = `${divider + LIQ_KIND_PAD}px`; second.style.maxWidth = `${room - divider - LIQ_KIND_PAD - 22}px`;
         button.classList.add('split-names'); button.style.maxWidth = ''; button.style.width = `${room}px`;
         button.replaceChildren(first, line, second);
+        // Measured once for these words and this width, as the unsplit button's group is: a name that would end in "…" gives way to its half of
+        // the split's short name ("Liq | Stops"), what the button said before it named the sub-columns.
+        if (first.scrollWidth > first.clientWidth || second.scrollWidth > second.clientWidth) {
+          const [shortA, shortB] = splitName(pair.split).split('|').map(half => half.trim());
+          if (shortA && shortB) { first.textContent = shortA; second.textContent = shortB; }
+        }
       } else { button.classList.remove('split-names'); button.style.width = ''; button.textContent = splitName(pair.split); }
       this.#liqKindGroupOff = false;
     } else if (fit !== this.#liqKindFit) {
@@ -4340,7 +4358,7 @@ export class HeatPane {
       ctx.fillStyle = p.muted;
       ctx.fillText(fitText(wide, t('LEVEL MAX {value}', { value: usd(maxLevel) }), liqRoom(W)), x0 + HEAD_INSET, heading.first);
       ctx.fillText(fitText(wide, t('CUM MAX {value}', { value: usd(maxCum) }), liqRoom(W)), x0 + HEAD_INSET, heading.first + HEAD_PITCH);
-      left.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, p); ctx.fillText(note.text, x0 + HEAD_INSET, heading.first + HEAD_PITCH * (2 + n)); });
+      left.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, this.#inks()); ctx.fillText(note.text, x0 + HEAD_INSET, heading.first + HEAD_PITCH * (2 + n)); });
       ctx.font = bodyFont(size);
     }
     this.#profileBox = null;
@@ -4425,7 +4443,7 @@ export class HeatPane {
     const below = top + HEAD_PITCH * (heads.rows - heads.across.length);
     ctx.globalAlpha = 1; ctx.font = bodyFont(size); ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
     heads.across.forEach((line, n) => ctx.fillText(line, x0 + HEAD_INSET, below + HEAD_PITCH * n));
-    notes.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, p); ctx.fillText(note.text, x0 + HEAD_INSET, top + HEAD_PITCH * (heads.rows + n)); });
+    notes.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, this.#inks()); ctx.fillText(note.text, x0 + HEAD_INSET, top + HEAD_PITCH * (heads.rows + n)); });
     ctx.restore(); ctx.textBaseline = 'middle';
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
     // The right sub-column's box stands over the left one and the map's edge: drawn last, on the pointer's layer (`#columnBoxes`).

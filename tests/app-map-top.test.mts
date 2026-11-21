@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { CAUTION, HEAD_INSET, HEAD_PITCH, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, toolsH } from '../src/app/map-top.ts';
+import { PALETTES, chromeFor, contrastRatio } from '../src/app/theme.ts';
+import { HEAD_INSET, HEAD_PITCH, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, toolsH } from '../src/app/map-top.ts';
 
 test('the map\'s top strip is one grid: the tools\' row, then every column\'s first line (Karl, 2026-11-21)', () => {
   // A map button is 26 px from 8 px down; the Bevel frame's are 23 px (styles.css), so its first line is 3 px higher.
@@ -30,11 +31,13 @@ test('the liquidation column\'s heading: its lines, then History, a map button, 
   assert.deepEqual(liqHeading('bevel', 2, true), { first: 35, historyTop: 63, band: 63 + 23 + 3 + 4 });
 });
 
-test('three roles, one look each: a name is bold in the text colour, a figure or note is muted, a warning amber', () => {
-  const ink = { text: '#111111', muted: '#777777' };
+test('three roles, one look each: a name is bold in the text colour, a figure or note is muted, a warning in the theme\'s caution words', () => {
+  const ink = { text: '#111111', muted: '#777777', caution: '#8a6400' };
   assert.equal(roleFont('name'), nameFont()); assert.equal(roleFont('note'), bodyFont()); assert.equal(roleFont('warn', 9.5), bodyFont(9.5));
   assert.match(nameFont(), /^600 10px /); assert.match(bodyFont(), /^10px /);
-  assert.equal(roleInk('name', ink), ink.text); assert.equal(roleInk('note', ink), ink.muted); assert.equal(roleInk('warn', ink), CAUTION);
+  assert.equal(roleInk('name', ink), ink.text); assert.equal(roleInk('note', ink), ink.muted); assert.equal(roleInk('warn', ink), ink.caution);
+  // The caution words colour reads on every theme's panel (the raw amber #e6a700 is 2:1 on white).
+  for (const [name, p] of Object.entries(PALETTES)) assert.ok(contrastRatio(chromeFor(p).caution, p.panel) >= 4.5, `${name}: a warning reads on the panel`);
 });
 
 test('every column\'s heading draws on the grid: its name on the tools\' row, its figures from the first line', () => {
@@ -50,6 +53,12 @@ test('every column\'s heading draws on the grid: its name on the tools\' row, it
   // The split's button names both sub-columns, each over its own (no caption rows on the canvas).
   assert.match(heat, /splitHeads\(wide, \{ captions: null,/);
   assert.match(heat, /button\.classList\.add\('split-names'\)/);
+  // A name with no room on the split's button gives way to its half of the split's short name, as the button said before.
+  assert.match(heat, /const \[shortA, shortB\] = splitName\(pair\.split\)\.split\('\|'\)\.map\(half => half\.trim\(\)\);/);
+  // A compact map's profile column (84 px, no corner tools' row above it) keeps its two figure lines at the top.
+  assert.match(heat, /if \(!strip && COMPACT\) \{[\s\S]{0,800}?x0 \+ 4, 4\); ctx\.fillText\(t\('CUM MAX \{value\}', \{ value: usd\(maxCum\) \}\), x0 \+ 4, 16\);/);
+  // The heading lines' warning ink is the theme's caution words colour, worked out once a palette.
+  assert.match(heat, /caution: chromeFor\(p\)\.caution/);
   // The stripe's captions are labels, not buttons: a plate without an edge.
   assert.doesNotMatch(heat, /ctx\.strokeRect\(x \+ 0\.5, y \+ 0\.5, w - 1, 14\)/);
   // No leftovers of the old constants.
