@@ -220,7 +220,10 @@ export function nlnsWhoLines(c: NlnsCandle, coin: string): InfoLine[] {
   if (c.unassigned > 0) lines.push({ label: t('Takers even'), text: coinText(c.unassigned, coin), color: 'muted' });
   if (c.unknown > 0) lines.push({ label: t('Side unknown'), text: coinText(c.unknown, coin), color: 'muted' });
   if (lines.length) lines[0] = { ...lines[0]!, rule: true };
-  if (c.fine > 0) lines.push({ text: c.fine < c.counted ? t('Minute by minute for {n} of {m} venues: each minute\'s change given to that minute\'s takers.', { n: c.fine, m: c.counted }) : t('Minute by minute: each minute\'s change given to that minute\'s takers.'), color: 'muted', wrap: true });
+  // How it was read: said in the OI pane's table too where it is this candle's own (some venues not minute by minute, a side decided by the
+  // price); the usual way, minute by minute for every venue, is the pane's help.
+  if (c.fine > 0) lines.push(c.fine < c.counted ? { text: t('Minute by minute for {n} of {m} venues: each minute\'s change given to that minute\'s takers.', { n: c.fine, m: c.counted }), color: 'muted', wrap: true }
+    : { text: t('Minute by minute: each minute\'s change given to that minute\'s takers.'), color: 'muted', wrap: true, table: false });
   if (c.byPrice) lines.push({ text: t('Where a market\'s flow is not recorded, the way the price went decides.'), color: 'muted', wrap: true });
   return lines;
 }

@@ -169,17 +169,18 @@ const coinFigures = new Intl.NumberFormat('en-US', { notation: 'compact', maximu
  */
 export function depthCardLines(h: { time: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; rank: number | null; of: number }): InfoLine[] {
   const fmt = (value: number): string => h.units === 'coin' ? `${coinFigures.format(value)} ${h.coin}` : money(value);
-  const lines: InfoLine[] = [{ text: t('Depth'), bold: true }, { label: t('Time'), text: clock(h.time, true) }];
-  h.bands.forEach((band, j) => lines.push({ label: `±${bandText(band.r)}%`, text: `${fmt(band.bid)} · ${fmt(band.ask)}`, bold: j === h.watched }));
+  // The table says the time, every band and the watched band's difference and ratio in its rows: it keeps the balance and the rank.
+  const lines: InfoLine[] = [{ text: t('Depth'), bold: true, table: false }, { label: t('Time'), text: clock(h.time, true), table: false }];
+  h.bands.forEach((band, j) => lines.push({ label: `±${bandText(band.r)}%`, text: `${fmt(band.bid)} · ${fmt(band.ask)}`, bold: j === h.watched, table: false }));
   const w = h.bands[h.watched];
   if (w) {
     const diff = w.bid - w.ask;
-    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), color: sideColor(diff), bold: true });
+    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), color: sideColor(diff), bold: true, table: false });
     const imbalance = imbalanceLine(w.bid, w.ask); if (imbalance) lines.push(imbalance);
-    const ratio = ratioLine(w.bid, w.ask, [t('bids'), t('asks')]); if (ratio) lines.push(ratio);
+    const ratio = ratioLine(w.bid, w.ask, [t('bids'), t('asks')]); if (ratio) lines.push({ ...ratio, table: false });
   }
   if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });
-  lines.push({ text: t('Bids · asks resting within each distance of the price, added up over the books counted (Venues); each band holds the ones inside it.'), color: 'muted', wrap: true, rule: true });
+  lines.push({ text: t('Bids · asks resting within each distance of the price, added up over the books counted (Venues); each band holds the ones inside it.'), color: 'muted', wrap: true, rule: true, table: false });
   return lines;
 }
 
@@ -190,18 +191,20 @@ export function depthCardLines(h: { time: number; bands: readonly { r: number; b
 export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; view?: LiqView; takes?: { bid: number; ask: number } | null }): InfoLine[] {
   const fmt = (value: number): string => h.units === 'coin' ? `${coinFigures.format(value)} ${h.coin}` : money(value);
   const kind = h.view ? curveOf(h.view) : 'liq';
-  const lines: InfoLine[] = [{ text: h.view ? viewParts(h.view).join(' · ') : t('Liquidation levels'), bold: true }, { label: t('Positions'), text: clock(h.asOf, true) }];
-  h.bands.forEach((band, j) => lines.push({ label: `±${bandText(band.r)}%`, text: `${fmt(band.bid)} · ${fmt(band.ask)}`, bold: j === h.watched }));
+  // The table says the snapshot's time in its foot, every band and the watched band's difference and ratio in its rows, and the levels control
+  // what is shown: it keeps the take profits.
+  const lines: InfoLine[] = [{ text: h.view ? viewParts(h.view).join(' · ') : t('Liquidation levels'), bold: true, table: false }, { label: t('Positions'), text: clock(h.asOf, true), table: false }];
+  h.bands.forEach((band, j) => lines.push({ label: `±${bandText(band.r)}%`, text: `${fmt(band.bid)} · ${fmt(band.ask)}`, bold: j === h.watched, table: false }));
   const w = h.bands[h.watched];
   if (w) {
     const diff = w.bid - w.ask;
-    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), color: sideColor(diff), bold: true });
+    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), color: sideColor(diff), bold: true, table: false });
     // Take profits on alone are resting orders: the buys below the price are bids, the sells above asks.
-    const ratio = ratioLine(w.bid, w.ask, kind === 'takes' ? [t('bids'), t('asks')] : [t('longs'), t('shorts')]); if (ratio) lines.push(ratio);
+    const ratio = ratioLine(w.bid, w.ask, kind === 'takes' ? [t('bids'), t('asks')] : [t('longs'), t('shorts')]); if (ratio) lines.push({ ...ratio, table: false });
   }
   // The take profits of the watched band: the sells that close longs above the price, the buys that close shorts below; never added to the rest.
   if (h.takes) lines.push({ label: t('Take profits above / below'), text: `${fmt(h.takes.ask)} · ${fmt(h.takes.bid)}`, rule: true });
-  lines.push({ text: kind === 'takes' ? t('Take profits of shorts · longs within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will fill.')
+  lines.push({ table: false, text: kind === 'takes' ? t('Take profits of shorts · longs within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will fill.')
     : kind === 'stops' ? t('Stops of longs · shorts within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will trigger.')
     : kind === 'both' ? t('Longs · shorts that would be liquidated or stopped out within each distance of the price, from HyperTracker\'s snapshot of Hyperliquid\'s BTC positions and orders: where the money sits, not what will happen.')
       : t('Longs · shorts that would be liquidated within each distance of the price, from HyperTracker\'s snapshot of Hyperliquid\'s BTC positions: where the money sits, not what will be liquidated.'), color: 'muted', wrap: true, rule: true });
@@ -211,8 +214,8 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
 /** One point of the Liquidity Tracker: the weighted liquidity of each side, how it compares, and the settings it was worked out with. */
 export function ltCardLines(h: { time: number; bid: number; ask: number; halfLifeBp: number; venues: number }): InfoLine[] {
   const lines: InfoLine[] = [
-    { text: t('Liquidity Tracker'), bold: true },
-    { label: t('Time'), text: clock(h.time, true) },
+    { text: t('Liquidity Tracker'), bold: true, table: false },
+    { label: t('Time'), text: clock(h.time, true), table: false },
     { label: t('Bid'), text: money(h.bid), color: 'below' },
     { label: t('Ask'), text: money(h.ask), color: 'above' },
     { label: 'Δ', text: signedUsd(h.bid - h.ask), color: sideColor(h.bid - h.ask), bold: true },
@@ -220,7 +223,7 @@ export function ltCardLines(h: { time: number; bid: number; ask: number; halfLif
   const imbalance = imbalanceLine(h.bid, h.ask); if (imbalance) lines.push(imbalance);
   const ratio = ratioLine(h.bid, h.ask, [t('bids'), t('asks')]); if (ratio) lines.push(ratio);
   lines.push({ label: t('Half-life'), text: `${h.halfLifeBp} bp` }, { label: t('Venues'), text: String(h.venues) });
-  lines.push({ text: t('Liquidity near the touch, weighted: a level counts in full at the touch and half as much for every half-life further away.'), color: 'muted', wrap: true, rule: true });
+  lines.push({ text: t('Liquidity near the touch, weighted: a level counts in full at the touch and half as much for every half-life further away.'), color: 'muted', wrap: true, rule: true, table: false });
   return lines;
 }
 
@@ -230,8 +233,8 @@ export function oiCardLines(h: { time: number; level: number; change: number | n
   const about = h.estimate ? '≈ ' : '';
   const signed = (value: number): string => `${about}${value > 0 ? '+' : value < 0 ? '−' : ''}${fmtPrice(Math.abs(value), 1)}`;
   const lines: InfoLine[] = [
-    { text: t('Open Interest'), bold: true },
-    { label: h.estimate ? t('Time') : t('Candle'), text: clock(h.time, true) },
+    { text: t('Open Interest'), bold: true, table: false },
+    { label: h.estimate ? t('Time') : t('Candle'), text: clock(h.time, true), table: false },
     { label: t('Open interest'), text: `${about}${fmtPrice(h.level, 1)}`, bold: true },
   ];
   if (h.change !== null) lines.push({ label: 'Δ', text: signed(h.change), color: sideColor(h.change), bold: true });
@@ -240,6 +243,6 @@ export function oiCardLines(h: { time: number; level: number; change: number | n
   if (h.sigma !== null && Number.isFinite(h.sigma)) lines.push({ label: t('Unusual'), text: t('{z}σ above its baseline', { z: h.sigma.toFixed(1) }), bold: true });
   if (h.source) lines.push({ text: h.source, color: 'muted' });
   if (h.staleMin !== null) lines.push({ text: t('last sample {n} min ago', { n: h.staleMin }), color: 'above' });
-  lines.push({ text: h.estimate ? t('Further back than the readings held: Bybit\'s own open interest, scaled to meet the line where it starts. An estimate of the total, and how far it moved since the reading before.') : t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
+  lines.push({ table: false, text: h.estimate ? t('Further back than the readings held: Bybit\'s own open interest, scaled to meet the line where it starts. An estimate of the total, and how far it moved since the reading before.') : t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
   return lines;
 }

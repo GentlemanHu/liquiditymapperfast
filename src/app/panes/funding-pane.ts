@@ -10,7 +10,7 @@ import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { AXIS_W, leftGutter } from './heat-pane.ts';
 import { TimePane, setHtml } from './lower-panes.ts';
-import { PaneTable, placeTable, tableInk, type TableCell, type TableRoom } from './pane-table.ts';
+import { PaneTable, headed, placeTable, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import { mixHex, type Palette } from '../theme.ts';
 import type { Pt } from '../touch.ts';
 import { currentCoin } from '../coin.ts';
@@ -94,51 +94,67 @@ const payerText = (per8h: number): string | null => per8h > 0 ? t('Longs pay sho
  * `continuous` venue no settlement stands behind the row and no band is drawn, so neither is named.
  */
 export function fundingCardLines(h: { time: number; venue: string; row: FundingRow | null; forming: boolean; premium: number | null; opens: HourOpens | null; coin: string; continuous: boolean; band?: boolean }): InfoLine[] {
-  const lines: InfoLine[] = [{ text: `${h.venue} · ${clock(h.time, true)}`, bold: true }];
+  // The table says the venue's funding, APR and premium in its row (who pays is their sign, and the help says it): it keeps the rest.
+  const lines: InfoLine[] = [{ text: `${h.venue} · ${clock(h.time, true)}`, bold: true, table: false }];
   if (h.row) {
     const tone = h.row.per8h > 0 ? 'buy' : h.row.per8h < 0 ? 'sell' : 'text', payer = payerText(h.row.per8h);
-    lines.push({ label: t('Funding'), text: `${rateText(h.row.per8h)} / 8 h`, color: tone, bold: true });
-    if (payer) lines.push({ text: payer, color: 'muted' });
+    lines.push({ label: t('Funding'), text: `${rateText(h.row.per8h)} / 8 h`, color: tone, bold: true, table: false });
+    if (payer) lines.push({ text: payer, color: 'muted', table: false });
     if (h.row.hours !== 8 && !h.continuous) lines.push({ label: t('Each settlement'), text: `${rateText(h.row.rate, 5)} / ${h.row.hours} h` });
-    lines.push({ label: 'APR', text: rateText(h.row.per8h * PER_YEAR, 2) });
+    lines.push({ label: 'APR', text: rateText(h.row.per8h * PER_YEAR, 2), table: false });
     if (!h.continuous) lines.push({ label: h.forming ? t('Settles at') : t('Settled at'), text: clock(h.row.t, true), color: 'muted' });
   }
-  if (h.premium !== null) lines.push({ label: t('Premium'), text: rateText(h.premium), color: h.premium > 0 ? 'buy' : h.premium < 0 ? 'sell' : 'text' });
+  if (h.premium !== null) lines.push({ label: t('Premium'), text: rateText(h.premium), color: h.premium > 0 ? 'buy' : h.premium < 0 ? 'sell' : 'text', table: false });
   if (h.opens) {
     const share = buyerShare(h.opens);
     if (share !== null) lines.push({ label: t('Buyers opened'), text: `${Math.round(share * 100)}%`, color: share > 0.5 ? 'buy' : share < 0.5 ? 'sell' : 'text', bold: true, rule: true });
     lines.push({ label: t('New longs'), text: coinText(h.opens.longOpened, h.coin), color: 'buy' }, { label: t('New shorts'), text: coinText(h.opens.shortOpened, h.coin), color: 'sell' });
   }
   // Only where the band's dotted lines are drawn (a venue with a premium line: on OKX and Bitget it would speak of lines not there).
-  if (!h.continuous && h.band !== false) lines.push({ text: t('Per eight hours on every venue. Funding stays at its base rate (dashed) while the premium stays between the dotted lines, and follows the premium outside them.'), color: 'muted', wrap: true, rule: true });
-  if (h.opens) lines.push({ text: t('Hour by hour, Hyperliquid\'s funding moved with the share of new positions buyers opened at market (measured on every trade of BTC and ETH): context, not a signal.'), color: 'muted', wrap: true });
+  if (!h.continuous && h.band !== false) lines.push({ text: t('Per eight hours on every venue. Funding stays at its base rate (dashed) while the premium stays between the dotted lines, and follows the premium outside them.'), color: 'muted', wrap: true, rule: true, table: false });
+  if (h.opens) lines.push({ text: t('Hour by hour, Hyperliquid\'s funding moved with the share of new positions buyers opened at market (measured on every trade of BTC and ETH): context, not a signal.'), color: 'muted', wrap: true, table: false });
   return lines;
 }
 
 /** One venue's line in the every-venue popup: its id (for its mark), its name and its rate there (null: none held for that time). */
 export interface VenueRate { id: string; name: string; per8h: number | null; forming: boolean }
 
-/** The popup with every venue shown: the median, then each venue with its mark, the rate accruing now marked as such. */
+/**
+ * The popup with every venue shown: the median, then each venue with its mark, the rate accruing now marked as such. The table says all of it in
+ * its rows (a venue each and the median, the rate still accruing marked there too: `fundingTableRows`).
+ */
 export function fundingAllCardLines(h: { time: number; median: { per8h: number } | null; venues: readonly VenueRate[]; need: number }): InfoLine[] {
   const tone = (x: number): 'buy' | 'sell' | 'text' => x > 0 ? 'buy' : x < 0 ? 'sell' : 'text';
-  const lines: InfoLine[] = [{ text: `${t('Every venue')} · ${clock(h.time, true)}`, bold: true }];
+  const lines: InfoLine[] = [{ text: `${t('Every venue')} · ${clock(h.time, true)}`, bold: true, table: false }];
   if (h.median) {
-    lines.push({ label: t('Median'), text: `${rateText(h.median.per8h)} / 8 h`, color: tone(h.median.per8h), bold: true });
-    const payer = payerText(h.median.per8h); if (payer) lines.push({ text: payer, color: 'muted' });
-    lines.push({ label: 'APR', text: rateText(h.median.per8h * PER_YEAR, 2) });
+    lines.push({ label: t('Median'), text: `${rateText(h.median.per8h)} / 8 h`, color: tone(h.median.per8h), bold: true, table: false });
+    const payer = payerText(h.median.per8h); if (payer) lines.push({ text: payer, color: 'muted', table: false });
+    lines.push({ label: 'APR', text: rateText(h.median.per8h * PER_YEAR, 2), table: false });
   }
-  h.venues.forEach((v, i) => lines.push({ label: v.name, mark: v.id, ...(i === 0 && h.median ? { rule: true } : {}), ...(v.per8h === null ? { text: '–', color: 'muted' as const } : { text: `${rateText(v.per8h)}${v.forming ? ` ${t('(now)')}` : ''}`, color: tone(v.per8h) }) }));
-  lines.push({ text: t('Per eight hours. The thick line is the median of the venues with a rate at that time, drawn where at least {n} have one; dashed, a rate still accruing counts.', { n: h.need }), color: 'muted', wrap: true, rule: true });
+  h.venues.forEach((v, i) => lines.push({ label: v.name, mark: v.id, table: false, ...(i === 0 && h.median ? { rule: true } : {}), ...(v.per8h === null ? { text: '–', color: 'muted' as const } : { text: `${rateText(v.per8h)}${v.forming ? ` ${t('(now)')}` : ''}`, color: tone(v.per8h) }) }));
+  lines.push({ text: t('Per eight hours. The thick line is the median of the venues with a rate at that time, drawn where at least {n} have one; dashed, a rate still accruing counts.', { n: h.need }), color: 'muted', wrap: true, rule: true, table: false });
   return lines;
 }
 
-/** One venue in the table: its name, its funding per eight hours and its premium at the moment read (null: not read, or not said by the venue); `ink`: its name in its line's colour. */
-export interface FundingReading { name: string; per8h: number | null; premium: number | null; ink?: string }
+/**
+ * One venue in the table: its name, its funding per eight hours and its premium at the moment read (null: not read, or not said by the venue); `ink`:
+ * its name in its line's colour; `forming`: its rate is the one still accruing then (the median's row has none).
+ */
+export interface FundingReading { name: string; per8h: number | null; premium: number | null; ink?: string; forming?: boolean }
 
-/** The Funding pane's table: a venue a row, its funding per eight hours, the yearly rate of that, and its premium where it is held. */
+/** Whether every venue's rate the table reads is still accruing: its foot then says (now) once, in place of every row. */
+export function fundingAllNow(readings: readonly FundingReading[]): boolean {
+  const rated = readings.filter(r => r.per8h !== null && r.forming !== undefined);
+  return rated.length > 0 && rated.every(r => r.forming);
+}
+
+/**
+ * The Funding pane's table: a venue a row, its funding per eight hours, the yearly rate of that, and its premium where it is held. A rate still accruing
+ * at the moment read says (now) beside it, as the card says it, where some of the rates read have settled (where none has, the foot says it once).
+ */
 export function fundingTableRows(readings: readonly FundingReading[], p: Pick<Palette, 'bid' | 'ask' | 'text'>): TableCell[][] {
-  const ink = (x: number | null): string | undefined => x ? tableInk(x > 0 ? p.bid : p.ask, p) : undefined;
-  return readings.map(r => [{ text: r.name, color: r.ink }, { text: r.per8h === null ? '–' : rateText(r.per8h), color: ink(r.per8h) }, { text: r.per8h === null ? '–' : rateText(r.per8h * PER_YEAR, 2) }, { text: r.premium === null ? '–' : rateText(r.premium), color: ink(r.premium) }]);
+  const ink = (x: number | null): string | undefined => x ? tableInk(x > 0 ? p.bid : p.ask, p) : undefined, each = !fundingAllNow(readings);
+  return readings.map(r => [{ text: r.name, color: r.ink }, { text: r.per8h === null ? '–' : `${rateText(r.per8h)}${each && r.forming ? ` ${t('(now)')}` : ''}`, color: ink(r.per8h) }, { text: r.per8h === null ? '–' : rateText(r.per8h * PER_YEAR, 2) }, { text: r.premium === null ? '–' : rateText(r.premium), color: ink(r.premium) }]);
 }
 
 /** A venue's premium at `at`: the one it gives now over the interval under way, else the candle or hour held there. */
@@ -243,8 +259,9 @@ export class FundingPane extends TimePane {
    * Every venue listing the coin at the moment read: the chart's own venue as it is drawn, the others with their funding and the reading now alone (their premium
    * candles are the costly read). Placed first with typical figures: where it would not fit, the other venues are not asked. Where it went, or null.
    * With every venue shown (`all`: their views, already asked, and the median), each name is in its line's colour and the median is the last row.
+   * `lines`: what the card says that the rows do not (one venue: when it settles, who opened), under the rows.
    */
-  #drawTable(venue: FundingVenue | null, shown: FundingView | null, tf: number, at: number, now: number, pointed: boolean, all?: { views: ReadonlyMap<FundingVenue, FundingView>; venues: readonly VenueFunding[]; median: { per8h: number } | null }): ReturnType<PaneTable['draw']> {
+  #drawTable(venue: FundingVenue | null, shown: FundingView | null, tf: number, at: number, now: number, pointed: boolean, all?: { views: ReadonlyMap<FundingVenue, FundingView>; venues: readonly VenueFunding[]; median: { per8h: number } | null }, lines: readonly InfoLine[] = []): ReturnType<PaneTable['draw']> {
     const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null };
     const listed = FUNDING_VENUES.filter(x => coin.markets[x]), heads = ['', t('Funding'), 'APR', t('Premium')], minCols = 2;
     // One venue: a row that repeats the header; no table, and the popup stays.
@@ -257,11 +274,15 @@ export class FundingPane extends TimePane {
     const readings = listed.map((x, i): FundingReading => {
       const data = all?.views.get(x) ?? (x === venue && shown ? shown : this.#funding.view(x, coin.markets[x]!, tf, v.t0, v.t1, Date.now(), false)), held = fundingShownAt(data, now, replaying());
       const { row, forming } = fundingAt(held.rows, held.forming, at, now), every = all?.venues[i], read = every ? fundingIn(every.rows, every.forming, at, now) : null;
-      return { name: venueLabel(x), per8h: (every ? read?.per8h : row?.per8h) ?? null, premium: premiumRead(held.forming, every ? !!read?.forming : forming, held.premium, data.premiumMs, at), ...(all ? { ink: mixHex(VENUE_LINE[x] ?? p.text, p.text, 0.35) } : {}) };
+      const accruing = every ? !!read?.forming : forming;
+      return { name: venueLabel(x), per8h: (every ? read?.per8h : row?.per8h) ?? null, premium: premiumRead(held.forming, accruing, held.premium, data.premiumMs, at), forming: accruing, ...(all ? { ink: mixHex(VENUE_LINE[x] ?? p.text, p.text, 0.35) } : {}) };
     });
     if (all) readings.push({ name: t('Median'), per8h: all.median?.per8h ?? null, premium: null, ink: p.text });
     this.#tableVenues = listed;
-    return this.#table.draw(ctx, p, room, { heads, minCols, focus: all ? readings.length - 1 : listed.indexOf(venue!), foot: pointed ? clock(at, true) : `${t('newest')} ${clock(at)}`, rows: fundingTableRows(readings, p) });
+    // A rate still accruing says so, as the card does: beside it where some rates have settled, once in the foot where none has (at rest the foot's
+    // "newest" says it).
+    const foot = pointed ? `${clock(at, true)}${fundingAllNow(readings) ? ` ${t('(now)')}` : ''}` : `${t('newest')} ${clock(at)}`;
+    return this.#table.draw(ctx, p, room, { heads, minCols, focus: all ? readings.length - 1 : listed.indexOf(venue!), foot, rows: fundingTableRows(readings, p), lines });
   }
 
   /**
@@ -391,12 +412,12 @@ export class FundingPane extends TimePane {
     ctx.restore();
     labels();
     if (hover && this.pointer && hover.t > at) this.cursorT = at;
-    // A table drawn takes the popup's place, as on every pane with one; the left tag stays unless the table is on a plate there.
-    const placed = state.fundingTable ? this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianNow }) : null;
+    // The table says all the card does in its rows (a venue each and the median): a complete one takes the card's place, as on every pane with one;
+    // beside one that lost a column, the card stays. The left tag stays unless the table is on a plate there.
+    const card = fundingAllCardLines({ time: at, median: medianNow, need, venues: shown.map(s => { const r = fundingIn(s.rows, s.forming, at, now); return { id: s.id, name: venueLabel(s.id), per8h: r?.per8h ?? null, forming: r?.forming ?? false }; }) });
+    const placed = state.fundingTable ? this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianNow }, tableLines(card)) : null;
     this.leftTag = placed?.plate !== true;
-    if (hover && this.pointer && !placed) {
-      this.#lines = fundingAllCardLines({ time: at, median: medianNow, need, venues: shown.map(s => { const r = fundingIn(s.rows, s.forming, at, now); return { id: s.id, name: venueLabel(s.id), per8h: r?.per8h ?? null, forming: r?.forming ?? false }; }) });
-    }
+    if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
     setHtml(readout, medianNow
       ? `${key(p.text)}${t('Median')} <b class="${tone(medianNow.per8h)}">${rateText(medianNow.per8h)}</b> / 8 h · APR ${rateText(medianNow.per8h * PER_YEAR, 2)} <span class="muted">${t('{n} of {m} venues', { n: medianNow.n, m: listed.length })}</span>`
@@ -546,11 +567,13 @@ export class FundingPane extends TimePane {
     // stay at their newest, and the cursor is drawn there.
     if (hover && this.pointer && hover.t > at) this.cursorT = at;
     const hourOpens = opens.find(h => h.t <= at && at < h.t + HOUR) ?? null;
-    // A table drawn takes the popup's place, as on every pane with one (Table off brings back who opened and when it settled); the left tag stays
+    // Every venue in the table, and under the rows what the card says of this venue that its row does not (when it settles, who opened), under its
+    // name: a table that holds all of it takes the card's place, as on every pane with one; beside one that cannot, the card stays. The left tag stays
     // unless the table is on a plate there.
-    const placed = state.fundingTable ? this.#drawTable(venue, data, tf, at, now, !!hover) : null;
+    const card = fundingCardLines({ time: at, venue: name, row: shownRow, forming: isForming, premium: premiumAt, opens: hourOpens, coin: coin.coin, continuous: continuousFunding(venue), band: hasPremium(venue) });
+    const placed = state.fundingTable ? this.#drawTable(venue, data, tf, at, now, !!hover, undefined, headed(name, tableLines(card))) : null;
     this.leftTag = placed?.plate !== true;
-    if (hover && this.pointer && !placed) this.#lines = fundingCardLines({ time: at, venue: name, row: shownRow, forming: isForming, premium: premiumAt, opens: hourOpens, coin: coin.coin, continuous: continuousFunding(venue), band: hasPremium(venue) });
+    if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
     const parts: string[] = [];
     if (shownRow) parts.push(`${key(p.text)}${t('Funding')} <b class="${tone(shownRow.per8h)}">${rateText(shownRow.per8h)}</b> / 8 h · APR ${rateText(shownRow.per8h * PER_YEAR, 2)}`);

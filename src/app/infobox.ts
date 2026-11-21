@@ -28,6 +28,12 @@ export interface InfoLine {
    * next piece would run past the wrap width, and a gap at the start of a row is left out.
    */
   runs?: readonly InfoRun[];
+  /**
+   * Where a pane's table says its card's lines under its rows (pane-table.ts `tableLines`): false for a line the table leaves out, because the
+   * table says it already (its rows, the time in its foot, the pane's name in the header) or because it explains rather than reads (the pane's
+   * help says it). Every other line of the card is the table's too.
+   */
+  table?: false;
 }
 /** A piece of a line drawn in pieces: its words, colour (the line's by default), weight, face (`value`: the monospace one) and mark. */
 export interface InfoRun { text: string; color?: InfoColor; bold?: boolean; value?: boolean; mark?: string; gap?: boolean }
