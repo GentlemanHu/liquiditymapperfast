@@ -516,10 +516,15 @@ test('a table stands in the middle with the lines it says at rest, holds them wh
   // A block of no lines for a moment (Funding as an hour turns, before that hour's row) names no table: the same one saying less, held as any smaller.
   t += 1_000; assert.equal(draw([], { rest: true })!.y0, 56);
   t += 800; assert.equal(draw(five, { rest: true })!.y0, 56);
-  // Another table starts afresh, its lines at once: other titles, or another heading (a venue, a band), or the pane resized.
+  // Another table starts afresh, its lines at once: other titles, another restKey (a coin, a timeframe, a venue, a band), or the pane resized.
   assert.equal(draw(two, { rest: true }, { heads: ['', 'A', 'B', 'C'] })!.y0, 80);
-  assert.equal(draw([{ text: 'Binance', bold: true }, ...two], { rest: true })!.y0, Math.round(150 - (105 + 50) / 2));
-  assert.equal(draw(two, { rest: true, h: 310 })!.y0, Math.round(155 - (105 + 35) / 2));
+  assert.equal(draw(OI_LINES, { rest: true })!.y0, 63, 'the titles back: another table again');
+  assert.equal(draw(two, { rest: true }, { restKey: 'ETH' })!.y0, 80, 'another coin: its two lines at once');
+  // A heading alone is not another table, only a line more: three lines are more than two, so the rows wait for them to stand.
+  assert.equal(draw([{ text: 'Binance', bold: true }, ...two], { rest: true }, { restKey: 'ETH' })!.y0, 80);
+  // The pane resized, the table otherwise the same: five lines held in 300, then two in 310, at once.
+  t += 1_000; draw(five, { rest: true }, { restKey: 'ETH' }); t += REST_STAND_MS; assert.equal(draw(five, { rest: true }, { restKey: 'ETH' })!.y0, 56);
+  assert.equal(draw(two, { rest: true, h: 310 }, { restKey: 'ETH' })!.y0, Math.round(155 - (105 + 35) / 2));
   // Kept through clear() and through a frame at rest where no table could be drawn: a plate, drawn under a pointer only, stands with them.
   const narrow = new PaneTable(host, null, () => t), at = (lines: InfoLine[], over: Partial<TableRoom>) => narrow.draw(ctx, palette, room({ w: 400 + 60 + 90, h: 300, ...over }), { ...spec(), foot: 'then', focus: -1, lines });
   assert.equal(at(OI_LINES, { rest: true }), null, 'no room beside the plot and no pointer: no table');
@@ -561,6 +566,68 @@ test('nothing of a moment moves the rows, not even a column its figures make too
   drawOn(d, OI_LINES, { rest: true }); t = 3_000; drawOn(d, OI_LINES, { rest: true });
   t = 3_016; assert.equal(drawOn(d, [...OI_LINES, { label: 'Shorts closed', text: '+5 BTC' }], { rest: true }).y0, 63);
   t = 603_016; assert.equal(drawOn(d, OI_LINES, { rest: true }).y0, 63, 'four lines, not the five said for a frame');
+  // More rows come in at rest (the Liquidity Tracker's markets as they load): a room held from fewer rows that these no longer leave goes at once, and
+  // the rows stand alone in the middle (held, it kept the table at the top of its pane with nothing under it). Two rows and four lines take 129 px of
+  // 200 (from 36); eight rows take 150, and 69 more do not fit.
+  const e = fresh(); t = 0;
+  const loading = (k: number, over: Partial<TableRoom> = {}) => e.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 200, ...over }), { ...spec(k), foot: 'then', focus: -1, lines: OI_LINES })!;
+  assert.equal(loading(2, { rest: true }).y0, 36);
+  t = 1_000; assert.equal(loading(8, { rest: true }).y0, 25);
+  // While a pointer reads a moment with more rows than the room was worked out for, the room stays as held, the rows kept inside the pane.
+  const f = new PaneTable(host, null, () => t);
+  f.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 200, rest: true }), { ...spec(2), foot: 'then', focus: -1, lines: OI_LINES });
+  assert.equal(f.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 200 }), { ...spec(8), foot: 'then', focus: -1, lines: OI_LINES })!.y0, 0);
+  // A table that goes on saying nothing (a Long/Short venue reading again: no line about it any more) is held like any smaller block, then let down.
+  const g = fresh(); t = 0;
+  assert.equal(drawOn(g, OI_LINES, { rest: true }).y0, 63);
+  t = 1_000; assert.equal(drawOn(g, [], { rest: true }).y0, 63);
+  t = REST_HOLD_MS; assert.equal(drawOn(g, [], { rest: true }).y0, 63);
+  t = REST_HOLD_MS + 1; assert.equal(drawOn(g, [], { rest: true }).y0, 98);
+});
+
+test('a pane that draws no table at rest (Funding, where its table would not fit beside the plot) still sets the room its plate keeps under a pointer', () => {
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const palette = { panel: 'P', line: 'L', text: 'T', muted: 'M' }, r = room({ w: 400 + 60 + 90, h: 300 });
+  const plateOf = (table: PaneTable) => table.draw(ctx, palette, { ...r, pointing: true }, { ...spec(), foot: 'then', focus: -1, lines: OI_LINES.slice(0, 2) })!;
+  const seen = new PaneTable(host, null, () => 0);
+  seen.observe(ctx, { ...r, rest: true }, { ...spec(), foot: '', focus: -1, lines: OI_LINES });
+  assert.deepEqual([plateOf(seen).plate, plateOf(seen).y0], [true, 63], 'the four lines said at rest');
+  assert.equal(plateOf(new PaneTable(host, null, () => 0)).y0, 98, 'never observed: the rows alone');
+  const pointed = new PaneTable(host, null, () => 0);
+  pointed.observe(ctx, { ...r, rest: true, pointing: true }, { ...spec(), foot: '', focus: -1, lines: OI_LINES });
+  assert.equal(plateOf(pointed).y0, 98, 'a pointer on the pane: nothing taken');
+});
+
+test('frames at random: while anything reads a moment or a pointer is on the pane, rows of one height stand at one height, whatever the moment shows', () => {
+  let seed = 11;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647, int = (lo: number, hi: number): number => lo + Math.floor(rnd() * (hi - lo + 1));
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const palette = { panel: 'P', line: 'L', text: 'T', muted: 'M' }, heads = ['', 'Longs', 'Shorts', 'Diff'];
+  const someLines = (): InfoLine[] => Array.from({ length: int(0, 9) }, (_, j) => j > 0 && rnd() < 0.15 ? { text: 'note '.repeat(int(1, 10)).trim(), wrap: true } : { label: `Line ${j}`, text: 'v'.repeat(int(1, 12)), rule: rnd() < 0.15 });
+  let frozen = 0;
+  for (let run = 0; run < 300; run++) {
+    let t = 0;
+    const table = new PaneTable(host, null, () => t), base = { w: 400 + 60 + int(60, 260), h: int(120, 420), plotW: 400, axisW: 60 };
+    // Since the last frame at rest: where rows of each height stood.
+    let stood = new Map<number, number>();
+    for (let f = 0; f < 200; f++) {
+      t += int(1, 4_000);
+      const rest = rnd() < 0.35, pointing = rnd() < (rest ? 0.15 : 0.5);
+      // The moment's own figures (so its columns), its own number of rows and its own lines.
+      const rows = Array.from({ length: int(1, 8) }, () => cells('n'.repeat(int(2, 6)), 'x'.repeat(int(1, 6)), 'x'.repeat(int(1, 6)), 'x'.repeat(int(1, 9))));
+      const at = table.draw(ctx, palette, { ...base, pointing, rest }, { heads, minCols: 2, rows, foot: 'f', focus: -1, lines: someLines() });
+      if (rest && !pointing) { stood = new Map(); continue; }
+      if (!at) continue;
+      const before = stood.get(at.height);
+      if (before === undefined) stood.set(at.height, at.y0); else assert.equal(at.y0, before, JSON.stringify({ run, f, base, height: at.height, cols: at.cols }));
+      frozen++;
+    }
+  }
+  assert.ok(frozen > 10_000, `${frozen} frames read a moment`);
 });
 
 test('Depth\'s table and its three lines stand in the middle of its pane (Karl, 2026-11-21: they stood 25 px low in a pane 272 px high)', () => {

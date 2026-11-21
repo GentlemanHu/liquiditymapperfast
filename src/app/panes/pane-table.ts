@@ -50,6 +50,11 @@ export interface TableSpec {
    * card speaks of the total) gives 1: the columns after it are the table's own, and one that goes (the × first) leaves the table complete.
    */
   cardCols?: number;
+  /**
+   * What the table is of beyond its titles (the market, the timeframe, a venue, a band): where it changes, the room held for its lines at rest starts
+   * afresh (`PaneTable`), so that a table switched to another coin, timeframe or venue does not stand for minutes where the last one's lines left it.
+   */
+  restKey?: string;
 }
 
 /**
@@ -169,9 +174,11 @@ export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, l
  */
 export function restLift(measure: Measure, room: TableRoom, spec: PlaceSpec, rest: readonly InfoLine[]): number {
   const at = rowsIn(measure, room, spec), laid = at?.framed && rest.length ? at.under(rest) : null;
-  if (!at || !laid) return 0;
-  return Math.round(room.h / 2 - (at.height + laid.summaryH) / 2) + at.height + laid.summaryH <= room.h - 2 ? laid.summaryH : 0;
+  return at && laid && leaves(room, at.height, laid.summaryH) ? laid.summaryH : 0;
 }
+
+/** Whether rows `height` px high, centred with `lift` px under them, stand inside the pane. */
+const leaves = (room: TableRoom, height: number, lift: number): boolean => Math.round(room.h / 2 - (height + lift) / 2) + height + lift <= room.h - 2;
 
 /**
  * The rows of a table in `room` as `placeTable` places them but for their height in the pane: the row height, what of it fits, its columns and place
@@ -216,6 +223,15 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
 
 /** The heavier face of a canvas font ("11px sans" -> "600 11px sans"), for the card's bold lines. */
 const boldFont = (font: string): string => /^(?:bold|[1-9]00)\s/.test(font) ? font : `600 ${font}`;
+/** A text's width in the canvas's font (`bold`: in its heavier face), the font left as it was. */
+const measureOn = (ctx: CanvasRenderingContext2D): Measure => {
+  const base = ctx.font, heavy = boldFont(String(base));
+  return (text, bold = false) => {
+    if (!bold) return ctx.measureText(text).width;
+    ctx.font = heavy; const width = ctx.measureText(text).width; ctx.font = base;
+    return width;
+  };
+};
 /** A card line's colour in a table: the side colours as the table's figures have them (`tableInk`), the muted one, else the text colour. */
 function inkOf(color: InfoColor, p: TablePalette): string {
   const side = color === 'below' ? p.bid : color === 'above' ? p.ask : color === 'buy' ? p.candleUp : color === 'sell' ? p.candleDown : undefined;
@@ -285,10 +301,8 @@ export class PaneTable {
   #stood: { lift: number; at: number }[] = [];
   /** The room the last frame at rest asked for, since when that much has been asked for, and when it was last asked for. */
   #saying: { lift: number; since: number; last: number } | null = null;
-  /** The table those were said by (its height, its titles and its lines' heading): another starts afresh. */
+  /** The table those were said by (the pane's height, the titles, `TableSpec.restKey`): another starts afresh. */
   #restKey = '';
-  /** The heading of the last block that said something (a block of no lines names no table: it is the same one saying less for now). */
-  #restHead = '';
 
   constructor(private readonly host: TableHost, private readonly onRow: ((row: number) => void) | null = null, private readonly now: () => number = () => performance.now()) {
     if (!onRow) return;
@@ -308,12 +322,7 @@ export class PaneTable {
    * set the room its rows keep under them from then on (`#lift`).
    */
   draw(ctx: CanvasRenderingContext2D, p: TablePalette, room: TableRoom, spec: TableSpec): TablePlace | null {
-    const base = ctx.font, heavy = boldFont(String(base));
-    const measure = (text: string, bold = false): number => {
-      if (!bold) return ctx.measureText(text).width;
-      ctx.font = heavy; const width = ctx.measureText(text).width; ctx.font = base;
-      return width;
-    };
+    const measure = measureOn(ctx);
     if (room.rest === true && !room.pointing) this.#takeRest(measure, room, spec);
     const at = placeTable(measure, room, spec, this.#lift);
     this.#at = at; this.#rows = spec.rows.length;
@@ -333,6 +342,14 @@ export class PaneTable {
     return x >= at.left && x <= at.left + at.width && y >= at.first - at.rowH && y <= at.first + (this.#rows + 1) * at.rowH;
   }
 
+  /**
+   * A frame at rest where the pane draws no table, as Funding where its table would not fit beside the plot (it asks the other venues nothing then):
+   * its lines still set the room a plate keeps under its rows when a pointer brings one, as `draw` does for every other pane.
+   */
+  observe(ctx: CanvasRenderingContext2D, room: TableRoom, spec: TableSpec): void {
+    if (room.rest === true && !room.pointing) this.#takeRest(measureOn(ctx), room, spec);
+  }
+
   /** Whether a press at `x` is the table's: over a table whose rows take a click; one only read lets a drag move the time axis as over the plot. */
   takesPress(x: number, pointer: { y: number } | null): boolean { return !!this.onRow && this.owns(x, pointer); }
 
@@ -349,20 +366,22 @@ export class PaneTable {
    * A frame at rest: the room its lines ask for (`restLift`, where a pointer would put the table, so a plate too; 0 where they would not be drawn: a
    * column short, a pane too low) counts once it has stood `REST_STAND_MS` (at once where none has), and the largest that stood within `REST_HOLD_MS` is
    * the room the rows keep. What the frame before asked for stood until this frame where it had stood by then, as far as frames tell (none came between,
-   * however long: a pointer on the pane for minutes), and what is asked for again goes on standing. Another table (a pane resized, other titles,
-   * another heading: a venue, a band) starts afresh; a block of no lines keeps the heading before it (Funding says nothing for a moment as an hour
-   * turns, before that hour's row comes in: 2026-11-21 22:00Z).
+   * however long: a pointer on the pane for minutes), and what is asked for again goes on standing. A room the rows at rest no longer leave (more of
+   * them came in: the Liquidity Tracker's markets as they load) goes at once, as those lines could not be drawn under them: held, it kept a table
+   * at the top of its pane with nothing under it (2026-11-21). Another table (a pane resized, other titles, another `restKey`: a coin, a timeframe, a
+   * venue, a band) starts afresh; a block of no lines is only a smaller one (Funding says nothing for a moment as an hour turns, before that hour's row
+   * comes in: 2026-11-21 22:00Z).
    */
   #takeRest(measure: Measure, room: TableRoom, spec: TableSpec): void {
-    const lines = spec.lines ?? [], now = this.now(), head = lines[0];
-    if (head) this.#restHead = head.label ?? head.text;
-    const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${this.#restHead}`;
+    const lines = spec.lines ?? [], now = this.now(), pointed = { ...room, pointing: true };
+    const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${spec.restKey ?? ''}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; }
-    const lift = restLift(measure, { ...room, pointing: true }, spec, lines), said = this.#saying;
+    const lift = restLift(measure, pointed, spec, lines), said = this.#saying;
     if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
     this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
-    const stood = this.#stood;
-    while (stood.length && stood[0]!.at < now - REST_HOLD_MS) stood.shift();
+    // Gone: what has not stood for the hold, and a room the rows here no longer leave (a smaller one after it may: the rooms only shrink down the line).
+    const stood = this.#stood, rows = rowsIn(measure, pointed, spec);
+    while (stood.length && (stood[0]!.at < now - REST_HOLD_MS || (rows && !leaves(room, rows.height, stood[0]!.lift)))) stood.shift();
     if (!stood.length) this.#stand(lift, now);
     this.#lift = stood[0]!.lift;
   }

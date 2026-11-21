@@ -254,7 +254,7 @@ export class SizeHistoryPane extends TimePane {
     if (state.sizesTable) {
       const read = hoverIdx >= 0 ? hoverIdx : last, room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hv };
       const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} USD`;
-      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card) });
+      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}` });
       if (placed?.complete) this.#lines = null;
     }
   }

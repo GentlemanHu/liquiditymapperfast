@@ -931,7 +931,7 @@ export class DepthPane extends TimePane {
     }
     // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
     const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines) : null;
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines, `${liq ? 'liq' : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
     if (pointed && card && !placed?.complete) this.#lines = card;
   }
 
@@ -939,13 +939,14 @@ export class DepthPane extends TimePane {
    * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them, the card's
    * `lines` the rows do not say under them and the time read under those. The header reads the watched band; where even a row a band does not fit, the
    * table is not drawn and the card says it instead. Where it went, or null (complete: every column and every line, so the card is not needed).
-   * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with).
+   * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with); `restKey`: the source, the band and the
+   * market the table is of (`TableSpec.restKey`).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, sides: readonly [string, string], lines: readonly InfoLine[]): TablePlace | null {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, sides: readonly [string, string], lines: readonly InfoLine[], restKey: string): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', sides[0], sides[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
-      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p), lines,
+      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p), lines, restKey,
     });
   }
 
@@ -1385,7 +1386,7 @@ export class OiPane extends TimePane {
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
-      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines })?.complete) this.#lines = null;
+      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.oiChange}` })?.complete) this.#lines = null;
     }
     say(`${t('base')} <b>${fmtPrice(bar[4], 1)}</b> Δ <b class="${d > 0 ? 'bid' : d < 0 ? 'ask' : ''}">${sign}${fmtPrice(Math.abs(d), 1)}</b>${whoText(who?.get(bar[0]), d)}${sigma}${source}${stale ? ` <span class="ask">${t('last sample {n} min ago', { n: Math.round(age / 60_000) })}</span>` : ''}`);
   }
@@ -1636,7 +1637,7 @@ export class LtPane extends TimePane {
       const foot = `${s.estimated ? '≈ ' : ''}${state.hover ? clock(s.times[at]!, true) : `${t('newest')} ${clock(s.times[at]!)}`}`;
       // Per level is what the series was worked out with (its parts carry the weights), not the setting, which a new series may still be on its way for.
       const heads = ltHeads(parts), lines = headed(t('Total'), tableLines(over === at && this.#lines ? this.#lines : cardAt(at)));
-      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !state.hover }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines })?.complete) this.#lines = null;
+      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !state.hover }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}` })?.complete) this.#lines = null;
     }
   }
 }
