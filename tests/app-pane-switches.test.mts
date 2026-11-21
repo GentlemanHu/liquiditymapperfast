@@ -33,9 +33,11 @@ test('every pane under the map has its button in the Panels deck, Scripts aside,
     if (p.id === 'script') assert.ok(!buttons.has(key), 'Scripts has no Panels button');
     else assert.ok(buttons.has(key), `${p.id} has a Panels button`);
   }
-  // The phone's Settings shows the deck's own buttons: no second Flow history switch beside them, under any name.
+  // The phone's Settings shows the deck's own buttons and no second Flow history switch beside them: not the phone's own button it had
+  // before (sizesToggle), not the flow column's and Bar stats' switch rows (size-history/switch.ts), and the toolbar names Flow history once.
   assert.match(toolbar, /section\(t\('Panels'\), \[this\.#toggles, el\('p', /);
   assert.doesNotMatch(toolbar, /sizesToggle/);
+  assert.doesNotMatch(toolbar, /size-history\/switch|flowHistoryRows/, "the flow column's switch rows stay in their panels");
   assert.equal(toolbar.match(/t\('Flow history'\)/g)?.length, 1, "the toolbar names Flow history once: its button in PANE_TOGGLES");
   // Switched on in a phone's Settings it closes them, the page having opened the Map tab under which the pane stands (main.ts).
   assert.match(toolbar, /if \(key === 'sizes' && on && isPhone\(\)\) this\.#sheet\?\.close\(\);/);

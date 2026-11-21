@@ -107,8 +107,9 @@ const CANDLE_COLOURS_ITEM = 'candle-colours';
  * its switch is in the order book's Cues panel. Flow history has one since 2026-11-21 (Karl: found only in the flow column's and the Bar
  * stats' settings, it was hard to discover). The deck is a grid of six columns, each as wide as its widest name, so the order sets its width:
  * Flow history ends the first row, over Funding, which widened the deck by 5 px in English where beside Stats it took 16 and in the empty
- * twelfth cell 36; with the buttons' sides at 3 px (styles.css), 1,366 px in English stays one row at 0.85 (measured in Chrome: 7.5 px to
- * spare, 1.9 before it; README "Flow history"). A phone's Settings shows the same buttons.
+ * twelfth cell 36; with the buttons' sides at 3 px (styles.css; 12 px back), 1,366 px in English stays one row at 0.85 in the default frame
+ * (measured in Chrome: 7.5 px to spare, 1.9 before it; README "Flow history" names the languages whose deck ends wider). A phone's Settings
+ * shows the same buttons.
  */
 const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['sizes', t('Flow history')], ['ls', t('L/S')], ['stats', t('Stats')], ['volume', t('Volume')], ['delta', t('Delta')], ['lt', 'LT'], ['funding', t('Funding')]];
 

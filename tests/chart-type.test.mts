@@ -57,11 +57,17 @@ test('the Panels deck holds twelve switches, none for the candles or Mirror, in 
   const keys = [...line.matchAll(/\['(\w+)', /g)].map(m => m[1]);
   // Each column is as wide as its widest name, so the order sets the deck's width. Flow history ends the first row, over Funding: 5 px more
   // in English, where beside Stats it took 16 and in the empty twelfth cell 36; with the names' sides at 3 px, 1,366 px in English stays one
-  // row at 0.85 (measured in Chrome, 2026-11-21; at 4 px, or in another place, the bar broke into two rows there).
+  // row at 0.85 in the default frame (measured in Chrome, 2026-11-21; at 4 px, or in another place, the bar broke into two rows there).
   assert.deepEqual(keys, ['cvd', 'book', 'profile', 'depth', 'oi', 'sizes', 'ls', 'stats', 'volume', 'delta', 'lt', 'funding']);
   assert.match(css, /\.toolbar\.cockpit \.deck-panels \.seg\.toggles button \{ padding-left: 3px; padding-right: 3px; \}/, "the names' sides that keep 1,366 px one row");
-  // No frame's stylesheet gives the deck's buttons other sides (the rule outranks the bevel's and text-mode's button padding).
-  for (const f of ['src/app/chrome.css', 'src/app/mobile.css']) assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /\.deck-panels[^{]*\{[^}]*padding/, `${f} pads the Panels deck's buttons`);
+  // The rule (0,5,1) outranks the padding the frames give every bar button, the bevel's (chrome.css, 0,4,1) and text-mode's (styles.css,
+  // 0,3,2), as Chrome showed. Pinned here: no other rule sets the sides of a toggles segment's buttons outside the phone's Settings (comments
+  // left out; a top or bottom padding does not count).
+  const rules = (sheet: string) => [...sheet.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].flatMap(m => m[1]!.split(',').map(sel => ({ sel: sel.trim().replace(/\s+/g, ' '), body: m[2]! })));
+  const sides = /(?:^|;)\s*padding(?:-(?:left|right|inline(?:-start|-end)?))?\s*:/;
+  const toggleSides = ['src/app/styles.css', 'src/app/chrome.css', 'src/app/mobile.css'].flatMap(f => rules(fs.readFileSync(f, 'utf8'))
+    .filter(r => r.sel.includes('.toggles') && /\bbutton\b/.test(r.sel) && !r.sel.includes('.sheet') && sides.test(r.body)).map(r => `${f}: ${r.sel}`));
+  assert.deepEqual(toggleSides, ['src/app/styles.css: .toolbar.cockpit .deck-panels .seg.toggles button'], "only the 3 px rule sets the sides of the top bar's toggles");
   assert.ok(!keys.includes('candles'), 'the Chart type menu shows and hides the price');
   assert.ok(!keys.includes('mirror'), "Mirror's switch is in the order book's Cues panel");
   // A switch more or fewer changes the grid: its columns and the outlines' overlap are written for six.
