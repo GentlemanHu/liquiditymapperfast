@@ -10,6 +10,22 @@ import type { LiqFamily } from './liq-history.ts';
 import { curveOf, groupName, groupTitle, kindName, kindTitle, takesBeside, type LiqPair, type LiqView } from './liq-view.ts';
 import type { LiqSplit } from './liq-url.ts';
 import type { HeadLine } from './map-top.ts';
+import { BALANCED_RATIO, ratioText } from './mirror.ts';
+
+/**
+ * The phone Liq tab's verdict on its range (`longs` below the price, `shorts` above, `alone` for take profits alone, named as orders: bids against
+ * asks): the larger side named with how many times the other it is, and whose colour it takes (`side`, the tab's CSS class: the falling colour
+ * for longs, as the column draws them, the rising one for take profits alone); "Balanced" in the text colour where neither is 2 % larger
+ * (`BALANCED_RATIO`: the map's liquidation box weighs the same band and says "about even" there; an exact tie named longs in the falling colour
+ * until 2026-11-21); nothing where both are empty.
+ */
+export function liqRatioWords(longs: number, shorts: number, alone: boolean): { text: string; side: 'long' | 'short' | null } {
+  const big = Math.max(longs, shorts), small = Math.min(longs, shorts);
+  if (!(big > 0)) return { text: '', side: null };
+  if (small > 0 && big / small < BALANCED_RATIO) return { text: t('Balanced'), side: null };
+  const side = longs >= shorts ? 'long' : 'short';
+  return { text: `${side === 'long' ? alone ? t('bids') : t('Longs') : alone ? t('asks') : t('Shorts')} ${ratioText(small > 0 ? big / small : Infinity)}`, side };
+}
 
 /** What a side of a set of levels is called. Take profits are held with their sides swapped: the long side is the take profits of shorts. */
 export function sideTitle(kind: LevelsKind, side: 'long' | 'short'): string {

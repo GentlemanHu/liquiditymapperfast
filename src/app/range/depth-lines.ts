@@ -7,6 +7,7 @@ import type { RangeSelection } from './selection.ts';
 import type { GridItem, RangeLine } from './stats.ts';
 import { curveOf, groupTitle, takesBeside, type LiqView } from '../liq-view.ts';
 import { ordersAbsent, sideTitle } from '../liq-words.ts';
+import { levelsOrderSide } from '../order-side.ts';
 
 /** One snapshot of the tracked liquidation levels as the Depth pane holds it: when its positions stood, when it was fetched, its buckets. */
 export interface DepthLiqRow { asOf: number; fetchedAt: number; long: ArrayLike<number>; short: ArrayLike<number>; longCoin: ArrayLike<number>; shortCoin: ArrayLike<number> }
@@ -289,6 +290,9 @@ export class DepthRangeSummary {
         : t('One snapshot: positions as of {asOf}, fetched {read}.', { asOf: clock(first.asOf, true), read: clock(first.fetchedAt, true) })));
       // Take profits on alone are said as what they are: the take profits of shorts below the price, of longs above it.
       const below = kind === 'takes' ? sideTitle('takes', 'long') : null, above = kind === 'takes' ? sideTitle('takes', 'short') : null;
+      // Each side in the colour of what its orders would do (order-side.ts): the longs below sold, the shorts above bought back; take profits
+      // alone the shorts' buys below and the longs' sells above.
+      const belowTone = levelsOrderSide(kind, 'long'), aboveTone = levelsOrderSide(kind, 'short');
       const items: GridItem[] = s.bands.map((b, j) => {
         const vals = [b.firstLong, b.lastLong, b.firstShort, b.lastShort].filter((v): v is number => v !== null);
         if (!vals.length) return { key: `dp-${j}`, label: band(b.r), value: t('Not in the history\'s buckets') };
@@ -297,11 +301,11 @@ export class DepthRangeSummary {
         return {
           key: `dp-${j}`, label: band(b.r), value: '',
           rows: s.rows.length > 1 ? [
-            { label: below ?? t('Longs first → last'), value: `${v(b.firstLong)} → ${v(b.lastLong)}${b.firstLong !== null && b.lastLong !== null ? ` (${fmt(b.lastLong - b.firstLong, true)})` : ''}`, tone: 'buy' as const },
-            { label: above ?? t('Shorts first → last'), value: `${v(b.firstShort)} → ${v(b.lastShort)}${b.firstShort !== null && b.lastShort !== null ? ` (${fmt(b.lastShort - b.firstShort, true)})` : ''}`, tone: 'sell' as const },
+            { label: below ?? t('Longs first → last'), value: `${v(b.firstLong)} → ${v(b.lastLong)}${b.firstLong !== null && b.lastLong !== null ? ` (${fmt(b.lastLong - b.firstLong, true)})` : ''}`, tone: belowTone },
+            { label: above ?? t('Shorts first → last'), value: `${v(b.firstShort)} → ${v(b.lastShort)}${b.firstShort !== null && b.lastShort !== null ? ` (${fmt(b.lastShort - b.firstShort, true)})` : ''}`, tone: aboveTone },
           ] : [
-            { label: below ?? t('Longs'), value: v(b.firstLong), tone: 'buy' as const },
-            { label: above ?? t('Shorts'), value: v(b.firstShort), tone: 'sell' as const },
+            { label: below ?? t('Longs'), value: v(b.firstLong), tone: belowTone },
+            { label: above ?? t('Shorts'), value: v(b.firstShort), tone: aboveTone },
           ],
         };
       });

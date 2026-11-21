@@ -4568,7 +4568,9 @@ export class HeatPane {
     // The strip has no room for the band's pills: its box says the same.
     const wide = W >= PROFILE_W;
     dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.6);
-    paintBand(ctx, p, x0, W, { y: top, color: p.candleUp, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: p.candleDown, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
+    // In the colours of what the orders would do, as the column and its box (order-side.ts): take profits alone sell above the price, buy below.
+    const sellsAbove = set.levels?.kind === 'takes';
+    paintBand(ctx, p, x0, W, { y: top, color: sellsAbove ? p.candleDown : p.candleUp, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: sellsAbove ? p.candleUp : p.candleDown, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
     // The row under the pointer: the column's row on the snapshot's own bins (`liqCardRow`), so what stands, the snapshot's amount, its count and
     // its largest describe the same prices.
     const row = liqCardRow(at, niceStep(v.p1 - v.p0, ph / 3), set.levels?.step ?? 0), { lo, hi } = row, step = hi - lo, side = at < price ? 'long' : 'short';

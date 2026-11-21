@@ -25,7 +25,8 @@ import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, liqCardLines, liqColumnRows, liqReading, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
 import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
-import { TAKE_DASH } from '../liq-levels.ts';
+import { TAKE_DASH, type LevelsKind } from '../liq-levels.ts';
+import { depthOrderSides, levelsOrderSide, pairKey } from '../order-side.ts';
 import { curveOf, groupTitle, kindName, levelsDescription, liveDepthView, liveSplit, viewKey, type LiqView } from '../liq-view.ts';
 import { toggleLevels } from '../levels-control.ts';
 import { ordersAbsent, readFailed } from '../liq-words.ts';
@@ -788,15 +789,11 @@ export class DepthPane extends TimePane {
     const outOf = current ? bookCountOutOf(state) : 0, liveShort = liveNow && outOf > 0 && liveNow.present < outOf ? t('{n} of {total} markets', { n: liveNow.present, total: outOf }) : '';
     // The header reads the watched band at the newest moment (Liquidation levels: longs and shorts, and when those positions stood).
     if (liq) {
-      const { row, take } = liqRead(null);
-      const b = row ? liqFigure(row, 'long', top) : NaN, a = row ? liqFigure(row, 'short', top) : NaN, view = liqHeld!.view, r = sideRatio(b, a);
-      // Whose levels (the Source names which), and the take profits beside them: the sells that close longs above, the buys that close shorts below.
+      const { row, take } = liqRead(null), view = liqHeld!.view;
+      // Whose levels (the Source names which).
       const whose = view.group !== 'all' ? `${groupTitle(view.group)} · ` : '';
-      // Take profits on alone are resting orders: the buys below the price are bids, the sells above asks.
-      const alone = curveOf(view) === 'takes', names = alone ? [t('bids'), t('asks')] : [t('longs'), t('shorts')];
-      const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? names[0] : names[1]} ${ratioFigure(r.ratio)}</b>` : '';
-      const tp = take ? ` · ${t('take profits')} <b class="ask">▲${amountText(liqFigure(take, 'short', top), coins)}</b> <b class="bid">▼${amountText(liqFigure(take, 'long', top), coins)}</b>` : '';
-      setHtml(readout, row ? `${whose}±${bandText(s.radii[top]!)}% L <b class="bid">${amountText(b, coins)}</b> S <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${larger}${tp} · ${t('positions as of {time}', { time: clock(row.asOf) })}` : '');
+      setHtml(readout, row ? depthLiqReadout({ whose, band: bandText(s.radii[top]!), long: liqFigure(row, 'long', top), short: liqFigure(row, 'short', top), coins, unit, kind: curveOf(view),
+        take: take ? { long: liqFigure(take, 'long', top), short: liqFigure(take, 'short', top) } : null, asOf: clock(row.asOf) }) : '');
     } else if (liveNow || lastX >= 0) {
       const b = liveNow ? liveFigure('bid', top) : bid[at(lastX, top)]!, a = liveNow ? liveFigure('ask', top) : ask[at(lastX, top)]!;
       const total = b + a, lean = total > 0 ? (b - a) / total : 0, r = sideRatio(b, a);
@@ -821,18 +818,22 @@ export class DepthPane extends TimePane {
     this.scaleAt = y => { const f = Math.abs(y - mid) / half; return amountText((detail ? f * f : f) * max, coins); };
     const xs = new Float64Array(s.w + 1);
     for (let x = 0; x <= s.w; x++) xs[x] = v.xOf(colT(x), pw);
+    // Each side in the colour of what its orders do (order-side.ts): the book's asks above sell and its bids below buy; the liquidation levels'
+    // shorts above are bought back and their longs below sold, so they draw the other way round (as the map's liquidation column does); take
+    // profits alone as the book. Up and down stay the price's.
+    const kind = liq ? curveOf(liqHeld!.view) : null, sides = depthOrderSides(kind), upInk = p[pairKey(sides.above)], downInk = p[pairKey(sides.below)];
     // The rings, the widest first: its colour the lightest, the band at the centre the side's own colour; each is opaque, so no layer shows through another.
     const shade = (side: string, j: number): string => mixHex(p.bg, side, top === 0 ? 1 : 0.3 + 0.7 * (1 - j / top));
     for (let j = top; j >= 0; j--) {
-      ctx.fillStyle = shade(p.ask, j);
+      ctx.fillStyle = shade(upInk, j);
       for (let x = 0; x < s.w; x++) { const h = yOf(ask[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid - h, xs[x + 1]! - xs[x]! + 0.6, h); }
-      ctx.fillStyle = shade(p.bid, j);
+      ctx.fillStyle = shade(downInk, j);
       for (let x = 0; x < s.w; x++) { const h = yOf(bid[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid, xs[x + 1]! - xs[x]! + 0.6, h); }
     }
     // The widest band's edge, in a stronger ink than its fill: darker on a light theme, lighter on a dark one.
     const edge = (side: string): string => mixHex(side, p.text, 0.35);
     ctx.lineWidth = 1.25; ctx.lineJoin = 'round';
-    for (const [values, sign, colour] of [[ask, -1, edge(p.ask)], [bid, 1, edge(p.bid)]] as const) {
+    for (const [values, sign, colour] of [[ask, -1, edge(upInk)], [bid, 1, edge(downInk)]] as const) {
       ctx.strokeStyle = colour; ctx.beginPath();
       let open = false;
       for (let x = 0; x < s.w; x++) {
@@ -931,7 +932,7 @@ export class DepthPane extends TimePane {
     }
     // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
     const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(kind), sides, lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
     if (pointed && card && !placed?.complete) this.#lines = card;
   }
 
@@ -942,11 +943,11 @@ export class DepthPane extends TimePane {
    * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with); `restKey`: the source, the band and the
    * market the table is of (`TableSpec.restKey`).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, sides: readonly [string, string], lines: readonly InfoLine[], restKey: string): TablePlace | null {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, heads2: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], restKey: string): TablePlace | null {
     const { ctx, palette: p } = this;
-    const heads = ['', sides[0], sides[1], 'Δ', '×'];
+    const heads = ['', heads2[0], heads2[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
-      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p), lines, restKey,
+      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides), lines, restKey,
     });
   }
 
@@ -1019,13 +1020,43 @@ function whoText(c: NlnsCandle | undefined, d: number): string {
   return [...(d > 0 ? [...opened, ...closed] : [...closed, ...opened])].filter(([, x]) => x !== 0).map(([label, x, tone]) => ` ${label} <b class="${tone}">${coinText(x, '')}</b>`).join('');
 }
 
+/** What the Depth pane's two sides do (order-side.ts `depthOrderSides`): its rings, header, table and card all colour them by it. */
+type DepthSides = ReturnType<typeof depthOrderSides>;
+
 /**
- * The Depth pane's table (both sources): a band a row, its bids and asks (longs and shorts), bids less asks, and how many times the larger side is
- * the smaller in that side's colour (pane-table.ts `ratioCell`). A band not read has dashes.
+ * The Depth table's two column titles: the book's Bid | Ask (`kind` null), the liquidation levels' Longs | Shorts (below the price, then above), and
+ * take profits alone Bids | Asks: they are resting orders, the shorts' buys below and the longs' sells above, as the header and the card name them.
  */
-export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
-  return rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(p.bid, p) }, { text: tableText(row.ask), color: tableInk(p.ask, p) },
-    { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, p)]);
+export function depthHeads(kind: LevelsKind | null): [string, string] {
+  return kind === null ? [t('Bid'), t('Ask')] : kind === 'takes' ? [t('Bids'), t('Asks')] : [t('Longs'), t('Shorts')];
+}
+
+/**
+ * The Depth pane's table (both sources): a band a row, its two sides (bids and asks; longs below the price and shorts above), the first less the
+ * second (never coloured: longs less shorts is not buying less selling), and how many times the larger side is the smaller in that side's colour
+ * (pane-table.ts `ratioCell`). Each side's figures take the colour of what its orders do (`sides`, order-side.ts): the bids' buy colour, the
+ * longs' sell colour (a long is closed by a sell), so × points at the column of its colour. A band not read has dashes.
+ */
+export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null)): TableCell[][] {
+  // The palette `ratioCell` reads, its first side (`bid`) in the colour of the side below the price.
+  const ink = { ...p, bid: p[pairKey(sides.below)], ask: p[pairKey(sides.above)] };
+  return rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p) }, { text: tableText(row.ask), color: tableInk(ink.ask, p) },
+    { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, ink)]);
+}
+
+/**
+ * The Depth pane's header over the liquidation levels: the watched band's two sides and their difference (below the price less above, never
+ * coloured, as in the table), the larger side named with how many times the other it is, the take profits beside them, and when the positions
+ * stood. Every figure is in the colour of what its orders would do (order-side.ts): the longs below in the sell colour, the shorts above in the
+ * buy colour; take profits alone are resting orders, lettered and named as the book's (B and A, bids and asks: the shorts' buys below).
+ */
+export function depthLiqReadout(h: { whose: string; band: string; long: number; short: number; coins: boolean; unit: string; kind: LevelsKind; take: { long: number; short: number } | null; asOf: string }): string {
+  const sides = depthOrderSides(h.kind), below = pairKey(sides.below), above = pairKey(sides.above), r = sideRatio(h.long, h.short);
+  const alone = h.kind === 'takes', names = alone ? [t('bids'), t('asks')] : [t('longs'), t('shorts')], letters = alone ? ['B', 'A'] : ['L', 'S'];
+  const larger = r?.lead ? ` <b class="${r.lead > 0 ? below : above}">${r.lead > 0 ? names[0] : names[1]} ${ratioFigure(r.ratio)}</b>` : '';
+  // The take profits beside the levels: the sells that close longs above the price, the buys that close shorts below.
+  const tp = h.take ? ` · ${t('take profits')} <b class="${pairKey(levelsOrderSide('takes', 'short'))}">▲${amountText(h.take.short, h.coins)}</b> <b class="${pairKey(levelsOrderSide('takes', 'long'))}">▼${amountText(h.take.long, h.coins)}</b>` : '';
+  return `${h.whose}±${h.band}% ${letters[0]} <b class="${below}">${amountText(h.long, h.coins)}</b> ${letters[1]} <b class="${above}">${amountText(h.short, h.coins)}</b> Δ <b>${h.coins ? tableSigned(h.long - h.short) : signedText(h.long - h.short)}</b>${h.unit}${larger}${tp} · ${t('positions as of {time}', { time: h.asOf })}`;
 }
 
 /** The OI pane's table: a venue a row, its open interest in coins, its change over the candle read and its share of those read then. */
