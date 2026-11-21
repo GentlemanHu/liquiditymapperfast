@@ -13,7 +13,7 @@ import { resolveZone } from '../traded/settings.ts';
 import { AXIS_W, leftGutter } from './heat-pane.ts';
 import { TimePane, bookNames, setHtml, tableSigned, tableText } from './lower-panes.ts';
 import { FlowCache, candleFlow, candleStarts, deltaCandles, resetKeys, type CandleFlow, type DeltaCandle, type DeltaTrack } from '../delta/candles.ts';
-import { PaneTable, ratioCell, tableInk, tableRowCap, type TableCell } from './pane-table.ts';
+import { PaneTable, headed, ratioCell, tableInk, tableLines, tableRowCap, type TableCell } from './pane-table.ts';
 import { el } from '../dom.ts';
 import type { Palette } from '../theme.ts';
 import { deltaFlows, deltaIds, ensureDeltaFlow } from '../delta/flows.ts';
@@ -52,10 +52,10 @@ export function deltaHeldKey(state: AppState, ids: readonly string[]): string {
 
 const signed = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 
-/** The popup for one candle of the pane: its time, its delta and the CVD it closed at. */
+/** The popup for one candle of the pane: its time (the table's foot says it), its delta and the CVD it closed at. */
 export function deltaCardLines(c: DeltaCandle, tf: string): InfoLine[] {
   return [
-    { text: `${clock(c.t, true)} · ${tf}`, bold: true },
+    { text: `${clock(c.t, true)} · ${tf}`, bold: true, table: false },
     { label: t('Delta'), text: signed(c.delta), color: c.delta > 0 ? 'buy' : c.delta < 0 ? 'sell' : 'text', bold: true },
     { label: t('CVD at the close'), text: signed(c.close), color: c.close > 0 ? 'buy' : c.close < 0 ? 'sell' : 'text' },
     { label: t('CVD high and low'), text: `${signed(c.high)} / ${signed(c.low)}`, color: 'muted' },
@@ -370,11 +370,12 @@ export class DeltaPane extends TimePane {
     if (hover && this.pointer) this.#lines = deltaCardLines(shown, state.timeframe);
     const since = earliest !== null && earliest > v.t0 ? ` <span class="muted">${t('flow recorded since {time}', { time: clock(earliest, true) })}</span>` : '';
     setHtml(readout, `Δ <b class="${shown.delta > 0 ? 'bid' : shown.delta < 0 ? 'ask' : ''}">${signed(shown.delta)}</b> ${t('CVD')} <b class="${shown.close > 0 ? 'bid' : shown.close < 0 ? 'ask' : ''}">${signed(shown.close)}</b>${since}`);
-    // Each market's part of the candle read (the readout's): a table drawn takes the popup's place, as on every pane with one (the readout has the CVD).
+    // Each market's part of the candle read (the readout's), and under them the card's lines (the candle's delta and CVD): a table that holds all of
+    // it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
     if (state.deltaTable && ids.length > 1) {
       const rows = this.#tableRows(state, ids, shown.t, tf, now, visible, ph);
-      const foot = `${hover ? clock(shown.t, true) : `${t('newest')} ${clock(shown.t)}`} USD`;
-      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, focus: -1, foot, rows: deltaTableRows(rows, p) })) this.#lines = null;
+      const foot = `${hover ? clock(shown.t, true) : `${t('newest')} ${clock(shown.t)}`} · ${state.timeframe} · USD`, lines = headed(t('Total'), tableLines(this.#lines ?? deltaCardLines(shown, state.timeframe)));
+      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 1, focus: -1, foot, rows: deltaTableRows(rows, p), lines })?.complete) this.#lines = null;
     }
   }
 

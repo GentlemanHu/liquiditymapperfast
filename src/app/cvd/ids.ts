@@ -1,7 +1,10 @@
 import type { AppState } from '../store.ts';
 import type { LevelsFrame } from '../wire.ts';
-import { inScope } from '../scope.ts';
+import type { FlowBook } from '../flow-book.ts';
+import { MAX_PROFILE_INSTRUMENTS } from '../../shared/footprint.ts';
+import { inScope, type Kind } from '../scope.ts';
 import { familyKey, venueOfInstrument } from './families.ts';
+import { aggregateIds } from './model.ts';
 import { venueLabel } from '../venues.ts';
 
 /**
@@ -80,6 +83,16 @@ export function flowIds(state: Pick<AppState, 'markets' | 'disabledVenues' | 'sc
 export const oiFlowIds = (state: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'> & MapState, withFlow: readonly string[]): string[] =>
   flowIds({ ...state, scope: 'all' }, withFlow);
 
+/**
+ * The markets whose liquidations the Flow history and the Bar stats count while the footprint adds up every venue (its Aggregated markets):
+ * the perpetuals of the ALL VENUES lines whatever the Spot / Perp filter says, as open interest counts them (`oiFlowIds`). Spot markets have
+ * no liquidations, and a Spot filter left on emptied both panes' liquidations and the Flow history's open interest (Karl, 2026-11-21: "OI
+ * and liquidations don't show up"). One list for both panes: they share one liquidation loader, which starts again whenever its markets
+ * change. Only markets the market list calls perpetual count, as under the Perp filter: one it does not classify (before the list loads, or
+ * another coin's still in the flow book) would take its exchange's lane ahead of the real perpetual.
+ */
+export const liquidationIds = (state: Pick<AppState, 'markets' | 'disabledVenues' | 'scope'> & MapState, flow: FlowBook, kindOf: (id: string) => Kind | null): string[] =>
+  aggregateIds(flow, oiFlowIds(state, flow.ids).filter(id => kindOf(id) === 'perp'), kindOf).sort().slice(0, MAX_PROFILE_INSTRUMENTS);
 /**
  * Every instrument whose flow the page asks the server for: all the markets it knows, not only the ones the filter and the chips let
  * through. What is on screen is chosen from this later; asking for all of it is what lets the column say which exchanges it is leaving

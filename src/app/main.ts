@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   toolbar.placeRecenter(heat.root);
   // The tour's moving picture of the right-button drag moves this chart (tour/demo.ts), and puts its view back when its step is left.
   setTourDemo({ plotRect: () => heat.plotRect(), zoom: (press, at) => heat.demoZoom(press, at), end: () => heat.endDemo() });
-  // Liquidations by UTC day of the markets the footprint counts: one loader for the Bar stats and the Flow history (liq-days.ts).
+  // Liquidations by UTC day of the perpetuals the Bar stats and the Flow history count (`liquidationMarkets`): one loader for both (liq-days.ts).
   const liqDays = new LiquidationDays(hub);
   const bars = new BarStatsPane(chart, store, heat.view, heat, hub, liqDays);
   // Flow history: liquidations, open interest's change and market orders by size per candle, the unusual ones standing out (Karl, 2026-11-20).
@@ -725,7 +725,7 @@ async function main(): Promise<void> {
     const shape = `${state.barStats.join(',')}|${state.barStatOptions.grouped}|${state.barStatOptions.folded.join(',')}`;
     if (shape !== tableShape) { tableShape = shape; arrange.setPaneHeight('bars', tableHeight(state.barStats, state.barStatOptions)); }
     if (changed.has('barStatOptions') || changed.has('footprint') || changed.has('barStats')) bars.refresh();
-    if (changed.has('sizeBars') || changed.has('footprint')) sizes.settingsChanged();
+    if (changed.has('sizeBars') || changed.has('sizesTable') || changed.has('footprint')) sizes.settingsChanged();
     if (changed.has('grouping') || changed.has('ladderMode') || changed.has('ladderShow') || changed.has('ladderCurves') || changed.has('cvd') || changed.has('pullStack') || changed.has('ladderVenue') || changed.has('ladderVenues') || changed.has('disabledVenues') || changed.has('scope')) { ladder.invalidate(); ladder.syncControls(); }
     if (changed.has('range')) { heat.invalidate(); oi.invalidate(); depth.invalidate(); lt.invalidate(); bars.invalidate(); script.invalidate(); cvd.invalidate(); }
     if (changed.has('hover')) { heat.invalidateHover(); oi.invalidate(); delta.invalidate(); ls.invalidate(); funding.invalidate(); depth.invalidate(); lt.invalidate(); bars.invalidate(); sizes.invalidate(); script.invalidate(); cvd.syncHover(); }

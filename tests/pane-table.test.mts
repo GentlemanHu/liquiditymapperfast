@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PaneTable, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
+import { PaneTable, headed, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
 import { fundingAt, type FundingNow, type FundingRow } from '../src/app/funding.ts';
-import { fundingTableRows } from '../src/app/panes/funding-pane.ts';
-import { lsTableRows } from '../src/app/panes/ls-pane.ts';
+import { fundingAllCardLines, fundingAllNow, fundingCardLines, fundingTableRows } from '../src/app/panes/funding-pane.ts';
+import { lsCardLines, lsTableRows } from '../src/app/panes/ls-pane.ts';
 import { bookNames, depthTableRows, ltHeads, ltRank, ltRowsAt, ltTableRows, oiTableRows } from '../src/app/panes/lower-panes.ts';
 import type { LtParts } from '../src/app/lt.ts';
-import { deltaRow, deltaTableRows } from '../src/app/panes/delta-pane.ts';
+import { deltaCardLines, deltaRow, deltaTableRows } from '../src/app/panes/delta-pane.ts';
+import { depthCardLines, liqCardLines, ltCardLines, oiCardLines } from '../src/app/panes/pane-cards.ts';
+import { nlnsWhoLines, type NlnsCandle } from '../src/app/delta/nlns.ts';
+import type { HourOpens } from '../src/app/delta/nlns-source.ts';
+import type { InfoLine } from '../src/app/infobox.ts';
 import { tableRowCap } from '../src/app/panes/pane-table.ts';
 import { foldCount } from '../src/app/pane-tune.ts';
 import type { Market } from '../src/app/store.ts';
@@ -57,7 +61,7 @@ test('painting: a lit row, a row under the pointer, the colours, the foot, and o
   const ctx = { fillStyle: '', strokeStyle: '', globalAlpha: 1, textAlign: 'left', fillText: (s: string, x: number, y: number) => calls.push(['text', s, x, y, ctx.fillStyle, ctx.textAlign]), fillRect: (x: number, y: number, w: number, h: number) => calls.push(['rect', x, y, w, h, ctx.globalAlpha]), strokeRect: () => calls.push(['stroke']) };
   const rows: TableCell[][] = [[{ text: 'A' }, { text: '1', color: 'green' }, { text: '2' }], [{ text: 'B' }, { text: '3', color: 'green' }, { text: '4' }]];
   const s: TableSpec = { heads: ['', 'H1', 'H2'], rows, foot: 'then', minCols: 2, focus: 0 };
-  const at = { rowH: 15, titles: true, foot: true, cols: 2, left: 10, plate: false, width: 50, y0: 20, first: 35, rights: [20, 40] };
+  const at = { rowH: 15, titles: true, foot: true, cols: 2, left: 10, plate: false, width: 50, y0: 20, first: 35, rights: [20, 40], height: 60, summary: [], summaryW: 50, summaryH: 0, complete: false };
   paintTable(ctx as unknown as CanvasRenderingContext2D, { panel: 'P', line: 'L', text: 'T', muted: 'M' }, at, s, 1);
   assert.deepEqual(calls, [
     ['text', 'H1', 40, 27.5, 'M', 'right'],
@@ -70,7 +74,7 @@ test('painting: a lit row, a row under the pointer, the colours, the foot, and o
     ['text', 'then', 15, 72.5, 'M', 'left'],
   ]);
   calls.length = 0;
-  paintTable(ctx as unknown as CanvasRenderingContext2D, { panel: 'P', line: 'L', text: 'T', muted: 'M' }, { ...at, plate: true, titles: false, foot: false, cols: 3, rights: [20, 40, 60] }, { ...s, focus: -1 }, -1);
+  paintTable(ctx as unknown as CanvasRenderingContext2D, { panel: 'P', line: 'L', text: 'T', muted: 'M' }, { ...at, plate: true, titles: false, foot: false, cols: 3, rights: [20, 40, 60], height: 30 }, { ...s, focus: -1 }, -1);
   assert.deepEqual(calls.slice(0, 3).map(c => c[0]), ['rect', 'stroke', 'text'], 'on a plate, drawn before its rows');
   assert.ok(calls.some(c => c[1] === '2'), 'with every column');
   assert.ok(!calls.some(c => c[1] === 'H2' || c[1] === 'then'), 'no titles and no foot where they do not fit');
@@ -109,9 +113,9 @@ test('the pointer over a table: a row lit and chosen by a click or a tap, the cl
 
 test('the tables are on by default, for a save or a layout from before them, and stay off once switched off', () => {
   const on = readSettings({});
-  assert.deepEqual([on.fundingTable, on.oiTable, on.lsTable, on.ltTable, on.deltaTable], [true, true, true, true, true]);
-  const off = readSettings({ fundingTable: false, oiTable: false, lsTable: false, ltTable: false, deltaTable: false });
-  assert.deepEqual([off.fundingTable, off.oiTable, off.lsTable, off.ltTable, off.deltaTable], [false, false, false, false, false]);
+  assert.deepEqual([on.fundingTable, on.oiTable, on.lsTable, on.ltTable, on.deltaTable, on.sizesTable], [true, true, true, true, true, true]);
+  const off = readSettings({ fundingTable: false, oiTable: false, lsTable: false, ltTable: false, deltaTable: false, sizesTable: false });
+  assert.deepEqual([off.fundingTable, off.oiTable, off.lsTable, off.ltTable, off.deltaTable, off.sizesTable], [false, false, false, false, false, false]);
 });
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 6, 0), MIN = 60_000;
@@ -335,4 +339,268 @@ test('the × column is the first to go beside the plot in the Liquidity Tracker 
   const less = placeTable(measure, room({ w: 400 + 60 + full.width - 10 }), { heads, rows: lt, minCols: 3 })!;
   assert.deepEqual([full.cols, less.cols], [6, 5], 'Share stays, × goes');
   assert.equal(deltaTableRows([deltaRow('A', 1, 3, 3)], PALETTE)[0]!.length, 6);
+});
+
+/** The placement before the card's lines came under the rows (2026-11-18), for tables without them: where they go must not move. */
+function placedBefore(measure: (text: string) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'cardCols'>) {
+  const GAP = 7, PAD = 5, k = spec.rows.length, n = spec.heads.length;
+  let rowH = 0, titles = true, foot = true;
+  fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
+    for (const h of [15, 14, 13, 12]) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
+  }
+  if (!rowH) return null;
+  const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? ''))));
+  const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
+  const free = room.w - room.axisW - room.plotW;
+  let cols = n, left = room.plotW + 4, plate = false;
+  while (cols >= spec.minCols && width(cols) > free - 4) cols--;
+  if (cols < spec.minCols) {
+    left = 6; plate = true;
+    if (!room.pointing) return null;
+    const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
+    for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
+    if (width(cols) > room.plotW * 0.6) return null;
+  }
+  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
+  const rights: number[] = [];
+  for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
+  // Complete: with its titles, its foot and the columns the card needs (all of them unless the table says fewer).
+  return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0, complete: titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n)) };
+}
+
+/** What of a placed table the card's lines must never move: the rows, their columns, their place and their height. */
+const rowsBlock = (at: ReturnType<typeof placeTable>) => at && { rowH: at.rowH, titles: at.titles, foot: at.foot, cols: at.cols, left: at.left, plate: at.plate, width: at.width, y0: at.y0, first: at.first, rights: at.rights, height: at.height };
+
+test('the rows go exactly where they went before the card\'s lines, with lines or without; complete only with titles, foot, the card\'s columns and every line', () => {
+  let seed = 7;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647, int = (lo: number, hi: number): number => lo + Math.floor(rnd() * (hi - lo + 1));
+  const words = ['Open interest', 'Δ', 'Candle before', 'Rank in view', 'Unusual', 'New longs', 'Shorts closed', 'Buy share', 'Its baseline'];
+  for (let i = 0; i < 20_000; i++) {
+    const n = int(2, 6), k = int(1, 9), minCols = int(2, n), plateMin = rnd() < 0.5 ? undefined : int(-1, n + 2), cardCols = rnd() < 0.5 ? undefined : int(0, n + 1);
+    const heads = Array.from({ length: n }, (_, c) => c ? 'H'.repeat(int(1, 6)) : '');
+    const rows = Array.from({ length: k }, () => Array.from({ length: n }, () => ({ text: 'x'.repeat(int(1, 9)) })));
+    const lines: InfoLine[] = Array.from({ length: int(0, 7) }, (_, j) => rnd() < 0.2 ? { text: 'note '.repeat(int(1, 12)).trim(), wrap: true, ...(rnd() < 0.3 ? { label: words[j % words.length]! } : {}) } : { label: words[int(0, words.length - 1)]!, text: 'v'.repeat(int(1, 14)), bold: rnd() < 0.3, rule: rnd() < 0.2 });
+    const r: TableRoom = { w: int(150, 1200), h: int(20, 400), plotW: int(80, 800), axisW: 60, pointing: rnd() < 0.5 };
+    const s = { heads, rows, minCols, ...(plateMin === undefined ? {} : { plateMin }), ...(cardCols === undefined ? {} : { cardCols }) };
+    const before = placedBefore(measure, r, s), bare = placeTable(measure, r, s), got = placeTable(measure, r, { ...s, lines });
+    const tag = JSON.stringify({ r, n, k, minCols, plateMin, cardCols, lines: lines.length });
+    assert.deepEqual(bare, before, tag);
+    assert.deepEqual(rowsBlock(got), rowsBlock(before), tag);
+    if (!got) continue;
+    if (!got.complete) { assert.equal(got.summary.length, 0, tag); continue; }
+    assert.ok(got.titles && got.foot, tag);
+    if (lines.length) {
+      assert.ok(got.summary.length > 0 && got.y0 + got.height + got.summaryH <= r.h - 2, tag);
+      assert.ok(got.summaryW >= got.width && got.summaryW <= (got.plate ? r.plotW * 0.6 : r.w - r.axisW - r.plotW - 4), tag);
+      assert.ok(got.summary.every(row => (row.label !== undefined ? measure(row.label) + (row.text ? 14 + measure(row.text) : 0) : measure(row.text)) <= got.summaryW - 10), tag);
+    }
+  }
+});
+
+/** Some of an Open Interest card's lines, as a table gets them: figures with labels, a plain status line and the first of a group with its hairline. */
+const OI_LINES: InfoLine[] = [{ label: 'Open interest', text: '182,507', bold: true }, { label: 'Δ', text: '−431', color: 'above', bold: true }, { text: '4 of 6 venues', color: 'muted' }, { label: 'New longs', text: '+239 BTC', color: 'buy', rule: true }];
+
+test('the card\'s lines hang under the foot where the pane has room below the rows, and only then is the table complete', () => {
+  // Five rows, the titles and the foot at 15 px (105) in the middle of 300 (from 98); under them the hairline (5), four lines and the card's own hairline (4): 69, to 272.
+  const whole = placeTable(measure, room({ w: 400 + 60 + 130, h: 300 }), { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([whole.cols, whole.plate, whole.complete, whole.summary.map(r => r.label ?? r.text)], [4, false, true, ['Open interest', 'Δ', '4 of 6 venues', 'New longs']]);
+  assert.deepEqual([whole.y0, whole.height, whole.summaryH], [98, 105, 69]);
+  assert.deepEqual(rowsBlock(whole), rowsBlock(placeTable(measure, room({ w: 400 + 60 + 130, h: 300 }), spec())), 'the rows where they are without lines');
+  // The rows stay in the middle, so the lines need the room under them: 140 has 15 px rows from 18 to 123 and no room for 69 more.
+  for (const h of [120, 140, 200]) {
+    const short = placeTable(measure, room({ w: 400 + 60 + 130, h }), { ...spec(), lines: OI_LINES })!;
+    assert.deepEqual([short.cols, short.complete, short.summary.length, short.rowH, short.titles, short.foot], [4, false, 0, 15, true, true], `h ${h}`);
+  }
+  // From 247 the 174 px of rows and lines fit with the rows in the middle (from 71 to 176, the lines to 245).
+  assert.deepEqual([246, 247].map(h => placeTable(measure, room({ w: 400 + 60 + 130, h }), { ...spec(), lines: OI_LINES })!.complete), [false, true]);
+  // A column left out is not complete, lines or none; every column with its titles and foot and no lines is.
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 110, h: 300 }), { ...spec(), lines: OI_LINES })!.complete, false);
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 110 }), spec())!.complete, false);
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 130 }), { ...spec(), lines: [] })!.complete, true);
+  // A pane too short for the titles, or for the foot that says the moment read, is never complete: the card says what they would.
+  const bare = (h: number) => { const at = placeTable(measure, room({ w: 400 + 60 + 130, h }), spec())!; return [at.titles, at.foot, at.complete]; };
+  assert.deepEqual([bare(109), bare(87), bare(64)], [[true, true, true], [false, true, false], [false, false, false]]);
+});
+
+test('the rows never move for the card\'s lines: two moments with more lines and fewer, or none, put them in the same place', () => {
+  // Funding on Hyperliquid: an old hour says three lines, the newest (the pointer gone onto the table) six. The rows a click chooses stay put.
+  const three: InfoLine[] = [{ text: 'Hyperliquid', bold: true }, { label: 'Each settlement', text: '+0.00041% / 1 h' }, { label: 'Settled at', text: 'Nov 21 09:00', color: 'muted' }];
+  const six: InfoLine[] = [...three, { label: 'Buyers opened', text: '61%', bold: true, rule: true }, { label: 'New longs', text: '+12 BTC' }, { label: 'New shorts', text: '+7 BTC' }];
+  for (const h of [260, 360, 520]) {
+    const at = (lines: InfoLine[]) => placeTable(measure, room({ w: 400 + 60 + 200, h }), { ...spec(6), lines });
+    assert.deepEqual(rowsBlock(at(three)), rowsBlock(at(six)), `h ${h}`);
+    assert.deepEqual(rowsBlock(at(six)), rowsBlock(at([])), `h ${h}`);
+  }
+  // The lines are never the table's for the pointer: it reads the time there, so drawing them or not changes nothing it owns.
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const table = new PaneTable({ canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined });
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const palette = { panel: 'P', line: 'L', text: 'T', muted: 'M' }, r = room({ w: 400 + 60 + 200, h: 520 });
+  const withLines = table.draw(ctx, palette, r, { ...spec(6), foot: 'then', focus: -1, lines: six })!;
+  const underFoot = withLines.y0 + withLines.height + 20, overRow = withLines.first + 2;
+  assert.ok(withLines.complete && withLines.summaryH > 20);
+  const owned = [table.owns(withLines.left + 3, { y: underFoot }), table.owns(withLines.left + 3, { y: overRow })];
+  table.draw(ctx, palette, r, { ...spec(6), foot: 'then', focus: -1, lines: [] });
+  assert.deepEqual([...owned, table.owns(withLines.left + 3, { y: underFoot }), table.owns(withLines.left + 3, { y: overRow })], [false, true, false, true]);
+});
+
+test('the card\'s lines may be wider than the rows: the columns keep their places and the lines\' values end at their own edge; a sentence wraps', () => {
+  // 'Minute by minute for' 100 + two gaps 14 + '3 of 4 venues' 65 = 179: wider than the columns' 126 less the pads.
+  const wide = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...spec(), lines: [{ label: 'Minute by minute for', text: '3 of 4 venues' }] })!;
+  assert.deepEqual([wide.width, wide.summaryW, wide.complete], [126, 189, true]);
+  assert.deepEqual(wide.rights, [429, 461, 498, 525], 'where they are without lines');
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 180, h: 300 }), { ...spec(), lines: [{ label: 'Minute by minute for', text: '3 of 4 venues' }] })!.complete, false, 'lines wider than the strip: the rows alone');
+  const note = 'Where a market flow is not recorded the way the price went decides.';
+  const wrapped = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...spec(), lines: [{ text: note, color: 'muted', wrap: true }] })!;
+  assert.equal(wrapped.summaryW, 126, 'a sentence does not widen the table');
+  assert.ok(wrapped.summary.length >= 3 && wrapped.summary.every(r => measure(r.text) <= 126 - 10), 'it wraps to the width inside the pads');
+  assert.equal(wrapped.summary.map(r => r.text).join(' '), note);
+  // A wrapped line's label stands on a row of its own: wider than the columns, it widens the lines.
+  const label = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...spec(), lines: [{ label: 'A label wider than the columns', text: note, wrap: true }] })!;
+  assert.equal(label.summaryW, 30 * 5 + 10);
+});
+
+test('on a plate the card\'s lines hang under the rows where 60 % of the plot and the pane leave room, and there is no plate without a pointer', () => {
+  const plate = placeTable(measure, room({ w: 400 + 60 + 90, h: 300, pointing: true }), { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([plate.plate, plate.left, plate.complete, plate.summary.length], [true, 6, true, 4]);
+  const rows = placeTable(measure, room({ w: 400 + 60 + 90, h: 120, pointing: true }), { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([rows.plate, rows.cols, rows.complete, rows.summary.length], [true, 4, false, 0], 'too short for the lines: the rows alone, and the card is needed');
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 90, h: 300 }), { ...spec(), lines: OI_LINES }), null, 'no pointer: nothing over the chart');
+  // The rows beside the plot stay there when the pointer comes: the table never jumps to a plate for its lines.
+  const beside = placeTable(measure, room({ w: 400 + 60 + 110, h: 300, pointing: true }), { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([beside.plate, beside.cols, beside.complete], [false, 3, false]);
+});
+
+test('a table whose card speaks of the total (cardCols 1) is complete without its own last columns, never below minCols', () => {
+  // The lines need 124 (see above); four columns 126, three 99. A strip of 128 holds three columns, and the lines under them.
+  const strip = room({ w: 400 + 60 + 128, h: 300 });
+  const three = placeTable(measure, strip, { ...spec(), lines: OI_LINES, cardCols: 1 })!;
+  assert.deepEqual([three.cols, three.complete, three.summary.length, three.width, three.summaryW], [3, true, 4, 99, 124], 'the × first: the card has nothing in it');
+  const partial = placeTable(measure, strip, { ...spec(), lines: OI_LINES })!;
+  assert.deepEqual([partial.cols, partial.complete, partial.summary.length], [3, false, 0], 'by default every column says something of the card');
+  assert.equal(placeTable(measure, strip, { ...spec(5, 4), lines: OI_LINES, cardCols: 1 }), null, 'minCols 4 holds: no table of three, and no plate without a pointer');
+  const rowsOnly = placeTable(measure, room({ w: 400 + 60 + 110 }), { ...spec(), cardCols: 1 })!;
+  assert.deepEqual([rowsOnly.cols, rowsOnly.complete], [3, true], 'no lines: the columns it keeps are enough');
+});
+
+test('a card\'s lines in a table: those it leaves out are gone, venue marks and pieces too, and a heading stands only over lines', () => {
+  const card: InfoLine[] = [{ text: 'Title', bold: true, table: false }, { label: 'OKX', text: 'could not be read', mark: 'okx', color: 'muted' }, { text: 'A B', runs: [{ text: 'A' }, { text: ' B' }] }, { text: 'help', wrap: true, table: false }];
+  assert.deepEqual(tableLines(card), [{ label: 'OKX', text: 'could not be read', color: 'muted' }, { text: 'A B' }]);
+  assert.equal(card[1]!.mark, 'okx', 'the card keeps its own');
+  assert.deepEqual(tableLines(null), []);
+  assert.deepEqual(headed('Total', []), []);
+  assert.deepEqual(headed('Total', [{ label: 'Δ', text: '+1' }]), [{ text: 'Total', bold: true }, { label: 'Δ', text: '+1' }]);
+});
+
+test('painting the card\'s lines: the foot under the rows where it always was, a hairline, labels muted at the left, values at the lines\' edge in their colours, bold in the heavier face', () => {
+  const calls: (string | number)[][] = [];
+  const ctx = {
+    font: '11px sans', fillStyle: '', strokeStyle: '', globalAlpha: 1, textAlign: 'left',
+    fillText: (s: string, x: number, y: number) => calls.push(['text', s, x, y, ctx.fillStyle, ctx.textAlign, ctx.font]),
+    fillRect: (x: number, y: number, w: number, h: number) => calls.push(['rect', x, y, w, h]), strokeRect: () => undefined, beginPath: () => calls.push(['path']), moveTo: (x: number, y: number) => calls.push(['move', x, y]), lineTo: () => undefined, stroke: () => undefined,
+  };
+  const p = { panel: '#ffffff', line: '#cccccc', text: '#000000', muted: '#888888', bid: '#00ff00', ask: '#ff0000', candleUp: '#00aa00', candleDown: '#aa0000' };
+  const s: TableSpec = { heads: ['', 'A'], rows: [[{ text: 'X' }, { text: '1' }]], foot: 'then', minCols: 2, focus: -1, lines: OI_LINES };
+  const at = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), s)!;
+  paintTable(ctx as unknown as CanvasRenderingContext2D, p, at, s, -1);
+  const text = (word: string) => calls.find(c => c[0] === 'text' && c[1] === word)!, right = at.left + at.summaryW - 5;
+  assert.deepEqual(calls.filter(c => c[0] === 'text').map(c => c[1]), ['A', 'X', '1', 'then', 'Open interest', '182,507', 'Δ', '−431', '4 of 6 venues', 'New longs', '+239 BTC']);
+  assert.equal(text('then')[3], at.first + at.rowH + at.rowH / 2, 'the foot right under the rows, where it is without lines');
+  assert.deepEqual(text('Δ').slice(2, 7).filter((_, i) => i !== 1), [at.left + 5, p.muted, 'left', '11px sans'], 'a label: muted, at the left');
+  assert.deepEqual(text('−431').slice(2, 7).filter((_, i) => i !== 1), [right, tableInk(p.ask, p), 'right', '600 11px sans'], 'its value: at the lines\' right edge, the side\'s ink, bold');
+  assert.deepEqual(text('+239 BTC').slice(4, 7), [tableInk(p.candleUp, p), 'right', '11px sans'], 'the buyers\' colour, not bold');
+  assert.deepEqual(text('4 of 6 venues').slice(2, 7).filter((_, i) => i !== 1), [at.left + 5, p.muted, 'left', '11px sans'], 'a plain line at the left');
+  assert.equal(calls.filter(c => c[0] === 'path').length, 2, 'the hairline over the lines and the card\'s own before New longs');
+  assert.equal(ctx.font, '11px sans', 'the font is the pane\'s again');
+  const last = text('+239 BTC')[3] as number;
+  assert.ok((text('Open interest')[3] as number) > at.y0 + at.height && last <= at.y0 + at.height + at.summaryH, 'the lines under the foot, inside their height');
+  // On a plate, the plate goes under the lines too.
+  calls.length = 0;
+  const plate = placeTable(measure, room({ w: 400 + 60 + 20, h: 300, pointing: true }), s)!;
+  paintTable(ctx as unknown as CanvasRenderingContext2D, p, plate, s, -1);
+  assert.deepEqual(calls[0], ['rect', plate.left, plate.y0 - 2, Math.max(plate.width, plate.summaryW), plate.height + plate.summaryH + 4]);
+});
+
+const CANDLE = { longOpened: 239, shortOpened: 484, longClosed: 628, shortClosed: 527, unassigned: 0, unknown: 0, fine: 4, counted: 4, byPrice: false } as NlnsCandle;
+
+test('each pane\'s card gives its table what the rows do not say, and nothing its rows, its foot, its header or its help say', () => {
+  const said = (lines: InfoLine[]): string[] => tableLines(lines).map(line => line.label ?? line.text);
+  // Open Interest: its level, change, the change before, rank, how unusual, how many venues; who made it, before the card's closing words.
+  const oi = oiCardLines({ time: 0, level: 182_507, change: -431, before: 97, rank: 103, of: 194, sigma: 2.3, source: '4 of 6 venues', staleMin: 6 });
+  oi.splice(oi.length - 1, 0, ...nlnsWhoLines(CANDLE, 'BTC'));
+  assert.deepEqual(said(oi), ['Open interest', 'Δ', 'Candle before', 'Rank in view', 'Unusual', '4 of 6 venues', 'last sample 6 min ago', 'New longs', 'New shorts', 'Longs closed', 'Shorts closed']);
+  // How a candle was read where it was not the usual way: some venues not minute by minute, a side decided by the price.
+  const odd = said(nlnsWhoLines({ ...CANDLE, fine: 3, unassigned: 2, byPrice: true }, 'BTC'));
+  assert.ok(odd.includes('Takers even') && odd.some(x => /3 of 4 venues/.test(x)) && odd.some(x => /the price went decides/.test(x)), odd.join(' | '));
+  // The Liquidity Tracker: the total, its balance and how it was weighed.
+  assert.deepEqual(said(ltCardLines({ time: 0, bid: 8e6, ask: 12e6, halfLifeBp: 25, venues: 7 })), ['Bid', 'Ask', 'Δ', 'Imbalance', 'Ratio', 'Half-life', 'Venues']);
+  // Delta: the candle's delta and its CVD.
+  assert.deepEqual(said(deltaCardLines({ t: 0, delta: -1.5e6, open: 2e6, high: 2.2e6, low: 4e5, close: 5e5, run: 0 }, '1h')), ['Delta', 'CVD at the close', 'CVD high and low']);
+  // Depth: the watched band's balance and rank (its figures, difference and ratio are its row).
+  assert.deepEqual(said(depthCardLines({ time: 0, bands: [{ r: 0.01, bid: 3, ask: 1 }, { r: 0.05, bid: 5, ask: 9 }], watched: 1, units: 'usd', coin: 'BTC', rank: 4, of: 90 })), ['Imbalance', 'Rank in view']);
+  // Liquidation levels: the take profits, where they are drawn; nothing else.
+  assert.deepEqual(said(liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid: 5, ask: 9 }], watched: 0, units: 'usd', coin: 'BTC', takes: { bid: 1, ask: 2 } })), ['Take profits above / below']);
+  assert.deepEqual(said(liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid: 5, ask: 9 }], watched: 0, units: 'usd', coin: 'BTC' })), []);
+  // Funding on one venue: when it settles and who opened (its funding, APR and premium are its row; who pays, their sign).
+  const opens: HourOpens = { t: 0, longOpened: 30, shortOpened: 10 };
+  assert.deepEqual(said(fundingCardLines({ time: 0, venue: 'Hyperliquid', row: { t: H, rate: 1e-4 / 8, per8h: 1e-4, hours: 1 }, forming: true, premium: -4e-4, opens, coin: 'BTC', continuous: false })), ['Each settlement', 'Settles at', 'Buyers opened', 'New longs', 'New shorts']);
+  // Every venue: all of it is the rows.
+  assert.deepEqual(said(fundingAllCardLines({ time: 0, need: 2, median: { per8h: 1e-4 }, venues: [{ id: 'binance', name: 'Binance', per8h: 1e-4, forming: true }, { id: 'okx', name: 'OKX', per8h: null, forming: false }] })), []);
+  // Long/Short: why a venue has no reading (a dash in its row says only that it has none); the readings are the rows, who each line counts the header's Series.
+  const series = [
+    { id: 'binance:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.556 }] },
+    { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'failed', points: [] },
+    { id: 'okx:BTC-USDT-SWAP', population: 'accounts', periodMs: H, status: 'ok', points: [] },
+  ] as unknown as LsSeries[];
+  const ls = tableLines(lsCardLines(series, T + 30 * MIN, '1h'));
+  assert.deepEqual(ls.map(line => line.label ?? line.text), ['Bybit']);
+  assert.deepEqual(tableLines(lsCardLines(series.filter(s => s.status === 'ok'), T + 30 * MIN, '1h')), [], 'every venue read: nothing the rows and the header do not say');
+  const page = [...series, { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'serverOnly', points: [] }] as unknown as LsSeries[];
+  assert.deepEqual(tableLines(lsCardLines(page, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'a venue a page cannot read: the header says so');
+  const older = [...series, { id: 'bitget:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T + 10 * H, long: 0.6 }] }, { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];
+  const card = lsCardLines(older, T + 30 * MIN, '1h').map(line => line.text);
+  assert.ok(card.some(text => /newest 30 readings/.test(text)) && card.some(text => /earlier readings/.test(text)), 'the card says both');
+  assert.deepEqual(tableLines(lsCardLines(older, T + 30 * MIN, '1h')).map(line => line.label ?? line.text), ['Bybit'], 'Bitget\'s 30 readings and a muted row are the help\'s and the row\'s');
+  // A venue whose last update failed and that has no reading at the moment read (a window its failed round never covered, or past its hold):
+  // its row's dashes are any venue's, so the table says it has no reading here and that its last update failed (review rounds 3 and 4); not
+  // "could not be read", which a gap in its readings inside what it read would make false.
+  const gone = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 48 * H, long: 0.5 }] }] as unknown as LsSeries[];
+  const goneLines = tableLines(lsCardLines(gone, T + 30 * MIN, '1h'));
+  assert.equal(goneLines.length, 2); assert.equal(goneLines[0]!.text, 'no reading'); assert.ok(goneLines[0]!.label); assert.match(goneLines[1]!.text, /last update could not be read/);
+  // A gap inside what it read (readings either side, none at the time read past the hold): the same two lines, never "could not be read".
+  const gap = [...series.filter(s => s.status === 'ok'), { id: 'gateio:BTC_USDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T - 10 * H, long: 0.5 }, { t: T + 10 * H, long: 0.5 }] }] as unknown as LsSeries[];
+  assert.deepEqual(tableLines(lsCardLines(gap, T, '1h')).map(line => line.text === 'no reading' ? line.text : /last update/.test(line.text) ? 'sentence' : line.text), ['no reading', 'sentence']);
+  // Bitget whose last update failed, at a time before its readings: the same two lines in the table; its 30-readings limit stays the card's (review 5).
+  const bitgetGone = [...series.filter(s => s.status === 'ok'), { id: 'bitget:BTCUSDT', population: 'accounts', periodMs: H, status: 'stale', points: [{ t: T + 10 * H, long: 0.6 }] }] as unknown as LsSeries[];
+  const bitgetCard = lsCardLines(bitgetGone, T, '1h');
+  assert.deepEqual(tableLines(bitgetCard).map(line => line.text === 'no reading' ? line.text : /last update/.test(line.text) ? 'sentence' : line.text), ['no reading', 'sentence']);
+  assert.ok(bitgetCard.some(line => /newest 30 readings/.test(line.text)), 'the card keeps Bitget\'s limit');
+  assert.deepEqual(lsTableRows(gone, T + 30 * MIN, PALETTE)[2]!.slice(1).map(cell => cell.text), ['–', '–', '–'], 'its row: dashes, as any venue without a reading');
+  // Who each line counts: the header's Series says it while every line counts the same people, not Bybit's accounts beside top traders' positions.
+  const mixed = [{ ...series[0]!, population: 'topPositions' }, { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: H, status: 'ok', points: [{ t: T, long: 0.5 }] }] as unknown as LsSeries[];
+  const mixedLines = tableLines(lsCardLines(mixed, T + 30 * MIN, '1h')).map(line => line.text);
+  assert.equal(mixedLines.length, 1); assert.match(mixedLines[0]!, /^Binance: .+ · Bybit: /);
+  assert.deepEqual([ls[0]!.text, ls[0]!.mark], ['could not be read', undefined]);
+});
+
+test('the Funding table marks a rate still accruing where some rates have settled, and leaves it to the foot where none has', () => {
+  const mixed = fundingTableRows([{ name: 'Binance', per8h: 1e-4, premium: null, forming: true }, { name: 'Hyperliquid', per8h: 2e-4, premium: null, forming: false }, { name: 'Median', per8h: 1.5e-4, premium: null }], PALETTE);
+  assert.deepEqual(mixed.map(r => r[1]!.text), ['+0.0100% (now)', '+0.0200%', '+0.0150%']);
+  const all = [{ name: 'Binance', per8h: 1e-4, premium: null, forming: true }, { name: 'OKX', per8h: null, premium: null, forming: false }, { name: 'Median', per8h: 1e-4, premium: null }];
+  assert.equal(fundingAllNow(all), true, 'a venue with no rate, and the median, do not count');
+  assert.deepEqual(fundingTableRows(all, PALETTE).map(r => r[1]!.text), ['+0.0100%', '–', '+0.0100%']);
+  assert.equal(fundingAllNow([{ name: 'Median', per8h: 1e-4, premium: null }]), false, 'nothing a venue reads: nothing to say');
+  assert.equal(fundingAllNow([{ name: 'Binance', per8h: 1e-4, premium: null, forming: false }]), false);
+});
+
+test('every table stands in the middle of its pane, Flow history\'s too: a short pane leaves the card beside it, a tall one takes its lines', () => {
+  // Eight rows (Flow history's) and a card of eight lines: in the middle of a pane 300 high the rows end at 225 and 73 px is not enough, so the
+  // card stays beside the table (Karl, 2026-11-21: a table at the top of its pane looked misplaced beside the other panes' tables).
+  const eight = { ...spec(8), lines: Array.from({ length: 8 }, (_, i): InfoLine => ({ label: `Line ${i}`, text: 'value', ...(i === 6 ? { rule: true } : {}) })) };
+  const short = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), eight)!;
+  assert.deepEqual([short.y0, short.complete], [75, false]);
+  const tall = placeTable(measure, room({ w: 400 + 60 + 200, h: 460 }), eight)!;
+  assert.deepEqual([tall.y0, tall.complete, tall.summary.length], [155, true, 8]);
+  assert.ok(tall.y0 + tall.height + tall.summaryH <= 458);
+  assert.deepEqual(rowsBlock(placeTable(measure, room({ w: 400 + 60 + 200, h: 460 }), { ...eight, lines: [] })), rowsBlock(tall), 'the lines never move the rows');
 });

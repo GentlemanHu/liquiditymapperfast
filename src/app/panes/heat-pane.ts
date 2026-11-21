@@ -35,7 +35,7 @@ import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, t
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
 import { lineMetric, onPriceAxis, placedOn } from '../traded/profiles.ts';
 import { MAX_BANDS, arrangeProfiles, arrangeSides, columnHit, type Arranged, type ProfileRoom } from '../traded/arrange.ts';
-import { flowIds, flowLoadIds, instrumentShown, mapVenues, oiFlowIds, shownKey } from '../cvd/ids.ts';
+import { flowIds, flowLoadIds, instrumentShown, liquidationIds, mapVenues, oiFlowIds, shownKey } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
 import { iconsOf, markLines, markSize, sameMarks, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
@@ -418,6 +418,14 @@ export class HeatPane {
   /** The pointer over a volume profile column (its y, and which column: its side and its place there, nearest the map first), or null. */
   #tradedHover: { y: number; side: Side; i: number } | null = null;
   #profileBox: { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null = null;
+  /**
+   * This overlay frame's column boxes (the profile column's, the liquidation column's or a split's, the seam's, a volume profile column's),
+   * drawn last on the pointer's layer (`#paintHoverLayer`) so that nothing drawn after them crosses them: a column's edge, the badge of what
+   * had no room, a saved Range, the legend (Karl, 2026-11-21: the liquidation column's edge ran through the Stops box). Each overlay frame
+   * sets them and every pointer-only frame after it draws them again; the column under the pointer is part of the hover key (`#hoverKey`),
+   * so a pointer moving on a column draws the overlay, and these, again.
+   */
+  #columnBoxes: ((ctx: CanvasRenderingContext2D) => void)[] = [];
   /** The last values given to --gutter and --gutter-left on the pane, so a frame that changes nothing writes nothing. */
   #gutterCss = ''; #leftCss = '';
   /** What the corner tools' names were last judged on (`#fitCorner`), and the room the legend wants for its title and prices (`#paintLegend`). */
@@ -1307,6 +1315,19 @@ export class HeatPane {
     return this.#footprintIds.ids;
   }
 
+  #liquidationIds: { key: unknown[]; ids: string[] } | null = null;
+  /**
+   * The markets whose liquidations the Flow history and the Bar stats count (one list: they share the liquidation loader). With the footprint's
+   * Aggregated markets the perpetuals of every venue switched on, whatever the Spot / Perp filter (`liquidationIds`); with the chart market or
+   * chosen markets those, as picked. Worked out again only when what it depends on changes (the filter is not part of it).
+   */
+  liquidationMarkets(state: AppState): string[] {
+    if (state.footprint.markets === 'chart' || state.footprint.markets === 'custom') return this.footprintMarkets(state);
+    const onMap = mapVenues(state), key = [state.markets, state.disabledVenues, onMap ? [...onMap].sort().join(',') : null, this.hub.flow.ids.length, this.hub.flow.loads];
+    if (!this.#liquidationIds || this.#liquidationIds.key.length !== key.length || this.#liquidationIds.key.some((k, i) => k !== key[i])) this.#liquidationIds = { key, ids: liquidationIds(state, this.hub.flow, id => kindOf(state.markets, id)) };
+    return this.#liquidationIds.ids;
+  }
+
   /**
    * Advance the footprint level of detail for this frame (also drives the heatmap dimming), and load the bars the footprint, the Bar stats
    * table and the Flow history read: one load for all three, made while any of them shows. The rows are the size the footprint would draw at this zoom whether it shows or
@@ -1381,7 +1402,7 @@ export class HeatPane {
     ctx.stroke(); ctx.globalAlpha = 1;
     const market = state.markets.find(m => (m.instrumentId ?? m.id) === state.marketId);
     paintWatermark(ctx, p, pw, ph, [market?.base && market.quote ? `${market.base}/${market.quote}` : '', state.timeframe].filter(Boolean).join(' · '));
-    this.mirror = null;
+    this.mirror = null; this.#columnBoxes = [];
     this.#paintHistoryStart(ctx, pw, ph, p);
     this.#paintTapeStart(ctx, state, pw, ph, p);
     this.#paintProfileAnchor(ctx, pw, ph, this.#tradedPalette(state));
@@ -1507,10 +1528,14 @@ export class HeatPane {
       ctx.fillStyle = p.text; ctx.textAlign = 'center'; ctx.fillText(emptyScope, pw / 2, ph / 2); ctx.textAlign = 'left'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
     }
     this.#paintRange(ctx, state, pw, ph);
+    if (!this.#columnBoxes.length) this.#paintRangeLabel(ctx, state, pw, ph);   // with a column box, after it (below)
     this.#paintBookRow(ctx, state, pw, ph);
     this.#paintLiqReadout(ctx, state, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
     this.#paintAnchorPreview(ctx, state, pw, ph);
+    // The column boxes over both canvases (`#columnBoxes`), with a plain solid pen whatever was drawn before them; then only the size tag of
+    // a Range being dragged, which a drag on a volume profile column has beside that column's box.
+    if (this.#columnBoxes.length) { ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1; for (const paint of this.#columnBoxes) paint(ctx); this.#paintRangeLabel(ctx, state, pw, ph); }
   }
 
   /**
@@ -1690,28 +1715,43 @@ export class HeatPane {
    * tag beside it gives its size (minutes, and a box's height as a share of its price).
    */
   #paintRange(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
-    const sel = state.range; if (!sel) return;
-    const v = this.view, p = this.#palette, box = sel.p0 !== null && sel.p1 !== null;
-    const x0 = Math.max(-2, v.xOf(sel.t0, pw)), x1 = Math.min(pw + 2, v.xOf(sel.t1, pw));
-    if (x1 < 0 || x0 > pw) return;
-    const y0 = box ? Math.max(-2, v.yOf(sel.p1!, ph)) : -2, y1 = box ? Math.min(ph + 2, v.yOf(sel.p0!, ph)) : ph + 2;
-    if (y1 < 0 || y0 > ph) return;
+    const r = this.#rangeRect(state, pw, ph); if (!r) return;
+    const p = this.#palette, { x0, x1, y0, y1 } = r;
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     ctx.fillStyle = p.text; ctx.globalAlpha = 0.07; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.globalAlpha = 1;
     // A light edge under the dashes, so the box reads over dark cells, bright walls and bubbles alike.
     const rect = [Math.round(x0) + 0.5, Math.round(y0) + 0.5, Math.max(1, Math.round(x1 - x0) - 1), Math.max(1, Math.round(y1 - y0) - 1)] as const;
     ctx.strokeStyle = p.panel; ctx.lineWidth = 3; ctx.globalAlpha = 0.85; ctx.strokeRect(...rect); ctx.globalAlpha = 1;
     ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.setLineDash([5, 4]); ctx.strokeRect(...rect); ctx.setLineDash([]);
-    if (sel.draft) {
-      const label = draftLabel(sel);
-      ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-      const w = ctx.measureText(label).width + 12, tx = Math.min(pw - w - 2, Math.max(2, x0)), ty = y0 > 24 ? y0 - 22 : Math.min(ph - 22, y1 + 4);
-      ctx.fillStyle = p.panel; ctx.globalAlpha = 0.94; ctx.fillRect(tx, ty, w, 18); ctx.globalAlpha = 1;
-      ctx.strokeStyle = p.line; ctx.strokeRect(tx + 0.5, ty + 0.5, w - 1, 17);
-      ctx.fillStyle = p.text; ctx.fillText(label, tx + 6, ty + 9);
-      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
-    }
     ctx.restore();
+  }
+
+  /**
+   * The size tag of a Range being dragged, after the column boxes (`#columnBoxes`) as the last thing on the pointer's layer: a drag on a
+   * volume profile column keeps its row's box beside the pointer, where it covered the tag (Sol, review 2026-11-21). The Range's box itself
+   * stays under the column boxes (`#paintRange`).
+   */
+  #paintRangeLabel(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    const r = this.#rangeRect(state, pw, ph); if (!r || !r.sel.draft) return;
+    const p = this.#palette, { x0, y0, y1 } = r, label = draftLabel(r.sel);
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
+    ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left'; ctx.lineWidth = 1; ctx.setLineDash([]);
+    const w = ctx.measureText(label).width + 12, tx = Math.min(pw - w - 2, Math.max(2, x0)), ty = y0 > 24 ? y0 - 22 : Math.min(ph - 22, y1 + 4);
+    ctx.fillStyle = p.panel; ctx.globalAlpha = 0.94; ctx.fillRect(tx, ty, w, 18); ctx.globalAlpha = 1;
+    ctx.strokeStyle = p.line; ctx.strokeRect(tx + 0.5, ty + 0.5, w - 1, 17);
+    ctx.fillStyle = p.text; ctx.fillText(label, tx + 6, ty + 9);
+    ctx.restore();
+  }
+
+  /** Where the Range lies on the plot (its corners, held a hair past the plot's edges, the full height for one with no prices), or null where none shows. */
+  #rangeRect(state: AppState, pw: number, ph: number): { sel: NonNullable<AppState['range']>; x0: number; x1: number; y0: number; y1: number } | null {
+    const sel = state.range; if (!sel) return null;
+    const v = this.view, box = sel.p0 !== null && sel.p1 !== null;
+    const x0 = Math.max(-2, v.xOf(sel.t0, pw)), x1 = Math.min(pw + 2, v.xOf(sel.t1, pw));
+    if (x1 < 0 || x0 > pw) return null;
+    const y0 = box ? Math.max(-2, v.yOf(sel.p1!, ph)) : -2, y1 = box ? Math.min(ph + 2, v.yOf(sel.p0!, ph)) : ph + 2;
+    if (y1 < 0 || y0 > ph) return null;
+    return { sel, x0, x1, y0, y1 };
   }
 
   /** A point of the map for the Range tool, held inside the plot. */
@@ -2989,9 +3029,9 @@ export class HeatPane {
     if (!(v.t1 > v.t0) || !(v.p1 > v.p0)) return;
     const { from, to } = this.#columnWindow(), anchor = this.anchoredWindow(), anchored = anchor !== null;
     // What is on the chart keeps changing only while it follows the live edge; an anchored window only when it is taken again (its own key,
-    // whether or not the chart follows the live edge). Open interest counts the perpetuals whatever the Spot / Perp filter says (`oiFlowIds`),
-    // as the OI pane does.
-    const live = !anchored && state.followLive && !replaying(), ids = (metric === 'oi' ? oiFlowIds : flowIds)(state, this.hub.flow.ids), end = to;
+    // whether or not the chart follows the live edge). Open interest and liquidations count the perpetuals whatever the Spot / Perp filter says
+    // (the measure's `perpetualsOnly`, `oiFlowIds`), as the OI pane and the Flow history do.
+    const live = !anchored && state.followLive && !replaying(), ids = (measureDef(metric).perpetualsOnly ? oiFlowIds : flowIds)(state, this.hub.flow.ids), end = to;
     const step = requestStep(this.#tradedStep(), this.#levelStep(), this.#gridStep() / 40), asked = { tag: anchor ? anchorTag(anchor) : '', settled: false };
     this.hub.ensureProfile(metric, ids, from, end, step, live, asked, measureDef(metric).judgedByMarks ? this.#absorptionContext(state).thresholds : undefined);
     if (metric === 'volume' && this.#loadedServes(state)) this.#ensureLoadedColumn(state);
@@ -3838,8 +3878,8 @@ export class HeatPane {
     const sides = sideColumns(state);
     for (const side of ['right', 'left'] as const) sides[side].forEach((p, i) => { const b = this.#paintColumn(ctx, state, pw, ph, p.metric, side, i, this.#columnX(side, i)); if (b) box = { ...b, side }; });
     if (box) {
-      const b: ColumnBox & { side: Side } = box;
-      paintInfoBox(ctx, b.lines, b.side === 'right' ? this.#columnX('right', 0) : 0, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, this.#palette, { placement: b.placement ?? 'center' }); ctx.textBaseline = 'middle';
+      const b: ColumnBox & { side: Side } = box, x = b.side === 'right' ? this.#columnX('right', 0) : 0, palette = this.#palette;
+      this.#columnBoxes.push(c => { paintInfoBox(c, b.lines, x, b.y, { x0: 0, y0: 0, x1: pw, y1: ph }, palette, { placement: b.placement ?? 'center' }); });
     }
   }
 
@@ -4059,8 +4099,7 @@ export class HeatPane {
       // The comparison pops up beside the profile column, pointing at it, and only while the pointer is on the column (`profileBoxFrame`).
       this.#profileBox = null;
       const frame = mirrorFrame(ctx, box.lines, h => profileBoxFrame(state, pw, ph, this.#liqHeadH, h));
-      paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, frame.x, box.y, frame.bounds, p, k => k === 'above' ? p.ask : k === 'below' ? p.bid : k === 'muted' ? p.muted : p.text, box.placement); });
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
   }
@@ -4288,8 +4327,7 @@ export class HeatPane {
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
-      paintMirrorBox(ctx, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, c => c === 'above' ? (alone ? p.candleDown : p.candleUp) : c === 'below' ? (alone ? p.candleUp : p.candleDown) : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, x0, box.y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, k => k === 'above' ? (alone ? p.candleDown : p.candleUp) : k === 'below' ? (alone ? p.candleUp : p.candleDown) : k === 'muted' ? p.muted : p.text, box.placement); });
     }
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
   }
@@ -4370,14 +4408,14 @@ export class HeatPane {
     ctx.globalAlpha = 1; ctx.font = `${size}px ui-sans-serif, system-ui, sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
     heads.across.forEach((line, n) => ctx.fillText(line, x0 + LIQ_PAD, below + 12 * n));
     ctx.restore(); ctx.textBaseline = 'middle';
+    ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
+    // The right sub-column's box stands over the left one and the map's edge: drawn last, on the pointer's layer (`#columnBoxes`).
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintLiqColumnMirror above
     if (box) {
       this.#profileBox = null;
       const frame = mirrorFrame(ctx, box.lines, h => liqSubBoxFrame(at, subs[at].x0, pw, ph, this.#liqHeadH, h));
-      paintMirrorBox(ctx, box.lines, frame.x, box.y, frame.bounds, p, c => c === 'above' ? p.candleUp : c === 'below' ? p.candleDown : c === 'muted' ? p.muted : p.text, box.placement);
-      ctx.textBaseline = 'middle';
+      this.#columnBoxes.push(c => { paintMirrorBox(c, box.lines, frame.x, box.y, frame.bounds, p, k => k === 'above' ? p.candleUp : k === 'below' ? p.candleDown : k === 'muted' ? p.muted : p.text, box.placement); });
     }
-    ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
   }
 
   /**
@@ -4470,7 +4508,8 @@ export class HeatPane {
       reach: { bid: booksReaching(frame, g.ids, price, bidRow, step, 'bid'), ask: booksReaching(frame, g.ids, price, askRow, step, 'ask'), of: g.ids.length },
       minutes: { positions: asOfs.liq ? (now - asOfs.liq) / 60_000 : null, orders: asOfs.orders ? (now - asOfs.orders) / 60_000 : null }, clipped });
     // On a phone the box also keeps below the legend, whose buttons lie over the canvas and would hide its first lines.
-    paintMirrorBox(ctx, lines, x0, hv.y, { x0: 0, y0: COMPACT ? Math.min(this.#legendBox.bottom + 4, ph / 3) : 0, x1: COMPACT ? pw + W : pw, y1: ph }, p, c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'buy' ? p.candleUp : c === 'sell' ? p.candleDown : c === 'muted' ? p.muted : p.text, hv.y < ph / 2 ? 'down' : 'up');
+    const bounds = { x0: 0, y0: COMPACT ? Math.min(this.#legendBox.bottom + 4, ph / 3) : 0, x1: COMPACT ? pw + W : pw, y1: ph }, y = hv.y;
+    this.#columnBoxes.push(c => { paintMirrorBox(c, lines, x0, y, bounds, p, k => k === 'above' ? p.ask : k === 'below' ? p.bid : k === 'buy' ? p.candleUp : k === 'sell' ? p.candleDown : k === 'muted' ? p.muted : p.text, y < ph / 2 ? 'down' : 'up'); });
   }
 
   /**

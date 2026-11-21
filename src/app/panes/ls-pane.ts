@@ -12,7 +12,7 @@ import { VENUE_LINE, venueLabel } from '../venues.ts';
 import { drawVenueMark } from '../venue-marks.ts';
 import { AXIS_W, leftGutter } from './heat-pane.ts';
 import { TimePane, setHtml } from './lower-panes.ts';
-import { PaneTable, tableInk, type TableCell, type TableRoom } from './pane-table.ts';
+import { PaneTable, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import type { Palette } from '../theme.ts';
 import { addTune } from '../pane-tune.ts';
 import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsFollowDelay, lsLanded, lsMessage, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
@@ -58,30 +58,44 @@ export function shareText(long: number): string {
   return t('{long} long · {short} short · L/S {ratio}', { long: `${(long * 100).toFixed(1)}%`, short: `${((1 - long) * 100).toFixed(1)}%`, ratio: (long / (1 - long)).toFixed(2) });
 }
 
-/** The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. */
+/**
+ * The popup of one moment: each venue's reading then (or why it has none), and what the numbers count. The table says the readings and a dash for
+ * none in its rows, the header's Series who each line counts (when they all count the same people), the header a venue a page cannot read, a
+ * muted row earlier readings, and the help Bitget's 30 readings: it keeps why a venue has no reading at a moment (still being read, not read,
+ * its last update failed), and who each line counts where they differ.
+ */
 export function lsCardLines(series: readonly LsSeries[], time: number, tf: string): InfoLine[] {
-  const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true }];
+  const lines: InfoLine[] = [{ text: `${clock(time, true)} · ${tf}`, bold: true, table: false }];
   let noBitget = false;
   for (const s of series) {
     const label = venueLabel(s.id);
-    if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id }); continue; }
+    // A venue a web page cannot read: its row's dash and the header ("not readable here") say it, at every moment, so the table leaves it out.
+    if (s.status === 'serverOnly') { lines.push({ label, text: t('not readable by a web page'), color: 'muted', mark: s.id, table: false }); continue; }
     const p = s.status === 'failed' ? null : lsAt(s.points, time, s.periodMs);
     // A venue still being read (`pending`) has no reading here yet: said so, not "no reading" or "could not be read".
     if (!p && s.pending) { lines.push({ label, text: t('being read'), color: 'muted', mark: s.id }); continue; }
     if (s.status === 'failed') { lines.push({ label, text: t('could not be read'), color: 'muted', mark: s.id }); continue; }
     if (!p && s.id.startsWith('bitget:')) noBitget = true;
-    lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id } : { label, text: t('no reading'), color: 'muted', mark: s.id });
-    if (s.status === 'stale') lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true });
+    // A venue whose last update failed: where it has a reading here, its row is muted, as its readout is, and the help says what muted means, so
+    // the table leaves both lines to the card. Where it has none, its dashes are any venue's: "no reading" and the sentence stay with the table
+    // (review rounds 3 and 4). Not "could not be read": the series keeps no record of the window its earlier read covered, so a time it did
+    // cover (a gap in the venue's readings, Bitget older than its 30) cannot be told from one its failed round missed; both lines are true of both.
+    const stale = s.status === 'stale', inTable = stale && !p, scope = inTable ? {} : { table: false as const };
+    lines.push(p ? { label, text: shareText(p.long), color: p.long > 0.5 ? 'buy' : p.long < 0.5 ? 'sell' : 'text', mark: s.id, table: false } : { label, text: t('no reading'), color: 'muted', mark: s.id, ...scope });
+    if (stale) lines.push({ text: t('{venue}: the last update could not be read; these are its earlier readings.', { venue: venueLabel(s.id) }), color: 'muted', wrap: true, ...scope });
   }
   // Bitget's own limit, said where it has no reading: what it published is not held apart from what the window kept, so it is not placed.
-  if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true });
+  if (noBitget) lines.push({ text: t('Bitget publishes only its newest 30 readings; an older time has none.'), color: 'muted', wrap: true, table: false });
   // Who each line counts, the venues of one population together: "Binance: top traders, by positions · Bybit, OKX: all accounts".
   const groups = new Map<LsPopulation, string[]>();
   for (const s of series) if (s.population) groups.set(s.population, [...(groups.get(s.population) ?? []), venueLabel(s.id)]);
-  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true });
+  // Where every line counts the same people, the header's Series says who, so the table leaves it out: carried, it never fitted under a table of
+  // normal height, and the card came back beside every Long/Short table (review 2026-11-21). Where they differ (Bybit's accounts beside the top
+  // traders' positions, an older server's Bitget), the Series does not say it, and the table carries it (review 3).
+  if (groups.size) lines.push({ text: [...groups].map(([population, venues]) => `${venues.join(', ')}: ${populationText(population)}`).join(' · '), color: 'muted', wrap: true, rule: true, ...(groups.size === 1 ? { table: false as const } : {}) });
   // What a ratio means follows who is counted: accounts, or (Binance's top traders by positions) the size they hold.
-  if (series.some(s => s.population && s.population !== 'topPositions')) lines.push({ text: t('Accounts as each exchange counts them, not coins: L/S 1.25 is 1.25 long accounts for each short one, not 25 % more BTC long. In coins the two sides are always equal.'), color: 'muted', wrap: true });
-  if (series.some(s => s.population === 'topPositions')) lines.push({ text: t('By positions: the share of the top traders\' position size that is long, not of accounts. L/S 1.25 is 1.25 times as much held long as short among them; across the whole market the two sides are always equal.'), color: 'muted', wrap: true });
+  if (series.some(s => s.population && s.population !== 'topPositions')) lines.push({ text: t('Accounts as each exchange counts them, not coins: L/S 1.25 is 1.25 long accounts for each short one, not 25 % more BTC long. In coins the two sides are always equal.'), color: 'muted', wrap: true, table: false });
+  if (series.some(s => s.population === 'topPositions')) lines.push({ text: t('By positions: the share of the top traders\' position size that is long, not of accounts. L/S 1.25 is 1.25 times as much held long as short among them; across the whole market the two sides are always equal.'), color: 'muted', wrap: true, table: false });
   return lines;
 }
 
@@ -373,11 +387,12 @@ export class LsPane extends TimePane {
     let time = state.hover ? state.hover.t : Math.min(now, v.t1);
     if (time > newest && Number.isFinite(newest) && shown.every(s => !lsAt(s.points, time, s.periodMs))) { time = newest; if (state.hover && this.pointer) this.cursorT = newest; }
     const hover = state.hover;
-    // A table drawn takes the popup's place, as on every pane with one (Table off brings back who each line counts).
-    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null };
+    // The readings in the table's rows, and under them the card's lines (why a venue has none, who each line counts): a table that holds all of it takes
+    // the card's place, as on every pane with one; beside one that cannot, the card stays.
+    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, card = lsCardLines(series, time, state.timeframe);
     // One series: a row that repeats the header; no table, and the popup stays.
-    const placed = state.lsTable && !blank && series.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: hover ? clock(time, true) : `${t('newest')} ${clock(time)}`, rows: lsTableRows(series, time, p) }) : null;
-    if (hover && this.pointer && !placed) this.#lines = lsCardLines(series, time, state.timeframe);
+    const placed = state.lsTable && !blank && series.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: `${hover ? clock(time, true) : `${t('newest')} ${clock(time)}`} · ${state.timeframe}`, rows: lsTableRows(series, time, p), lines: tableLines(card) }) : null;
+    if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const parts = series.map(s => {
       const q = lsAt(s.points, time, s.periodMs), name = venueLabel(s.id);
       if (s.status === 'serverOnly') return `<span class="muted">${name} ${t('not readable here')}</span>`;

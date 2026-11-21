@@ -36,7 +36,7 @@ import { togglePlus } from '../plus/panel.ts';
 import type { StatOptions } from '../stat-options.ts';
 import { el } from '../dom.ts';
 import { addTune, settingsIcon } from '../pane-tune.ts';
-import { PaneTable, ratioCell, ratioFigure, sideRatio, tableInk, tableRowCap, type TableCell, type TableRoom } from './pane-table.ts';
+import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
@@ -917,30 +917,35 @@ export class DepthPane extends TimePane {
       if (live) { readTime = liveNow!.at; if (pointed) this.cursorT = newestT; }
       foot = Number.isFinite(readTime) ? (pointed && !live ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';
     }
-    const drawn = settings.table && this.#drawTable(rows, this.pointer !== null, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')]);
-    if (!drawn && pointed && liq) {
+    // The card of the moment read, whose lines the rows do not say are the table's too: the watched band's balance and rank, the take profits.
+    let card: InfoLine[] | null = null;
+    if (!pointed && !settings.table) { /* neither the card nor the table's lines are wanted */ }
+    else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
-      if (readRow) this.#lines = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
-    }
-    else if (!drawn && pointed && (live || readX >= 0)) {
+      if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
+    } else if (live || readX >= 0) {
       const here = rows[top]!.bid + rows[top]!.ask;
       let rank = 1, of = 0;
       for (let x = 0; x < cutW; x++) { const total = bid[at(x, top)]! + ask[at(x, top)]!; if (total > 0) { of++; if (total > here) rank++; } }
-      this.#lines = depthCardLines({ time: readTime, bands: rows, watched: top, units: settings.units, coin, rank, of });
+      card = depthCardLines({ time: readTime, bands: rows, watched: top, units: settings.units, coin, rank, of });
     }
+    // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
+    const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, focused ? top : -1, foot, unit, liq ? [t('Longs'), t('Shorts')] : [t('Bid'), t('Ask')], lines) : null;
+    if (pointed && card && !placed?.complete) this.#lines = card;
   }
 
   /**
-   * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them and the time read
-   * under them. The header reads the watched band; where even a row a band does not fit, the table is not drawn and the card says it instead. Returns whether it was drawn
-   * (a plate is drawn whole or not at all, so one that cannot hold the × column leaves the card, which says the watched band's ratio).
+   * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them, the card's
+   * `lines` the rows do not say under them and the time read under those. The header reads the watched band; where even a row a band does not fit, the
+   * table is not drawn and the card says it instead. Where it went, or null (complete: every column and every line, so the card is not needed).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, focus: number, time: string, unit: string, sides: readonly [string, string]): boolean {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, focus: number, time: string, unit: string, sides: readonly [string, string], lines: readonly InfoLine[]): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', sides[0], sides[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing }, {
-      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p),
-    }) !== null;
+      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p), lines,
+    });
   }
 
   /** The watched band's columns of an answer, as two plain series (Highlights judged a pixel column at a time). */
@@ -1356,25 +1361,30 @@ export class OiPane extends TimePane {
     const sigma = flagged && Number.isFinite(analysis.sigma[shown]) ? ` <span class="muted">${analysis.sigma[shown]!.toFixed(1)}σ</span>` : '';
     const over = hover && this.pointer ? barAt(oi, tf, hover.t) : -1;
     if (over === oi.length - 1 && hover && hover.t >= oi[over]![0] + tf) this.cursorT = oi[over]![0] + tf / 2;
-    if (over >= 0) {
-      const there = oi[over]!, seen = visible.filter(i => i > 0), change = over > 0 ? analysis.delta[over]! : null, size = change === null ? 0 : Math.abs(change);
-      this.#lines = oiCardLines({
-        time: there[0], level: there[4], change, before: over > 1 ? analysis.delta[over - 1]! : null,
-        rank: change === null || !seen.length ? null : 1 + seen.filter(i => Math.abs(analysis.delta[i]!) > size).length, of: seen.length,
-        sigma: highlight.on && analysis.flag[over] === 1 && Number.isFinite(analysis.sigma[over]) ? analysis.sigma[over]! : null,
-        source: oiSourceText(state, venues?.[over]),
-        staleMin: over === oi.length - 1 && stale ? Math.round(age / 60_000) : null,
+    // A bar's card: its level and change (the bar's own: the venues added up by their changes), the change before, its rank among the bars in view and
+    // how unusual it is, then who made the change (NL/NS) before its closing words.
+    let counted: number[] | null = null;
+    const cardAt = (i: number): InfoLine[] => {
+      const there = oi[i]!, change = i > 0 ? analysis.delta[i]! : null, size = change === null ? 0 : Math.abs(change), seen = counted ??= visible.filter(j => j > 0);
+      const lines = oiCardLines({
+        time: there[0], level: there[4], change, before: i > 1 ? analysis.delta[i - 1]! : null,
+        rank: change === null || !seen.length ? null : 1 + seen.filter(j => Math.abs(analysis.delta[j]!) > size).length, of: seen.length,
+        sigma: highlight.on && analysis.flag[i] === 1 && Number.isFinite(analysis.sigma[i]) ? analysis.sigma[i]! : null,
+        source: oiSourceText(state, venues?.[i]),
+        staleMin: i === oi.length - 1 && stale ? Math.round(age / 60_000) : null,
       });
-      // Who made the change, before the card's closing words.
       const c = who?.get(there[0]);
-      if (c && this.#lines.length) this.#lines.splice(this.#lines.length - 1, 0, ...nlnsWhoLines(c, coinOf(state)));
-    }
-    // Who holds it and who moved it, at the bar read. A table drawn (beside the plot or on a plate) takes the popup's place, as on every pane with one;
-    // the header still reads the bar, and with Table off the popup says the rest (its rank, who made the change).
+      if (c && lines.length) lines.splice(lines.length - 1, 0, ...nlnsWhoLines(c, coinOf(state)));
+      return lines;
+    };
+    if (over >= 0) this.#lines = cardAt(over);
+    // Who holds it and who moved it, at the bar read, and under them what the card says of that bar (its level, change, rank, who opened and closed).
+    // A table that holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
     const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]) : [];
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
-      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, focus: -1, foot, rows: oiTableRows(venuesThen, p) })) this.#lines = null;
+      const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
+      if (this.#table.draw(ctx, p, room, { heads: ['', 'OI', 'Δ', t('Share')], minCols: 2, cardCols: 1, focus: -1, foot, rows: oiTableRows(venuesThen, p), lines })?.complete) this.#lines = null;
     }
     say(`${t('base')} <b>${fmtPrice(bar[4], 1)}</b> Δ <b class="${d > 0 ? 'bid' : d < 0 ? 'ask' : ''}">${sign}${fmtPrice(Math.abs(d), 1)}</b>${whoText(who?.get(bar[0]), d)}${sigma}${source}${stale ? ` <span class="ask">${t('last sample {n} min ago', { n: Math.round(age / 60_000) })}</span>` : ''}`);
   }
@@ -1613,8 +1623,10 @@ export class LtPane extends TimePane {
     // The card reads the windows shown too: in a replay, never one under way at its moment or after it (the mask covers pixels, not the card).
     const over = state.hover && this.pointer ? readAt(slotAt(s.times.subarray(0, n), step, state.hover.t), state.hover.t, n - 1, s.times[n - 1]) : -1;
     if (over >= 0 && state.hover && state.hover.t >= s.times[over]! + step) this.cursorT = s.times[over]! + step / 2;
-    if (over >= 0) this.#lines = ltCardLines({ time: s.times[over]!, bid: s.bid[over]!, ask: s.ask[over]!, halfLifeBp: lt.halfLifeBp, venues: s.ids.length });
-    // Each market at the window read (the readout's): a table drawn takes the popup's place, as on every pane with one (Table off brings the popup back).
+    const cardAt = (i: number): InfoLine[] => ltCardLines({ time: s.times[i]!, bid: s.bid[i]!, ask: s.ask[i]!, halfLifeBp: lt.halfLifeBp, venues: s.ids.length });
+    if (over >= 0) this.#lines = cardAt(over);
+    // Each market at the window read (the readout's), and under them the card's lines (the total, its balance and how it was weighted): a table that
+    // holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
     if (state.ltTable && s.parts && s.ids.length > 1) {
       const parts = s.parts, windows = s.times.length;
       // The order is the series' (worked out once for it): rows keep their places while the pointer moves and as the newest window changes.
@@ -1622,8 +1634,8 @@ export class LtPane extends TimePane {
       const rows = ltRowsAt(s, bookNames(s.ids, state.markets), this.#rank.order, at, tableRowCap(ph));
       const foot = `${s.estimated ? '≈ ' : ''}${state.hover ? clock(s.times[at]!, true) : `${t('newest')} ${clock(s.times[at]!)}`}`;
       // Per level is what the series was worked out with (its parts carry the weights), not the setting, which a new series may still be on its way for.
-      const heads = ltHeads(parts);
-      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, plateMin: heads.length - 1, focus: -1, foot, rows: ltTableRows(rows, p) })) this.#lines = null;
+      const heads = ltHeads(parts), lines = headed(t('Total'), tableLines(over === at && this.#lines ? this.#lines : cardAt(at)));
+      if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines })?.complete) this.#lines = null;
     }
   }
 }
@@ -1884,7 +1896,8 @@ export class BarStatsPane extends TimePane {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, defs = enabledStats(state.barStats), options = state.barStatOptions;
     const readout = this.head.querySelector('.readout'), data = this.heat.footprintData, daily = options.cvdFrom === 'day';
-    // Aggregated, the rows count every market the footprint adds together; open interest stays the OI pane's one market (as its row's tip says).
+    // Aggregated, the rows count every market the footprint adds together; open interest stays the OI pane's one market (as its row's tip says),
+    // and the liquidations count the perpetuals whatever the Spot / Perp filter (`liquidationMarkets`, below).
     const markets = this.heat.footprintMarkets(state), stats = daily
       ? tn(defs.length, "{n} stat · cvd from each day's start", "{n} stats · cvd from each day's start")
       : tn(defs.length, '{n} stat · cvd sums the bars loaded for the view', '{n} stats · cvd sums the bars loaded for the view');
@@ -1908,15 +1921,19 @@ export class BarStatsPane extends TimePane {
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
     // The exchange's own candles (Binance's): the candle delta and the fills read them.
     const taker = defs.some(def => def.id === 'takerDelta' || def.id === 'fills' || def.id === 'avgFill') ? this.heat.takerRows(state, tfMs, times[0]!) : null;
-    // Liquidations of the markets counted, a UTC day per answer, over the days of the table's candles (none after now). A candle before the
-    // record reaches is not known: the source keeps a week (a page's own engine a day), and only since the recording started. The edge is
-    // taken to the next whole minute (a candle half expired is not known either), which also keeps it from changing on every frame.
+    // Liquidations of the perpetuals counted, whatever the Spot / Perp filter (`liquidationMarkets`, the Flow history's list too: the two share
+    // the loader), a UTC day per answer, over the days of the table's candles (none after now). A candle before the record reaches is not known:
+    // the source keeps a week (a page's own engine a day), and only since the recording started. The edge is taken to the next whole minute (a
+    // candle half expired is not known either), which also keeps it from changing on every frame.
     const retention = this.hub.source.kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
     const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = Math.max(Math.ceil((Date.now() - retention) / 60_000) * 60_000, this.hub.recordedSince > 0 ? this.hub.recordedSince : 0);
+    // A list without a perpetual (the chart market or chosen markets all spot, or every perpetual venue switched off) has none to count: its
+    // cells stay empty rather than read 0.
+    const liqMarkets = this.heat.liquidationMarkets(state), liqPerps = liqMarkets.some(id => kindOf(state.markets, id) !== 'spot');
     let liquidations: StatInput['liquidations'];
-    if (this.hub.source.liquidations && defs.some(def => def.id === 'liq' || def.id === 'liqNet') && markets.length) {
-      this.liqDays.ensure('bars', markets.join(','), Math.max(times[0]!, liqCover), liqTo);
-      liquidations = this.#liquidationsFor(markets, times, tfMs, liqCover);
+    if (this.hub.source.liquidations && defs.some(def => def.id === 'liq' || def.id === 'liqNet') && liqPerps) {
+      this.liqDays.ensure('bars', liqMarkets.join(','), Math.max(times[0]!, liqCover), liqTo);
+      liquidations = this.#liquidationsFor(liqMarkets, times, tfMs, liqCover);
     }
     const restart = daily ? resetKeys(times, 'day', zone) : undefined;
     // Worked out again only when what it is worked out from changes: a pointer move redraws from what is held. The clock counts by the minute

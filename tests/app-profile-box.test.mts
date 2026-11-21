@@ -127,7 +127,7 @@ test('the map draws the profile column\'s box in that frame', () => {
   assert.ok(start > 0 && end > start);
   const body = heat.slice(start, end);
   assert.match(body, /const frame = mirrorFrame\(ctx, box\.lines, h => profileBoxFrame\(state, pw, ph, this\.#liqHeadH, h\)\);/);
-  assert.match(body, /paintMirrorBox\(ctx, box\.lines, frame\.x, box\.y, frame\.bounds,/);
+  assert.match(body, /this\.#columnBoxes\.push\(c => \{ paintMirrorBox\(c, box\.lines, frame\.x, box\.y, frame\.bounds,/, 'drawn last, on the pointer\'s layer');
 });
 
 test('on a phone\'s map a long verdict wraps to the room there: the box stays on the map, as tall as the frame measured it (review 2026-11-21)', () => {

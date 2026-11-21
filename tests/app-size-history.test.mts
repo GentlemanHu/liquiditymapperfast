@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { BANDS, PLAIN_ALPHA, QUIET_ALPHA, SHARE_MIN_SLOTS, alphaOf, bandLabel, buildHistory, cardLines, emphasis, heightOf, judge, preRollMs, rowCap, shareDot, shareMarks, unusualRows, type HistoryInput } from '../src/app/size-history/model.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { DEFAULT_HIGHLIGHT } from '../src/app/anomaly.ts';
+import { sizeTableRows } from '../src/app/panes/size-history-pane.ts';
+import { tableLines } from '../src/app/panes/pane-table.ts';
 
 const MIN = 60_000, TF = 15 * MIN, T0 = Date.UTC(2026, 10, 20, 0, 0);
 const H = { on: true, mult: 2, length: 72 } as const;
@@ -128,7 +130,7 @@ test('the card says the amounts, how unusual, what it is judged against, and the
   const ctx = { time: '20 Nov 09:45', live: true, judging: true, oiSource: null, oiNote: null, mult: 2 } as const;
   const size = cardLines(m, 4, 39, ctx).map(l => `${l.label ?? ''}|${l.text}`);
   assert.equal(size[0], '|Market orders $100K–500K');
-  assert.ok(size.includes('Candle|20 Nov 09:45 · in progress: amounts so far'));
+  assert.ok(size.includes('Candle|20 Nov 09:45') && size.includes('|in progress: amounts so far'), size.join('\n'));
   assert.ok(size.some(l => l.startsWith('Buys / sells|$5') && l.includes('$40')));
   assert.ok(size.some(l => /^Unusual\|\d+\.\dσ above its baseline$/.test(l)), size.join('\n'));
   assert.ok(size.includes('|Its baseline: the 39 earlier candles with orders of this size'));
@@ -139,6 +141,10 @@ test('the card says the amounts, how unusual, what it is judged against, and the
   assert.equal(liqCard.filter(l => l.startsWith('Shorts liquidated|')).length, 1, 'the judgement is named apart from the amount');
   const spot = cardLines(m, 1, 39, { ...ctx, oiNote: 'spot' }).map(l => l.text);
   assert.ok(spot.includes('Only spot markets are counted: they have no open interest.'));
+  // A chart market or chosen markets that are all spot: the liquidations row says why it has none, not "$0 liquidated".
+  const spotLiq = cardLines(m, 0, 39, { ...ctx, live: false, liqNote: 'spot' }).map(l => `${l.label ?? ''}|${l.text}`);
+  assert.ok(spotLiq.includes('|Only spot markets are counted: they have no liquidations.'), spotLiq.join('\n'));
+  assert.ok(!spotLiq.some(l => l.startsWith('Shorts liquidated|')), 'no amounts beside the note');
   const partialBars = bars.map((b, i) => i === 20 ? { ...b, minutes: 5 } : b);
   const p = buildHistory(input(partialBars, { liquidations: liq })), lines = cardLines(p, 4, 20, ctx).map(l => `${l.label ?? ''}|${l.text}`);
   assert.ok(lines.includes('Unusual|Not judged: part of the candle was not recorded'), lines.join('\n'));
@@ -381,4 +387,39 @@ test('with Buys and sells either side lit takes the dot away; a candle exactly a
   const m = buildHistory(input(Array.from({ length: 60 }, (_, i) => even(i))));
   assert.equal(m.share![2]!.usual[50], 1 / 6, 'judged, against a sixth');
   assert.equal(m.share![2]!.flag[50], 0);
+});
+
+test('the pane\'s table: every row at the candle, liquidations as forced buys and sells, open interest in its Δ alone, each size\'s share', () => {
+  const bars = Array.from({ length: 40 }, (_, i) => bar(i, boxes({ 0: 1e5, 3: 3e5 }), boxes({ 0: 5e4, 3: 1e5 })));
+  const liq = { buy: new Map(bars.map(b => [b.t, 2000] as const)), sell: new Map(bars.map(b => [b.t, 6000] as const)), cut: true, cutStarts: new Set([bars[39]!.t]) };
+  const oi = new Map(bars.map(b => [b.t, -1.5e6] as const));
+  const m = buildHistory(input([...bars, null], { liquidations: liq, oi }));
+  const P = { bid: '#00ff00', ask: '#ff0000', text: '#000000', muted: '#888888' };
+  const cells = (i: number) => sizeTableRows(m, i, P).map(r => r.map(c => c.text));
+  assert.deepEqual(cells(38), [
+    ['Liquidations', '2K', '6K', '−4K', '', '3.00×'],
+    ['OI change', '', '', '−1.5M', '', ''],
+    ['< $25K', '100K', '50K', '+50K', '27%', '2.00×'],
+    ['$25K–100K', '0', '0', '+0', '0%', '–'],
+    ['$100K–500K', '300K', '100K', '+200K', '73%', '3.00×'],
+    ['$500K–1M', '0', '0', '+0', '0%', '–'],
+    ['$1M–5M', '0', '0', '+0', '0%', '–'],
+    ['≥ $5M', '0', '0', '+0', '0%', '–'],
+  ]);
+  assert.equal(cells(39)[0]![0], '≈Liquidations', 'a candle whose day was cut at 5,000 says so in its row\'s name');
+  assert.deepEqual(cells(40).slice(2).map(r => r.slice(1, 4)), Array.from({ length: 6 }, () => ['–', '–', '–']), 'a candle with nothing recorded: dashes');
+  assert.ok(sizeTableRows(m, 38, P).every(r => r.length === 6), 'every row has the heads\' six columns');
+});
+
+test('the card gives the pane\'s table what its row does not say: how unusual, its baseline, how the sizes stand together, a candle under way', () => {
+  const bars = Array.from({ length: 40 }, (_, i) => bar(i, boxes({ 3: i === 39 ? 5e6 : 1e5 + i * 100 }), boxes({ 3: 4e4 })));
+  const liq = { buy: new Map(bars.map(b => [b.t, 2000] as const)), sell: new Map(bars.map(b => [b.t, 0] as const)), cut: true, cutStarts: new Set([bars[39]!.t]) };
+  const m = buildHistory(input(bars, { liquidations: liq, oi: new Map(bars.map(b => [b.t, 1e6] as const)) }));
+  const ctx = { time: '20 Nov 09:45', live: false, judging: true, oiSource: '6 venues added together', oiNote: null, mult: 2 } as const;
+  const said = (r: number, over: object = {}) => tableLines(cardLines(m, r, 39, { ...ctx, ...over })).map(l => l.label ?? l.text);
+  assert.deepEqual(said(4), ['Market orders $100K–500K', 'Buy share', 'Share of the net', 'Unusual', 'Its baseline: the 39 earlier candles with orders of this size', 'Unusual size rows'], 'the amounts, the net and the share of volume are its row; its share of the nets is not');
+  assert.deepEqual(said(4, { live: true }).slice(0, 2), ['Market orders $100K–500K', 'in progress: amounts so far'], 'a candle under way says so, not its time again');
+  assert.deepEqual(said(0), ['Liquidations', 'Shorts', '≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.', 'Its baseline: the 39 earlier candles with liquidations on that side']);
+  assert.deepEqual(said(1), ['Open interest change', 'Markets', 'Not unusual', 'Its baseline: the 39 earlier candles'], 'its change in dollars is the row\'s Δ');
+  assert.ok(said(1, { oiCoins: { value: 12, coin: 'BTC' } }).includes('Change'), 'the coins beside the dollars keep the line');
 });
