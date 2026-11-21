@@ -48,12 +48,6 @@ export interface TableSpec {
    * card speaks of the total) gives 1: the columns after it are the table's own, and one that goes (the × first) leaves the table complete.
    */
   cardCols?: number;
-  /**
-   * Where the rows stand in the pane's height: in the middle (every table from before the card's lines), or at its top (`'top'`), which leaves the
-   * pane's height under them to the card's lines. Flow history's, new on 2026-11-21 and so moving no table anyone knew, stands at the top: its
-   * eight rows in the middle of a pane 300 px high left 73 px for a card of eight lines or more, and its card came back every time.
-   */
-  anchor?: 'middle' | 'top';
 }
 
 /** The pane's room, in plot coordinates: its width and height, the plot's width, the price axis's and whether a pointer (or a finger) is on the pane. */
@@ -132,7 +126,7 @@ export function ratioCell(first: number, second: number, p: Pick<Palette, 'bid' 
  * has room across: as wide as the widest one that does not wrap and never narrower than the rows, their sentences wrapped to that. Complete: the titles,
  * the foot and the columns the card needs (`cardCols`), with every line.
  */
-export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols' | 'anchor'>): TablePlace | null {
+export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>): TablePlace | null {
   const k = spec.rows.length, n = spec.heads.length, lines = spec.lines ?? [];
   let rowH = 0, titles = true, foot = true;
   fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
@@ -153,7 +147,7 @@ export function placeTable(measure: (text: string, bold?: boolean) => number, ro
     if (width(cols) > room.plotW * 0.6) return null;
   }
   // In the middle, or at the top: 2 px down, as the middle's margin is in the shortest pane.
-  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = spec.anchor === 'top' ? 2 : Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
+  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
   const rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
   const rowsOnly = { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0 };

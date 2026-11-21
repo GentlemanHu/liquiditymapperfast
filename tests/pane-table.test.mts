@@ -593,13 +593,14 @@ test('the Funding table marks a rate still accruing where some rates have settle
   assert.equal(fundingAllNow([{ name: 'Binance', per8h: 1e-4, premium: null, forming: false }]), false);
 });
 
-test('a table anchored at the top stands 2 px down, the pane under it left to the card\'s lines; anchored or not, the lines never move it', () => {
-  // Eight rows (Flow history's) and a card of eight lines in a pane 300 high: in the middle the rows end at 225 and 73 px is not enough.
+test('every table stands in the middle of its pane, Flow history\'s too: a short pane leaves the card beside it, a tall one takes its lines', () => {
+  // Eight rows (Flow history's) and a card of eight lines: in the middle of a pane 300 high the rows end at 225 and 73 px is not enough, so the
+  // card stays beside the table (Karl, 2026-11-21: a table at the top of its pane looked misplaced beside the other panes' tables).
   const eight = { ...spec(8), lines: Array.from({ length: 8 }, (_, i): InfoLine => ({ label: `Line ${i}`, text: 'value', ...(i === 6 ? { rule: true } : {}) })) };
-  const middle = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), eight)!, top = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...eight, anchor: 'top' })!;
-  assert.deepEqual([middle.y0, middle.complete], [75, false]);
-  assert.deepEqual([top.y0, top.first, top.complete, top.summary.length], [2, 17, true, 8]);
-  assert.ok(top.y0 + top.height + top.summaryH <= 298);
-  assert.deepEqual(rowsBlock(placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), { ...eight, lines: [], anchor: 'top' })), rowsBlock(top), 'no lines: the same rows in the same place');
-  assert.deepEqual({ ...rowsBlock(top)!, y0: 0, first: 0 }, { ...rowsBlock(middle)!, y0: 0, first: 0 }, 'only the height it stands at differs');
+  const short = placeTable(measure, room({ w: 400 + 60 + 200, h: 300 }), eight)!;
+  assert.deepEqual([short.y0, short.complete], [75, false]);
+  const tall = placeTable(measure, room({ w: 400 + 60 + 200, h: 460 }), eight)!;
+  assert.deepEqual([tall.y0, tall.complete, tall.summary.length], [155, true, 8]);
+  assert.ok(tall.y0 + tall.height + tall.summaryH <= 458);
+  assert.deepEqual(rowsBlock(placeTable(measure, room({ w: 400 + 60 + 200, h: 460 }), { ...eight, lines: [] })), rowsBlock(tall), 'the lines never move the rows');
 });
