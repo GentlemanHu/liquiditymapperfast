@@ -146,7 +146,7 @@ export function placeTable(measure: (text: string, bold?: boolean) => number, ro
     for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
     if (width(cols) > room.plotW * 0.6) return null;
   }
-  // In the middle, or at the top: 2 px down, as the middle's margin is in the shortest pane.
+  // In the middle of the pane's height, every pane's table alike.
   const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
   const rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
