@@ -500,6 +500,9 @@ test('a table stands in the middle with the lines it says at rest, holds them wh
   t += 1; assert.equal(draw(five, { rest: true })!.y0, 56);
   // The newest coming and going between four and five lines after that moves nothing either.
   for (let i = 0; i < 20; i++) { t += 3_000; assert.equal(draw(i % 2 ? five : OI_LINES, { rest: true })!.y0, 56, `step ${i}`); }
+  // A block of no lines for a moment (Funding as an hour turns, before that hour's row) names no table: the same one saying less, held as any smaller.
+  t += 1_000; assert.equal(draw([], { rest: true })!.y0, 56);
+  t += 800; assert.equal(draw(five, { rest: true })!.y0, 56);
   // Another table starts afresh, its lines at once: other titles, or another heading (a venue, a band), or the pane resized.
   assert.equal(draw(two, { rest: true }, { heads: ['', 'A', 'B', 'C'] })!.y0, 80);
   assert.equal(draw([{ text: 'Binance', bold: true }, ...two], { rest: true })!.y0, Math.round(150 - (105 + 50) / 2));

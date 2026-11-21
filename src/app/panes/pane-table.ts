@@ -263,6 +263,8 @@ export class PaneTable {
   #saying: { lines: readonly InfoLine[]; since: number } | null = null;
   /** The table those were said by (its height, its titles and its lines' heading): another starts afresh. */
   #restKey = '';
+  /** The heading of the last block that said something (a block of no lines names no table: it is the same one saying less for now). */
+  #restHead = '';
 
   constructor(private readonly host: TableHost, private readonly onRow: ((row: number) => void) | null = null, private readonly now: () => number = () => performance.now()) {
     if (!onRow) return;
@@ -322,10 +324,13 @@ export class PaneTable {
   /**
    * A frame at rest: the lines it says join those the rows may stand with once they have stood `REST_STAND_MS` (at once where none has), and the
    * largest that stood within `REST_HOLD_MS` is the one they stand with. Lines are counted, not measured: a block of as many lines replaces the one
-   * before (the newest words of it). Another table (a pane resized, other titles, another heading: a venue, a band) starts afresh.
+   * before (the newest words of it). Another table (a pane resized, other titles, another heading: a venue, a band) starts afresh; a block of no lines
+   * keeps the heading before it (Funding says nothing for a moment as an hour turns, before that hour's row comes in: 2026-11-21 22:00Z).
    */
   #takeRest(room: TableRoom, spec: TableSpec): void {
-    const lines = spec.lines ?? [], now = this.now(), head = lines[0], key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${head ? head.label ?? head.text : ''}`;
+    const lines = spec.lines ?? [], now = this.now(), head = lines[0];
+    if (head) this.#restHead = head.label ?? head.text;
+    const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${this.#restHead}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; }
     this.#saying = this.#saying?.lines.length === lines.length ? { lines, since: this.#saying.since } : { lines, since: now };
     const stood = this.#stood;
