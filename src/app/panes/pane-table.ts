@@ -8,10 +8,12 @@ import { layoutInfo, type InfoColor, type InfoLine, type InfoRow } from '../info
  * rows do not (`TableSpec.lines`: the sum, who opened and closed, the rank, how it was read). Beside the plot where the columns right of it leave room, the
  * last columns going first; else over the plot's left end on a plate while the pointer (or a pinned finger) is on the pane, so it never covers the newest
  * candles and leaves the chart clear at rest; a plate keeps every column, or as many as its `plateMin` says. In a short pane the rows close up (15 px down
- * to 12) and the titles, then the foot, are left out; where even a row each does not fit, there is no table. The card's lines come whole or not at all:
- * where they do not fit with every column, the rows are drawn alone. A pane hides its hover card only beside a table that is complete
- * (`TablePlace.complete`: every column and every line), since that table says all the card would (Karl, 2026-11-21: the card had gone wherever a table was
- * drawn, and with it what only the card said); beside a partial table, with Table off, or with no table, the card is there.
+ * to 12) and the titles, then the foot, are left out; where even a row each does not fit, there is no table. The card's lines hang under the foot, whole or
+ * not at all, and never move the rows: the table's rows, columns and place are what they are without them, so a moment with more lines or fewer (a pointer
+ * moving between candles, or onto the table, which reads the newest) shifts nothing a row can be clicked on (review 2026-11-21). A pane hides its hover card
+ * only beside a table that is complete (`TablePlace.complete`: its titles, its foot, the columns the card needs and every line), since that table says all
+ * the card would (Karl, 2026-11-21: the card had gone wherever a table was drawn, and with it what only the card said); beside a partial table, with Table
+ * off, or with no table, the card is there.
  */
 
 /** One cell: its words and, where it has one, its colour (else the text colour). */
@@ -35,9 +37,9 @@ export interface TableSpec {
   /** The row lit as the one chosen; -1 for none. */
   focus: number;
   /**
-   * What the pane's card says of the moment read that the rows do not (`tableLines`), drawn under the rows after a hairline: a label at the left
-   * and its value at the right edge, a plain line at the left, a long sentence wrapped to the table's width, the card's own hairlines kept. None,
-   * or empty, where the rows say all the card does.
+   * What the pane's card says of the moment read that the rows do not (`tableLines`), drawn under the foot after a hairline: a label at the left
+   * and its value at the lines' right edge, a plain line at the left, a long sentence wrapped to the lines' width, the card's own hairlines kept.
+   * None, or empty, where the rows say all the card does.
    */
   lines?: readonly InfoLine[];
   /**
@@ -52,12 +54,13 @@ export interface TableSpec {
 export interface TableRoom { w: number; h: number; plotW: number; axisW: number; pointing: boolean }
 
 /**
- * Where a table goes: the row height, what of it fits, its left edge and width, whether it is on a plate, its top, its first row and each column's right edge;
- * the card's lines as laid out under the rows (none where they were left out), the whole height, and whether it is complete (every column and every line).
+ * Where a table goes: the row height, what of it fits, its left edge and width, whether it is on a plate, its top, its first row, each column's right edge
+ * and its height (titles, rows and foot), all as they are without the card's lines; the card's lines as laid out under the foot (none where they were left
+ * out), the width they take (never narrower than the rows) and the height (their hairline included); and whether it is complete.
  */
 export interface TablePlace {
-  rowH: number; titles: boolean; foot: boolean; cols: number; left: number; plate: boolean; width: number; y0: number; first: number; rights: number[];
-  summary: readonly InfoRow[]; height: number; complete: boolean;
+  rowH: number; titles: boolean; foot: boolean; cols: number; left: number; plate: boolean; width: number; y0: number; first: number; rights: number[]; height: number;
+  summary: readonly InfoRow[]; summaryW: number; summaryH: number; complete: boolean;
 }
 
 /** The colours a table is painted in: the side colours colour the card's lines (a palette without them paints those in the text colour). */
@@ -116,69 +119,50 @@ export function ratioCell(first: number, second: number, p: Pick<Palette, 'bid' 
 }
 
 /**
- * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face).
- * First the whole table beside the plot: the card's lines under the rows and as many columns as fit, never fewer than `cardCols` (or `minCols`);
- * else the rows alone beside the plot, as many columns as fit; else, under a pointer, the whole table on a plate (keeping the columns a plate
- * keeps); else the rows alone on a plate, down to `plateMin` columns. Only a whole table is complete. The rows' height is the same rule with the
- * lines or without: the titles, then the foot, go where the pane is short.
+ * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face). The rows
+ * go where they went before the card's lines: beside the plot where the columns right of it leave room (as many columns as fit, down to `minCols`), else,
+ * under a pointer, on a plate over the plot's left end (down to `plateMin` columns), in the middle of the pane's height, their titles and then their foot
+ * left out where it is short. The lines go under the foot where the pane has room below and, beside the plot, the strip (on a plate, 60 % of the plot)
+ * has room across: as wide as the widest one that does not wrap and never narrower than the rows, their sentences wrapped to that. Complete: the titles,
+ * the foot and the columns the card needs (`cardCols`), with every line.
  */
 export function placeTable(measure: (text: string, bold?: boolean) => number, room: TableRoom, spec: Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>): TablePlace | null {
   const k = spec.rows.length, n = spec.heads.length, lines = spec.lines ?? [];
-  // The fewest columns a complete table keeps: those that say something the card says, and never fewer than the table needs to be one.
-  const need = Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
-  type Fit = { rowH: number; titles: boolean; foot: boolean };
-  // `more` rows and `px` pixels under the rows (the card's lines and their hairlines) besides the table's own.
-  const fit = (more: number, px: number): Fit | null => {
-    for (const [titles, foot] of [[true, true], [false, true], [false, false]] as const) {
-      for (const rowH of ROW_HEIGHTS) if ((k + more + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH + px + 4 <= room.h) return { rowH, titles, foot };
-    }
-    return null;
-  };
-  const rowsFit = fit(0, 0);
-  if (!rowsFit) return null;
+  let rowH = 0, titles = true, foot = true;
+  fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
+    for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
+  }
+  if (!rowH) return null;
   const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? ''))));
   const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
   const free = room.w - room.axisW - room.plotW;
-  const at = (cols: number, left: number, plate: boolean, w: number, f: Fit, summary: readonly InfoRow[], px: number, complete: boolean): TablePlace => {
-    const height = (k + summary.length + (f.titles ? 1 : 0) + (f.foot ? 1 : 0)) * f.rowH + px, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (f.titles ? f.rowH : 0);
-    // Where the card's lines are wider than the columns, the room left goes after the names: the figures keep their right edge with the lines'.
-    const rights: number[] = [];
-    for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]! + (c === 0 ? w - width(cols) : 0); rights.push(x); x += GAP; }
-    return { rowH: f.rowH, titles: f.titles, foot: f.foot, cols, left, plate, width: w, y0, first, rights, summary, height, complete };
-  };
-  // The whole table with `cols` columns: at least as wide as the widest line that does not wrap (a label, its value and two gaps between), its
-  // sentences wrapped to that width; its rows' height, or null where the pane is too short for the lines.
-  const natural = Math.max(0, ...lines.filter(line => line.wrap !== true).map(line => (line.label !== undefined ? measure(line.label) + 2 * GAP : 0) + measure(line.text, line.bold === true)));
-  const wide = (cols: number): number => Math.max(width(cols), lines.length ? natural + 2 * PAD : 0);
-  const whole = (w: number): { summary: InfoRow[]; px: number; f: Fit } | null => {
-    if (!lines.length) return { summary: [], px: 0, f: rowsFit };
-    const summary = layoutInfo((text, bold) => measure(text, bold), lines, w - 2 * PAD).rows;
-    // The first line's hairline is the one under the rows.
-    const px = SEP + summary.filter((row, i) => row.rule && i > 0).length * RULE, f = fit(summary.length, px);
-    return f ? { summary, px, f } : null;
-  };
-  // The most columns that fit `space` with the lines, down to `fewest`; a narrower table only wraps more, so the first too short for its lines ends it.
-  const wholeIn = (space: number, fewest: number, left: number, plate: boolean): TablePlace | null => {
-    for (let cols = n; cols >= fewest; cols--) {
-      const w = wide(cols); if (w > space) continue;
-      const it = whole(w);
-      return it ? at(cols, left, plate, w, it.f, it.summary, it.px, true) : null;
-    }
-    return null;
-  };
-  const beside = wholeIn(free - 4, need, room.plotW + 4, false);
-  if (beside) return beside;
-  let cols = n;
+  let cols = n, left = room.plotW + 4, plate = false;
   while (cols >= spec.minCols && width(cols) > free - 4) cols--;
-  if (cols >= spec.minCols) return at(cols, room.plotW + 4, false, width(cols), rowsFit, [], 0, false);
-  if (!room.pointing) return null;
-  // On a plate the last columns go first too, down to `plateMin` (every column unless the table says otherwise).
-  const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
-  const plate = wholeIn(room.plotW * 0.6, Math.max(least, need), 6, true);
-  if (plate) return plate;
-  for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
-  if (width(cols) > room.plotW * 0.6) return null;
-  return at(cols, 6, true, width(cols), rowsFit, [], 0, false);
+  if (cols < spec.minCols) {
+    left = 6; plate = true;
+    if (!room.pointing) return null;
+    // On a plate the last columns go first too, down to `plateMin` (every column unless the table says otherwise).
+    const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
+    for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
+    if (width(cols) > room.plotW * 0.6) return null;
+  }
+  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
+  const rights: number[] = [];
+  for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
+  const rowsOnly = { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0 };
+  // Complete only with the titles over the figures, the foot that says the moment read and the columns that say what the card says.
+  const framed = titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
+  if (!lines.length || !framed) return { ...rowsOnly, complete: framed && !lines.length };
+  // A wrapped line's label stays on a row of its own, so it must fit across too.
+  const natural = Math.max(0, ...lines.map(line => line.wrap === true ? (line.label !== undefined ? measure(line.label) : 0)
+    : (line.label !== undefined ? measure(line.label) + 2 * GAP : 0) + measure(line.text, line.bold === true)));
+  const summaryW = Math.max(rowsOnly.width, natural + 2 * PAD);
+  if (summaryW > (plate ? room.plotW * 0.6 : free - 4)) return { ...rowsOnly, complete: false };
+  const summary = layoutInfo((text, bold) => measure(text, bold), lines, summaryW - 2 * PAD).rows;
+  // The first line's hairline is the one over them.
+  const summaryH = SEP + summary.length * rowH + summary.filter((row, i) => row.rule && i > 0).length * RULE;
+  if (y0 + height + summaryH > room.h - 2) return { ...rowsOnly, complete: false };
+  return { ...rowsOnly, summary, summaryW, summaryH, complete: true };
 }
 
 /** The heavier face of a canvas font ("11px sans" -> "600 11px sans"), for the card's bold lines. */
@@ -190,12 +174,13 @@ function inkOf(color: InfoColor, p: TablePalette): string {
 }
 
 /**
- * Draw a placed table: the plate under it if it has one, the titles, a row each (the chosen one lit, the one `hover` less so), the card's lines under a
- * hairline (labels muted at the left, their values at the right edge in their colours, bold where the card has them bold) and the foot.
+ * Draw a placed table: the plate under it if it has one (under the card's lines too), the titles, a row each (the chosen one lit, the one `hover` less so),
+ * the foot, and the card's lines under a hairline (labels muted at the left, their values at the lines' right edge in their colours, bold where the card
+ * has them bold).
  */
 export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: TablePlace, spec: TableSpec, hover: number): void {
-  const k = spec.rows.length;
-  if (at.plate) { ctx.fillStyle = p.panel; ctx.globalAlpha = 0.9; ctx.fillRect(at.left, at.y0 - 2, at.width, at.height + 4); ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.strokeRect(at.left + 0.5, at.y0 - 1.5, at.width - 1, at.height + 3); }
+  const k = spec.rows.length, wide = at.summary.length ? Math.max(at.width, at.summaryW) : at.width, tall = at.height + (at.summary.length ? at.summaryH : 0);
+  if (at.plate) { ctx.fillStyle = p.panel; ctx.globalAlpha = 0.9; ctx.fillRect(at.left, at.y0 - 2, wide, tall + 4); ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.strokeRect(at.left + 0.5, at.y0 - 1.5, wide - 1, tall + 3); }
   ctx.textAlign = 'right'; ctx.fillStyle = p.muted;
   if (at.titles) for (let c = 1; c < at.cols; c++) ctx.fillText(spec.heads[c]!, at.rights[c]!, at.y0 + at.rowH / 2);
   for (let j = 0; j < k; j++) {
@@ -205,10 +190,12 @@ export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: T
     ctx.textAlign = 'right';
     for (let c = 1; c < at.cols; c++) { ctx.fillStyle = row[c]!.color ?? p.text; ctx.fillText(row[c]!.text, at.rights[c]!, mid); }
   }
-  let y = at.first + k * at.rowH;
+  ctx.textAlign = 'left'; ctx.fillStyle = p.muted;
+  if (at.foot && spec.foot) ctx.fillText(spec.foot, at.left + PAD, at.first + k * at.rowH + at.rowH / 2);
   if (at.summary.length) {
-    const base = ctx.font, heavy = boldFont(base), right = at.rights[at.cols - 1] ?? at.left + at.width - PAD;
-    const rule = (yy: number): void => { ctx.globalAlpha = 0.5; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(at.left + PAD, Math.round(yy) + 0.5); ctx.lineTo(at.left + at.width - PAD, Math.round(yy) + 0.5); ctx.stroke(); ctx.globalAlpha = 1; };
+    const base = ctx.font, heavy = boldFont(base), right = at.left + at.summaryW - PAD;
+    const rule = (yy: number): void => { ctx.globalAlpha = 0.5; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(at.left + PAD, Math.round(yy) + 0.5); ctx.lineTo(right, Math.round(yy) + 0.5); ctx.stroke(); ctx.globalAlpha = 1; };
+    let y = at.y0 + at.height;
     rule(y + SEP / 2); y += SEP;
     at.summary.forEach((row, i) => {
       if (row.rule && i > 0) { rule(y + RULE / 2); y += RULE; }
@@ -222,8 +209,6 @@ export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: T
       y += at.rowH;
     });
   }
-  ctx.textAlign = 'left'; ctx.fillStyle = p.muted;
-  if (at.foot && spec.foot) ctx.fillText(spec.foot, at.left + PAD, y + at.rowH / 2);
 }
 
 /** What a table needs of its pane. */
@@ -267,13 +252,16 @@ export class PaneTable {
     return at;
   }
 
-  /** Whether the pointer at `x` (plot coordinates) is over the table, its card's lines and foot included. */
+  /**
+   * Whether the pointer at `x` (plot coordinates) is over the table's rows (its titles to its foot). Not its card's lines: owning them would clear the time
+   * read, so the lines (of that time) would go, and a pointer that stayed would read the time again and bring them back, every move (review 2026-11-21).
+   */
   owns(x: number, pointer: { y: number } | null): boolean {
     const at = this.#at;
     if (!at || !pointer) { this.#light(-1); return false; }
     const y = pointer.y - this.host.canvas.getBoundingClientRect().top;
     if (this.onRow) { const row = this.#rowAt(x, y); this.#light(row); if (row >= 0) this.host.canvas.style.cursor = 'pointer'; }
-    return x >= at.left && x <= at.left + at.width && y >= at.y0 - 2 && y <= at.y0 + at.height + 2;
+    return x >= at.left && x <= at.left + at.width && y >= at.first - at.rowH && y <= at.first + (this.#rows + 1) * at.rowH;
   }
 
   /** Whether a press at `x` is the table's: over a table whose rows take a click; one only read lets a drag move the time axis as over the plot. */

@@ -919,7 +919,8 @@ export class DepthPane extends TimePane {
     }
     // The card of the moment read, whose lines the rows do not say are the table's too: the watched band's balance and rank, the take profits.
     let card: InfoLine[] | null = null;
-    if (liq) {
+    if (!pointed && !settings.table) { /* neither the card nor the table's lines are wanted */ }
+    else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
       if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
     } else if (live || readX >= 0) {
@@ -1362,9 +1363,9 @@ export class OiPane extends TimePane {
     if (over === oi.length - 1 && hover && hover.t >= oi[over]![0] + tf) this.cursorT = oi[over]![0] + tf / 2;
     // A bar's card: its level and change (the bar's own: the venues added up by their changes), the change before, its rank among the bars in view and
     // how unusual it is, then who made the change (NL/NS) before its closing words.
-    const seen = visible.filter(i => i > 0);
+    let counted: number[] | null = null;
     const cardAt = (i: number): InfoLine[] => {
-      const there = oi[i]!, change = i > 0 ? analysis.delta[i]! : null, size = change === null ? 0 : Math.abs(change);
+      const there = oi[i]!, change = i > 0 ? analysis.delta[i]! : null, size = change === null ? 0 : Math.abs(change), seen = counted ??= visible.filter(j => j > 0);
       const lines = oiCardLines({
         time: there[0], level: there[4], change, before: i > 1 ? analysis.delta[i - 1]! : null,
         rank: change === null || !seen.length ? null : 1 + seen.filter(j => Math.abs(analysis.delta[j]!) > size).length, of: seen.length,

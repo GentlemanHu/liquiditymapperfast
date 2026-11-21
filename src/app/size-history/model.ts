@@ -329,7 +329,7 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
   let dotNote: InfoLine | null = null;
   out.push({ text: row.kind === 'size' ? t('Market orders {band}', { band: row.label }) : row.kind === 'liq' ? t('Liquidations') : t('Open interest change'), bold: true });
   // The table's foot says the time; a candle under way says so in the table too.
-  out.push({ label: t('Candle'), text: ctx.live ? `${ctx.time} · ${t('in progress: amounts so far')}` : ctx.time, ...(ctx.live ? {} : { table: false as const }) });
+  out.push({ label: t('Candle'), text: ctx.live ? `${ctx.time} · ${t('in progress: amounts so far')}` : ctx.time, ...(ctx.live ? { wrap: true } : { table: false as const }) });
   const judgedParts: Part[] = [];
   const judged = (p: Part, label: string | null, isPartial: boolean): void => {
     if (!ctx.judging) return;
