@@ -328,8 +328,9 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
   // What the share dot says, under the judgement and what it is judged against (so the two stay together).
   let dotNote: InfoLine | null = null;
   out.push({ text: row.kind === 'size' ? t('Market orders {band}', { band: row.label }) : row.kind === 'liq' ? t('Liquidations') : t('Open interest change'), bold: true });
-  // The table's foot says the time; a candle under way says so in the table too.
-  out.push({ label: t('Candle'), text: ctx.live ? `${ctx.time} · ${t('in progress: amounts so far')}` : ctx.time, ...(ctx.live ? { wrap: true } : { table: false as const }) });
+  // The table's foot says the time; a candle under way says so on a line of its own, which the table keeps (its time it would repeat).
+  out.push({ label: t('Candle'), text: ctx.time, table: false });
+  if (ctx.live) out.push({ text: t('in progress: amounts so far'), color: 'muted' });
   const judgedParts: Part[] = [];
   const judged = (p: Part, label: string | null, isPartial: boolean): void => {
     if (!ctx.judging) return;

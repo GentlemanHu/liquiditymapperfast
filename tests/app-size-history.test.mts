@@ -130,7 +130,7 @@ test('the card says the amounts, how unusual, what it is judged against, and the
   const ctx = { time: '20 Nov 09:45', live: true, judging: true, oiSource: null, oiNote: null, mult: 2 } as const;
   const size = cardLines(m, 4, 39, ctx).map(l => `${l.label ?? ''}|${l.text}`);
   assert.equal(size[0], '|Market orders $100K–500K');
-  assert.ok(size.includes('Candle|20 Nov 09:45 · in progress: amounts so far'));
+  assert.ok(size.includes('Candle|20 Nov 09:45') && size.includes('|in progress: amounts so far'), size.join('\n'));
   assert.ok(size.some(l => l.startsWith('Buys / sells|$5') && l.includes('$40')));
   assert.ok(size.some(l => /^Unusual\|\d+\.\dσ above its baseline$/.test(l)), size.join('\n'));
   assert.ok(size.includes('|Its baseline: the 39 earlier candles with orders of this size'));
@@ -418,7 +418,7 @@ test('the card gives the pane\'s table what its row does not say: how unusual, i
   const ctx = { time: '20 Nov 09:45', live: false, judging: true, oiSource: '6 venues added together', oiNote: null, mult: 2 } as const;
   const said = (r: number, over: object = {}) => tableLines(cardLines(m, r, 39, { ...ctx, ...over })).map(l => l.label ?? l.text);
   assert.deepEqual(said(4), ['Market orders $100K–500K', 'Buy share', 'Share of the net', 'Unusual', 'Its baseline: the 39 earlier candles with orders of this size', 'Unusual size rows'], 'the amounts, the net and the share of volume are its row; its share of the nets is not');
-  assert.ok(said(4, { live: true }).includes('Candle'), 'a candle under way says so');
+  assert.deepEqual(said(4, { live: true }).slice(0, 2), ['Market orders $100K–500K', 'in progress: amounts so far'], 'a candle under way says so, not its time again');
   assert.deepEqual(said(0), ['Liquidations', 'Shorts', '≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.', 'Its baseline: the 39 earlier candles with liquidations on that side']);
   assert.deepEqual(said(1), ['Open interest change', 'Markets', 'Not unusual', 'Its baseline: the 39 earlier candles'], 'its change in dollars is the row\'s Δ');
   assert.ok(said(1, { oiCoins: { value: 12, coin: 'BTC' } }).includes('Change'), 'the coins beside the dollars keep the line');
