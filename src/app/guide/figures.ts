@@ -6,6 +6,7 @@ import { laneColorsFor } from '../cvd/colors.ts';
 import type { FigureId } from './content.ts';
 import { tg } from './words.ts';
 import { BALANCED_RATIO } from '../mirror.ts';
+import { ratioWords } from '../hover-rows.ts';
 
 /**
  * The guide's animated figures. Each is a small scene drawn on a canvas from the page's own colours and colour ramp, looping while it is
@@ -34,7 +35,7 @@ const smooth = (x: number): number => { const t = clamp(x); return t * t * (3 - 
 /** 0 → 1 → 0 over the unit interval, eased, with a pause at each end. */
 const breathe = (u: number, hold = 0.12): number => { const t = u < 0.5 ? u * 2 : (1 - u) * 2; return smooth((t - hold) / (1 - 2 * hold)); };
 const mix = (a: number, b: number, t: number): number => a + (b - a) * t;
-const money = (v: number): string => v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1)}M` : `$${Math.round(v / 1e3)}k`;
+const money = (v: number): string => v >= 1e6 ? `$${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1)}M` : v >= 500 ? `$${Math.round(v / 1e3)}k` : '$0';
 const priceText = (v: number): string => Math.round(v).toLocaleString('en-US');
 const font = (g: Ctx, size: number, weight = 400): void => { g.font = `${weight} ${size}px ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif`; };
 
@@ -151,6 +152,51 @@ function note(g: Ctx, text: string, x: number, y: number, th: Theme, align: Canv
   font(g, size, weight); g.textAlign = align; g.textBaseline = 'middle';
   if (pill) { const w = g.measureText(text).width + 14, left = align === 'left' ? x - 7 : align === 'right' ? x - w + 7 : x - w / 2; g.save(); g.globalAlpha = 0.88; g.fillStyle = th.panel; g.beginPath(); g.roundRect(left, y - 10, w, 20, 6); g.fill(); g.restore(); }
   g.fillStyle = color; g.fillText(text, x, y);
+}
+/** The size, at most `size` and at least `min`, at which `text` fits in `room` px: on a phone a figure's box is a third of the screen wide. */
+export function fitSize(g: Ctx, text: string, room: number, size: number, weight = 400, min = 8): number {
+  font(g, size, weight); const width = g.measureText(text).width;
+  return width <= room || !(width > 0) ? size : Math.max(min, Math.floor(size * room / width * 10) / 10);
+}
+/** A word a Japanese or Chinese phrase ends with (a particle written in hiragana, a function word, punctuation), and one a Chinese phrase starts with. */
+const PHRASE_END = /^[぀-ゟ]+$|^[与也或是和及的]$|^[　-〿！-／：-＠]+$/, PHRASE_START = /^[与也或是和及]$/;
+/**
+ * Where a text written without spaces may break: at a phrase's edge, from the browser's own word breaks ("買い板と / 売り板はほぼ同じ",
+ * "既无买盘 / 也无卖盘"). Not at every word's edge: those split a compound ("売り / 板"). None without the word breaks.
+ */
+export function phraseEdges(text: string): number[] {
+  const Segmenter = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
+  if (!Segmenter) return [];
+  const words = [...new Segmenter(undefined, { granularity: 'word' }).segment(text)].map(w => w.segment), out: number[] = [];
+  let at = 0;
+  words.forEach((word, k) => { at += [...word].length; if (k < words.length - 1 && (PHRASE_END.test(word) || PHRASE_START.test(words[k + 1]!))) out.push(at); });
+  return out;
+}
+/**
+ * `text` in at most two lines no wider than `room`: one line at `size`, or a little smaller (to 85 %); else two, broken at the space (or, in
+ * a script written without spaces, the phrase's edge: `phraseEdges`) that leaves the wider line narrowest; smaller where even two are too
+ * wide, and one smaller line where there is nowhere to break.
+ */
+export function fitLines(g: Ctx, text: string, room: number, size: number, weight = 400): { lines: string[]; size: number } {
+  font(g, size, weight);
+  const whole = g.measureText(text).width;
+  if (whole <= room) return { lines: [text], size };
+  if (whole * 0.85 <= room) return { lines: [text], size: Math.floor(size * room / whole * 10) / 10 };
+  const chars = [...text], spaces = chars.flatMap((c, i) => (c === ' ' ? [i] : []));
+  let best: { lines: string[]; width: number } | null = null;
+  for (const i of spaces.length ? spaces : phraseEdges(text)) {
+    const lines = [chars.slice(0, i).join('').trimEnd(), chars.slice(i).join('').trimStart()];
+    if (!lines[0] || !lines[1]) continue;
+    const width = Math.max(...lines.map(line => g.measureText(line).width));
+    if (!best || width < best.width) best = { lines, width };
+  }
+  if (!best) return { lines: [text], size: fitSize(g, text, room, size, weight) };
+  return { lines: best.lines, size: best.width <= room ? size : Math.max(8, Math.floor(size * room / best.width * 10) / 10) };
+}
+/** Draw `text` as `fitLines` fits it, centred on `y`, its lines `lead` times their size apart. */
+function fitNote(g: Ctx, text: string, x: number, y: number, room: number, th: Theme, color: string, size: number, weight = 400, lead = 1.25): void {
+  const fit = fitLines(g, text, room, size, weight), step = fit.size * lead;
+  fit.lines.forEach((line, i) => note(g, line, x, y + (i - (fit.lines.length - 1) / 2) * step, th, 'left', color, fit.size, weight));
 }
 
 // ---- the scenes ----------------------------------------------------------------------------------------------------------------------
@@ -291,6 +337,20 @@ const pan: Scene = {
   },
 };
 
+/**
+ * Which band holds more, in the words of the profile's box (`depthBandVerdict` in hover-rows.ts; Karl, 2026-11-21): the heavier side named
+ * by its price side with how many times the other it is, as the boxes print a ratio (`ratioWords`); about even under the Mirror's balance;
+ * only one side where the other holds nothing. The colour comes from the same test, so "about even" is never in a side's colour.
+ */
+export function mirrorVerdict(asks: number, bids: number, th: Pick<Theme, 'ask' | 'bid' | 'text' | 'muted'>): { text: string; color: string } {
+  if (!(asks > 0) && !(bids > 0)) return { text: tg('No bids or asks'), color: th.muted };
+  if (!(asks > 0)) return { text: tg('Only bids'), color: th.bid };
+  if (!(bids > 0)) return { text: tg('Only asks'), color: th.ask };
+  if (Math.max(asks, bids) / Math.min(asks, bids) < BALANCED_RATIO) return { text: tg('Bids and asks about even'), color: th.text };
+  return asks > bids ? { text: tg('Asks {ratio} the bids', { ratio: ratioWords(asks, bids) }), color: th.ask }
+    : { text: tg('Bids {ratio} the asks', { ratio: ratioWords(bids, asks) }), color: th.bid };
+}
+
 const mirror: Scene = {
   duration: 9000, rest: 0.55, height: 300,
   draw(g, w, h, u, th) {
@@ -310,17 +370,21 @@ const mirror: Scene = {
     g.strokeStyle = th.ask; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(prof.x, yMark + 0.5); g.lineTo(prof.x + prof.w, yMark + 0.5); g.stroke(); g.setLineDash([]);
     for (const y of [yHov, yMir]) { g.strokeStyle = th.ui; g.lineWidth = 1.5; g.beginPath(); g.moveTo(prof.x, y + 0.5); g.lineTo(prof.x + prof.w, y + 0.5); g.stroke(); g.lineWidth = 1; }
     pointer(g, prof.x + prof.w * 0.5, yHov, th);
-    // the box
-    const bx = prof.x + prof.w + 22, bw = w - bx - 10, ratio = Math.max(asks, bids) / Math.max(1, Math.min(asks, bids));
+    // the box: each band's total, then which is heavier in the profile box's words (`mirrorVerdict`), every line kept inside the box
+    const bx = prof.x + prof.w + 22, bw = w - bx - 10, room = bw - 24;
     g.fillStyle = th.panel; g.strokeStyle = th.line; g.beginPath(); g.roundRect(bx, 40, bw, 150, 8); g.fill(); g.stroke();
-    note(g, tg('±${price}  from the price', { price: priceText(dist) }), bx + 12, 58, th, 'left', th.muted, 11);
-    note(g, tg('Asks (this side)  {amount}', { amount: money(asks) }), bx + 12, 84, th, 'left', th.ask, 12.5, 650);
-    note(g, tg('Bids (opposite)  {amount}', { amount: money(bids) }), bx + 12, 108, th, 'left', th.bid, 12.5, 650);
-    const verdict = asks <= 0 && bids <= 0 ? tg('No liquidity in this range') : ratio < BALANCED_RATIO ? tg('Balanced') : asks > bids ? tg('Asks have {ratio}x more', { ratio: ratio.toFixed(2) }) : tg('Bids have {ratio}x more', { ratio: ratio.toFixed(2) });
-    note(g, verdict, bx + 12, 140, th, 'left', asks > bids * BALANCED_RATIO ? th.ask : bids > asks * BALANCED_RATIO ? th.bid : th.text, 13, 700);
-    note(g, tg('Move outward: the balance changes'), bx + 12, 168, th, 'left', th.muted, 10.5);
-    badge(g, tg('Hover'), bx, 206, th, 1);
-    note(g, tg('in the profile or the order book'), bx + 62, 217, th, 'left', th.muted, 11);
+    const away = tg('±${price}  from the price', { price: priceText(dist) }), asksLine = tg('Asks  {amount}', { amount: money(asks) }), bidsLine = tg('Bids  {amount}', { amount: money(bids) });
+    note(g, away, bx + 12, 58, th, 'left', th.muted, fitSize(g, away, room, 11, 400));
+    note(g, asksLine, bx + 12, 84, th, 'left', th.ask, fitSize(g, asksLine, room, 12.5, 650), 650);
+    note(g, bidsLine, bx + 12, 108, th, 'left', th.bid, fitSize(g, bidsLine, room, 12.5, 650), 650);
+    // The verdict and the hint under it take two lines where one would be too wide: on a phone the box is a third of the screen.
+    const verdict = mirrorVerdict(asks, bids, th);
+    fitNote(g, verdict.text, bx + 12, 141, room, th, verdict.color, 13, 700);
+    fitNote(g, tg('Move outward: the balance changes'), bx + 12, 173, room, th, th.muted, 10.5);
+    // Where it is said: beside the key, after the key's own width ("Hover" is twice as long in some languages), or under it where that is too narrow.
+    const hover = badge(g, tg('Hover'), bx, 206, th, 1), where = tg('in the profile or the order book'), beside = w - bx - hover - 14;
+    if (fitLines(g, where, beside, 11).lines.length === 1) fitNote(g, where, bx + hover + 8, 217, beside, th, th.muted, 11);
+    else fitNote(g, where, bx + 2, 247, w - bx - 10, th, th.muted, 11);
   },
 };
 
