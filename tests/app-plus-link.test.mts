@@ -291,16 +291,90 @@ test('a link that cannot be reached reads the old way once, with the pass; when 
   assert.deepEqual(down.reads.map(r => r.pass), [null, PASS], 'the link once, then the old way once');
 });
 
-/** The page's `fetch` answering as `answer` says, every request noted with its Authorization header and cache mode, until `restore`. */
-function stubFetch(answer: (url: string) => { status: number; body: unknown }) {
+test('a link that ran out on its way is not held: the read goes the old way, and no link is asked for 30 seconds however many reads follow (Sol, review 2026-11-21)', async () => {
+  type Clock = ReturnType<typeof clock>;
+  const cases: [string, (c: Clock) => LinkAnswer][] = [
+    // Answered a second after it was asked, with 90 s left, and arriving 100 s after it was asked.
+    ['a slow answer', c => { const sent = c.t; c.t += 100_000; return grant(A, sent + 1_000, 90_000); }],
+    ['a slot of a millisecond, arriving 2 ms later', c => { c.t += 2; return { status: 200, body: { base: A, until: 1_001, now: 1_000 } }; }],
+    ['times in seconds, arriving 5 s later', c => { c.t += 5_000; return { status: 200, body: { base: A, until: 1_795_003_200, now: 1_795_000_000 } }; }],
+  ];
+  for (const [what, first] of cases) {
+    const c = clock(), s = server(n => n === 1 ? first(c) : grant(A, c.t)), svc = levels(() => OK), { read } = linked(c, s, svc);
+    assert.deepEqual(await read(TRIGGERS, PASS), OK, what);
+    assert.deepEqual(svc.reads, [{ url: TRIGGERS, pass: PASS }], `${what}: the old way, with the pass`);
+    for (let i = 0; i < 240; i++) await read(TRIGGERS, PASS);
+    assert.equal(s.asks.length, 1, `${what}: 240 reads more, no request more`);
+    assert.ok(svc.reads.every(r => r.pass === PASS), `${what}: all the old way`);
+    c.t += LINK_WAIT_MIN_MS - 1; await read(TRIGGERS, PASS);
+    assert.equal(s.asks.length, 1, `${what}: none within the 30 s`);
+    c.t += 1; await read(TRIGGERS, PASS);
+    assert.equal(s.asks.length, 2, `${what}: asked for again after them`);
+    assert.deepEqual(svc.reads.at(-1), { url: `${A}plus/btc/triggers.json`, pass: null }, `${what}: and read from`);
+  }
+});
+
+const settle = async (): Promise<void> => { for (let i = 0; i < 5; i++) await tick(); };
+
+test('a link refused again stays dropped: a request on its way when it was dropped cannot bring it back, nor cut the quiet spell short (Sol, review 2026-11-21)', async () => {
+  type Clock = ReturnType<typeof clock>;
+  const cases: [string, (c: Clock) => LinkAnswer][] = [
+    ['the dropped link', c => grant(B, c.t)],
+    ['a link that ran out on its way', c => { c.t += 2; return { status: 200, body: { base: linkOf('c'), until: 1_001, now: 1_000 } }; }],
+    ['a busy server naming a second', () => ({ status: 503, body: null, retryAfter: 1 })],
+  ];
+  for (const [what, onItsWay] of cases) {
+    const c = clock(), t0 = c.t, s = server(n => n === 3 ? onItsWay(c) : grant(n === 1 ? A : B, c.t)), day = `${LEVELS}/v1/plus/btc/trigger-history/2026-11-20.json`;
+    let refuseLate = (): void => {};
+    const late = new Promise<LiqAnswer>(r => { refuseLate = () => r(REFUSED); });
+    const svc = levels(url => url === `${B}plus/btc/triggers.json` ? late : url.startsWith(A) || url.startsWith(B) ? REFUSED : OK), { read, link } = linked(c, s, svc);
+    // The first read is refused on A, moves to B, and its read of B is held back.
+    const first = read(TRIGGERS, PASS);
+    await settle();
+    assert.equal(s.asks.length, 2, what);
+    // The second is refused on B at once: it drops B (refused once) and asks for a link again, an answer the server holds back.
+    s.hold();
+    const second = read(GROUPS, PASS);
+    await settle();
+    assert.equal(s.asks.length, 3, what);
+    // The third waits for that request too.
+    const third = read(day, PASS);
+    // The first read's B is refused now: its second refusal drops B and quiets the link for five minutes.
+    refuseLate();
+    assert.deepEqual(await first, OK, what);
+    // Then the request on its way is answered: nothing is held or given to the reads waiting for it.
+    s.release();
+    assert.deepEqual(await second, OK, what); assert.deepEqual(await third, OK, what);
+    assert.ok(!svc.reads.some(r => r.url === `${B}plus/btc/trigger-history/2026-11-20.json`), `${what}: the third read never tried the dropped link`);
+    assert.deepEqual(svc.reads.filter(r => r.pass === PASS).map(r => r.url).sort(), [TRIGGERS, GROUPS, day].sort(), `${what}: all three the old way`);
+    // The five minutes stand, whatever the answer said: nothing asked for or given within them.
+    c.t = t0 + LINK_WAIT_MIN_MS + 1_000;
+    assert.equal(await link.get(PASS), null, `${what}: still quiet after 31 s`);
+    c.t = t0 + LINK_FAILED_MS - 1;
+    assert.equal(await link.get(PASS), null, what);
+    assert.equal(s.asks.length, 3, `${what}: no request within the five minutes`);
+    // Once they are over, a link is asked for again, and B may be the answer.
+    c.t = t0 + LINK_FAILED_MS;
+    assert.equal(await link.get(PASS), B, what);
+    assert.equal(s.asks.length, 4, what);
+  }
+});
+
+/** A body whose first bytes come, then the connection is lost. */
+const brokenBody = (): ReadableStream<Uint8Array> => new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('{"rows": [')); c.error(new TypeError('connection lost')); } });
+/**
+ * The page's `fetch` answering as `answer` says (`broken`: the headers, then a body that fails), every request noted with its Authorization
+ * header and cache mode, until `restore`.
+ */
+function stubFetch(answer: (url: string) => { status: number; body?: unknown; broken?: true }) {
   const real = globalThis.fetch, seen: { url: string; auth: string | null; cache: RequestCache | undefined }[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     seen.push({ url, auth: new Headers(init?.headers).get('authorization'), cache: init?.cache });
     const a = answer(url);
-    return new Response(JSON.stringify(a.body), { status: a.status });
+    return new Response(a.broken ? brokenBody() : JSON.stringify(a.body ?? null), { status: a.status });
   }) as typeof fetch;
-  return { seen, restore: (): void => { globalThis.fetch = real; } };
+  return { seen, count: (url: string): number => seen.filter(r => r.url === url).length, restore: (): void => { globalThis.fetch = real; } };
 }
 
 test('through the page\'s own fetch: the link is asked for with the pass as a bearer token and never cached; the file read from it with no pass and revalidated', async () => {
@@ -325,7 +399,48 @@ const triggersFile = (): Record<string, unknown> => ({ v: 1, coin: 'BTC', venue:
   stops: { orders: 4, wallets: 4, bins: [[8, 300, 100, 0, 0, 2, 0, 300, 0], [12, 0, 0, 50, 150, 0, 3, 0, 100]], beyond: { longUsd: 0, shortUsd: 0 }, cut: { longUsd: 0, shortUsd: 0 } },
   takes: { orders: 4, wallets: 4, bins: [[6, 0, 0, 0, 70, 0, 1, 0, 70], [14, 40, 20, 0, 0, 2, 0, 40, 0]], beyond: { longUsd: 0, shortUsd: 0 }, cut: { longUsd: 0, shortUsd: 0 } } });
 
-// The one test of the tab's shared link: it is the first and only use of it in this file, so it starts with none held.
+test('a linked file whose body fails after its headers is no answer: the file is read the old way, with the pass (Sol, review 2026-11-21)', async () => {
+  const stub = stubFetch(url => url === `${API}/link` ? { status: 200, body: { base: A, until: Date.now() + 6 * HOUR, now: Date.now() } }
+    : url.startsWith(A) ? { status: 200, broken: true } : { status: 200, body: { v: 1 } });
+  try {
+    const read = withLink(webFetch, new DataLink(() => API), { refusal: isRefusal });
+    assert.deepEqual(await read(TRIGGERS, PASS), { status: 200, body: { v: 1 } });
+    assert.deepEqual(stub.seen.map(r => [r.url, r.auth]), [[`${API}/link`, `Bearer ${PASS}`], [`${A}plus/btc/triggers.json`, null], [TRIGGERS, `Bearer ${PASS}`]]);
+  } finally { stub.restore(); }
+});
+
+test('a body that fails after its headers makes webFetch reject (no answer, as its contract says), and the live levels and the history take it as a failed read (Sol, review 2026-11-21)', async () => {
+  const day = Date.UTC(2026, 10, 15), now = day + 12 * HOUR, broken = `${LEVELS}/v1/btc/liquidation-history/${dayText(day - DAY_MS)}.json`;
+  const stub = stubFetch(url => url === broken || url === TRIGGERS ? { status: 200, broken: true }
+    : url.endsWith('/liquidation-history.json') ? { status: 200, body: { edges: [1, 2], first: day - 5 * DAY_MS, last: now } } : { status: 404, body: null });
+  try {
+    await assert.rejects(webFetch(broken));
+    await assert.rejects(webFetch(TRIGGERS, PASS));
+    assert.deepEqual(await webFetch(`${LEVELS}/v1/plus/btc/none.json`, PASS), { status: 404, body: null }, 'a whole body is read as before');
+    // The live orders file, read the old way: unavailable, and asked again 30 s later as any failed read.
+    let at = AS_OF + 45 * MIN;
+    const src = new LiqLevelsSource(async url => url.includes('hyperliquid') ? [] : freeFile(), () => at, () => `${LEVELS}/v1/btc/liquidations.json`, webFetch, { pass: () => PASS, refused: () => {} });
+    const stops: LiqView = { ...FREE_VIEW, liq: false, stops: true }, live = stub.count(TRIGGERS);
+    for (let i = 0; i < 3; i++) { src.ensure(BTC, () => {}, stops); await tick(); await tick(); }
+    assert.equal(stub.count(TRIGGERS), live + 1); assert.equal(src.state, 'unavailable'); assert.equal(src.levels, null);
+    at += 29_000; src.ensure(BTC, () => {}, stops); await tick(); await tick();
+    assert.equal(stub.count(TRIGGERS), live + 1, 'not again within the 30 s');
+    at += 1_000; src.ensure(BTC, () => {}, stops); await tick(); await tick();
+    assert.equal(stub.count(TRIGGERS), live + 2, 'asked again after them');
+    // A day read after it ended: a failed read, asked again a minute later; never held as an empty day, which would not be asked again.
+    const history = new LiqHistory(), from = day - DAY_MS + HOUR, to = day - HOUR, days = stub.count(broken);
+    const ask = async (t: number): Promise<void> => { for (let i = 0; i < 3; i++) { history.ensure(from, to, t, () => {}); await tick(); await tick(); } };
+    await ask(now);
+    assert.equal(stub.count(broken), days + 1); assert.deepEqual(history.rows(from, to), []);
+    await ask(now + 59_000);
+    assert.equal(stub.count(broken), days + 1, 'not again within the minute');
+    await ask(now + 61_000);
+    assert.equal(stub.count(broken), days + 2, 'asked again: a failed read');
+  } finally { stub.restore(); }
+});
+
+// The one test that reads with a pass through the tab's shared link: the reads of the shared readers before it carry no pass and never touch
+// the link, so it starts with none held.
 test('the page\'s own readers share the tab\'s one link: the live Plus files and the history\'s rollups come from it, the pass never sent', async () => {
   const stub = stubFetch(url => url === `${PLUS_API}/link` ? { status: 200, body: { base: A, until: Date.now() + 6 * HOUR, now: Date.now() } }
     : url === `${A}plus/btc/triggers.json` ? { status: 200, body: triggersFile() }

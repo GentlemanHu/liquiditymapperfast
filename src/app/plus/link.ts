@@ -72,7 +72,10 @@ export const webLinkRequest: LinkRequest = (url, pass) => withTimeout(async sign
 export interface LinkSource {
   /** The link to read through, or null when there is none to be had now (the old way, then). Never rejects. */
   get(pass: string): Promise<string | null>;
-  /** The levels service refused `base`: it is forgotten if it is the link held. `quiet`: refused again, so no link is asked for a while. */
+  /**
+   * The levels service refused `base`: it is forgotten if it is the link held. `quiet`: refused again, so no link is asked for a while, and
+   * `base` is not taken back meanwhile from a request already on its way.
+   */
   drop(base: string, quiet?: boolean): void;
 }
 
@@ -86,16 +89,18 @@ const failedWait = (seconds: number | undefined): number =>
 /**
  * The tab's link, asked for when a paid read needs one, one request at a time (every caller meanwhile waits for the same answer). It is kept
  * for the life the server gave it, measured from the server's own clock (`until - now`) and counted on this tab's clock from when it was asked,
- * so a page clock that is off by hours or days keeps it just as long. A request that failed makes every caller go the old way for a while
- * without asking again; so does a refused pass, for that pass.
+ * so a page clock that is off by hours or days keeps it just as long. A request that failed, or a link that ran out on its way, makes every
+ * caller go the old way for a while without asking again; so does a refused pass, for that pass.
  */
 export class DataLink implements LinkSource {
   /** The link held, and the stretch of this tab's clock it is used in. */
   #held: (Span & { base: string }) | null = null;
   /** The request on its way. */
   #asking: Promise<string | null> | null = null;
-  /** No link is asked for in this stretch (a request that failed, or a link refused again). */
+  /** No link is asked for in this stretch (a request that failed, a link that ran out on its way, or a link refused again). */
   #quiet: Span | null = null;
+  /** The link refused again, and the stretch in which it is not taken from an answer (one asked for before it was dropped can bring it back). */
+  #dropped: (Span & { base: string }) | null = null;
   /** The pass the server last refused a link to, and the stretch in which no link is asked for with it. */
   #refused: (Span & { pass: string }) | null = null;
 
@@ -117,11 +122,17 @@ export class DataLink implements LinkSource {
     // A newer link is held: the refusal was of one already replaced.
     if (this.#held && this.#held.base !== base) return;
     this.#held = null;
-    if (quiet) this.#quietFor(LINK_FAILED_MS);
+    if (quiet) this.#dropped = { base, ...this.#quietFor(LINK_FAILED_MS) };
   }
 
-  /** No link is asked for during the next `ms`. */
-  #quietFor(ms: number): void { const at = this.now(); this.#quiet = { from: at, until: at + ms }; }
+  /**
+   * No link is asked for during the next `ms` at least: the stretch. One under way is only ever lengthened, so an answer to a request asked
+   * for before it began (a failure, a link that ran out on its way) does not cut short a link refused again.
+   */
+  #quietFor(ms: number): Span {
+    const at = this.now(), quiet = this.#quiet;
+    return this.#quiet = quiet && inside(quiet, at) ? { from: quiet.from, until: Math.max(quiet.until, at + ms) } : { from: at, until: at + ms };
+  }
 
   async #ask(pass: string, asked: number): Promise<string | null> {
     let answer: Awaited<ReturnType<LinkRequest>>;
@@ -130,9 +141,14 @@ export class DataLink implements LinkSource {
     if (answer.status === 403) { this.#refused = { pass, from: at, until: at + LINK_REFUSED_MS }; return null; }
     const grant = answer.status === 200 ? readLink(answer.body) : null;
     if (!grant) { this.#quietFor(failedWait(answer.retryAfter)); return null; }
+    // The link refused again, brought back by a request asked for before it was dropped: not taken while its quiet stretch lasts.
+    if (this.#dropped?.base === grant.base && inside(this.#dropped, at)) return null;
     // Counted from when it was asked: the server's clock read `now` after that, so the link never outlives what the server said.
-    const life = grant.until - grant.now;
-    this.#held = { base: grant.base, from: asked, until: asked + Math.min(LINK_LONGEST_MS, life > LINK_EARLY_MS ? life - LINK_EARLY_MS : life) };
+    const life = grant.until - grant.now, until = asked + Math.min(LINK_LONGEST_MS, life > LINK_EARLY_MS ? life - LINK_EARLY_MS : life);
+    // One that ran out on its way (a slow answer, or a server whose times are off) is not held: this read goes the old way, and none is asked
+    // for a moment, so the reads that follow do not each ask again.
+    if (until <= at) { this.#quietFor(LINK_WAIT_MIN_MS); return null; }
+    this.#held = { base: grant.base, from: asked, until };
     return grant.base;
   }
 }

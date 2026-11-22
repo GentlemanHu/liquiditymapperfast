@@ -42,14 +42,20 @@ export const LIQ_REFUSED = 'plus_required';
 
 /** An answer of the levels service or its gate: its status, its body (JSON, or null), and how long it asked to wait (`Retry-After`, s). */
 export interface LiqAnswer { status: number; body: unknown; retryAfter?: number }
-/** A read that gives the answer whatever its status (a failure to reach the server rejects): the address, and the pass to send with it. */
+/**
+ * A read that gives the answer whatever its status (a failure to reach the server, or to receive the whole body, rejects): the address, and
+ * the pass to send with it.
+ */
 export type LiqFetch = (url: string, pass?: string | null) => Promise<LiqAnswer>;
 /** A read of the levels service or its gate is given up after this long (a rollup is the largest file, a few MB). */
 const READ_TIMEOUT_MS = 30_000;
 export const webFetch: LiqFetch = async (url, pass) => {
   const answer = await fetch(url, { cache: 'no-cache', signal: AbortSignal.timeout(READ_TIMEOUT_MS), ...(pass ? { headers: { authorization: `Bearer ${pass}` } } : {}) });
+  // The body is taken whole before it is read as JSON: a connection lost or given up while it comes rejects, as no answer at all, never a
+  // file with nothing in it (the data link then reads the file the old way, and a day is not held as empty).
+  const text = await answer.text();
   let body: unknown = null;
-  try { body = await answer.json(); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
+  try { body = JSON.parse(text); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
   const wait = retryAfterSeconds(answer.headers.get('retry-after'), Date.now());
   return { status: answer.status, body, ...(wait !== undefined ? { retryAfter: wait } : {}) };
 };
