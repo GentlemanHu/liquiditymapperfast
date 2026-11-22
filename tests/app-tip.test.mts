@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { placeTip } from '../src/app/tip.ts';
+import { PressGuard, placeTip } from '../src/app/tip.ts';
 import { HELP } from '../src/app/help.ts';
 
 const viewport = { w: 1000, h: 700 };
@@ -29,4 +29,26 @@ test('every help topic says what it is and points at a guide section', () => {
     assert.ok(/^[a-z-]+$/.test(topic.guide), `${id} names a guide section`);
   }
   assert.match(HELP.mirror.tip, /Nothing changes until you hover/, "Mirror's help says the box only shows while you hover");
+});
+
+// Karl, 2026-11-22: the Depth pane's Source dropdown sometimes left its tip over the open list. The control a mouse or pen pressed keeps its
+// tip shut until the pointer moves to another element (tip.ts PressGuard): the press focuses it, and the open list hands the pointer back
+// over the same control, and either showed the tip again.
+test('the control just pressed shows no tip, on the pointer coming back over it or on the focus the press gave it, until the pointer moves on', () => {
+  const guard = new PressGuard<string>();
+  assert.equal(guard.over('source'), true, 'before any press, a tip may show');
+  guard.press('source');
+  assert.equal(guard.focus('source'), false, 'the focus the press gave it');
+  assert.equal(guard.over('source'), false, 'the pointer back over it from the open list');
+  assert.equal(guard.over('source'), false, 'and again');
+  assert.equal(guard.focus('bars'), true, 'focus on another control shows its tip');
+  assert.equal(guard.over('bars'), true, 'the pointer over another control: its tip, and the guard ends');
+  assert.equal(guard.over('source'), true, 'so coming back to the dropdown later shows its tip again');
+  guard.press('source');
+  assert.equal(guard.over(null), false, 'over nothing with a tip: no tip, and the guard ends');
+  assert.equal(guard.over('source'), true);
+  guard.press('source'); guard.key();
+  assert.equal(guard.focus('source'), true, 'a key pressed: keyboard focus shows tips again');
+  guard.press(null);
+  assert.equal(guard.over('source'), true, 'a press on something without a tip guards nothing');
 });

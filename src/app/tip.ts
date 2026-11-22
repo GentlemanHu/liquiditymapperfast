@@ -24,6 +24,27 @@ export function placeTip(rect: { left: number; right: number; top: number; botto
   return { left: Math.max(MARGIN, Math.min(centre, viewport.w - MARGIN - size.w)), top: Math.max(MARGIN, top), above };
 }
 
+/**
+ * The element a mouse or pen just pressed keeps its tip shut until the pointer moves to another element (Karl, 2026-11-22: the Depth pane's
+ * Source dropdown sometimes left its tip over the open list). A press hides the tip, but the press also focuses the control, which a browser
+ * may count as visible focus, and a native dropdown takes the pointer away without a leave and gives it back over the same control, where
+ * the tip would follow at once: either brought the tip back over the open list.
+ */
+export class PressGuard<T> {
+  #pressed: T | null = null;
+  /** A mouse or pen went down on `node` (the element under it that carries a tip, or null). */
+  press(node: T | null): void { this.#pressed = node; }
+  /** The pointer is over `node`: whether its tip may show. Any other element, or none, ends the guard. */
+  over(node: T | null): boolean {
+    if (node !== null && node === this.#pressed) return false;
+    this.#pressed = null; return node !== null;
+  }
+  /** `node` took focus: whether its tip may show (not when the press gave it the focus). */
+  focus(node: T | null): boolean { return node !== null && node !== this.#pressed; }
+  /** A key went down: focus from the keyboard shows tips again, the pressed control's too. */
+  key(): void { this.#pressed = null; }
+}
+
 /** Start listening on `doc`; returns how to stop (for tests and hot reload). */
 export function installTips(doc: Document = document): () => void {
   const box = doc.createElement('div');
@@ -94,22 +115,27 @@ export function installTips(doc: Document = document): () => void {
     const node = target(event);
     if (node === current) return;
     hide();
-    if (!node) return;
+    if (!node || !guard.over(node)) return;
     // Once a tooltip has been seen, the next one follows at once, as when a toolbar is being scanned.
     if (Date.now() - lastShown < FOLLOW_MS) show(node); else timer = window.setTimeout(() => show(node), SHOW_DELAY_MS);
   };
   const focus = (event: FocusEvent): void => {
     const node = target(event);
-    if (node && event.target instanceof Element && event.target.matches(':focus-visible')) { hide(); show(node); }
+    if (node && guard.focus(node) && event.target instanceof Element && event.target.matches(':focus-visible')) { hide(); show(node); }
   };
   // A finger always "leaves" when it lifts, which would close a tip it had just opened.
   const leave = (event: PointerEvent): void => { if (event.pointerType !== 'touch' && !event.relatedTarget) hide(); };
   const stop = (): void => hide();
-  const key = (event: KeyboardEvent): void => { if (event.key === 'Escape') hide(); };
+  // A press hides the tip, and a mouse's or pen's keeps its element's shut until the pointer moves to another (PressGuard).
+  const guard = new PressGuard<HTMLElement>();
+  const down = (event: PointerEvent): void => { hide(); if (event.pointerType !== 'touch') guard.press(target(event)); else guard.press(null); };
+  const key = (event: KeyboardEvent): void => { guard.key(); if (event.key === 'Escape') hide(); };
 
   doc.addEventListener('pointerover', over, true);
   doc.addEventListener('pointerleave', leave, true);
-  doc.addEventListener('pointerdown', stop, true);
+  doc.addEventListener('pointerdown', down, true);
+  // A choice made in a dropdown: whatever its tip, it is not wanted over what was chosen.
+  doc.addEventListener('change', stop, true);
   doc.addEventListener('pointerdown', pressDown, true); doc.addEventListener('pointermove', pressMove, true);
   doc.addEventListener('pointerup', lifted, true); doc.addEventListener('pointercancel', lifted, true); doc.addEventListener('click', swallow, true);
   doc.addEventListener('wheel', stop, { capture: true, passive: true });
@@ -119,7 +145,8 @@ export function installTips(doc: Document = document): () => void {
   window.addEventListener('blur', stop);
   return () => {
     hide();
-    doc.removeEventListener('pointerover', over, true); doc.removeEventListener('pointerleave', leave, true); doc.removeEventListener('pointerdown', stop, true);
+    doc.removeEventListener('pointerover', over, true); doc.removeEventListener('pointerleave', leave, true); doc.removeEventListener('pointerdown', down, true);
+    doc.removeEventListener('change', stop, true);
     doc.removeEventListener('pointerdown', pressDown, true); doc.removeEventListener('pointermove', pressMove, true); doc.removeEventListener('pointerup', lifted, true);
     doc.removeEventListener('pointercancel', lifted, true); doc.removeEventListener('click', swallow, true); cancelPress();
     doc.removeEventListener('wheel', stop, true); doc.removeEventListener('focusin', focus, true); doc.removeEventListener('focusout', blurred, true); doc.removeEventListener('keydown', key, true);
