@@ -153,45 +153,67 @@ function note(g: Ctx, text: string, x: number, y: number, th: Theme, align: Canv
   if (pill) { const w = g.measureText(text).width + 14, left = align === 'left' ? x - 7 : align === 'right' ? x - w + 7 : x - w / 2; g.save(); g.globalAlpha = 0.88; g.fillStyle = th.panel; g.beginPath(); g.roundRect(left, y - 10, w, 20, 6); g.fill(); g.restore(); }
   g.fillStyle = color; g.fillText(text, x, y);
 }
-/** The size, at most `size` and at least `min`, at which `text` fits in `room` px: on a phone a figure's box is a third of the screen wide. */
-export function fitSize(g: Ctx, text: string, room: number, size: number, weight = 400, min = 8): number {
+/** The smallest size a picture's words are drawn at. */
+const MIN_TEXT = 8;
+/** The size, at most `size`, at which `text` fits in `room` px, or `min` where it is too wide even then: on a phone a figure's box is a third of the screen. */
+export function fitSize(g: Ctx, text: string, room: number, size: number, weight = 400, min = MIN_TEXT): number {
   font(g, size, weight); const width = g.measureText(text).width;
   return width <= room || !(width > 0) ? size : Math.max(min, Math.floor(size * room / width * 10) / 10);
 }
-/** A word a Japanese or Chinese phrase ends with (a particle written in hiragana, a function word, punctuation), and one a Chinese phrase starts with. */
-const PHRASE_END = /^[぀-ゟ]+$|^[与也或是和及的]$|^[　-〿！-／：-＠]+$/, PHRASE_START = /^[与也或是和及]$/;
+/** Whether every character of `s` lies in one of `ranges` (code points, both ends included). */
+const within = (s: string, ...ranges: readonly (readonly [number, number])[]): boolean => [...s].every(c => { const p = c.codePointAt(0)!; return ranges.some(([lo, hi]) => p >= lo && p <= hi); });
+const HIRAGANA = [0x3041, 0x309f] as const, KANJI = [0x3400, 0x9fff] as const, CJK_MARKS = [[0x3000, 0x303f], [0xff01, 0xff0f], [0xff1a, 0xff20]] as const;
+/** A word a Japanese or Chinese phrase ends with (a particle written in hiragana, a Chinese function word, punctuation), and one a Chinese phrase starts with. */
+const phraseEnd = (w: string): boolean => within(w, HIRAGANA) || within(w, ...CJK_MARKS) || ([...w].length === 1 && '与也或是和及的'.includes(w));
+const phraseStart = (w: string): boolean => [...w].length === 1 && '与也或是和及'.includes(w);
+/** A kanji with the kana written after it (買い, 動かす): one word, which word breaks made from a dictionary keep whole. */
+const kanjiKana = (s: string): boolean => { const c = [...s]; return c.some((x, i) => i + 1 < c.length && within(x, KANJI) && within(c[i + 1]!, HIRAGANA)); };
+type WordBreaks = { segment(text: string): Iterable<{ segment: string }> };
+const browserBreaks = (): WordBreaks | null => { const S = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter; return S ? new S(undefined, { granularity: 'word' }) : null; };
 /**
  * Where a text written without spaces may break: at a phrase's edge, from the browser's own word breaks ("買い板と / 売り板はほぼ同じ",
- * "既无买盘 / 也无卖盘"). Not at every word's edge: those split a compound ("売り / 板"). None without the word breaks.
+ * "既无买盘 / 也无卖盘"). Not at every word's edge: those split a compound ("売り / 板"). None without word breaks, and none from breaks
+ * made without a dictionary, which split a word's kana from its kanji ("買 / い") and so cannot tell a particle from them.
  */
-export function phraseEdges(text: string): number[] {
-  const Segmenter = (Intl as { Segmenter?: typeof Intl.Segmenter }).Segmenter;
-  if (!Segmenter) return [];
-  const words = [...new Segmenter(undefined, { granularity: 'word' }).segment(text)].map(w => w.segment), out: number[] = [];
+export function phraseEdges(text: string, breaks: WordBreaks | null = browserBreaks()): number[] {
+  if (!breaks) return [];
+  const words: string[] = [];
+  for (const { segment } of breaks.segment(text)) {
+    // A run of hiragana is one word here (または, never また / は).
+    if (words.length && within(segment, HIRAGANA) && within(words[words.length - 1]!, HIRAGANA)) words[words.length - 1] += segment; else words.push(segment);
+  }
+  if (kanjiKana(text) && !words.some(kanjiKana)) return [];
+  const out: number[] = [];
   let at = 0;
-  words.forEach((word, k) => { at += [...word].length; if (k < words.length - 1 && (PHRASE_END.test(word) || PHRASE_START.test(words[k + 1]!))) out.push(at); });
+  words.forEach((word, k) => { at += [...word].length; if (k < words.length - 1 && (phraseEnd(word) || phraseStart(words[k + 1]!))) out.push(at); });
   return out;
 }
 /**
- * `text` in at most two lines no wider than `room`: one line at `size`, or a little smaller (to 85 %); else two, broken at the space (or, in
- * a script written without spaces, the phrase's edge: `phraseEdges`) that leaves the wider line narrowest; smaller where even two are too
- * wide, and one smaller line where there is nowhere to break.
+ * `text` in at most two lines for `room`: one line at `size`, or a little smaller (to 85 %); else two, broken at the space (or, in a script
+ * written without spaces, the phrase's edge: `phraseEdges`) that leaves the wider line narrowest, smaller where two are too wide; one line
+ * where there is nowhere to break. Never below `MIN_TEXT`, so `fits` says whether the lines are in fact no wider than `room`.
  */
-export function fitLines(g: Ctx, text: string, room: number, size: number, weight = 400): { lines: string[]; size: number } {
+export function fitLines(g: Ctx, text: string, room: number, size: number, weight = 400): { lines: string[]; size: number; fits: boolean } {
   font(g, size, weight);
   const whole = g.measureText(text).width;
-  if (whole <= room) return { lines: [text], size };
-  if (whole * 0.85 <= room) return { lines: [text], size: Math.floor(size * room / whole * 10) / 10 };
+  if (!(whole > room)) return { lines: [text], size, fits: true }; // it fits, or cannot be measured
+  const shrunk = Math.floor(size * room / whole * 10) / 10;
+  if (shrunk >= Math.max(MIN_TEXT, size * 0.85)) return { lines: [text], size: shrunk, fits: true };
   const chars = [...text], spaces = chars.flatMap((c, i) => (c === ' ' ? [i] : []));
+  let cuts = spaces.length ? spaces : phraseEdges(text);
+  // With no phrase's edge found (no word breaks in this browser) and one line too wide even at the smallest size: any character, rather
+  // than words cut off at the picture's edge.
+  if (!cuts.length && whole * MIN_TEXT / size > room) cuts = chars.map((_, i) => i).slice(1);
   let best: { lines: string[]; width: number } | null = null;
-  for (const i of spaces.length ? spaces : phraseEdges(text)) {
+  for (const i of cuts) {
     const lines = [chars.slice(0, i).join('').trimEnd(), chars.slice(i).join('').trimStart()];
     if (!lines[0] || !lines[1]) continue;
     const width = Math.max(...lines.map(line => g.measureText(line).width));
     if (!best || width < best.width) best = { lines, width };
   }
-  if (!best) return { lines: [text], size: fitSize(g, text, room, size, weight) };
-  return { lines: best.lines, size: best.width <= room ? size : Math.max(8, Math.floor(size * room / best.width * 10) / 10) };
+  const [lines, width] = best ? [best.lines, best.width] : [[text], whole];
+  const at = width <= room ? size : Math.max(MIN_TEXT, Math.floor(size * room / width * 10) / 10);
+  return { lines, size: at, fits: width * at / size <= room };
 }
 /** Draw `text` as `fitLines` fits it, centred on `y`, its lines `lead` times their size apart. */
 function fitNote(g: Ctx, text: string, x: number, y: number, room: number, th: Theme, color: string, size: number, weight = 400, lead = 1.25): void {
@@ -340,23 +362,26 @@ const pan: Scene = {
 /**
  * Which band holds more, in the words of the profile's box (`depthBandVerdict` in hover-rows.ts; Karl, 2026-11-21): the heavier side named
  * by its price side with how many times the other it is, as the boxes print a ratio (`ratioWords`); about even under the Mirror's balance;
- * only one side where the other holds nothing. The colour comes from the same test, so "about even" is never in a side's colour.
+ * only one side where the other holds nothing. The colour comes from the same test, so "about even" is never in a side's colour. A side not
+ * known, below zero or endless counts as nothing, as there.
  */
 export function mirrorVerdict(asks: number, bids: number, th: Pick<Theme, 'ask' | 'bid' | 'text' | 'muted'>): { text: string; color: string } {
-  if (!(asks > 0) && !(bids > 0)) return { text: tg('No bids or asks'), color: th.muted };
-  if (!(asks > 0)) return { text: tg('Only bids'), color: th.bid };
-  if (!(bids > 0)) return { text: tg('Only asks'), color: th.ask };
-  if (Math.max(asks, bids) / Math.min(asks, bids) < BALANCED_RATIO) return { text: tg('Bids and asks about even'), color: th.text };
-  return asks > bids ? { text: tg('Asks {ratio} the bids', { ratio: ratioWords(asks, bids) }), color: th.ask }
-    : { text: tg('Bids {ratio} the asks', { ratio: ratioWords(bids, asks) }), color: th.bid };
+  const a = Number.isFinite(asks) && asks > 0 ? asks : 0, b = Number.isFinite(bids) && bids > 0 ? bids : 0;
+  if (!a && !b) return { text: tg('No bids or asks'), color: th.muted };
+  if (!a) return { text: tg('Only bids'), color: th.bid };
+  if (!b) return { text: tg('Only asks'), color: th.ask };
+  if (Math.max(a, b) / Math.min(a, b) < BALANCED_RATIO) return { text: tg('Bids and asks about even'), color: th.text };
+  return a > b ? { text: tg('Asks {ratio} the bids', { ratio: ratioWords(a, b) }), color: th.ask }
+    : { text: tg('Bids {ratio} the asks', { ratio: ratioWords(b, a) }), color: th.bid };
 }
 
 const mirror: Scene = {
   duration: 9000, rest: 0.55, height: 300,
   draw(g, w, h, u, th) {
     g.fillStyle = th.bg; g.fillRect(0, 0, w, h);
-    const prof: Box = { x: 8, y: 8, w: Math.round(w * 0.46), h: h - 16 }, d: Dom = { t0: 0, t1: 1, p0: MARK - 1250, p1: MARK + 1250 };
-    // a taller profile, drawn bar by bar so the bands can be summed
+    // a taller profile, drawn bar by bar so the bands can be summed; on a phone it gives up some width (46 % of a wide picture, 40 % of the
+    // narrowest) so the box beside it keeps room for its words
+    const prof: Box = { x: 8, y: 8, w: Math.round(w * (0.4 + 0.06 * clamp((w - 280) / 320))), h: h - 16 }, d: Dom = { t0: 0, t1: 1, p0: MARK - 1250, p1: MARK + 1250 };
     g.fillStyle = th.panel; g.fillRect(prof.x, prof.y, prof.w, prof.h); g.strokeStyle = th.line; g.strokeRect(prof.x + 0.5, prof.y + 0.5, prof.w - 1, prof.h - 1);
     const k = breathe(u, 0.08), dist = 80 + k * 1050;                // price distance of the pointer from the mark
     const yMark = yOf(prof, d, MARK), yHov = yOf(prof, d, MARK + dist), yMir = yOf(prof, d, MARK - dist);
@@ -370,7 +395,7 @@ const mirror: Scene = {
     g.strokeStyle = th.ask; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(prof.x, yMark + 0.5); g.lineTo(prof.x + prof.w, yMark + 0.5); g.stroke(); g.setLineDash([]);
     for (const y of [yHov, yMir]) { g.strokeStyle = th.ui; g.lineWidth = 1.5; g.beginPath(); g.moveTo(prof.x, y + 0.5); g.lineTo(prof.x + prof.w, y + 0.5); g.stroke(); g.lineWidth = 1; }
     pointer(g, prof.x + prof.w * 0.5, yHov, th);
-    // the box: each band's total, then which is heavier in the profile box's words (`mirrorVerdict`), every line kept inside the box
+    // the box: each band's total, then which is heavier in the profile box's words (`mirrorVerdict`), each line fitted to the box
     const bx = prof.x + prof.w + 22, bw = w - bx - 10, room = bw - 24;
     g.fillStyle = th.panel; g.strokeStyle = th.line; g.beginPath(); g.roundRect(bx, 40, bw, 150, 8); g.fill(); g.stroke();
     const away = tg('±${price}  from the price', { price: priceText(dist) }), asksLine = tg('Asks  {amount}', { amount: money(asks) }), bidsLine = tg('Bids  {amount}', { amount: money(bids) });
@@ -382,8 +407,8 @@ const mirror: Scene = {
     fitNote(g, verdict.text, bx + 12, 141, room, th, verdict.color, 13, 700);
     fitNote(g, tg('Move outward: the balance changes'), bx + 12, 173, room, th, th.muted, 10.5);
     // Where it is said: beside the key, after the key's own width ("Hover" is twice as long in some languages), or under it where that is too narrow.
-    const hover = badge(g, tg('Hover'), bx, 206, th, 1), where = tg('in the profile or the order book'), beside = w - bx - hover - 14;
-    if (fitLines(g, where, beside, 11).lines.length === 1) fitNote(g, where, bx + hover + 8, 217, beside, th, th.muted, 11);
+    const hover = badge(g, tg('Hover'), bx, 206, th, 1), where = tg('in the profile or the order book'), beside = w - bx - hover - 14, there = fitLines(g, where, beside, 11);
+    if (there.lines.length === 1 && there.fits) fitNote(g, where, bx + hover + 8, 217, beside, th, th.muted, 11);
     else fitNote(g, where, bx + 2, 247, w - bx - 10, th, th.muted, 11);
   },
 };
