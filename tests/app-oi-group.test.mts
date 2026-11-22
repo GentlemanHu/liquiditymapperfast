@@ -55,6 +55,20 @@ test('a venue\'s gap longer than two chart candles is no change, grouped or not'
   assert.equal(sum(g.change), [...v.change.values()].reduce((x, m) => x + sum(m), 0));
 });
 
+test("the venues a drawn candle's level is made of are those read at its last chart candle, held as the chart candles hold them", () => {
+  // b stops at T + 1h (a sampler that hung): the chart candles hold its reading two hours, to T + 3h. Held for two drawn candles of four
+  // hours, it would still be counted eight hours on; read at each drawn candle's last chart candle, it is not.
+  const a: OiPart = { id: 'binance:BTCUSDT', bars: Array.from({ length: 16 }, (_, i) => bar(T - D4 + i * H, 100 + i)) };
+  const b: OiPart = { id: 'bitget:BTCUSDT', bars: Array.from({ length: 6 }, (_, i) => bar(T - D4 + i * H, 50 + i)) };
+  const parts = [a, b], oi = chainedOi(oiSumOf(parts, H)), v = groupVenues(oi, parts, H, D4), fine = oiSumOf(parts, H);
+  assert.deepEqual([...v.closeAt], [[T - D4, T - H], [T, T + 3 * H], [T + D4, T + 7 * H], [T + 2 * D4, T + 11 * H]], "each drawn candle's last chart candle");
+  assert.deepEqual([...v.read], [[T - D4, 2], [T, 2], [T + D4, 1], [T + 2 * D4, 1]], 'b held to T + 3h, then gone; the first drawn candle has its level too');
+  for (const [s, t] of v.closeAt) assert.equal(v.read.get(s), fine.venues[fine.bars.findIndex(x => x[0] === t)], `as sumOi counts the chart candle at ${t}`);
+  assert.equal(v.counted.get(T), 2, "b's changes in T..T+1h still count in the bar");
+  // The drawn-candle hold the pane used before: b's last grouped bar (T) held to T + 2 drawn candles.
+  assert.equal(oiSumOf(groupParts(parts, D4), D4).venues[2], 2, 'held for two drawn candles, b was counted at T + 4h');
+});
+
 test('the USD changes grouped add up per drawn candle, the first one without', () => {
   const a: OiPart = { id: 'binance:BTCUSDT', bars: Array.from({ length: 9 }, (_, i) => bar(T - H + i * H, 100 + 2 * i)) };
   const b: OiPart = { id: 'bybit:BTCUSDT', bars: Array.from({ length: 9 }, (_, i) => bar(T - H + i * H, 50 + i)) };

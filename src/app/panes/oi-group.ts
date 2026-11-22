@@ -17,7 +17,9 @@ import { heldOiAt, type OiPart } from '../oi-change.ts';
  */
 export interface OiGrouped {
   oi: OiBar[]; parts: OiPart[]; change: Map<number, number>; candles: CandleRow[];
-  venues: { change: Map<string, Map<number, number>>; counted: Map<number, number>; cohorts: Map<number, string> };
+  venues: GroupedVenues;
+  /** How many venues each drawn candle's level is made of (`GroupedVenues.read`), as `oi`: what `sumOi` counts per chart candle. */
+  read: number[];
   fine: { oi: readonly OiBar[]; parts: readonly OiPart[]; tfMs: number; candles: readonly CandleRow[] };
   drawnMs: number;
 }
@@ -56,17 +58,29 @@ export function groupChanges(oi: readonly OiBar[], change: ReadonlyMap<number, n
 }
 
 /**
+ * The venues of each drawn candle, by its start: each venue's own change (`change`), how many venues and which had a change counted (`counted`,
+ * `cohorts`), the last chart candle (`closeAt`, whose level the drawn candle's is) and how many venues were read there (`read`).
+ */
+export interface GroupedVenues {
+  change: Map<string, Map<number, number>>; counted: Map<number, number>; cohorts: Map<number, string>; closeAt: Map<number, number>; read: Map<number, number>;
+}
+
+/**
  * Each venue's own change per drawn candle as the chart candles count it (`sumOi`: a venue between its readings one chart candle apart, each
  * held up to max(2 candles, 10 min)), and per drawn candle how many venues and which had a change counted (`counted`, `cohorts`). The Range
  * summary's per-venue rows, venue counts and cohorts then add up to the drawn bars: worked out again from the venues' grouped bars they did
  * not where a venue starts inside a drawn candle or has a gap longer than two chart candles (review, 2026-11-22). The first drawn candle has
- * none, as in `groupChanges`.
+ * none, as in `groupChanges`. The venues its level is made of are those read at its last chart candle, held as the chart candles hold them
+ * (`read`, `closeAt`): held for two drawn candles, a venue that stopped two days before was still listed and counted on a daily candle
+ * (review, 2026-11-22).
  */
-export function groupVenues(oi: readonly OiBar[], parts: readonly OiPart[], tfMs: number, drawnMs: number): { change: Map<string, Map<number, number>>; counted: Map<number, number>; cohorts: Map<number, string> } {
+export function groupVenues(oi: readonly OiBar[], parts: readonly OiPart[], tfMs: number, drawnMs: number): GroupedVenues {
   const carry = Math.max(2 * tfMs, 10 * 60_000), first = oi.length ? drawnStart(oi[0]![0], drawnMs) : NaN;
-  const change = new Map<string, Map<number, number>>(), members = new Map<number, Set<string>>();
+  const change = new Map<string, Map<number, number>>(), members = new Map<number, Set<string>>(), closeAt = new Map<number, number>(), read = new Map<number, number>();
+  for (const b of oi) closeAt.set(drawnStart(b[0], drawnMs), b[0]);
   for (const part of parts) {
     const bars = [...part.bars].sort((a, b) => a[0] - b[0]), mine = new Map<number, number>();
+    for (const [s, t] of closeAt) if (heldOiAt(bars, t, carry)) read.set(s, (read.get(s) ?? 0) + 1);
     for (const b of oi) {
       const t = b[0], s = drawnStart(t, drawnMs);
       if (s === first) continue;
@@ -79,7 +93,7 @@ export function groupVenues(oi: readonly OiBar[], parts: readonly OiPart[], tfMs
   }
   const counted = new Map<number, number>(), cohorts = new Map<number, string>();
   for (const [s, m] of members) { counted.set(s, m.size); cohorts.set(s, [...m].sort().join(',')); }
-  return { change, counted, cohorts };
+  return { change, counted, cohorts, closeAt, read };
 }
 
 /** Each bar's change in USD by drawn candle: the chart candles' USD changes (`oiUsdChangeByTime`) added up, the first drawn candle without. */

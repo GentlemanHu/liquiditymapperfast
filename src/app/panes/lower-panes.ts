@@ -1218,8 +1218,9 @@ export class OiPane extends TimePane {
     // Each chart candle's change as the bars count it: venues added together by their own changes, one market from its bar before.
     const fine = parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : new Map(oi.slice(1).map((b, i) => [b[0], b[4] - oi[i]![4]] as const));
     const { oi: level, change } = groupChanges(oi, fine, drawnMs);
+    const venues = groupVenues(oi, parts.length > 1 ? parts : [], tfMs, drawnMs);
     const out: OiGrouped = { oi: level, parts: parts.length > 1 ? groupParts(parts, drawnMs) : [...parts], change, candles: groupCandles(candles, drawnMs),
-      venues: groupVenues(oi, parts.length > 1 ? parts : [], tfMs, drawnMs), fine: { oi, parts, tfMs, candles }, drawnMs };
+      venues, read: level.map(b => venues.read.get(b[0]) ?? 0), fine: { oi, parts, tfMs, candles }, drawnMs };
     this.#group = { oi, parts, candles, drawnMs, out };
     return out;
   }
@@ -1276,7 +1277,7 @@ export class OiPane extends TimePane {
     const usdAt = aggregated ? 0 : state.oiPrice, fineCloses = drawn && own ? new Map(drawn.fine.candles.map(c => [c[0], c[4]] as const)) : null;
     const usd = drawn && (own || usdAt > 0) ? groupUsd(oiUsdChangeByTime(drawn.fine.oi, drawn.fine.parts, drawn.fine.tfMs, at => fineCloses?.get(at), usdAt), drawn.fine.oi, drawn.drawnMs) : null;
     this.#held = {
-      key, oi, tfMs: tf, tf: drawn ? drawn.name : state.timeframe, ...(drawn ? { change: drawn.change, venueChange: drawn.venues.change, ...(usd ? { usd } : {}) } : {}), venues: sum ? sum.venues : null,
+      key, oi, tfMs: tf, tf: drawn ? drawn.name : state.timeframe, ...(drawn ? { change: drawn.change, venueChange: drawn.venues.change, ...(usd ? { usd } : {}) } : {}), venues: sum ? drawn ? drawn.read : sum.venues : null,
       counted: sum ? oi.map(bar => (drawn ? drawn.venues.counted : sum.counted).get(bar[0]) ?? 0) : null, cohorts: aggregated ? drawn ? oi.map(bar => drawn.venues.cohorts.get(bar[0]) ?? '') : oiCohorts(oi, parts, tf) : null, parts: aggregated ? parts : [], who, whoOn, flag,
       candles, ownPrice: own, priceMarket: chart ? name(chart) : '', coin: coinOf(state),
       market: aggregated ? null : inst ? name(inst) : null, ids: aggregated ? parts.map(part => part.id) : inst ? [inst] : [], usdAt: aggregated ? 0 : state.oiPrice, seam, replayAt,
@@ -1488,7 +1489,8 @@ export class OiPane extends TimePane {
     }
     // Venues added together: where fewer of them have a reading than elsewhere in view (a recording gap), the sum is drawn dashed and faint,
     // so a gap does not read as positions opened or closed.
-    const venues = parts.length > 1 ? oiSumOf(parts, tf).venues : null, most = venues ? Math.max(...visible.map(i => venues[i] ?? 0)) : 0;
+    // Grouped: the venues read at each drawn candle's last chart candle, held as the chart candles hold them (`groupVenues`).
+    const venues = parts.length > 1 ? grouped ? grouped.read : oiSumOf(parts, tf).venues : null, most = venues ? Math.max(...visible.map(i => venues[i] ?? 0)) : 0;
     if (visible.length) {
       // The line holds the last sample on screen. It ends at the newest sample's centre only when that sample is the one on screen; looking at
       // the past it carries its level to the edge of the view, and the newest value (which is somewhere to the right) is not joined to it.
@@ -1560,8 +1562,11 @@ export class OiPane extends TimePane {
     if (over >= 0) this.#lines = cardAt(over);
     // Who holds it and who moved it, at the bar read, and under them what the card says of that bar (its level, change, rank, who opened and closed).
     // A table that holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
-    // Grouped: each venue's change is its own over the drawn candle as the chart candles count it (`groupVenues`), as the Range rows say.
-    const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]).map(v => grouped ? { ...v, change: grouped.venues.change.get(v.id)?.get(bar[0]) ?? null } : v) : [];
+    // Grouped: the venues as read at the drawn candle's last chart candle (its level's), each with its own change over the drawn candle as the
+    // chart candles count it (`groupVenues`), as the Range rows say.
+    const venuesThen = state.oiTable && parts.length > 1 ? grouped
+      ? oiVenuesAt(grouped.fine.parts, grouped.fine.tfMs, grouped.venues.closeAt.get(bar[0]) ?? bar[0]).map(v => ({ ...v, change: grouped.venues.change.get(v.id)?.get(bar[0]) ?? null }))
+      : oiVenuesAt(parts, tf, bar[0]) : [];
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
