@@ -243,6 +243,11 @@ export class FootprintData {
   version = 0;
   /** With markets added together: the order of every row's venue pieces (`venueOrderOf`), worked out once a load. */
   venueOrder: string[] = [];
+  /**
+   * Questions answered and failed so far, those for the markets and timeframe asked only (an answer for others is dropped uncounted): the
+   * Flow history's warm-up lets a source go after six failures in a row (size-history/warm.ts).
+   */
+  readonly tally = { answers: 0, failures: 0 };
   #busy = false; #retryAt = 0;
 
   /**
@@ -342,6 +347,7 @@ export class FootprintData {
     // Several markets (a comma list): each row's markets too, for the bar's pieces.
     load(inst, tf, ask.from, ask.to, rowStep, asked, FOOTPRINT_BUDGET, inst.includes(',')).then(body => {
       if (request !== this.#request) return;
+      this.tally.answers++;
       // A source that answered only the newest part says where it starts; an older one answers the whole window.
       const reached = Math.max(ask.from, Number.isFinite(body.from) ? body.from! : ask.from), held = this.#held;
       const settled = Math.floor((now - FOOTPRINT_SETTLE_MS) / tfMs) * tfMs;
@@ -364,7 +370,7 @@ export class FootprintData {
     }).catch(error => {
       if (request !== this.#request) return;
       // Asked again in five seconds, not on every frame.
-      console.error('footprint load failed', error); this.#retryAt = performance.now() + FOOTPRINT_REFRESH_MS;
+      console.error('footprint load failed', error); this.#retryAt = performance.now() + FOOTPRINT_REFRESH_MS; this.tally.failures++;
     }).finally(() => { if (request === this.#request) this.#busy = false; });
     return true;
   }
@@ -380,10 +386,10 @@ export class FootprintData {
     const request = ++this.#request;
     load(inst, tf, 0, 1, 0, [], 0, false).then(body => {
       if (request !== this.#request) return;
-      this.#stepAsked = context; this.fine = body.fine > 0 ? body.fine : 0; onLoad();
+      this.tally.answers++; this.#stepAsked = context; this.fine = body.fine > 0 ? body.fine : 0; onLoad();
     }).catch(error => {
       if (request !== this.#request) return;
-      console.error('footprint load failed', error); this.#retryAt = performance.now() + FOOTPRINT_REFRESH_MS;
+      console.error('footprint load failed', error); this.#retryAt = performance.now() + FOOTPRINT_REFRESH_MS; this.tally.failures++;
     }).finally(() => { if (request === this.#request) this.#busy = false; });
   }
 }

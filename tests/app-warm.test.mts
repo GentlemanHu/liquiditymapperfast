@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { quietMs, resetQuiet, track, trackedFetch } from '../src/app/quiet.ts';
-import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmLiquidationSpan, warmNext, warmRefund, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
+import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_FAILURES, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
 import { historyLoading } from '../src/app/size-history/model.ts';
 import { askRowStep, rowsBlind, zoomLevel } from '../src/app/panes/footprint.ts';
 import { liquidationCover } from '../src/app/liq-days.ts';
@@ -51,7 +51,7 @@ test('the counted fetch is the page\x27s fetch with its options, counted until i
 });
 
 /** A look at which the warm-up may ask, `ms` after the market list became the one drawn at 0. */
-const look = (ms: number, over: Partial<WarmLook> = {}): WarmLook => ({ now: ms, key: 'a,b|1h', hidden: false, mapFirst: false, quietMs: WARM_QUIET_MS, barsBusy: false, barsCovered: false, days: true, ...over });
+const look = (ms: number, over: Partial<WarmLook> = {}): WarmLook => ({ now: ms, key: 'a,b|1h', hidden: false, mapFirst: false, quietMs: WARM_QUIET_MS, barsBusy: false, barsCovered: false, days: true, answers: 0, failures: 0, ...over });
 /** The warm-up's state once its market list has been seen at 0. */
 const seen = (): WarmState => warmNext(WARM_IDLE, look(0)).state;
 
@@ -135,12 +135,54 @@ test('a look that waits for any of its five reasons counts no question, however 
   assert.equal(settling.tries, 0, 'a list still settling');
 });
 
-test('a question a look counted is given back when its act sent none (a pause after a failure, a day still loading)', () => {
-  const asked = warmNext(seen(), look(WARM_SETTLE_MS)).state;
-  assert.equal(asked.tries, 1);
-  assert.equal(warmRefund(asked).tries, 0);
-  assert.equal(warmRefund(warmRefund(asked)).tries, 0, 'never below none');
-  assert.deepEqual({ ...warmRefund(asked), tries: 1 }, asked, 'nothing else changes');
+test('after its act: every day held is done, and a look whose act sent no question gives back the one it counted', () => {
+  const s: WarmState = { ...seen(), tries: 5 };
+  assert.equal(warmAfter(s, true).tries, 5, 'the bars asked');
+  assert.equal(warmAfter(s, 'asked').tries, 5, 'a day asked');
+  assert.equal(warmAfter(s, false).tries, 4, 'the bars not asked: in their pause after a failure');
+  assert.equal(warmAfter(s, 'waiting').tries, 4, 'a day still loading, or every one missing in its pause');
+  assert.deepEqual([warmAfter(s, 'done').done, warmAfter(s, 'done').tries], [true, 5], 'every day held');
+  assert.equal(warmAfter(s, true).done, false);
+  assert.equal(warmAfter({ ...s, tries: 0 }, false).tries, 0, 'never below none');
+  assert.deepEqual({ ...warmAfter(s, 'waiting'), tries: 5 }, s, 'nothing else changes');
+});
+
+test('six failures in a row let the warm-up go, in the bars or the days; an answer between them starts the count again', () => {
+  for (const barsCovered of [false, true]) {
+    let s = seen(), t = WARM_SETTLE_MS;
+    const step = (over: Partial<WarmLook>): string => { const r = warmNext(s, look(t, { barsCovered, ...over })); s = r.state; t += WARM_LOOK_MS; return r.act; };
+    const act = barsCovered ? 'days' : 'bars';
+    assert.equal(step({}), act);
+    for (let f = 1; f < WARM_MAX_FAILURES; f++) assert.equal(step({ failures: f }), act, `${f} failed in a row`);
+    assert.equal(step({ failures: WARM_MAX_FAILURES - 1, answers: 1 }), act, 'an answer: the count starts again');
+    for (let f = 1; f < WARM_MAX_FAILURES; f++) assert.equal(step({ failures: WARM_MAX_FAILURES - 1 + f, answers: 1 }), act);
+    assert.equal(step({ failures: 2 * WARM_MAX_FAILURES - 1, answers: 1 }), 'none', `six in a row since the answer (${act})`);
+    assert.equal(s.done, true);
+  }
+});
+
+test('a healthy start of some 65 questions is never let go for a failure now and then, each followed by an answer', () => {
+  let s = seen(), t = WARM_SETTLE_MS, answers = 0, failures = 0;
+  for (let i = 0; i < 65; i++, t += 5 * WARM_LOOK_MS) {
+    const r = warmNext(s, look(t, { answers, failures })); s = r.state;
+    assert.equal(r.act, 'bars', `question ${i + 1}`);
+    // Every seventh question fails, and is answered when it is asked again (sent, so counted).
+    if (i % 7 === 6) failures++; else answers++;
+  }
+  assert.deepEqual([s.done, s.tries], [false, 65]);
+});
+
+test('failures counted before the warm-up of this market list and timeframe began do not count toward its six', () => {
+  // The loaders still count five failures from earlier (another timeframe's warm-up, or a pane during an outage).
+  let s = warmNext(WARM_IDLE, look(0, { failures: 5 })).state;
+  assert.equal(s.streak, 0, 'a list first seen starts from none');
+  s = warmNext(s, look(WARM_SETTLE_MS, { failures: 5 })).state;
+  const own = warmNext(s, look(WARM_SETTLE_MS + WARM_LOOK_MS, { failures: 6 }));
+  assert.deepEqual([own.act, own.state.streak], ['bars', 1], 'its own first failure is its first');
+  const other = warmNext({ ...own.state, streak: 5 }, look(WARM_SETTLE_MS + 2 * WARM_LOOK_MS, { key: 'a,b|15m', failures: 7 }));
+  assert.equal(other.state.streak, 0, 'another timeframe starts from none, whatever the last one counted');
+  const next = warmNext(other.state, look(WARM_SETTLE_MS + 3 * WARM_LOOK_MS, { key: 'a,b|15m', failures: 8 }));
+  assert.equal(next.state.streak, 1);
 });
 
 test('the pane says Loading only while a question is out for candles not yet answered for', () => {

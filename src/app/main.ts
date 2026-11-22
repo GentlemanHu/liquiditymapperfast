@@ -166,7 +166,7 @@ async function main(): Promise<void> {
   // Liquidations by UTC day of the perpetuals the Bar stats and the Flow history count (`liquidationMarkets`): one loader for both (liq-days.ts).
   const liqDays = new LiquidationDays(hub);
   // The Flow history's warm-up holds its liquidation days before it opens (HeatPane `#warmStep`, size-history/warm.ts).
-  heat.warmLiquidations = (ids, from, to) => liqDays.warm(ids, from, to);
+  heat.liquidationDays = liqDays;
   const bars = new BarStatsPane(chart, store, heat.view, heat, hub, liqDays);
   // Flow history: liquidations, open interest's change and market orders by size per candle, the unusual ones standing out (Karl, 2026-11-20).
   const sizes = new SizeHistoryPane(chart, store, heat.view, heat, hub, liqDays);

@@ -68,8 +68,8 @@ import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
 import { dayStartOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
-import { WARM_IDLE, WARM_LOOK_MS, warmLiquidationSpan, warmNext, warmRefund, type WarmState } from '../size-history/warm.ts';
-import { liquidationCover } from '../liq-days.ts';
+import { WARM_IDLE, WARM_LOOK_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
+import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
 import { quietMs } from '../quiet.ts';
 import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
@@ -1358,8 +1358,8 @@ export class HeatPane {
 
   /** The Flow history's warm-up (size-history/warm.ts `warmNext`). */
   #warm: WarmState = WARM_IDLE;
-  /** The warm-up's liquidation days (main.ts sets it to liq-days.ts `warm`): `done` once every day of the stretch is held. */
-  warmLiquidations: ((ids: string, from: number, to: number) => 'done' | 'asked' | 'waiting') | null = null;
+  /** The liquidation days the warm-up holds (main.ts sets it to the panes' shared loader, liq-days.ts): its `warm`, and its `tally`. */
+  liquidationDays: Pick<LiquidationDays, 'warm' | 'tally'> | null = null;
 
   /**
    * One look of the Flow history's warm-up, while nothing shows the footprint's bars (size-history/warm.ts): once the page's own requests
@@ -1370,22 +1370,20 @@ export class HeatPane {
     if (now - this.#warm.at < WARM_LOOK_MS) return;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint;
     const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true });
-    const want = footprintWant(window, tfMs), liq = this.liquidationMarkets(state);
+    const want = footprintWant(window, tfMs), liq = this.liquidationMarkets(state), days = this.liquidationDays;
     const { state: next, act } = warmNext(this.#warm, {
       now, key: markets.length ? `${markets.join(',')}|${state.timeframe}` : '', hidden: document.visibilityState === 'hidden',
       mapFirst: this.hub.mapFirst(), quietMs: quietMs(now), barsBusy: fp.busy,
       barsCovered: fp.holds(markets, state.timeframe) && fp.covers(want.from, want.to),
       // The perpetuals' liquidations whatever the Spot / Perp filter, as the pane counts them (`liquidationMarkets`).
-      days: !!this.warmLiquidations && !!this.hub.source.liquidations && liq.some(id => kindOf(state.markets, id) !== 'spot'),
+      days: !!days && !!this.hub.source.liquidations && liq.some(id => kindOf(state.markets, id) !== 'spot'),
+      answers: fp.tally.answers + (days?.tally.answers ?? 0), failures: fp.tally.failures + (days?.tally.failures ?? 0),
     });
     this.#warm = next;
-    // A look whose act sent no question (a loader in its pause after a failure, a day still loading) gives back the question it counted.
-    if (act === 'bars') { if (!fp.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow(), true)) this.#warm = warmRefund(this.#warm); }
+    if (act === 'bars') this.#warm = warmAfter(this.#warm, fp.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow(), true));
     else if (act === 'days') {
       const wall = Date.now(), span = warmLiquidationSpan(window.t0, this.view.t1, tfMs, wall, liquidationCover(this.hub.source.kind, this.hub.recordedSince, wall));
-      const days = span ? this.warmLiquidations!(liq.join(','), span.from, span.to) : 'done';
-      if (days === 'done') this.#warm = { ...this.#warm, done: true };
-      else if (days === 'waiting') this.#warm = warmRefund(this.#warm);
+      this.#warm = warmAfter(this.#warm, span ? days!.warm(liq.join(','), span.from, span.to) : 'done');
     }
   }
 

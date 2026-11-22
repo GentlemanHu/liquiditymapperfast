@@ -40,6 +40,11 @@ export class LiquidationDays {
   /** The warm-up's stretch (`warm`), kept WARM_MS from when it was last set. */
   #warm: { from: number; to: number; at: number } | null = null;
   #listeners = new Set<() => void>();
+  /**
+   * Days answered and failed so far, those of the markets asked only (an answer for others is dropped uncounted): the Flow history's
+   * warm-up lets a source go after six failures in a row (size-history/warm.ts).
+   */
+  readonly tally = { answers: 0, failures: 0 };
 
   constructor(private readonly hub: Pick<Hub, 'source'>) {}
 
@@ -105,9 +110,9 @@ export class LiquidationDays {
     const asked = Date.now();
     source.liquidations(day, day + DAY_MS).then(rows => {
       if (ids !== this.#ids) return;
-      this.#retry.delete(day);
+      this.tally.answers++; this.#retry.delete(day);
       this.#days.set(day, { rows, cut: rows.length >= LIQUIDATIONS_PER_ANSWER, to: Math.min(day + DAY_MS, asked), at: Date.now() }); this.#version++;
-    }, () => { if (ids === this.#ids) this.#retry.set(day, Date.now() + 15_000); })
+    }, () => { if (ids === this.#ids) { this.tally.failures++; this.#retry.set(day, Date.now() + 15_000); } })
       // Drawn again whatever came back: the slot it held is free for the next day, an answer dropped for other markets included.
       .finally(() => { this.#loading.delete(day); for (const fn of this.#listeners) fn(); });
   }

@@ -148,6 +148,34 @@ test('the warm-up of a source without liquidations is done at once, and a warm d
   });
 });
 
+test('the days count their answers and failures, the markets asked only: an answer for the old ones is dropped uncounted', async () => {
+  const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000;
+  assert.deepEqual(days.tally, { answers: 0, failures: 0 });
+  await withClock(now, async () => {
+    days.warm('a', D0 - DAY_MS, D0 + 6 * 3_600_000);
+    s.waiting.splice(0).forEach(w => w.reject(new Error('down')));
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(days.tally, { answers: 0, failures: 1 }, 'today failed');
+    days.warm('a', D0 - DAY_MS, D0 + 6 * 3_600_000);
+    await s.answer();
+    assert.deepEqual(days.tally, { answers: 1, failures: 1 }, 'the day before answered');
+    days.ensure('bars', 'a', D0 - 3 * DAY_MS, D0 - 2 * DAY_MS);
+    assert.equal(s.waiting.length, 1);
+    days.ensure('bars', 'b', D0 - 3 * DAY_MS, D0 - 2 * DAY_MS);
+    await s.answer();
+    assert.deepEqual(days.tally, { answers: 1, failures: 1 }, 'the old markets\x27 answer is not counted');
+    days.ensure('bars', 'b', D0 - 3 * DAY_MS, D0 - 2 * DAY_MS);
+    s.waiting.splice(0).forEach(w => w.reject(new Error('down')));
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(days.tally, { answers: 1, failures: 2 });
+    days.ensure('bars', 'b', D0 - 5 * DAY_MS, D0 - 4 * DAY_MS);
+    days.ensure('bars', 'c', D0 - 5 * DAY_MS, D0 - 4 * DAY_MS);
+    s.waiting.splice(0).forEach(w => w.reject(new Error('down')));
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(days.tally, { answers: 1, failures: 2 }, 'nor a failure for the old ones');
+  });
+});
+
 test('a warm-up of another stretch lets the last one\x27s days go, but not those a pane still needs', async () => {
   const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - 8 * DAY_MS, to = D0 - 3 * DAY_MS;
   await withClock(now, async () => {

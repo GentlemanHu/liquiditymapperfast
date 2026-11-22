@@ -6,9 +6,10 @@
  * in 32 ms. The page's own engine took 0.4 s. So the warm-up asks only once the page's own requests have drained (quiet.ts) and the map's
  * own first load is in (`Hub.mapFirst`), one question at a time, and nothing on the clock (footprint.ts `ensure(..., warm)`, liq-days.ts
  * `warm`): the first pane to show the bars asks for what changed since, while drawing what is held. Each piece waits for a second of quiet
- * after the one before, so it takes some 10 to 50 s after a start or a switch has settled: a few questions on one- and five-minute candles,
- * some 30 on hourly ones (the bars' slices and eight liquidation days), more on 15- and 30-minute candles, whose wider windows of minutes
- * come in more slices (about 65 for 30-minute candles over the default view, estimated from the slicing rules).
+ * after the one before. Measured on that server (2026-11-22): at 1h, 11 questions (the markets' step, two slices of bars, as hourly candles
+ * read the hours added together, and eight liquidation days) in about 30 s; at 30 minutes, whose candles are read minute by minute in slices
+ * of a few candles, 47 slices and then four days, about two and a half minutes. Fifteen-minute candles take about 30 slices, one- and
+ * five-minute ones some 5 to 12 (from the slicing rules).
  */
 
 /** The page's own requests drained this long before the warm-up asks for its next piece. */
@@ -18,15 +19,26 @@ export const WARM_SETTLE_MS = 3_000;
 /** How often the warm-up looks (not every frame). */
 export const WARM_LOOK_MS = 250;
 /**
- * A warm-up that has sent this many questions without being done gives up, so a source that keeps failing is not asked forever (one
- * question every 5 s for the bars, every 15 s for a day, the loaders' own pauses). Only a question that went out counts (`warmRefund` gives
- * back a look that sent none: a pause, a day still loading), so time spent waiting costs nothing; a start sends a few to about 65.
+ * A warm-up whose questions failed this many times in a row gives up: a source that is down is let go some half a minute after the warm-up
+ * began asking it for the bars (each asked again after the loader's 5 s pause), a minute and a half for a day (15 s). Counted from the
+ * loaders' answers and failures (`tally`) since its market list and timeframe were first seen: an answer starts the count again, and
+ * failures from before (another timeframe's warm-up, a pane during an outage) do not count.
+ */
+export const WARM_MAX_FAILURES = 6;
+/**
+ * A warm-up that has sent this many questions without being done gives up, the backstop for a source that fails now and then without six
+ * in a row. Only a question that went out counts (`warmAfter` gives back a look that sent none: a pause, a day still loading), so time
+ * spent waiting costs nothing. A start sent 11 at 1h and 52 at 30 minutes; a much wider view of short candles than the default is left
+ * partly warm.
  */
 export const WARM_MAX_TRIES = 150;
 
-/** The warm-up's own state: the market list and timeframe it is for (`markets|tf`), since when, the questions it has asked, its last look, done. */
-export interface WarmState { key: string; since: number; tries: number; at: number; done: boolean }
-export const WARM_IDLE: WarmState = Object.freeze({ key: '', since: 0, tries: 0, at: -Infinity, done: false });
+/**
+ * The warm-up's own state: the market list and timeframe it is for (`markets|tf`), since when, the questions it has asked, its last look,
+ * done; its failures in a row (`streak`), and the loaders' answers and failures at its last look, to see what came since.
+ */
+export interface WarmState { key: string; since: number; tries: number; at: number; done: boolean; streak: number; answers: number; failures: number }
+export const WARM_IDLE: WarmState = Object.freeze({ key: '', since: 0, tries: 0, at: -Infinity, done: false, streak: 0, answers: 0, failures: 0 });
 
 /** What the map sees at a look. */
 export interface WarmLook {
@@ -44,6 +56,9 @@ export interface WarmLook {
   barsCovered: boolean;
   /** The Flow history's liquidation row has days to warm (a perpetual counted, and a source that has liquidations). */
   days: boolean;
+  /** Questions the bars' and the days' loaders have had answered, and that failed, so far (their `tally`, added together). */
+  answers: number;
+  failures: number;
 }
 
 export type WarmAct = 'none' | 'bars' | 'days';
@@ -53,16 +68,25 @@ export function warmNext(state: WarmState, look: WarmLook): { state: WarmState; 
   if (look.now - state.at < WARM_LOOK_MS) return { state, act: 'none' };
   let s: WarmState = { ...state, at: look.now };
   if (!look.key) return { state: s, act: 'none' };
-  if (look.key !== s.key) s = { key: look.key, since: look.now, tries: 0, at: look.now, done: false };
+  if (look.key !== s.key) s = { key: look.key, since: look.now, tries: 0, at: look.now, done: false, streak: 0, answers: look.answers, failures: look.failures };
+  // An answer since the last look ends a run of failures; failures since then lengthen it (one question at a time: rarely both at a look).
+  else s = { ...s, streak: look.answers > s.answers ? 0 : s.streak + look.failures - s.failures, answers: look.answers, failures: look.failures };
   if (s.done) return { state: s, act: 'none' };
   if (look.hidden || look.mapFirst || look.quietMs < WARM_QUIET_MS || look.now - s.since < WARM_SETTLE_MS || look.barsBusy) return { state: s, act: 'none' };
   if (look.barsCovered && !look.days) return { state: { ...s, done: true }, act: 'none' };
-  if (s.tries >= WARM_MAX_TRIES) return { state: { ...s, done: true }, act: 'none' };
+  if (s.streak >= WARM_MAX_FAILURES || s.tries >= WARM_MAX_TRIES) return { state: { ...s, done: true }, act: 'none' };
   return { state: { ...s, tries: s.tries + 1 }, act: look.barsCovered ? 'days' : 'bars' };
 }
 
-/** The question a look counted, given back: the act sent none (a loader in its pause after a failure, a day still loading). */
-export function warmRefund(state: WarmState): WarmState { return { ...state, tries: Math.max(0, state.tries - 1) }; }
+/**
+ * The warm-up's state once its act ran, from what the loader said (the bars' `ensure`: whether a question went out; the days' `warm`):
+ * every day held is done, and a look whose act sent no question (a loader in its pause after a failure, a day still loading) gives back
+ * the question it counted.
+ */
+export function warmAfter(state: WarmState, sent: boolean | 'done' | 'asked' | 'waiting'): WarmState {
+  if (sent === 'done') return { ...state, done: true };
+  return sent === false || sent === 'waiting' ? { ...state, tries: Math.max(0, state.tries - 1) } : state;
+}
 
 /**
  * The stretch of liquidations the Flow history asks for first (size-history-pane.ts): from the first candle of the warm stretch, or where the

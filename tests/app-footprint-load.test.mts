@@ -349,6 +349,52 @@ test('a view that moved past the bars the warm-up holds is asked from their end,
   } finally { time.restore(); }
 });
 
+test('a failed question is asked again after its pause and not before, ensure says whether one went out, and the answers and failures of the markets asked are counted', async () => {
+  const time = clock(1_000_000);
+  try {
+    const { load: good } = source(50);
+    let fail = true;
+    const load = (...args: Parameters<typeof good>): Promise<FootprintResponse> => fail ? Promise.reject(new Error('down')) : good(...args);
+    const data = new FootprintData(), view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, sourceNow = 12 * H + 30 * 60_000;
+    const ask = (rowStep: number, inst = 'a', with_ = load): boolean => data.ensure(inst, '1h', view, rowStep, with_, () => {}, [], sourceNow, true);
+    // No row size yet: the markets\x27 step is asked first, alone.
+    assert.equal(ask(0), true, 'the step went out');
+    await turn();
+    assert.deepEqual(data.tally, { answers: 0, failures: 1 });
+    assert.equal(ask(0), false, 'in its pause: none goes out');
+    time.advance(FOOTPRINT_REFRESH_MS - 1);
+    assert.equal(ask(0), false, 'still in its pause');
+    time.advance(1); fail = false;
+    assert.equal(ask(0), true, 'after it, asked again');
+    await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 1 });
+    // The view, on rows: failed, paused, then answered.
+    fail = true;
+    assert.equal(ask(5), true); await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 2 });
+    assert.equal(ask(5), false, 'its pause');
+    time.advance(FOOTPRINT_REFRESH_MS); fail = false;
+    // Another list while a question is out: the old answer is dropped, and not counted.
+    let release = (): void => {};
+    const held = (...args: Parameters<typeof good>): Promise<FootprintResponse> => new Promise(resolve => { release = () => resolve(good(...args)); });
+    assert.equal(ask(5, 'a', held), true);
+    const old = release;
+    assert.equal(ask(5, 'b', held), true, 'another list asks at once');
+    old(); await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 2 }, 'the old list\x27s answer goes uncounted');
+    release(); await turn();
+    assert.deepEqual(data.tally, { answers: 2, failures: 2 });
+    // Nor is a failure for the old list.
+    let reject = (): void => {};
+    const failing = (): Promise<FootprintResponse> => new Promise((_, no) => { reject = () => no(new Error('down')); });
+    assert.equal(ask(5, 'c', failing), true);
+    const oldReject = reject;
+    assert.equal(ask(5, 'd', held), true);
+    oldReject(); await turn();
+    assert.deepEqual(data.tally, { answers: 2, failures: 2 }, 'nor its failure');
+  } finally { time.restore(); }
+});
+
 test('the bars a view asks for: its candles with one each side, on whole candles; the rows held are said', async () => {
   assert.deepEqual(footprintWant({ t0: 10.5 * H, t1: 12.2 * H, p0: 0, p1: 1 }, H), { from: 9 * H, to: 14 * H });
   const { load } = source(50), data = new FootprintData();
