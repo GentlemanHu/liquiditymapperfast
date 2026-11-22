@@ -10,9 +10,12 @@ import { unitOf, type CoinVenue } from '../../shared/coins.ts';
  *
  * Bybit and OKX open interest normally arrives on their WebSocket feeds (live-feeds.mts); this sampler is their fallback. While a venue's
  * feed is not live (`setFast`), that venue is read every five seconds instead of once a minute, and back to the minute once the feed
- * returns; that read is of the live value only, never the history, and never beside another read of the same instrument. Every venue's
- * failures (an answer without a reading included) are counted, said in `status()` (the diagnostics route) and logged at most once every
- * ten minutes, so a dead endpoint is never silent.
+ * returns; that read is of the live value only, never the history, and never beside another read of the same instrument (a read under way
+ * is left to finish, the fast round tries again five seconds later). Every venue's failures (an answer without a reading included) are
+ * counted, said in `status()` (the diagnostics route, with when each venue was last asked and since when a read of it is under way) and
+ * logged at most once every ten minutes, so a dead endpoint is never silent. A read that has not settled is given up after
+ * `OI_READ_DEADLINE_MS` (its live reading) or let go after `OI_STALL_MS` (a read or a round): one read let go may still finish beside the one
+ * that replaced it (its history rows are turned away by the store where it holds them; its live reading goes through like any other).
  */
 export const SAMPLED_OI_VENUES: readonly string[] = ['bybit', 'okx', 'bitget', 'deribit'];
 export const OI_SAMPLE_MS = 60_000;
@@ -27,9 +30,10 @@ const RETRY_MS = 60_000, RETRY_MAX_MS = 3_600_000;
 /** Failures of one venue are logged at most this often. */
 const OI_LOG_EVERY_MS = 10 * 60_000;
 /**
- * A live reading that has not settled by then is a failure, so one venue can never hold up the round. On 2026-11-19 20:22Z a Bitget read
- * neither answered nor failed for three days and the round, which reads every instrument in turn and waits for each, stopped for every venue
- * with nothing in the diagnostics (failures 0, no error): Bitget's and Deribit's parts went missing from the summed open interest.
+ * A live reading that has not settled by then is a failure, so a venue that never answers holds the round up this long at most. On
+ * 2026-11-19 20:22Z a Bitget read neither answered nor failed for three days and the round, which reads every instrument in turn and waits for
+ * each, stopped for every venue with nothing in the diagnostics (failures 0, no error): Bitget's and Deribit's parts went missing from the
+ * summed open interest.
  */
 export const OI_READ_DEADLINE_MS = 30_000;
 /**
@@ -86,6 +90,8 @@ export class OiSampler {
   #running: Promise<void> | null = null; #fastRunning: Promise<void> | null = null; #closed = false;
   /** When the round under way started (`OI_STALL_MS`). */
   #roundSince = 0;
+  /** The timers of the waits on a read under way (`#waitHeld`), let go by `close()`. */
+  readonly #waits = new Set<ReturnType<typeof setTimeout>>();
   /** Each instrument's history: read, or when to try again and how many times it failed. */
   readonly #history = new Map<string, { done: boolean; tries: number; nextAt: number }>();
   /** Per venue: the last outcome, for the diagnostics route and the ten-minute failure log. */
@@ -172,30 +178,36 @@ export class OiSampler {
       const venue = venueOf(id);
       if (!this.#fast.has(venue)) continue;
       if (this.now() - (this.#lastAsked.get(id) ?? 0) < OI_FALLBACK_MS) continue;
+      // A read under way (the minute round's, its history at start) is left to finish: the next fast round, five seconds on, asks again. Waiting
+      // for it, the fast round stayed pinned on a read that never settled while the minute round had let it go (review, 2026-11-22).
+      if (this.#held(id)) continue;
       await this.#once(id, false);
     }
   }
 
   /**
    * One read of an instrument at a time, whichever round asks: a slow history read at start once ran twice side by side, the fast round
-   * starting it again while the minute's round was still paging. A fast read that finds a read under way waits for it (so at start the fast
-   * fallback brings nothing until the history is in, as before it existed; the socket's first frame comes within a second anyway). The
-   * minute's round that finds a fast read under way reads the history after it, when due: joining it alone would lose the history each
-   * time the two met, and a failed history read would never be tried again.
+   * starting it again while the minute's round was still paging (the fast round now leaves an instrument whose read is under way, so at start
+   * the fast fallback brings nothing until the history is in, as before it existed; the socket's first frame comes within a second anyway).
+   * The minute's round that finds a read under way waits for it and reads the history after it, when due: joining it alone would lose the
+   * history each time the two met, and a failed history read would never be tried again. It waits no longer than until that read's stall
+   * limit; a read still under way then is let go (`#held`) and this one reads in its place, so a read stuck mid-round costs the next round
+   * the rest of its limit, not a whole limit more. The one exception to one read at a time: a read let go may still finish beside its
+   * replacement.
    */
   #once(id: string, withHistory: boolean): Promise<void> {
     const held = this.#held(id);
-    if (held) return withHistory ? held.then(() => this.#readHistoryDue(id)) : held;
+    if (held) return this.#waitHeld(held).then(stalled => stalled ? this.#once(id, withHistory) : withHistory ? this.#readHistoryDue(id) : undefined);
     return this.#start(id, () => this.#read(id, withHistory));
   }
   /** Each instrument's read under way and when it started. */
   readonly #inflight = new Map<string, { read: Promise<void>; since: number }>();
 
   /** The read of `id` under way, unless it has been under way past the stall limit: then it is counted as a failure and no longer waited for. */
-  #held(id: string): Promise<void> | null {
+  #held(id: string): { read: Promise<void>; since: number } | null {
     const held = this.#inflight.get(id);
     if (!held) return null;
-    if (this.now() - held.since <= this.stallMs) return held.read;
+    if (this.now() - held.since <= this.stallMs) return held;
     this.#inflight.delete(id);
     const venue = venueOf(id);
     this.#failure(venue, `${venue} open interest read under way for ${Math.round((this.now() - held.since) / 60_000)} min; no longer waited for`);
@@ -211,10 +223,20 @@ export class OiSampler {
     return read;
   }
 
-  /** The history alone, when due, as one read of the instrument: after a read under way, never beside it. */
+  /** The history alone, when due, as one read of the instrument: after a read under way (waited for until its stall limit), never beside it. */
   #readHistoryDue(id: string): Promise<void> {
-    const held = this.#held(id); if (held) return held.then(() => this.#readHistoryDue(id));
+    const held = this.#held(id); if (held) return this.#waitHeld(held).then(() => this.#readHistoryDue(id));
     return this.#start(id, () => this.#historyStep(id));
+  }
+
+  /** Waits for a read under way until it settles (false) or reaches its stall limit (true: `#held` lets it go when next asked). */
+  #waitHeld(held: { read: Promise<void>; since: number }): Promise<boolean> {
+    const left = held.since + this.stallMs - this.now();
+    if (left < 0) return Promise.resolve(true);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Unref'd: a wait never keeps a process alive by itself (the server's own sockets and timers do).
+    const stalled = new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), left + 1); timer.unref?.(); this.#waits.add(timer); });
+    return Promise.race([held.read.then(() => false, () => false), stalled]).finally(() => { clearTimeout(timer); if (timer) this.#waits.delete(timer); });
   }
 
   /** One instrument's history, when it is due. */
@@ -286,5 +308,9 @@ export class OiSampler {
     }
   }
 
-  close(): void { this.#closed = true; if (this.#timer) clearInterval(this.#timer); this.#timer = null; if (this.#fastTimer) clearInterval(this.#fastTimer); this.#fastTimer = null; }
+  close(): void {
+    this.#closed = true; if (this.#timer) clearInterval(this.#timer); this.#timer = null; if (this.#fastTimer) clearInterval(this.#fastTimer); this.#fastTimer = null;
+    for (const timer of this.#waits) clearTimeout(timer);
+    this.#waits.clear();
+  }
 }

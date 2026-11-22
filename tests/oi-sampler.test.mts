@@ -341,3 +341,97 @@ test('webGet gives up on time even when fetch never settles, and aborts the requ
     assert.equal(signal?.aborted, true, 'the request was aborted too');
   } finally { globalThis.fetch = original; }
 });
+
+/** A Bybit history `get` whose first `held` asks wait for the test to release them; the rest answer at once (review round 1, 2026-11-22). */
+function heldHistory(held = 2) {
+  const release: (() => void)[] = []; let asks = 0, tickers = 0;
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('open-interest?category')) { asks++; if (asks <= held) return new Promise(resolve => release.push(() => resolve({ result: { list: [] } }))); return { result: { list: [] } }; }
+    if (url.includes('tickers')) { tickers++; return { result: { list: [{ singleOpenInterest: '10' }] } }; }
+    throw new Error(url);
+  };
+  return { get, release, asks: () => asks, tickers: () => tickers };
+}
+const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+
+test('a read let go that finishes late leaves its replacement held (the read\'s own entry is the only one its end clears)', { timeout: 5_000 }, async () => {
+  let clock = NOW;
+  const h = heldHistory();
+  const sampler = new OiSampler(() => {}, () => {}, h.get, () => clock, 3_600_000, () => {}, 30_000, 600_000);
+  sampler.sync(['bybit:BTCUSDT']);
+  const r1 = sampler.round(); await tick();
+  clock += 660_000;
+  const r2 = sampler.round(); await tick();
+  assert.notEqual(r1, r2);
+  assert.equal(h.asks(), 2, 'the second round asked again beside the stuck read');
+  assert.equal(sampler.status().bybit.pendingSince, NOW + 660_000, 'the newer read is the one held');
+  h.release[0]!(); await tick(); await tick(); await tick(); await r1;
+  assert.equal(sampler.status().bybit.pendingSince, NOW + 660_000, 'the old read\'s end does not let the newer one go');
+  h.release[1]!(); await r2;
+  assert.equal(sampler.status().bybit.pendingSince, null);
+  sampler.close();
+});
+
+test('a round let go that finishes late leaves the newer round as the one under way', { timeout: 5_000 }, async () => {
+  let clock = NOW;
+  const h = heldHistory();
+  const sampler = new OiSampler(() => {}, () => {}, h.get, () => clock, 3_600_000, () => {}, 30_000, 600_000);
+  sampler.sync(['bybit:BTCUSDT']);
+  const r1 = sampler.round(); await tick();
+  clock += 660_000;
+  const r2 = sampler.round(); await tick();
+  h.release[0]!(); await r1;
+  assert.equal(sampler.round(), r2, 'the second round is still the one under way');
+  h.release[1]!(); await r2;
+  sampler.close();
+});
+
+test('the fast round never waits on a read under way: it skips it, and reads once the minute round has let a stuck one go', { timeout: 5_000 }, async () => {
+  let clock = NOW;
+  const h = heldHistory(1);
+  const sampler = new OiSampler(() => {}, () => {}, h.get, () => clock, 3_600_000, () => {}, 30_000, 600_000);
+  sampler.sync(['bybit:BTCUSDT']);
+  sampler.setFast(['bybit']);
+  void sampler.round(); await tick();
+  for (let i = 0; i < 3; i++) { clock += 5_000; await sampler.roundFast(); }
+  assert.equal(h.tickers(), 0, 'nothing read beside the stuck read, and each fast round ended');
+  clock += 600_000;
+  await sampler.roundFast();
+  assert.equal(h.tickers(), 1, 'past the stall limit the stuck read is let go and the fast round reads');
+  sampler.close();
+});
+
+test('a read stuck mid-round holds the next round only until its own stall limit, not a whole limit more', { timeout: 5_000 }, async () => {
+  // Real clock, an 80 ms stall limit: Bitget's first read answers after 50 ms, then Deribit's first read never answers; the second round
+  // (started past the round's limit, 90 ms in) reaches Deribit while that read is 40 ms old, waits out the 40 ms it has left, and reads again.
+  let deribitAsks = 0, bitgetAsks = 0;
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('bitget.com')) { if (++bitgetAsks === 1) await new Promise(resolve => setTimeout(resolve, 50)); return { data: { openInterestList: [{ size: '5' }] } }; }
+    if (url.includes('deribit.com')) { deribitAsks++; if (deribitAsks === 1) return new Promise(() => {}); return { result: [{ open_interest: 85_000_000, mark_price: 85_000 }] }; }
+    throw new Error(url);
+  };
+  const sampler = new OiSampler(() => {}, () => {}, get, Date.now, 3_600_000, () => {}, 30_000, 80);
+  sampler.sync(['bitget:BTCUSDT', 'deribit:BTC-PERPETUAL']);
+  const started = Date.now();
+  await new Promise(resolve => setTimeout(resolve, 90));
+  await sampler.round();
+  assert.equal(deribitAsks, 2, 'Deribit read again in the second round');
+  assert.ok(Date.now() - started < 300, `within about one limit of the stuck read (${Date.now() - started} ms)`);
+  sampler.close();
+});
+
+test('webGet keeps a refused answer\'s status when its body stalls, and a caller\'s abort settles it at once', { timeout: 8_000 }, async () => {
+  const original = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => ({ ok: false, status: 429, text: () => new Promise<string>(() => {}) })) as unknown as typeof fetch;
+    const started = Date.now();
+    await assert.rejects(webGetWithin(5_000)('https://example.invalid/x'), (error: unknown) => (error as { status?: number }).status === 429);
+    assert.ok(Date.now() - started < 4_000, 'the body is read for a short while only');
+    globalThis.fetch = (() => new Promise<never>(() => {})) as typeof fetch;
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 20);
+    const t0 = Date.now();
+    await assert.rejects(webGetWithin(5_000)('https://example.invalid/y', { signal: caller.signal }), (error: unknown) => error instanceof Error && error.name === 'AbortError');
+    assert.ok(Date.now() - t0 < 1_000, 'at once, though fetch never settled');
+  } finally { globalThis.fetch = original; }
+});
