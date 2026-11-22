@@ -832,7 +832,8 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
 :root[data-frame="bevel"] .pane.heat .liq-kind { height: 23px; line-height: 21px; box-shadow: none; }
 :root[data-frame="bevel"] .pane.heat .liq-history { height: 23px; box-shadow: none; }
 /* Under a drawn split the button is as wide as the column and names each sub-column over its own (heat-pane.ts `#placeLiqKind`), the divider
-   through it; a name too long for its half ends in an ellipsis (the tip says both). */
+   through it; a name too long for its half gives way to the half of the split's short name ("Liq | Stops"), and only a name too long even then ends in
+   an ellipsis (the tip says both whole). */
 .pane.heat .liq-kind.split-names { text-overflow: clip; }
 .pane.heat .liq-kind.split-names > span:not(.lk-div) { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
 .pane.heat .liq-kind.split-names .lk-b { position: absolute; top: 0; }

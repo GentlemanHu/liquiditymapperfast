@@ -50,12 +50,14 @@ test('the split\'s names on the levels button: each as far into its own sub-colu
   // In the column's own pixels: the button starts at the inset and its padding box a border further.
   const box = HEAD_INSET + 1;
   assert.equal(box + plan.divider, 100, 'the divider through the button continues the column\'s');
-  assert.equal(box + 9 - 0, 17, 'the first name stands 17 px into the left sub-column');
-  assert.equal(box + plan.secondLeft - 100, 17, 'and the second as far into the right one');
+  const firstInto = box + 9;
+  assert.equal(box + plan.secondLeft - 100, firstInto, 'the second name stands as far into the right sub-column as the first into the left one');
   assert.ok(9 + plan.firstMax < plan.divider, 'the first name never reaches the divider');
   assert.equal(plan.secondLeft + plan.secondMax, 189 - 2 - 22, 'the second never reaches the arrow');
-  // The Bevel frame's button (23 px, the same border and paddings here) and a narrower button keep the rule; no room gives no width, not less.
-  assert.deepEqual(splitNames({ subX: 100, room: 120, border: 2, pad: 9, arrow: 22 }).secondMax, 0);
+  // A thicker border moves both names and the divider by as much; a button with no room for a second name gives it no width, never less.
+  const thick = splitNames({ subX: 100, room: 189, border: 2, pad: 9, arrow: 22 });
+  assert.equal(HEAD_INSET + 2 + thick.divider, 100); assert.equal(HEAD_INSET + 2 + thick.secondLeft - 100, HEAD_INSET + 2 + 9);
+  assert.equal(splitNames({ subX: 100, room: 120, border: 2, pad: 9, arrow: 22 }).secondMax, 0);
 });
 
 test('every column\'s heading draws on the grid: its name on the tools\' row, its figures from the first line', () => {
@@ -77,6 +79,13 @@ test('every column\'s heading draws on the grid: its name on the tools\' row, it
   assert.equal(heat.match(/button\.classList\.remove\('split-names'\); button\.style\.width = '';/g)?.length, 2);
   // The names placed by the pure plan, from the button's own border and paddings.
   assert.match(heat, /plan = splitNames\(\{ subX: subColumns\(0, W\)\[1\]\.x0, room, border: button\.clientLeft,/);
+  assert.match(heat, /first\.style\.maxWidth = `\$\{plan\.firstMax\}px`; line\.style\.left = `\$\{plan\.divider\}px`;/);
+  assert.match(heat, /second\.style\.left = `\$\{plan\.secondLeft\}px`; second\.style\.maxWidth = `\$\{plan\.secondMax\}px`;/);
+  // The short halves take over only where a whole name overflows, each over its own sub-column (the left half over the left one).
+  assert.match(heat, /if \(first\.scrollWidth > first\.clientWidth \|\| second\.scrollWidth > second\.clientWidth\) \{/);
+  assert.match(heat, /if \(shortA && shortB\) \{ first\.textContent = shortA; second\.textContent = shortB; \}/);
+  // No crosshair over a measure column's heading, where a press now pans.
+  assert.match(heat, /overColumn = hit !== null && y >= \(this\.#columnHeads\.get\(/);
   // A press on a measure column's heading selects nothing: only a press under its band starts a selection.
   assert.match(heat, /this\.#columnHeads\.set\(`\$\{side\}\|\$\{i\}`, headH\);/);
   assert.match(heat, /column && y >= head && y <= this\.plotH/);

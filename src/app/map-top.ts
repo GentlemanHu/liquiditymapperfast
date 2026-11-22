@@ -9,8 +9,8 @@
  * - a name (what a column, a sub-column or a lane is) is `nameFont` in the text colour;
  * - a figure or a note (how much; why) is `bodyFont`, muted; a warning (a group's orders not on the server, a measure's record cut short) is
  *   the theme's caution words colour (theme.ts `cautionInk`: amber moved toward the text until it reads), as every caution on the page is.
- * A compact map (a phone's, under 520 px) has no corner tools' row and an 84 px profile column: that column keeps its two figure lines at the
- * top, as before (heat-pane.ts `#paintProfile`).
+ * A compact map (a map pane under 520 px across: a phone's, or a narrow window's) has an 84 px profile column too narrow for a name and two
+ * figure lines under the tools' row: it keeps its two figure lines at the top, as before (heat-pane.ts `#paintProfile`).
  * Pure: the painters (panes/heat-pane.ts) read the numbers here, and `tests/app-map-top.test.mts` holds them.
  */
 

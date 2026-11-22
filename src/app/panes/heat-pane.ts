@@ -535,8 +535,8 @@ export class HeatPane {
   readonly #liveButton = el('button', { class: 'map-live', type: 'button', tip: t('Back to the live candle at this zoom (keyboard: End). While the live candle is on screen the chart follows it.') }, t('Live'));
   /**
    * The liquidation column's History (Karl, 2026-11-17: few visitors knew the levels have a history; 2026-11-21: people must see it to find
-   * it): a map button under the heading's lines (map-top.ts `liqHeading`), it opens the Depth pane on Liquidation levels, which follows what the
-   * levels show (liquidations, stops or both), and is out of sight while that is what the pane shows. A page element over the drawing, placed
+   * it): a map button under the heading's lines (map-top.ts `liqHeading`), it opens the Depth pane on Liquidation levels, which follows the kinds
+   * the levels show (liquidations, stops, take profits), and is out of sight while that is what the pane shows. A page element over the drawing, placed
    * where the column is drawn (`#paintLiqColumn`); the heading's band is as tall as what it holds (`#liqHeadH`), History included.
    */
   readonly #liqHistory = el('button', { class: 'liq-history', type: 'button', hidden: true, tip: t('How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane. The last {n} days are free; older history is part of Plus.', { n: FREE_DAYS }) }, t('History'));
@@ -4356,7 +4356,8 @@ export class HeatPane {
       ctx.fillStyle = p.muted;
       ctx.fillText(fitText(wide, t('LEVEL MAX {value}', { value: usd(maxLevel) }), liqRoom(W)), x0 + HEAD_INSET, heading.first);
       ctx.fillText(fitText(wide, t('CUM MAX {value}', { value: usd(maxCum) }), liqRoom(W)), x0 + HEAD_INSET, heading.first + HEAD_PITCH);
-      left.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, this.#inks()); ctx.fillText(note.text, x0 + HEAD_INSET, heading.first + HEAD_PITCH * (2 + n)); });
+      const inks = this.#inks();
+      left.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, inks); ctx.fillText(note.text, x0 + HEAD_INSET, heading.first + HEAD_PITCH * (2 + n)); });
       ctx.font = bodyFont(size);
     }
     this.#profileBox = null;
@@ -4441,7 +4442,8 @@ export class HeatPane {
     const below = top + HEAD_PITCH * (heads.rows - heads.across.length);
     ctx.globalAlpha = 1; ctx.font = bodyFont(size); ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
     heads.across.forEach((line, n) => ctx.fillText(line, x0 + HEAD_INSET, below + HEAD_PITCH * n));
-    notes.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, this.#inks()); ctx.fillText(note.text, x0 + HEAD_INSET, top + HEAD_PITCH * (heads.rows + n)); });
+    const inks = this.#inks();
+    notes.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, inks); ctx.fillText(note.text, x0 + HEAD_INSET, top + HEAD_PITCH * (heads.rows + n)); });
     ctx.restore(); ctx.textBaseline = 'middle';
     ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(x0 + 0.5, 0); ctx.lineTo(x0 + 0.5, ph); ctx.stroke();
     // The right sub-column's box stands over the left one and the map's edge: drawn last, on the pointer's layer (`#columnBoxes`).
@@ -5266,7 +5268,7 @@ export class HeatPane {
         if (x >= 0 && x <= this.plotW && y <= this.plotH) this.store.set({ hover: { t: this.view.tOf(x, this.plotW), price: this.view.pOf(y, this.plotH), y, source: 'heat' } });
         return;
       }
-      const overColumn = this.#columnAt(x) !== null && y <= this.plotH;
+      const hit = this.#columnAt(x), overColumn = hit !== null && y >= (this.#columnHeads.get(`${hit.side}|${hit.i}`) ?? 0) && y <= this.plotH;
       const onPlot = x >= 0 && x <= this.plotW && y <= this.plotH;
       // The drawing tools follow the pointer: the next point's preview with a tool armed, else what of the drawings is under it.
       if (onPlot && !this.#drag?.panning) this.draw?.move({ x, y }, e.altKey, false); else if (!onPlot) this.draw?.leave();

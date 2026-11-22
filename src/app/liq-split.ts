@@ -251,7 +251,7 @@ export interface SubHead { scale: string[] }
  * (map-top.ts, 2026-11-21: the caption rows that stood here before are gone): each sub-column's own LEVEL MAX and CUM MAX (`maxima`, null
  * for one with nothing to draw, which says why instead), in its own `subRoom`; then, across the column
  * (`wholeRoom`), words only (`across`): where the two share one scale (liquidations beside stops), that they do. No figure goes across: a line
- * at the column's left edge reads as the left caption's. A line that does not fit wraps under itself (at most two lines), never cut short:
+ * at the column's left edge reads as the left sub-column's. A line that does not fit wraps under itself (at most two lines), never cut short:
  * every figure is printed whole. `rows` is how many lines the heading takes.
  */
 export function splitHeads(measure: (text: string) => number, o: { maxima: readonly [readonly [string, string] | null, readonly [string, string] | null]; across: string | null; subRoom: number; wholeRoom: number }):
