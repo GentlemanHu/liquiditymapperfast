@@ -6,7 +6,9 @@
  * in 32 ms. The page's own engine took 0.4 s. So the warm-up asks only once the page's own requests have drained (quiet.ts) and the map's
  * own first load is in (`Hub.mapFirst`), one question at a time, and nothing on the clock (footprint.ts `ensure(..., warm)`, liq-days.ts
  * `warm`): the first pane to show the bars asks for what changed since, while drawing what is held. Each piece waits for a second of quiet
- * after the one before, so it takes about 15 to 25 s after a start or a switch has settled (more slices on candles under the hour).
+ * after the one before, so it takes some 10 to 50 s after a start or a switch has settled: a few questions on one- and five-minute candles,
+ * some 30 on hourly ones (the bars' slices and eight liquidation days), more on 15- and 30-minute candles, whose wider windows of minutes
+ * come in more slices (about 65 for 30-minute candles over the default view, estimated from the slicing rules).
  */
 
 /** The page's own requests drained this long before the warm-up asks for its next piece. */
@@ -16,11 +18,11 @@ export const WARM_SETTLE_MS = 3_000;
 /** How often the warm-up looks (not every frame). */
 export const WARM_LOOK_MS = 250;
 /**
- * A warm-up that has asked this many times without being done gives up: a source that keeps failing is not asked forever. A question is
- * counted at every look that would ask one (one that is retried after a failure's pause counts at each look of the pause), so time spent
- * waiting (a hidden page, a pane shown, a busy page) costs nothing. A start asks some 3 to 25 times (more slices on candles under the hour).
+ * A warm-up that has sent this many questions without being done gives up, so a source that keeps failing is not asked forever (one
+ * question every 5 s for the bars, every 15 s for a day, the loaders' own pauses). Only a question that went out counts (`warmRefund` gives
+ * back a look that sent none: a pause, a day still loading), so time spent waiting costs nothing; a start sends a few to about 65.
  */
-export const WARM_MAX_TRIES = 80;
+export const WARM_MAX_TRIES = 150;
 
 /** The warm-up's own state: the market list and timeframe it is for (`markets|tf`), since when, the questions it has asked, its last look, done. */
 export interface WarmState { key: string; since: number; tries: number; at: number; done: boolean }
@@ -58,6 +60,9 @@ export function warmNext(state: WarmState, look: WarmLook): { state: WarmState; 
   if (s.tries >= WARM_MAX_TRIES) return { state: { ...s, done: true }, act: 'none' };
   return { state: { ...s, tries: s.tries + 1 }, act: look.barsCovered ? 'days' : 'bars' };
 }
+
+/** The question a look counted, given back: the act sent none (a loader in its pause after a failure, a day still loading). */
+export function warmRefund(state: WarmState): WarmState { return { ...state, tries: Math.max(0, state.tries - 1) }; }
 
 /**
  * The stretch of liquidations the Flow history asks for first (size-history-pane.ts): from the first candle of the warm stretch, or where the

@@ -320,10 +320,10 @@ test('a pane that opens while a warm question is out waits for its answer rather
     });
   };
   const data = new FootprintData(), view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, sourceNow = 12 * H + 30 * 60_000;
-  data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow, true);
+  assert.equal(data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow, true), true, 'a question went out');
   assert.equal(data.busy, true, 'the warm question is out');
   assert.equal(data.answered, null, 'and nothing is answered yet (the pane says it is loading)');
-  data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow);
+  assert.equal(data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow), false, 'none goes out while one is');
   assert.equal(asked.length, 1, 'the pane does not ask again');
   release!(); await turn();
   assert.equal(data.busy, false);

@@ -74,23 +74,24 @@ export class LiquidationDays {
   /**
    * The warm-up (HeatPane `#warmStep`, before any pane shows the days): ask for the days of [from, to) of `ids` not held at all, one at a
    * time, the newest first, and keep them WARM_MS. Nothing on the clock: a day held is not asked again here (the first pane to show it asks
-   * for what changed since, the day under way included). True once every day of the stretch is held.
+   * for what changed since, the day under way included); a day whose question failed is asked again after its pause. `done` once every
+   * day of the stretch is held, `asked` when a question went out now, `waiting` while one is out or every day missing is in its pause.
    */
-  warm(ids: string, from: number, to: number): boolean {
-    const source = this.hub.source; if (!source.liquidations) return true;
+  warm(ids: string, from: number, to: number): 'done' | 'asked' | 'waiting' {
+    const source = this.hub.source; if (!source.liquidations) return 'done';
     this.#markets(ids);
     const now = Date.now();
     this.#warm = { from, to, at: now };
-    let missing = false;
+    let missing = false, asked = false;
     for (let day = Math.floor((to - 1) / DAY_MS) * DAY_MS; day >= Math.floor(from / DAY_MS) * DAY_MS; day -= DAY_MS) {
       if (this.#days.has(day)) continue;
       missing = true;
-      if (!this.#loading.size && now >= (this.#retry.get(day) ?? 0)) this.#load(day, ids);
+      if (!this.#loading.size && now >= (this.#retry.get(day) ?? 0)) { this.#load(day, ids); asked = true; }
     }
     // A warm-up of another stretch (another timeframe) lets the last one's days go, unless a pane still needs them.
     const wants = [...[...this.#wants.values()].filter(w => now - w.at <= WANT_MS), this.#warm];
     for (const day of [...this.#days.keys()]) if (!wants.some(w => day + DAY_MS >= w.from - DAY_MS && day <= w.to + DAY_MS)) this.#days.delete(day);
-    return !missing;
+    return !missing ? 'done' : asked ? 'asked' : 'waiting';
   }
 
   /** Other markets counted: what is held is not theirs, and an answer still out for the old ones is dropped when it comes. */

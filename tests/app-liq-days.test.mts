@@ -74,9 +74,9 @@ test('other markets start again: the days held are dropped and an answer still o
 test('the warm-up holds the days before any pane asks: one at a time, the newest first, and the day under way not asked again', async () => {
   const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - 2 * DAY_MS, to = D0 + 6 * 3_600_000;
   await withClock(now, async () => {
-    assert.equal(days.warm('a', from, to), false);
+    assert.equal(days.warm('a', from, to), 'asked');
     assert.deepEqual(s.asked, [D0], 'today first, alone');
-    assert.equal(days.warm('a', from, to), false);
+    assert.equal(days.warm('a', from, to), 'waiting');
     assert.deepEqual(s.asked, [D0], 'nothing more while it is out');
     await s.answer();
     days.warm('a', from, to);
@@ -84,11 +84,11 @@ test('the warm-up holds the days before any pane asks: one at a time, the newest
     await s.answer();
     days.warm('a', from, to);
     await s.answer();
-    assert.equal(days.warm('a', from, to), true, 'every day of the stretch held');
+    assert.equal(days.warm('a', from, to), 'done', 'every day of the stretch held');
     assert.deepEqual(s.asked, [D0, D0 - DAY_MS, D0 - 2 * DAY_MS]);
   });
   await withClock(now + 10 * 60_000, async () => {
-    assert.equal(days.warm('a', from, to), true);
+    assert.equal(days.warm('a', from, to), 'done');
     assert.equal(s.asked.length, 3, 'ten minutes on, the warm-up has not asked the day under way again');
     // The Flow history opens on the same stretch: it draws the days held and asks for the day under way alone.
     days.ensure('sizes', 'a', from, to);
@@ -101,7 +101,7 @@ test('the warm-up\x27s days outlive a pane\x27s two minutes, and go once its hal
   const s = source(), days = new LiquidationDays(s.hub), now = D0 + DAY_MS + 3_600_000, from = D0 - 3 * DAY_MS, to = D0 - DAY_MS;
   await withClock(now, async () => {
     for (let i = 0; i < 3; i++) { days.warm('a', from, to); await s.answer(); }
-    assert.equal(days.warm('a', from, to), true);
+    assert.equal(days.warm('a', from, to), 'done');
     assert.deepEqual(s.asked, [D0 - 2 * DAY_MS, D0 - 3 * DAY_MS]);
   });
   // The Bar stats ask for today alone, three minutes later: the warm-up's days stay.
@@ -128,7 +128,7 @@ test('a pane that opens while a warm day is out takes it rather than asking it t
 
 test('the warm-up of a source without liquidations is done at once, and a warm day whose question failed is asked again after its pause', async () => {
   const none = new LiquidationDays({ source: {} } as never);
-  await withClock(D0, () => { assert.equal(none.warm('a', D0 - DAY_MS, D0 + DAY_MS), true); });
+  await withClock(D0, () => { assert.equal(none.warm('a', D0 - DAY_MS, D0 + DAY_MS), 'done'); });
   const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - DAY_MS, to = D0 + 6 * 3_600_000;
   await withClock(now, async () => {
     days.warm('a', from, to);
@@ -137,14 +137,14 @@ test('the warm-up of a source without liquidations is done at once, and a warm d
     days.warm('a', from, to);
     assert.deepEqual(s.asked, [D0, D0 - DAY_MS], 'today failed: the day before meanwhile');
     await s.answer();
-    assert.equal(days.warm('a', from, to), false, 'today is still missing');
+    assert.equal(days.warm('a', from, to), 'waiting', 'today is still missing, in its pause: nothing to send');
     assert.equal(s.asked.length, 2, 'and not asked again before its pause');
   });
   await withClock(now + 16_000, async () => {
-    days.warm('a', from, to);
+    assert.equal(days.warm('a', from, to), 'asked');
     assert.deepEqual(s.asked.slice(2), [D0], 'after its pause today is asked again');
     await s.answer();
-    assert.equal(days.warm('a', from, to), true);
+    assert.equal(days.warm('a', from, to), 'done');
   });
 });
 
@@ -152,7 +152,7 @@ test('a warm-up of another stretch lets the last one\x27s days go, but not those
   const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - 8 * DAY_MS, to = D0 - 3 * DAY_MS;
   await withClock(now, async () => {
     for (let i = 0; i < 5; i++) { days.warm('a', from, to); await s.answer(); }
-    assert.equal(days.warm('a', from, to), true, 'five days held, one at a time');
+    assert.equal(days.warm('a', from, to), 'done', 'five days held, one at a time');
     // The Bar stats need the newest of them; the warm-up then moves to another stretch (another timeframe).
     days.ensure('bars', 'a', D0 - 4 * DAY_MS, D0 - 3 * DAY_MS);
     days.warm('a', D0 - DAY_MS, D0 + 6 * 3_600_000);

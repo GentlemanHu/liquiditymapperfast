@@ -44,7 +44,7 @@ import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
-import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, askRowStep, footprintLayout, footprintWant, paintFootprint, rowsBlind, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
+import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, askRowStep, footprintLayout, footprintWant, paintFootprint, rowsBlind, zoomLevel, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
 import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
@@ -68,7 +68,7 @@ import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
 import { dayStartOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
-import { WARM_IDLE, WARM_LOOK_MS, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
+import { WARM_IDLE, WARM_LOOK_MS, warmLiquidationSpan, warmNext, warmRefund, type WarmState } from '../size-history/warm.ts';
 import { liquidationCover } from '../liq-days.ts';
 import { quietMs } from '../quiet.ts';
 import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
@@ -1339,15 +1339,15 @@ export class HeatPane {
    * table's rows, point of control and imbalances, are the footprint's own when both are on), the Bar stats' retail and whale sizes as size
    * lines (those between box edges, so their rows are exact at any size from the floor), and the window: the view, from the start of the day
    * its left edge falls in for the table's running sums from each day's start (`stats`), and with the Highlights' length of candles before
-   * it for the Flow history's baselines (`sizes`; at least 36 candles and six hours: size-history/model.ts). Readers blind to the rows (the
-   * Flow history alone, or its warm-up: `rowsBlind`) keep the rows held (`askRowStep`), and only peek at the level of detail: its hysteresis
-   * is the footprint's drawing's.
+   * it for the Flow history's baselines (`sizes`; at least 36 candles and six hours: size-history/model.ts). Readers blind to the rows (no
+   * footprint and no Bar stats shown: the Flow history alone, or its warm-up, `rowsBlind`) keep the rows held (`askRowStep`), and only peek
+   * at the level of detail (`zoomLevel`): its hysteresis is the footprint's drawing's.
    */
-  #footprintAsk(state: AppState, need: { stats: boolean; sizes: boolean; warm: boolean }): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
+  #footprintAsk(state: AppState, need: { stats: boolean; sizes: boolean }): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
     const v = this.view, ph = this.plotH, tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint, fine = fp.fine;
-    const markets = this.footprintMarkets(state), blind = rowsBlind({ footprint: state.show.footprint, stats: state.show.stats, warm: need.warm });
+    const markets = this.footprintMarkets(state), blind = rowsBlind({ footprint: state.show.footprint, stats: state.show.stats });
     const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
-    const zoom = fine > 0 ? fine * 2 ** (blind ? this.#lod.peek(fineRowPx) : this.#lod.level(fineRowPx)) : 0;
+    const zoom = fine > 0 ? fine * 2 ** zoomLevel(this.#lod, blind, fineRowPx) : 0;
     const rowStep = askRowStep(blind, blind && fp.holds(markets, state.timeframe) ? fp.heldStep : 0, zoom);
     const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
     let from = v.t0;
@@ -1358,8 +1358,8 @@ export class HeatPane {
 
   /** The Flow history's warm-up (size-history/warm.ts `warmNext`). */
   #warm: WarmState = WARM_IDLE;
-  /** The warm-up's liquidation days (main.ts sets it to liq-days.ts `warm`): true once every day of the stretch is held. */
-  warmLiquidations: ((ids: string, from: number, to: number) => boolean) | null = null;
+  /** The warm-up's liquidation days (main.ts sets it to liq-days.ts `warm`): `done` once every day of the stretch is held. */
+  warmLiquidations: ((ids: string, from: number, to: number) => 'done' | 'asked' | 'waiting') | null = null;
 
   /**
    * One look of the Flow history's warm-up, while nothing shows the footprint's bars (size-history/warm.ts): once the page's own requests
@@ -1369,7 +1369,7 @@ export class HeatPane {
   #warmStep(state: AppState, now: number): void {
     if (now - this.#warm.at < WARM_LOOK_MS) return;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint;
-    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true, warm: true });
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true });
     const want = footprintWant(window, tfMs), liq = this.liquidationMarkets(state);
     const { state: next, act } = warmNext(this.#warm, {
       now, key: markets.length ? `${markets.join(',')}|${state.timeframe}` : '', hidden: document.visibilityState === 'hidden',
@@ -1379,10 +1379,13 @@ export class HeatPane {
       days: !!this.warmLiquidations && !!this.hub.source.liquidations && liq.some(id => kindOf(state.markets, id) !== 'spot'),
     });
     this.#warm = next;
-    if (act === 'bars') fp.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow(), true);
+    // A look whose act sent no question (a loader in its pause after a failure, a day still loading) gives back the question it counted.
+    if (act === 'bars') { if (!fp.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow(), true)) this.#warm = warmRefund(this.#warm); }
     else if (act === 'days') {
       const wall = Date.now(), span = warmLiquidationSpan(window.t0, this.view.t1, tfMs, wall, liquidationCover(this.hub.source.kind, this.hub.recordedSince, wall));
-      if (!span || this.warmLiquidations!(liq.join(','), span.from, span.to)) this.#warm = { ...this.#warm, done: true };
+      const days = span ? this.warmLiquidations!(liq.join(','), span.from, span.to) : 'done';
+      if (days === 'done') this.#warm = { ...this.#warm, done: true };
+      else if (days === 'waiting') this.#warm = warmRefund(this.#warm);
     }
   }
 
@@ -1399,7 +1402,7 @@ export class HeatPane {
       this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 }); return;
     }
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: state.show.stats, sizes: state.show.sizes, warm: false });
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: state.show.stats, sizes: state.show.sizes });
     if (!markets.length) this.#footprint.clear();
     if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow());
     const rowH = rowStep > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(rowStep, ph)) : 0;

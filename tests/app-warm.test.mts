@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { quietMs, resetQuiet, track, trackedFetch } from '../src/app/quiet.ts';
-import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmLiquidationSpan, warmNext, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
+import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmLiquidationSpan, warmNext, warmRefund, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
 import { historyLoading } from '../src/app/size-history/model.ts';
-import { askRowStep, rowsBlind } from '../src/app/panes/footprint.ts';
+import { askRowStep, rowsBlind, zoomLevel } from '../src/app/panes/footprint.ts';
 import { liquidationCover } from '../src/app/liq-days.ts';
 import { LIQUIDATION_RETENTION_MS } from '../src/shared/liquidations.ts';
 import { BROWSER_RETENTION_MS } from '../src/shared/recorder.ts';
@@ -103,17 +103,44 @@ test('the warm-up gives up after its questions run out, in the bars or the days,
   assert.deepEqual([late.act, late.state.tries], ['bars', 1]);
 });
 
-test('row-blind readers keep the rows held unless more than four times finer than the zoom\x27s; the footprint and the Bar stats read rows', () => {
-  assert.equal(rowsBlind({ footprint: false, stats: false, warm: false }), true, 'the Flow history alone');
-  assert.equal(rowsBlind({ footprint: true, stats: false, warm: false }), false, 'the footprint draws rows');
-  assert.equal(rowsBlind({ footprint: false, stats: true, warm: false }), false, 'the Bar stats read them');
-  assert.equal(rowsBlind({ footprint: true, stats: true, warm: true }), true, 'the warm-up, before any reader shows');
+test('row-blind readers keep the rows held unless more than eight times finer than the zoom\x27s; the footprint and the Bar stats read rows', () => {
+  assert.equal(rowsBlind({ footprint: false, stats: false }), true, 'the Flow history alone, or its warm-up');
+  assert.equal(rowsBlind({ footprint: true, stats: false }), false, 'the footprint draws rows');
+  assert.equal(rowsBlind({ footprint: false, stats: true }), false, 'the Bar stats read them');
   assert.equal(askRowStep(true, 4, 8), 4, 'one level finer held: kept (the map grew shorter as the pane opened)');
   assert.equal(askRowStep(true, 16, 8), 16, 'coarser held: kept');
-  assert.equal(askRowStep(true, 2, 8), 2, 'four times finer: kept');
-  assert.equal(askRowStep(true, 1, 8), 8, 'more than four times finer (a deep zoom\x27s): the zoom\x27s');
+  assert.equal(askRowStep(true, 1, 8), 1, 'eight times finer (the map at 30 % of its height, a level off): kept');
+  assert.equal(askRowStep(true, 0.5, 8), 8, 'more than eight times finer (a deep zoom\x27s): the zoom\x27s');
   assert.equal(askRowStep(true, 0, 8), 8, 'nothing held');
   assert.equal(askRowStep(false, 4, 8), 8, 'a reader of rows: always the zoom\x27s');
+});
+
+test('readers of rows move the level of detail; readers blind to rows only peek at it', () => {
+  const calls: string[] = [];
+  const lod = { level: (px: number) => { calls.push(`level ${px}`); return 3; }, peek: (px: number) => { calls.push(`peek ${px}`); return 2; } };
+  assert.equal(zoomLevel(lod, false, 5), 3);
+  assert.equal(zoomLevel(lod, true, 7), 2);
+  assert.deepEqual(calls, ['level 5', 'peek 7'], 'the footprint or the Bar stats move the hysteresis; the Flow history alone and its warm-up do not');
+});
+
+test('a look that waits for any of its five reasons counts no question, however many there are', () => {
+  const gates: Partial<WarmLook>[] = [{ hidden: true }, { mapFirst: true }, { quietMs: WARM_QUIET_MS - 1 }, { barsBusy: true }];
+  for (const gate of gates) {
+    let s = seen();
+    for (let i = 0; i < 200; i++) s = warmNext(s, look(WARM_SETTLE_MS + i * WARM_LOOK_MS, gate)).state;
+    assert.equal(s.tries, 0, `waiting on ${JSON.stringify(gate)}`);
+  }
+  let settling = seen();
+  for (let i = 0; i < 11; i++) settling = warmNext(settling, look(i * WARM_LOOK_MS + 1)).state;
+  assert.equal(settling.tries, 0, 'a list still settling');
+});
+
+test('a question a look counted is given back when its act sent none (a pause after a failure, a day still loading)', () => {
+  const asked = warmNext(seen(), look(WARM_SETTLE_MS)).state;
+  assert.equal(asked.tries, 1);
+  assert.equal(warmRefund(asked).tries, 0);
+  assert.equal(warmRefund(warmRefund(asked)).tries, 0, 'never below none');
+  assert.deepEqual({ ...warmRefund(asked), tries: 1 }, asked, 'nothing else changes');
 });
 
 test('the pane says Loading only while a question is out for candles not yet answered for', () => {

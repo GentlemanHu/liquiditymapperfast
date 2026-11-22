@@ -163,7 +163,7 @@ export class FootprintLod {
 
   /** Dyadic row grouping that keeps rows 12-16 px tall (with hysteresis), as multiples of the recorded fine step. */
   level(fineRowPx: number): number { this.#level = this.peek(fineRowPx); return this.#level; }
-  /** The level `level` would give, leaving the hysteresis as it is (the Flow history's warm-up asks while nothing draws rows). */
+  /** The level `level` would give, leaving the hysteresis as it is (readers blind to rows ask while nothing draws them: `zoomLevel`). */
   peek(fineRowPx: number): number {
     const p = FOOTPRINT_POLICY; let level = this.#level;
     if (fineRowPx * 2 ** level < p.coarsenHeight) while (level < p.maxLevel && fineRowPx * 2 ** level < p.coarsenHeight) level++;
@@ -201,18 +201,26 @@ const FOOTPRINT_MAX_BARS = 3_000;
 type FootprintLoad = (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[], budget: number, venues: boolean) => Promise<FootprintResponse>;
 
 /**
- * Whether the readers of the footprint's bars are blind to its rows: the Flow history alone (it reads each bar's sums and minutes), or its
- * warm-up before any reader shows. The footprint draws rows, and the Bar stats read them (point of control, imbalances).
+ * Whether the readers of the footprint's bars are blind to its rows: neither the footprint (it draws them) nor the Bar stats (point of
+ * control, imbalances) shows, so only the Flow history, which reads each bar's sums and minutes, or its warm-up, before any reader shows.
  */
-export function rowsBlind(readers: { footprint: boolean; stats: boolean; warm: boolean }): boolean { return readers.warm || (!readers.footprint && !readers.stats); }
+export function rowsBlind(readers: { footprint: boolean; stats: boolean }): boolean { return !readers.footprint && !readers.stats; }
+
+/**
+ * The level of detail the bars are asked at: the drawing's own (`level`, which moves its hysteresis) for readers of rows, a peek at it
+ * (`peek`, which does not) for readers blind to them, so the hysteresis follows only what draws rows.
+ */
+export function zoomLevel(lod: { level(fineRowPx: number): number; peek(fineRowPx: number): number }, blind: boolean, fineRowPx: number): number {
+  return blind ? lod.peek(fineRowPx) : lod.level(fineRowPx);
+}
 
 /**
  * The row size the bars are asked on: the zoom's (`zoom`, the level of detail at this height), or for row-blind readers the rows held
- * (`held`), so the map growing shorter as the Flow history opens under it, or a zoom, does not ask the whole window again; unless the held
- * rows are more than four times finer than the zoom's (an answer from a deep zoom would make every later slice that much larger). Coarser
- * rows held are kept.
+ * (`held`), so the map growing shorter as the Flow history opens under it (to 30 % of its height at most, two levels), or a zoom, does not
+ * ask the whole window again; unless the held rows are more than eight times finer than the zoom's (a deep zoom's answer would make every
+ * later slice that much larger), when the window is asked once on the zoom's rows. Coarser rows held are kept.
  */
-export function askRowStep(blind: boolean, held: number, zoom: number): number { return blind && held > 0 && held * 4 >= zoom ? held : zoom; }
+export function askRowStep(blind: boolean, held: number, zoom: number): number { return blind && held > 0 && held * 8 >= zoom ? held : zoom; }
 
 /** The bars a view asks for: its candles with one each side, [from, to) on whole candles. */
 export function footprintWant(view: Bounds, tfMs: number): { from: number; to: number } {
@@ -257,8 +265,9 @@ export class FootprintData {
   /** Whether the bars held were answered for all of [from, to) (on the last grid asked). */
   covers(from: number, to: number): boolean { const h = this.#held; return !!h && h.from <= from && h.to >= to; }
   /**
-   * The row size of the bars held, 0 before an answer. A reader that never draws rows (the Flow history alone, or its warm-up) asks on it, so
-   * a zoom, or the map growing shorter as the pane opens under it, does not ask the whole window again on another grid (HeatPane `#footprintAsk`).
+   * The row size of the bars held, 0 before an answer. Readers blind to rows (the Flow history alone, or its warm-up) ask on it while it is
+   * no more than eight times finer than the zoom's (`askRowStep`), so a zoom, or the map growing shorter as the pane opens under it, does not
+   * ask the whole window again on another grid (HeatPane `#footprintAsk`).
    */
   get heldStep(): number { const h = this.#held; return h ? Number(h.grid.slice(0, h.grid.indexOf('|'))) : 0; }
   /**
@@ -282,22 +291,22 @@ export class FootprintData {
    * bars that can still change (every FOOTPRINT_REFRESH_MS, or the view reaching past the newest), or the next older slice. `now` is the
    * source's clock (a bar is settled by its time). `warm`: no pane shows the bars yet (the Flow history's warm-up, HeatPane `#warmStep`):
    * the view is asked for until it is covered, in its slices (a view that moved past the bars held asks from their end), and nothing on the
-   * clock (no refresh of the bars still changing, no late-trade recheck, no size-sum retry); the first pane to show them asks for what
-   * changed since.
+   * clock (no refresh of the bars still changing, no late-trade recheck, no size-sum retry; a question that failed is asked again after the
+   * pause below, as for a pane); the first pane to show them asks for what changed since. True when a question went out.
    */
-  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: FootprintLoad, onLoad: () => void, cuts: readonly number[] = [], now = Date.now(), warm = false): void {
+  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: FootprintLoad, onLoad: () => void, cuts: readonly number[] = [], now = Date.now(), warm = false): boolean {
     const tfMs = TIMEFRAMES[tf] ?? 3_600_000;
     // Rows of another market or timeframe are not rows of this one, whatever the window: they go now, rather than being drawn until the new
     // ones come (or for good, if they never do). A request still out for the old context is left to finish, and its answer is ignored.
     const context = `${inst}|${tf}`;
     if (context !== this.#context) { this.#context = context; this.bars = new Map(); this.venueOrder = []; this.step = 0; this.fine = 0; this.#held = null; this.#busy = false; this.#retryAt = 0; this.#stepAsked = ''; this.version++; }
     const clock = performance.now();
-    if (this.#busy || clock < this.#retryAt) return;
+    if (this.#busy || clock < this.#retryAt) return false;
     // No row size yet (`rowStep` 0: the markets' recorded step comes with their first answer). Asked as it is, the answer would hold every bar
     // on the finest rows recorded (BTC's $0.50, where the footprint draws some $64 at an hour's zoom: 45 MB for a week of hourly bars of 13
     // markets, 2026-11-07), only for the next look to ask again on the drawn rows. The step is asked first, alone; markets with nothing
     // recorded (no step) are then asked as before.
-    if (!(rowStep > 0) && !this.#held && this.#stepAsked !== context) { this.#askStep(context, inst, tf, load, onLoad); return; }
+    if (!(rowStep > 0) && !this.#held && this.#stepAsked !== context) { this.#askStep(context, inst, tf, load, onLoad); return true; }
     // Other size lines are another question: the bars' sums are for the lines asked.
     const grid = `${rowStep}|${cuts.join(',')}`, want = footprintWant(view, tfMs);
     const h = this.#held;
@@ -327,7 +336,7 @@ export class FootprintData {
       if (h.redo.to === Infinity) { h.redo.tries++; h.redo.at = clock; }
       ask = { from: Math.max(h.redo.from, h.from), to: Math.min(h.settled, h.to, h.redo.to), kind: 'redo' };
     }
-    else return;
+    else return false;
     this.#busy = true;
     const request = ++this.#request, asked = [...cuts];
     // Several markets (a comma list): each row's markets too, for the bar's pieces.
@@ -357,6 +366,7 @@ export class FootprintData {
       // Asked again in five seconds, not on every frame.
       console.error('footprint load failed', error); this.#retryAt = performance.now() + FOOTPRINT_REFRESH_MS;
     }).finally(() => { if (request === this.#request) this.#busy = false; });
+    return true;
   }
 
   /** The context whose recorded step `#askStep` was answered for, so markets with nothing recorded are not asked it on every look. */
