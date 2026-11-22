@@ -4,7 +4,10 @@ import { DAY_MS, type LiquidationDay } from './panes/bar-stats.ts';
 
 /** How long a pane's stretch is kept without the pane asking again (it asks on every drawing): a pane put away stops holding days. */
 const WANT_MS = 120_000;
-/** How long the warm-up's stretch is kept: days held before any pane asks, for the Flow history to open on at once. */
+/**
+ * How long the warm-up's stretch counts as needed: days held before any pane asks, for the Flow history to open on at once. They go at the
+ * first look after it (a pane's `ensure`, or another warm-up), not on a clock of their own.
+ */
 export const WARM_MS = 30 * 60_000;
 
 /**
@@ -12,7 +15,8 @@ export const WARM_MS = 30 * 60_000;
  * (BTC: 900 to 3,500) rather than the largest 5,000 of a week; the day under way asked again every half minute; two at a time, the newest
  * first; a day whose question failed asked again after its own pause, the others meanwhile. One loader for the Bar stats and the Flow
  * history, which count the same markets (`HeatPane.liquidationMarkets`: the perpetuals whatever the Spot / Perp filter), so a day is asked
- * once however many of them show: each says the stretch it needs (`ensure`), and a day is kept while any of them needs it.
+ * once however many of them show: each says the stretch it needs (`ensure`), and a day is kept while any of them needs it. Before either
+ * shows, the Flow history's warm-up (`warm`, size-history/warm.ts) holds the days its row will read first.
  */
 export class LiquidationDays {
   #days = new Map<number, LiquidationDay & { at: number }>();

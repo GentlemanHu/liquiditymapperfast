@@ -125,3 +125,25 @@ test('a pane that opens while a warm day is out takes it rather than asking it t
     assert.equal(days.days.size, 0, 'other markets: what was held is not theirs');
   });
 });
+
+test('the warm-up of a source without liquidations is done at once, and a warm day whose question failed is asked again after its pause', async () => {
+  const none = new LiquidationDays({ source: {} } as never);
+  await withClock(D0, () => { assert.equal(none.warm('a', D0 - DAY_MS, D0 + DAY_MS), true); });
+  const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - DAY_MS, to = D0 + 6 * 3_600_000;
+  await withClock(now, async () => {
+    days.warm('a', from, to);
+    s.waiting.splice(0).forEach(w => w.reject(new Error('down')));
+    await new Promise(r => setTimeout(r, 0));
+    days.warm('a', from, to);
+    assert.deepEqual(s.asked, [D0, D0 - DAY_MS], 'today failed: the day before meanwhile');
+    await s.answer();
+    assert.equal(days.warm('a', from, to), false, 'today is still missing');
+    assert.equal(s.asked.length, 2, 'and not asked again before its pause');
+  });
+  await withClock(now + 16_000, async () => {
+    days.warm('a', from, to);
+    assert.deepEqual(s.asked.slice(2), [D0], 'after its pause today is asked again');
+    await s.answer();
+    assert.equal(days.warm('a', from, to), true);
+  });
+});

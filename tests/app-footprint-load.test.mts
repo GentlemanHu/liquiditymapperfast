@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FOOTPRINT_REFRESH_MS, FootprintData, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
+import { FOOTPRINT_REFRESH_MS, FootprintData, FootprintLod, footprintWant, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
 import type { FootprintResponse } from '../src/app/source.ts';
 
 const H = 3_600_000;
@@ -310,7 +310,7 @@ test('the warm-up never rechecks settled bars for late trades nor retries missin
   } finally { time.restore(); }
 });
 
-test('a pane that opens while a warm question is out waits for its answer rather than asking again, and draws it', async () => {
+test('a pane that opens while a warm question is out waits for its answer rather than asking again, and holds its bars', async () => {
   const asked: number[][] = [];
   let release: (() => void) | null = null;
   const load = (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
@@ -329,4 +329,42 @@ test('a pane that opens while a warm question is out waits for its answer rather
   assert.equal(data.busy, false);
   assert.deepEqual([...data.bars.keys()].map(t => t / H), [9, 10, 11, 12], 'the warm answer is the pane\x27s');
   assert.ok(data.holds(['a'], '1h'));
+});
+
+test('a view that moved past the bars the warm-up holds is asked from their end, so the warm-up finishes rather than waiting on a refresh', async () => {
+  const time = clock(1_000_000);
+  try {
+    // The source's clock half an hour into the 15h bar: the bars from 15h on can still change.
+    const { asked, load } = source(50), data = new FootprintData(), sourceNow = 15.5 * H;
+    data.ensure('a', '1h', { t0: 10 * H, t1: 14 * H, p0: 0, p1: 1 }, 5, load, () => {}, [], sourceNow, true); await turn();
+    assert.deepEqual(asked.map(a => [a.from / H, a.to / H]), [[9, 15]]);
+    // Past the late-trade recheck's five minutes, the view moved on past the end of what is held, still overlapping it (panned, or the
+    // page hidden while the live edge moved on).
+    time.advance(5 * 60_000 + 1);
+    const moved = { t0: 13 * H, t1: 18 * H, p0: 0, p1: 1 };
+    data.ensure('a', '1h', moved, 5, load, () => {}, [], sourceNow, true); await turn();
+    assert.deepEqual(asked.slice(1).map(a => [a.from / H, a.to / H]), [[15, 19]], 'the warm-up asks from the end of what is held, not an hour back for late trades');
+    const w = footprintWant(moved, H);
+    assert.ok(data.covers(w.from, w.to), 'and the moved view is covered');
+  } finally { time.restore(); }
+});
+
+test('the bars a view asks for: its candles with one each side, on whole candles; the rows held are said', async () => {
+  assert.deepEqual(footprintWant({ t0: 10.5 * H, t1: 12.2 * H, p0: 0, p1: 1 }, H), { from: 9 * H, to: 14 * H });
+  const { load } = source(50), data = new FootprintData();
+  assert.equal(data.heldStep, 0, 'nothing held');
+  data.ensure('a', '1h', { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, 40, load, () => {}, [25_000, 100_000], 20 * H); await turn();
+  assert.equal(data.heldStep, 40, 'the row size asked, not the size lines');
+});
+
+test('a peek at the level leaves the footprint\x27s hysteresis as it is; the level itself moves it', () => {
+  const fresh = new FootprintLod();
+  assert.equal(fresh.peek(7), 1, 'rows of 7 px grouped by two');
+  assert.equal(fresh.level(14), 0, 'the peek left the level at 0: rows of 14 px need no grouping (from level 1 they would stay grouped)');
+  const lod = new FootprintLod();
+  assert.equal(lod.peek(1), 4, 'rows of 1 px grouped by 16 to reach 12 px');
+  assert.equal(lod.level(20), 0, 'the peek did not move it: rows of 20 px need no grouping');
+  assert.equal(lod.level(1), 4);
+  assert.equal(lod.peek(7), 2, 'hysteresis: from level 4 it refines while the row one level finer stays 16 px or more (from level 0 it would be 1)');
+  assert.equal(lod.level(1), 4, 'and the peek left level 4 in place');
 });

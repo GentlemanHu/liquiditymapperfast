@@ -162,11 +162,13 @@ export class FootprintLod {
   #level = 0;
 
   /** Dyadic row grouping that keeps rows 12-16 px tall (with hysteresis), as multiples of the recorded fine step. */
-  level(fineRowPx: number): number {
+  level(fineRowPx: number): number { this.#level = this.peek(fineRowPx); return this.#level; }
+  /** The level `level` would give, leaving the hysteresis as it is (the Flow history's warm-up asks while nothing draws rows). */
+  peek(fineRowPx: number): number {
     const p = FOOTPRINT_POLICY; let level = this.#level;
     if (fineRowPx * 2 ** level < p.coarsenHeight) while (level < p.maxLevel && fineRowPx * 2 ** level < p.coarsenHeight) level++;
     else while (level > 0 && fineRowPx * 2 ** (level - 1) >= p.refineHeight) level--;
-    this.#level = level; return level;
+    return level;
   }
 
   step(now: number, input: { enabled: boolean; hasData: boolean; widthCss: number; rowHeightCss: number; factor: number }): LodFrame {
@@ -197,6 +199,11 @@ const RECHECK_MS = 5 * 60_000, RECHECK_SPAN_MS = 3_600_000;
 const FOOTPRINT_MAX_BARS = 3_000;
 
 type FootprintLoad = (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[], budget: number, venues: boolean) => Promise<FootprintResponse>;
+
+/** The bars a view asks for: its candles with one each side, [from, to) on whole candles. */
+export function footprintWant(view: Bounds, tfMs: number): { from: number; to: number } {
+  return { from: Math.floor((view.t0 - tfMs) / tfMs) * tfMs, to: Math.ceil((view.t1 + tfMs) / tfMs) * tfMs };
+}
 
 /**
  * Executions per candle (taker buy/sell USD by price row) for the visible window. A recorded bar does not change once it is settled, so
@@ -236,6 +243,11 @@ export class FootprintData {
   /** Whether the bars held were answered for all of [from, to) (on the last grid asked). */
   covers(from: number, to: number): boolean { const h = this.#held; return !!h && h.from <= from && h.to >= to; }
   /**
+   * The row size of the bars held, 0 before an answer. A reader that never draws rows (the Flow history alone, or its warm-up) asks on it, so
+   * a zoom, or the map growing shorter as the pane opens under it, does not ask the whole window again on another grid (HeatPane `#footprintAsk`).
+   */
+  get heldStep(): number { const h = this.#held; return h ? Number(h.grid.slice(0, h.grid.indexOf('|'))) : 0; }
+  /**
    * Whether the bars held are those of `markets` (as the map asks for them, sorted) at `tf`: the context the last `ensure` set, or, with no
    * markets to count, the cleared one. The map switches it in its own frame, so a pane drawn first after a click still holds the old bars.
    */
@@ -255,8 +267,9 @@ export class FootprintData {
    * Ask for what the view needs next, if anything: everything (another row size or size lines, or a view the bars held do not touch), the
    * bars that can still change (every FOOTPRINT_REFRESH_MS, or the view reaching past the newest), or the next older slice. `now` is the
    * source's clock (a bar is settled by its time). `warm`: no pane shows the bars yet (the Flow history's warm-up, HeatPane `#warmStep`):
-   * the view is asked for once, in its slices, and nothing on the clock (no refresh of the bars still changing, no late-trade recheck, no
-   * size-sum retry); the first pane to show them asks for what changed since.
+   * the view is asked for until it is covered, in its slices (a view that moved past the bars held asks from their end), and nothing on the
+   * clock (no refresh of the bars still changing, no late-trade recheck, no size-sum retry); the first pane to show them asks for what
+   * changed since.
    */
   ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: FootprintLoad, onLoad: () => void, cuts: readonly number[] = [], now = Date.now(), warm = false): void {
     const tfMs = TIMEFRAMES[tf] ?? 3_600_000;
@@ -272,7 +285,7 @@ export class FootprintData {
     // recorded (no step) are then asked as before.
     if (!(rowStep > 0) && !this.#held && this.#stepAsked !== context) { this.#askStep(context, inst, tf, load, onLoad); return; }
     // Other size lines are another question: the bars' sums are for the lines asked.
-    const grid = `${rowStep}|${cuts.join(',')}`, want = { from: Math.floor((view.t0 - tfMs) / tfMs) * tfMs, to: Math.ceil((view.t1 + tfMs) / tfMs) * tfMs };
+    const grid = `${rowStep}|${cuts.join(',')}`, want = footprintWant(view, tfMs);
     const h = this.#held;
     // Scrolled over more bars than are worth holding: those off the view go (the view's own are kept, however many it shows).
     if (h && this.bars.size > FOOTPRINT_MAX_BARS && (h.from < want.from || h.to > want.to)) {
@@ -285,8 +298,8 @@ export class FootprintData {
     // Every few minutes the tail reaches back an hour into the settled bars: a trade a venue sends late (after a reconnect) lands in a
     // minute already settled here, and is otherwise only seen when the view is loaded again. A view that ends in that hour is rechecked
     // too, with no bar still under way in it (panned a few minutes behind the live edge).
-    else if (!warm && (want.to > h.to || (h.settled < want.to && clock - h.at >= FOOTPRINT_REFRESH_MS) || (clock - h.rechecked >= RECHECK_MS && want.to > h.settled - RECHECK_SPAN_MS))) {
-      const recheck = clock - h.rechecked >= RECHECK_MS;
+    else if (want.to > h.to || (!warm && ((h.settled < want.to && clock - h.at >= FOOTPRINT_REFRESH_MS) || (clock - h.rechecked >= RECHECK_MS && want.to > h.settled - RECHECK_SPAN_MS)))) {
+      const recheck = !warm && clock - h.rechecked >= RECHECK_MS;
       if (recheck) h.rechecked = clock;
       // From the start of the bar an hour back is in (on 4 h or 1 d bars an hour back is inside the bar before): an answer's bars that start
       // before where it was asked are not taken, so a recheck begun inside a bar would leave that bar as it was.
