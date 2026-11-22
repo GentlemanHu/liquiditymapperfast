@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { BandHistory, DepthHistory, RANK_MIN_COVER_MS, RANK_RECENT_MS, RANK_SPAN_MS, rankAt, rankKind, rankValue, SETTLE_MS, USUAL_SHARE, type BandRank } from '../src/app/depth-history.ts';
+import { BandHistory, DepthHistory, RANK_MIN_COVER_MS, RANK_RECENT_MS, RANK_SPAN_MS, cannotRank, rankAt, rankKind, rankValue, SETTLE_MS, USUAL_SHARE, type BandRank } from '../src/app/depth-history.ts';
 import { depthCardLines, depthRankBrief, liqCardLines, liqTakesLine, type DepthHistoryLines } from '../src/app/panes/pane-cards.ts';
 import { clock } from '../src/app/format.ts';
 import type { ColumnsFrame } from '../src/shared/columns.ts';
@@ -78,8 +78,8 @@ test('the grid grows both ways, a trim forgets the oldest windows, and a gap aft
   h.put(frame(['a'], T0 + 100 * STEP, 50, () => 7), T0 + 100 * STEP, T0 + 150 * STEP);
   h.put(frame(['a'], T0, 20, () => 3), T0, T0 + 20 * STEP);
   assert.equal(h.n0, Math.round(T0 / STEP)); assert.equal(h.count, 150);
-  // (a is held in under 90 % of this grid, so it is not a usual book of it: the totals are asked with it named as usual)
-  assert.deepEqual(h.usual(), []);
+  // a is in every window that holds a book (the 80 between the puts hold none: the source's gap, not a's), so it is usual of this grid.
+  assert.deepEqual(h.usual(), [0]);
   assert.ok(Number.isNaN(h.total('ask', 0, h.n0 + 50, null, [0])), 'between the two puts nothing is held');
   assert.equal(h.total('ask', 0, h.n0 + 10, null, [0]), 3); assert.equal(h.total('ask', 0, h.n0 + 120, null, [0]), 7);
   h.trim(T0 + 110 * STEP);
@@ -117,6 +117,42 @@ test('what a source really had: the windows holding any book, not the grid it wa
   assert.deepEqual([h.count, h.held()], [150, 150]);
 });
 
+test('a window no book holds is the source\'s gap, not every book\'s: a 4-day source, a 20-hour outage of every book and an empty week still rank; a newcomer stays unusual', () => {
+  const ids = ['a', 'b'], end = T0 + 630 * STEP;
+  const rankOf = (sizeAt: (id: string, x: number) => number | null, among = ids) => {
+    const h = new BandHistory('k', [], RADII); h.addBooks(['a', 'b', 'c']);
+    h.put(frame(['a', 'b', 'c'], T0, 630, sizeAt), T0, end);
+    return { h, r: rankValue(h, 'ask', 0, end, 25, among) };
+  };
+  const size = (x: number) => 10 + (x % 7);
+  // A source that has held four days of the week asked for (a server in its first week): every window it holds counts, as it held them.
+  const four = rankOf((id, x) => id !== 'c' && x >= 270 ? size(x) : null);
+  assert.deepEqual([four.h.usualIn(ids, T0 / STEP, end / STEP).length, four.r?.n], [2, 360]);
+  // Every book out for 20 hours (the PC or the server off): the rest of the week counts.
+  const outage = rankOf((id, x) => id !== 'c' && (x < 300 || x >= 375) ? size(x) : null);
+  assert.deepEqual([outage.h.usualIn(ids, T0 / STEP, end / STEP).length, outage.r?.n], [2, 555]);
+  // The older days answered with nothing (the browser engine, or a store that lost them): the 50 recent hours rank (188 windows, 48 h and more).
+  const recent = rankOf((id, x) => id !== 'c' && x >= 442 ? size(x) : null);
+  assert.deepEqual([recent.h.held(), recent.r?.n], [188, 188]);
+  // A venue that joined two days ago stays unusual (present in 180 of 630 windows held by the others), so its absence before never voids a window.
+  const newcomer = rankOf((id, x) => id === 'c' ? (x >= 450 ? 3 : null) : size(x), ['a', 'b', 'c']);
+  assert.deepEqual([newcomer.h.usualIn(['a', 'b', 'c'], T0 / STEP, end / STEP), newcomer.r?.n], [[0, 1], 630]);
+});
+
+test('whether a history can rank at all: a source whose own minutes began under 48 hours ago, known at once; a history read whole that holds fewer', () => {
+  const NOW = T0 + 630 * STEP, h = new BandHistory('k', [], RADII);
+  h.addBooks(['a']);
+  h.put(frame(['a'], T0, 630, (_, x) => x >= 530 ? 5 : null), T0, NOW);
+  assert.equal(h.held(), 100);
+  assert.equal(cannotRank(null, false, NOW - 24 * HOUR, NOW), true, 'the browser engine: a day of its own minutes, from the first frame');
+  assert.equal(cannotRank(null, false, NOW - 3 * DAY, NOW), false, 'three days: may rank, the history decides');
+  assert.equal(cannotRank(null, false, Infinity, NOW), true, 'a book with no minutes of its own yet');
+  assert.equal(cannotRank(h, false, null, NOW), false, 'still reading: not decided');
+  assert.equal(cannotRank(h, true, null, NOW), true, 'read whole, 100 windows held (26.7 h)');
+  h.put(frame(['a'], T0, 630, (_, x) => x >= 400 ? 5 : null), T0, NOW);
+  assert.equal(cannotRank(h, true, null, NOW), false, '230 windows held (61 h)');
+});
+
 test('a short table\'s one row (Karl, 2026-11-22): the band, or in a coarse view the time of the book ranked, then each side\'s place without the span; bold past the 5th or 95th percentile', () => {
   const r = (below: number, equal: number, above: number, at: number | null = null): BandRank => ({ p: (below + equal / 2) / (below + equal + above), n: below + equal + above, below, equal, above, coverMs: 7 * DAY, value: 1, at });
   const brief = (bid: BandRank | null, ask: BandRank | null, more: Partial<DepthHistoryLines> = {}) => depthRankBrief(0.00625, { bid, ask, loading: false, whole: true, ...more });
@@ -145,7 +181,8 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, keepBrief, /);
   // A source that can never reach the minimum (the public site's browser engine): once whole and still short, the card's rank in view as before
   // the history, no rank row and no room kept for one.
-  assert.match(depth, /const unranked = whole && history!\.held\(\) \* history!\.step < RANK_MIN_COVER_MS;/);
+  assert.match(depth, /const unranked = !liq && cannotRank\(history, whole, this\.hub\.source\.depthSince\?\.\(counted\) \?\? null, this\.hub\.sourceNow\(\)\);/);
+  assert.match(lower, /new DepthHistory\(\(ids, from, to, step\) => this\.hub\.source\.columns\(ids, from, to, step, true\), \(\) => this\.invalidate\(\), \(\) => this\.hub\.sourceNow\(\)\)/, 'the source\'s clock');
   assert.match(depth, /if \(unranked\) \{\n\s+const here = rows\[said\]!\.bid \+ rows\[said\]!\.ask;/);
   assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: settings\.units, coin, rank, of \}\);/);
   assert.match(depth, /keepBrief = liq \? !!liqHeld\?\.takeRows\?\.length : !unranked;/);
@@ -154,6 +191,11 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   const bands = [{ r: 0.01, bid: 3, ask: 1 }, { r: 0.05, bid: 5, ask: 9 }];
   assert.ok(said({ time: 0, bands, watched: 1, units: 'usd', coin: 'BTC', rank: 4, of: 90 }).includes('Rank in view'));
   assert.ok(!said({ time: 0, bands, watched: 1, units: 'usd', coin: 'BTC', rank: 4, of: 90 }).includes('Bids'));
+  // With the history: what the ranks stand on while it is read; nothing once it is read and this moment has no rank ("…" would read as loading).
+  const basis = (history: DepthHistoryLines) => said({ time: 0, bands, watched: 1, units: 'usd', coin: 'BTC', rank: null, of: 0, history }).filter(t => /earlier readings/.test(t));
+  assert.equal(basis({ bid: null, ask: null, loading: true, whole: false }).length, 1);
+  assert.equal(basis({ bid: null, ask: null, loading: false, whole: false }).length, 1);
+  assert.deepEqual(basis({ bid: null, ask: null, loading: false, whole: true }), []);
 });
 
 test('the pane\'s history asks for a new book\'s recent hours first, then its older days, then each closed window; new books alone; new bands afresh', async () => {

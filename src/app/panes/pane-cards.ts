@@ -217,8 +217,9 @@ export function depthCardLines(h: { time: number; bands: readonly { r: number; b
     }
     // What the ranks stand on, in the table too: how many earlier readings, and, where a coarser view's column could not be ranked as shown,
     // which closing minute was. Said from the first frame, so the lines do not move when the history arrives.
+    // Once the history is read and this moment still has no rank, there is nothing to say it stands on ("…" would read as still loading).
     const r = hist.bid ?? hist.ask;
-    lines.push({ text: r?.at != null ? t('The book at {time}, against {n} earlier readings, one every 16 minutes', { time: clock(r.at), n: r.n })
+    if (r || hist.loading || !hist.whole) lines.push({ text: r?.at != null ? t('The book at {time}, against {n} earlier readings, one every 16 minutes', { time: clock(r.at), n: r.n })
       : t('Against {n} earlier readings, one every 16 minutes', { n: r ? r.n : '…' }), color: 'muted', wrap: true });
   }
   else if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });

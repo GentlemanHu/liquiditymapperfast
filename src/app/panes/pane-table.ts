@@ -226,13 +226,6 @@ const leaves = (room: TableRoom, height: number, lift: number): boolean => Math.
  */
 function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
   const k = spec.rows.length, n = spec.heads.length;
-  let rowH = 0, titles = true, foot = true, kept = false;
-  // Room kept for the brief: the titles, the rows, the foot, a hairline and one row more, closed up together where they fit (`TableSpec.briefRoom`).
-  if (spec.briefRoom) for (const h of ROW_HEIGHTS) if ((k + 3) * h + SEP + 4 <= room.h) { rowH = h; kept = true; break; }
-  if (!rowH) fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
-    for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
-  }
-  if (!rowH) return null;
   const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? '', row[c]?.bold === true))));
   const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
   const free = room.w - room.axisW - room.plotW;
@@ -246,9 +239,18 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
     for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
     if (width(cols) > room.plotW * 0.6) return null;
   }
-  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH;
   // Complete only with the titles over the figures, the foot that says the moment read and the columns that say what the card says.
-  const framed = titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
+  const enough = cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
+  let rowH = 0, titles = true, foot = true, kept = false;
+  // Room kept for the brief (`TableSpec.briefRoom`): the titles, the rows, the foot, a hairline and one row more, closed up together where they fit,
+  // and only for a table framed to say it (one that is not says no lines, so its rows would close up for nothing).
+  if (spec.briefRoom && enough) for (const h of ROW_HEIGHTS) if ((k + 3) * h + SEP + 4 <= room.h) { rowH = h; kept = true; break; }
+  if (!rowH) fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
+    for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
+  }
+  if (!rowH) return null;
+  const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH;
+  const framed = titles && foot && enough;
   /** Lines laid out under the rows, as wide as the widest that does not wrap and never narrower than the rows; null where the strip is narrower. */
   const under = (shown: readonly InfoLine[]): Pick<TablePlace, 'summary' | 'summaryW' | 'summaryH'> | null => {
     // A wrapped line's label stays on a row of its own, so it must fit across too.

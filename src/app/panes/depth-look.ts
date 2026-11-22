@@ -240,7 +240,8 @@ export function bandUnder(b: BandsAt, col: number, y: number, keep: LitBand | nu
   const height = (side: 'up' | 'down', j: number): number => j < 0 ? 0 : b.yOf((side === 'up' ? b.ask : b.bid)[col * b.k + j]!);
   if (keep && keep.j <= b.top) {
     const h = keep.side === 'up' ? b.mid - y : y - b.mid, outer = height(keep.side, keep.j), inner = height(keep.side, keep.j - 1);
-    if (outer - inner >= 0.5 && h >= inner - margin && h <= outer + margin) return keep;
+    // Never across the price line: the innermost band on the side the pointer left lets go as soon as it crosses.
+    if (outer - inner >= 0.5 && h >= Math.max(0, inner - margin) && h <= outer + margin) return keep;
   }
   const side = y < b.mid ? 'up' : 'down', h = side === 'up' ? b.mid - y : y - b.mid;
   for (let j = 0; j <= b.top; j++) { const v = height(side, j); if (v > 0 && h <= v) return { side, j }; }

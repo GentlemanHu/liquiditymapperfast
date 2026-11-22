@@ -115,9 +115,7 @@ export class BandHistory {
   usual(among: readonly string[] | null = null): number[] {
     const key = among ? among.join('\u0001') : '*';
     if (this.#usual?.key === key) return this.#usual.books;
-    const books: number[] = [], candidates = among ? among.map(id => this.#index.get(id)).filter((b): b is number => b !== undefined) : this.ids.map((_, b) => b);
-    for (const b of candidates) { let c = 0; const p = this.present[b]!; for (let g = 0; g < this.count; g++) c += p[g]!; if (this.count && c >= USUAL_SHARE * this.count) books.push(b); }
-    books.sort((a, b) => a - b);
+    const books = this.#usualOver(this.books(among), 0, this.count);
     this.#usual = { key, books };
     return books;
   }
@@ -128,11 +126,21 @@ export class BandHistory {
   usualIn(among: readonly string[] | null, nLo: number, nHi: number): number[] {
     const key = `${among ? among.join('') : '*'}|${nLo}|${nHi}|${this.version}`;
     if (this.#usualIn?.key === key) return this.#usualIn.books;
-    const g0 = Math.max(0, nLo - this.n0), g1 = Math.min(this.count, nHi - this.n0), span = nHi - nLo, books: number[] = [];
-    if (span > 0) for (const b of this.books(among)) { let c = 0; const p = this.present[b]!; for (let g = g0; g < g1; g++) c += p[g]!; if (c >= USUAL_SHARE * span) books.push(b); }
-    books.sort((a, b) => a - b);
+    const books = nHi > nLo ? this.#usualOver(this.books(among), Math.max(0, nLo - this.n0), Math.min(this.count, nHi - this.n0)) : [];
     this.#usualIn = { key, books };
     return books;
+  }
+  /**
+   * The candidates present in at least USUAL_SHARE of the windows [g0, g1) that some candidate holds. A window none of them holds is the source's
+   * gap (the page closed, the server or the PC off), not every book's, so it never makes a book unusual: counted over the grid, a source holding
+   * four days, or an outage of every book for 20 hours, left no usual book and so no rank for a week (review 2026-11-22).
+   */
+  #usualOver(candidates: readonly number[], g0: number, g1: number): number[] {
+    let held = 0;
+    for (let g = g0; g < g1; g++) if (candidates.some(b => this.present[b]![g])) held++;
+    const books: number[] = [];
+    if (held) for (const b of candidates) { let c = 0; const p = this.present[b]!; for (let g = g0; g < g1; g++) c += p[g]!; if (c >= USUAL_SHARE * held) books.push(b); }
+    return books.sort((a, b) => a - b);
   }
   /** The books of `among` held (by default every book), as indexes into `ids`. */
   books(among: readonly string[] | null = null): number[] {
@@ -224,6 +232,16 @@ export function rankAt(h: BandHistory, side: RankSide, j: number, t: number, amo
   const step = h.step, n = Math.floor(t / step) - 1, nLo = Math.max(h.n0, n - Math.round(RANK_SPAN_MS / step));
   const value = h.total(side, j, n, among, h.usualIn(among, nLo, n));
   return value === value ? rankValue(h, side, j, (n + 1) * step - 1, value, among, (n + 1) * step) : null;
+}
+
+/**
+ * Whether the history cannot rank at all: a source whose own minutes began less than RANK_MIN_COVER_MS before `now` (`since`, from
+ * `DataSource.depthSince`: the public site's browser engine keeps about a day of them), known from its first frame, so the pane's layout does not
+ * change once its history is read; or a history read whole that holds fewer windows than that (its grid spans whatever was asked for, held or
+ * not). The pane then says the band's rank in view, as before the history.
+ */
+export function cannotRank(h: BandHistory | null, whole: boolean, since: number | null, now: number): boolean {
+  return (since !== null && now - since < RANK_MIN_COVER_MS) || (whole && !!h && h.held() * h.step < RANK_MIN_COVER_MS);
 }
 
 /**

@@ -502,6 +502,9 @@ test('a table that keeps room for its brief (Depth) closes its rows up for it an
   // A tall pane says the lines and keeps its rows' height; another table (no briefRoom) is sized by its rows alone, as before.
   assert.deepEqual([placeTable(measure, r(300), kept)!.rowH, placeTable(measure, r(300), kept)!.complete], [15, true]);
   assert.deepEqual([placeTable(measure, r(105), { ...spec(), lines: OI_LINES, brief })!.rowH, placeTable(measure, r(105), { ...spec(), lines: OI_LINES, brief })!.summary.length], [14, 0]);
+  // A strip too narrow for every column (the table is not framed, so it says no lines): the rows keep their own height (review 2026-11-22).
+  const narrow = placeTable(measure, room({ w: 400 + 60 + 110, h: 105 }), kept)!;
+  assert.deepEqual([narrow.cols, narrow.rowH, narrow.summary.length], [3, 14, 0]);
 });
 
 test('the rows never move for the card\'s lines: two moments with more lines and fewer, or none, put them in the same place', () => {

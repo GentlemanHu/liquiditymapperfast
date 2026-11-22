@@ -40,7 +40,7 @@ import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { BandLayer, LitPainter, bandUnder, depthLook, type LitBand } from './depth-look.ts';
-import { DepthHistory, RANK_FINE_MS, RANK_MIN_COVER_MS, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
+import { DepthHistory, RANK_FINE_MS, cannotRank, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
@@ -465,7 +465,7 @@ export class DepthPane extends TimePane {
   readonly #litPainter = new LitPainter();
   #lit: LitBand | null = null;
   /** Each band's history at a fixed step (depth-history.ts), read once the order book's table or card wants a rank, for where a reading stands in it. */
-  readonly #bandHistory = new DepthHistory((ids, from, to, step) => this.hub.source.columns(ids, from, to, step, true), () => this.invalidate());
+  readonly #bandHistory = new DepthHistory((ids, from, to, step) => this.hub.source.columns(ids, from, to, step, true), () => this.invalidate(), () => this.hub.sourceNow());
   get bandHistory(): DepthHistory { return this.#bandHistory; }
   /** The ranks last worked out, and of what (`rankKey`). */
   #ranks: { key: string; ranks: { bid: BandRank | null; ask: BandRank | null }[] } = { key: '', ranks: [] };
@@ -969,9 +969,9 @@ export class DepthPane extends TimePane {
     const ranks = this.#ranks.ranks;
     const whole = !!history && this.#bandHistory.wholeFor(counted);
     // A source that keeps less than the minimum can never rank (the public site's browser engine holds about a day of closing minutes, and the
-    // long history's tiles are means): once its history is whole and still that short, the card says the band's rank in view as it did before
-    // the history, and the table keeps no rank row.
-    const unranked = whole && history!.held() * history!.step < RANK_MIN_COVER_MS;
+    // long history's tiles are means): known from where its own minutes began, or once its history is whole and still that short, the card says
+    // the band's rank in view as it did before the history, and the table keeps no rank row.
+    const unranked = !liq && cannotRank(history, whole, this.hub.source.depthSince?.(counted) ?? null, this.hub.sourceNow());
     // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
     const said = lit ? lit.j : top;
     if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
