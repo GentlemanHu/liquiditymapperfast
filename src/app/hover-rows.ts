@@ -12,7 +12,7 @@ import type { LevelsFrame } from './wire.ts';
 import { venueLabel } from './venues.ts';
 import type { LevelsKind } from './liq-levels.ts';
 import { countLabel, sideTitle, splitText, topLabel } from './liq-words.ts';
-import { BALANCED_RATIO } from './mirror.ts';
+import { BALANCED_RATIO, ratioWords } from './mirror.ts';
 
 const dollars = (value: number): string => `$${usd(value)}`;
 
@@ -28,16 +28,6 @@ export class Held<T> {
     this.#value = make(); this.#key = key; this.#at = now;
     return this.#value;
   }
-}
-
-/**
- * A ratio as the boxes print it, two decimals below ten and one up to a thousand ("1.04×", "13.0×"), and no more digits past that ("≥1000×":
- * a side all but empty against a full one printed sixteen of them and widened the box); a dash where the side divided by holds nothing.
- */
-export function ratioWords(top: number, bottom: number): string {
-  if (!(bottom > 0)) return '–';
-  const r = top / bottom;
-  return r >= 1000 ? '≥1000×' : `${r >= 10 ? r.toFixed(1) : r.toFixed(2)}×`;
 }
 
 /** Whole percentages of `values` out of `total` that add up to 100 (the largest remainders take the points rounding leaves over). */

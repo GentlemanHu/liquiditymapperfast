@@ -5,8 +5,7 @@ import { t } from '../i18n.ts';
 import { laneColorsFor } from '../cvd/colors.ts';
 import type { FigureId } from './content.ts';
 import { tg } from './words.ts';
-import { BALANCED_RATIO } from '../mirror.ts';
-import { ratioWords } from '../hover-rows.ts';
+import { BALANCED_RATIO, ratioWords } from '../mirror.ts';
 
 /**
  * The guide's animated figures. Each is a small scene drawn on a canvas from the page's own colours and colour ramp, looping while it is
