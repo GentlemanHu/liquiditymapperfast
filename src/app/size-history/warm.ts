@@ -21,8 +21,9 @@ export const WARM_LOOK_MS = 250;
 /**
  * A warm-up whose questions failed this many times in a row gives up: a source that is down is let go some half a minute after the warm-up
  * began asking it for the bars (each asked again after the loader's 5 s pause), a minute and a half for a day (15 s). Counted from the
- * loaders' answers and failures (`tally`) since its market list and timeframe were first seen: an answer starts the count again, and
- * failures from before (another timeframe's warm-up, a pane during an outage) do not count.
+ * loaders' answers and failures (`tally`): an answer starts the count again, and another market list or timeframe starts it from none, so
+ * failures counted under another one (its warm-up, a pane during an outage) do not count. A pane's on the same list do: one put away
+ * during an outage leaves the warm-up let go when it resumes (rare, and the pane asks for itself when it shows again).
  */
 export const WARM_MAX_FAILURES = 6;
 /**
