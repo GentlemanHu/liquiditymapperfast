@@ -44,7 +44,7 @@ import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
-import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, footprintWant,paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
+import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, askRowStep, footprintLayout, footprintWant, paintFootprint, rowsBlind, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
 import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
@@ -68,7 +68,8 @@ import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
 import { dayStartOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
-import { WARM_IDLE, WARM_LOOK_MS, liquidationCover, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
+import { WARM_IDLE, WARM_LOOK_MS, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
+import { liquidationCover } from '../liq-days.ts';
 import { quietMs } from '../quiet.ts';
 import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
@@ -1338,19 +1339,16 @@ export class HeatPane {
    * table's rows, point of control and imbalances, are the footprint's own when both are on), the Bar stats' retail and whale sizes as size
    * lines (those between box edges, so their rows are exact at any size from the floor), and the window: the view, from the start of the day
    * its left edge falls in for the table's running sums from each day's start (`stats`), and with the Highlights' length of candles before
-   * it for the Flow history's baselines (`sizes`; at least 36 candles and six hours: size-history/model.ts). A reader that never draws rows
-   * (`rowBlind`: the Flow history alone, which reads each bar's sums, or its warm-up) asks on the rows held, so a zoom, or the map growing
-   * shorter as the pane opens under it, does not ask the whole window again; the warm-up only peeks at the level (`warm`: nothing draws
-   * rows yet, the hysteresis is the footprint's).
+   * it for the Flow history's baselines (`sizes`; at least 36 candles and six hours: size-history/model.ts). Readers blind to the rows (the
+   * Flow history alone, or its warm-up: `rowsBlind`) keep the rows held (`askRowStep`), and only peek at the level of detail: its hysteresis
+   * is the footprint's drawing's.
    */
-  #footprintAsk(state: AppState, need: { stats: boolean; sizes: boolean; rowBlind: boolean; warm: boolean }): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
+  #footprintAsk(state: AppState, need: { stats: boolean; sizes: boolean; warm: boolean }): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
     const v = this.view, ph = this.plotH, tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint, fine = fp.fine;
-    const markets = this.footprintMarkets(state);
-    let rowStep = need.rowBlind && fp.holds(markets, state.timeframe) ? fp.heldStep : 0;
-    if (!(rowStep > 0)) {
-      const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
-      rowStep = fine > 0 ? fine * 2 ** (need.warm ? this.#lod.peek(fineRowPx) : this.#lod.level(fineRowPx)) : 0;
-    }
+    const markets = this.footprintMarkets(state), blind = rowsBlind({ footprint: state.show.footprint, stats: state.show.stats, warm: need.warm });
+    const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
+    const zoom = fine > 0 ? fine * 2 ** (blind ? this.#lod.peek(fineRowPx) : this.#lod.level(fineRowPx)) : 0;
+    const rowStep = askRowStep(blind, blind && fp.holds(markets, state.timeframe) ? fp.heldStep : 0, zoom);
     const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
     let from = v.t0;
     if (need.stats && state.barStatOptions.cvdFrom === 'day') from = Math.min(from, dayStartOf(v.t0, resolveZone('page', state.timeZone)));
@@ -1371,7 +1369,7 @@ export class HeatPane {
   #warmStep(state: AppState, now: number): void {
     if (now - this.#warm.at < WARM_LOOK_MS) return;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint;
-    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true, rowBlind: true, warm: true });
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true, warm: true });
     const want = footprintWant(window, tfMs), liq = this.liquidationMarkets(state);
     const { state: next, act } = warmNext(this.#warm, {
       now, key: markets.length ? `${markets.join(',')}|${state.timeframe}` : '', hidden: document.visibilityState === 'hidden',
@@ -1401,7 +1399,7 @@ export class HeatPane {
       this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 }); return;
     }
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: state.show.stats, sizes: state.show.sizes, rowBlind: !drawn && !state.show.stats, warm: false });
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: state.show.stats, sizes: state.show.sizes, warm: false });
     if (!markets.length) this.#footprint.clear();
     if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow());
     const rowH = rowStep > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(rowStep, ph)) : 0;

@@ -147,3 +147,16 @@ test('the warm-up of a source without liquidations is done at once, and a warm d
     assert.equal(days.warm('a', from, to), true);
   });
 });
+
+test('a warm-up of another stretch lets the last one\x27s days go, but not those a pane still needs', async () => {
+  const s = source(), days = new LiquidationDays(s.hub), now = D0 + 12 * 3_600_000, from = D0 - 8 * DAY_MS, to = D0 - 3 * DAY_MS;
+  await withClock(now, async () => {
+    for (let i = 0; i < 5; i++) { days.warm('a', from, to); await s.answer(); }
+    assert.equal(days.warm('a', from, to), true, 'five days held, one at a time');
+    // The Bar stats need the newest of them; the warm-up then moves to another stretch (another timeframe).
+    days.ensure('bars', 'a', D0 - 4 * DAY_MS, D0 - 3 * DAY_MS);
+    days.warm('a', D0 - DAY_MS, D0 + 6 * 3_600_000);
+    assert.equal(days.days.has(D0 - 8 * DAY_MS) || days.days.has(D0 - 7 * DAY_MS), false, 'the last warm-up\x27s days no pane needs go');
+    assert.ok(days.days.has(D0 - 4 * DAY_MS), 'the one the Bar stats need stays');
+  });
+});

@@ -11,7 +11,6 @@ import { kindOf } from '../scope.ts';
 import { oiChangeByTime, oiPartsUntil, oiUsdChangeByTime, type OiPart } from '../oi-change.ts';
 import { wrapText } from '../text-fit.ts';
 import { addTune } from '../pane-tune.ts';
-import { liquidationCover } from '../size-history/warm.ts';
 import { BAR_CUT_H, BAR_CUT_PX, cutGap } from '../bar-scale.ts';
 import { colourRamp, RAMP_STEPS } from '../traded/emphasis.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
@@ -20,10 +19,10 @@ import { readAt } from './pane-cards.ts';
 import { TimePane, oiSourceText, setText, tableSigned, tableText } from './lower-panes.ts';
 import { AXIS_W, leftGutter, type HeatPane } from './heat-pane.ts';
 import { PaneTable, ratioCell, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
-import type { LiquidationDays } from '../liq-days.ts';
+import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
 import { el } from '../dom.ts';
 import type { Palette } from '../theme.ts';
-import { alphaOf, buildHistory, cardLines, emphasis, heightOf, preRollMs, rowCap, shareDot, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
+import { alphaOf, buildHistory, cardLines, emphasis, heightOf, historyLoading, preRollMs, rowCap, shareDot, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
 
 /** The gap between the two rows of context (liquidations, open interest) and the six size rows, in px. */
 const GROUP_GAP = 8;
@@ -161,8 +160,8 @@ export class SizeHistoryPane extends TimePane {
     const times = [...starts].sort((a, b) => a - b);
     // A question still out for candles the bars held were not answered for (the first look, or a pan into the past): loading, not "nothing recorded".
     if (!times.length || !times.some(s => data.bars.has(s))) {
-      const loading = data.busy && !(times.length && data.covers(times[0]!, times[times.length - 1]! + tfMs));
-      this.#message(loading ? t('Loading…') : t('Flow history appears once market orders are recorded for these candles.')); this.#held = null; return;
+      this.#message(historyLoading(data.busy, times, tfMs, (from, to) => data.covers(from, to)) ? t('Loading…') : t('Flow history appears once market orders are recorded for these candles.'));
+      this.#held = null; return;
     }
     // Liquidations and open interest are the perpetuals': they count with the Spot filter on too, the size rows counting only its spot markets
     // (`liquidationMarkets`; Karl, 2026-11-21: they "don't show up"). Only a list without a perpetual (the chart market or chosen markets all

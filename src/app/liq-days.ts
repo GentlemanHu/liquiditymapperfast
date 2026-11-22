@@ -1,6 +1,17 @@
-import { LIQUIDATIONS_PER_ANSWER } from '../shared/liquidations.ts';
+import { LIQUIDATIONS_PER_ANSWER, LIQUIDATION_RETENTION_MS } from '../shared/liquidations.ts';
+import { BROWSER_RETENTION_MS } from '../shared/recorder.ts';
 import type { Hub } from './hub.ts';
 import { DAY_MS, type LiquidationDay } from './panes/bar-stats.ts';
+
+/**
+ * Where the liquidations the Bar stats and the Flow history count begin: what the record keeps (a week on a server, a day in a page's own
+ * engine), and only since the recording started, to the next whole minute (a candle half expired is not known either, and the edge does
+ * not change on every frame). Both panes and the Flow history's warm-up read the same days.
+ */
+export function liquidationCover(kind: 'server' | 'browser', recordedSince: number, now: number): number {
+  const retention = kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
+  return Math.max(Math.ceil((now - retention) / 60_000) * 60_000, recordedSince > 0 ? recordedSince : 0);
+}
 
 /** How long a pane's stretch is kept without the pane asking again (it asks on every drawing): a pane put away stops holding days. */
 const WANT_MS = 120_000;

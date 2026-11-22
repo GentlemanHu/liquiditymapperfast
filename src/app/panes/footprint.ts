@@ -200,6 +200,20 @@ const FOOTPRINT_MAX_BARS = 3_000;
 
 type FootprintLoad = (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[], budget: number, venues: boolean) => Promise<FootprintResponse>;
 
+/**
+ * Whether the readers of the footprint's bars are blind to its rows: the Flow history alone (it reads each bar's sums and minutes), or its
+ * warm-up before any reader shows. The footprint draws rows, and the Bar stats read them (point of control, imbalances).
+ */
+export function rowsBlind(readers: { footprint: boolean; stats: boolean; warm: boolean }): boolean { return readers.warm || (!readers.footprint && !readers.stats); }
+
+/**
+ * The row size the bars are asked on: the zoom's (`zoom`, the level of detail at this height), or for row-blind readers the rows held
+ * (`held`), so the map growing shorter as the Flow history opens under it, or a zoom, does not ask the whole window again; unless the held
+ * rows are more than four times finer than the zoom's (an answer from a deep zoom would make every later slice that much larger). Coarser
+ * rows held are kept.
+ */
+export function askRowStep(blind: boolean, held: number, zoom: number): number { return blind && held > 0 && held * 4 >= zoom ? held : zoom; }
+
 /** The bars a view asks for: its candles with one each side, [from, to) on whole candles. */
 export function footprintWant(view: Bounds, tfMs: number): { from: number; to: number } {
   return { from: Math.floor((view.t0 - tfMs) / tfMs) * tfMs, to: Math.ceil((view.t1 + tfMs) / tfMs) * tfMs };

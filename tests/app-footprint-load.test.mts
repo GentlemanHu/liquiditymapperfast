@@ -357,14 +357,12 @@ test('the bars a view asks for: its candles with one each side, on whole candles
   assert.equal(data.heldStep, 40, 'the row size asked, not the size lines');
 });
 
-test('a peek at the level leaves the footprint\x27s hysteresis as it is; the level itself moves it', () => {
+test('a peek at the level leaves the hysteresis of the footprint as it is; the level itself moves it', () => {
   const fresh = new FootprintLod();
   assert.equal(fresh.peek(7), 1, 'rows of 7 px grouped by two');
   assert.equal(fresh.level(14), 0, 'the peek left the level at 0: rows of 14 px need no grouping (from level 1 they would stay grouped)');
   const lod = new FootprintLod();
-  assert.equal(lod.peek(1), 4, 'rows of 1 px grouped by 16 to reach 12 px');
-  assert.equal(lod.level(20), 0, 'the peek did not move it: rows of 20 px need no grouping');
-  assert.equal(lod.level(1), 4);
-  assert.equal(lod.peek(7), 2, 'hysteresis: from level 4 it refines while the row one level finer stays 16 px or more (from level 0 it would be 1)');
-  assert.equal(lod.level(1), 4, 'and the peek left level 4 in place');
+  assert.equal(lod.level(1), 4, 'rows of 1 px grouped by 16 to reach 12 px');
+  assert.equal(lod.peek(7), 2, 'from level 4, rows of 7 px refine to 2 (from level 0 they would coarsen to 1)');
+  assert.equal(lod.peek(1.6), 4, 'and that peek left level 4 in place: rows of 1.6 px stay at 4 from there (from level 2 they would come to 3)');
 });

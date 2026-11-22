@@ -1,6 +1,3 @@
-import { LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
-import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
-
 /**
  * The Flow history's warm-up (Karl, 2026-11-22: "make it instantly pop up the data"). While no pane shows the footprint's bars, the map
  * (`HeatPane.#warmStep`) asks for what the Flow history reads first, once per market list and timeframe, so that switching it on draws at
@@ -18,12 +15,16 @@ export const WARM_QUIET_MS = 1_000;
 export const WARM_SETTLE_MS = 3_000;
 /** How often the warm-up looks (not every frame). */
 export const WARM_LOOK_MS = 250;
-/** A warm-up still not done this long after its first question gives up (a source that keeps failing is not asked forever). */
-export const WARM_GIVE_UP_MS = 3 * 60_000;
+/**
+ * A warm-up that has asked this many times without being done gives up: a source that keeps failing is not asked forever. A question is
+ * counted at every look that would ask one (one that is retried after a failure's pause counts at each look of the pause), so time spent
+ * waiting (a hidden page, a pane shown, a busy page) costs nothing. A start asks some 3 to 25 times (more slices on candles under the hour).
+ */
+export const WARM_MAX_TRIES = 80;
 
-/** The warm-up's own state: the market list and timeframe it is for (`markets|tf`), since when, its first question, its last look, done. */
-export interface WarmState { key: string; since: number; asked: number; at: number; done: boolean }
-export const WARM_IDLE: WarmState = Object.freeze({ key: '', since: 0, asked: 0, at: -Infinity, done: false });
+/** The warm-up's own state: the market list and timeframe it is for (`markets|tf`), since when, the questions it has asked, its last look, done. */
+export interface WarmState { key: string; since: number; tries: number; at: number; done: boolean }
+export const WARM_IDLE: WarmState = Object.freeze({ key: '', since: 0, tries: 0, at: -Infinity, done: false });
 
 /** What the map sees at a look. */
 export interface WarmLook {
@@ -50,23 +51,12 @@ export function warmNext(state: WarmState, look: WarmLook): { state: WarmState; 
   if (look.now - state.at < WARM_LOOK_MS) return { state, act: 'none' };
   let s: WarmState = { ...state, at: look.now };
   if (!look.key) return { state: s, act: 'none' };
-  if (look.key !== s.key) s = { key: look.key, since: look.now, asked: 0, at: look.now, done: false };
+  if (look.key !== s.key) s = { key: look.key, since: look.now, tries: 0, at: look.now, done: false };
   if (s.done) return { state: s, act: 'none' };
-  if (s.asked && look.now - s.asked > WARM_GIVE_UP_MS) return { state: { ...s, done: true }, act: 'none' };
   if (look.hidden || look.mapFirst || look.quietMs < WARM_QUIET_MS || look.now - s.since < WARM_SETTLE_MS || look.barsBusy) return { state: s, act: 'none' };
-  if (!s.asked) s = { ...s, asked: look.now };
-  if (!look.barsCovered) return { state: s, act: 'bars' };
-  if (!look.days) return { state: { ...s, done: true }, act: 'none' };
-  return { state: s, act: 'days' };
-}
-
-/**
- * Where the liquidations the Flow history counts begin: what the record keeps (a week on a server, a day in a page's own engine), and only
- * since the recording started. The pane (size-history-pane.ts) and the warm-up read the same days.
- */
-export function liquidationCover(kind: 'server' | 'browser', recordedSince: number, now: number): number {
-  const retention = kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
-  return Math.max(Math.ceil((now - retention) / 60_000) * 60_000, recordedSince > 0 ? recordedSince : 0);
+  if (look.barsCovered && !look.days) return { state: { ...s, done: true }, act: 'none' };
+  if (s.tries >= WARM_MAX_TRIES) return { state: { ...s, done: true }, act: 'none' };
+  return { state: { ...s, tries: s.tries + 1 }, act: look.barsCovered ? 'days' : 'bars' };
 }
 
 /**

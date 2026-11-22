@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { quietMs, resetQuiet, track, trackedFetch } from '../src/app/quiet.ts';
-import { WARM_GIVE_UP_MS, WARM_IDLE, WARM_LOOK_MS, WARM_QUIET_MS, WARM_SETTLE_MS, liquidationCover, warmLiquidationSpan, warmNext, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
+import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmLiquidationSpan, warmNext, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
+import { historyLoading } from '../src/app/size-history/model.ts';
+import { askRowStep, rowsBlind } from '../src/app/panes/footprint.ts';
+import { liquidationCover } from '../src/app/liq-days.ts';
 import { LIQUIDATION_RETENTION_MS } from '../src/shared/liquidations.ts';
 import { BROWSER_RETENTION_MS } from '../src/shared/recorder.ts';
 
@@ -30,13 +33,16 @@ test('quiet: zero while any of the page\x27s own requests is out, then the time 
   } finally { time.restore(); resetQuiet(); }
 });
 
-test('the counted fetch is the page\x27s fetch, counted until its answer comes', async () => {
+test('the counted fetch is the page\x27s fetch with its options, counted until its answer comes', async () => {
   const time = clock(20_000), real = globalThis.fetch;
   try {
     resetQuiet();
     let answer!: (r: Response) => void;
-    globalThis.fetch = ((_url: string) => new Promise<Response>(resolve => { answer = resolve; })) as typeof fetch;
-    const out = trackedFetch('/api/v2/state');
+    const seen: [string, RequestInit | undefined][] = [];
+    globalThis.fetch = ((url: string, init?: RequestInit) => { seen.push([url, init]); return new Promise<Response>(resolve => { answer = resolve; }); }) as typeof fetch;
+    const init = { cache: 'no-store', priority: 'low' } as RequestInit;
+    const out = trackedFetch('/api/v2/state', init);
+    assert.deepEqual(seen, [['/api/v2/state', init]], 'the url and its options reach the page\x27s fetch');
     assert.equal(quietMs(20_100), 0, 'out');
     time.set(20_500); answer(new Response('{}')); const r = await out;
     assert.equal(await r.text(), '{}');
@@ -51,42 +57,73 @@ const seen = (): WarmState => warmNext(WARM_IDLE, look(0)).state;
 
 test('the warm-up waits for the market list to settle, the page shown, its own first map load in and a second of quiet', () => {
   const s = seen();
-  assert.deepEqual([s.key, s.since, s.done], ['a,b|1h', 0, false], 'the list is seen');
+  assert.deepEqual([s.key, s.since, s.tries, s.done], ['a,b|1h', 0, 0, false], 'the list is seen');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS - 1)).act, 'none', 'a switch\x27s own loads come first');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS)).act, 'bars');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS, { hidden: true })).act, 'none', 'a hidden page');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS, { mapFirst: true })).act, 'none', 'the map\x27s own first load');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS, { quietMs: WARM_QUIET_MS - 1 })).act, 'none', 'the page\x27s own requests not drained');
   assert.equal(warmNext(s, look(WARM_SETTLE_MS, { barsBusy: true })).act, 'none', 'one question at a time');
-  assert.equal(warmNext(s, look(WARM_SETTLE_MS, { key: '' })).act, 'none', 'no market counted');
+  const none = warmNext({ ...s, done: true }, look(WARM_SETTLE_MS, { key: '' }));
+  assert.deepEqual([none.act, none.state.key, none.state.done], ['none', 'a,b|1h', true], 'no market counted: nothing asked, and what was warmed is not forgotten');
 });
 
 test('the warm-up looks four times a second, starts again on another list, asks the bars until covered, then the days, then is done', () => {
   let s = seen();
   const r1 = warmNext(s, look(WARM_SETTLE_MS)); s = r1.state;
-  assert.equal(r1.act, 'bars');
+  assert.deepEqual([r1.act, s.tries], ['bars', 1]);
   assert.equal(warmNext(s, look(WARM_SETTLE_MS + WARM_LOOK_MS - 1)).act, 'none', 'not again within its look');
   const r2 = warmNext(s, look(WARM_SETTLE_MS + WARM_LOOK_MS, { barsCovered: true })); s = r2.state;
-  assert.equal(r2.act, 'days', 'the bars covered: the liquidation days');
+  assert.deepEqual([r2.act, s.tries], ['days', 2], 'the bars covered: the liquidation days, a question counted too');
   // The caller sets done once every day is held; with no days to warm it is done at once.
   const none = warmNext(seen(), look(WARM_SETTLE_MS, { barsCovered: true, days: false }));
   assert.deepEqual([none.act, none.state.done], ['none', true], 'no perpetual counted: nothing more to warm');
   const after = warmNext({ ...s, done: true }, look(WARM_SETTLE_MS + 2 * WARM_LOOK_MS));
   assert.equal(after.act, 'none', 'done: nothing more for this list');
   const other = warmNext({ ...s, done: true }, look(WARM_SETTLE_MS + 2 * WARM_LOOK_MS, { key: 'a,b|15m' }));
-  assert.deepEqual([other.act, other.state.done, other.state.since], ['none', false, WARM_SETTLE_MS + 2 * WARM_LOOK_MS], 'another timeframe settles again before it is warmed');
+  assert.deepEqual([other.act, other.state.done, other.state.since, other.state.tries], ['none', false, WARM_SETTLE_MS + 2 * WARM_LOOK_MS, 0], 'another timeframe: counted from nothing, settling again');
 });
 
-test('a warm-up still not done three minutes after its first question gives up, and a page that never let it ask does not count', () => {
-  let s = seen();
-  s = warmNext(s, look(WARM_SETTLE_MS)).state;
-  assert.equal(s.asked, WARM_SETTLE_MS, 'its first question');
-  assert.equal(warmNext(s, look(WARM_SETTLE_MS + WARM_GIVE_UP_MS)).act, 'bars', 'still asking at three minutes');
-  const gaveUp = warmNext(s, look(WARM_SETTLE_MS + WARM_GIVE_UP_MS + 1));
+test('the warm-up gives up after its questions run out, in the bars or the days, and time spent waiting costs it nothing', () => {
+  let s = seen(), t = WARM_SETTLE_MS;
+  for (let i = 0; i < WARM_MAX_TRIES; i++, t += WARM_LOOK_MS) { const r = warmNext(s, look(t)); assert.equal(r.act, 'bars'); s = r.state; }
+  const gaveUp = warmNext(s, look(t));
   assert.deepEqual([gaveUp.act, gaveUp.state.done], ['none', true], 'a source that keeps failing is not asked forever');
-  // Never quiet for an hour: it has not asked, so it has not given up.
-  const busy = warmNext(seen(), look(60 * 60_000, { quietMs: 0 }));
-  assert.deepEqual([busy.act, busy.state.done, busy.state.asked], ['none', false, 0]);
+  // The days count too: the bars covered at once, the days never all held.
+  let d = seen(); t = WARM_SETTLE_MS;
+  for (let i = 0; i < WARM_MAX_TRIES; i++, t += WARM_LOOK_MS) { const r = warmNext(d, look(t, { barsCovered: true })); assert.equal(r.act, 'days'); d = r.state; }
+  assert.equal(warmNext(d, look(t, { barsCovered: true })).state.done, true, 'nor are days that never come');
+  // One question, then an hour hidden: it goes on where it was.
+  let w = warmNext(seen(), look(WARM_SETTLE_MS)).state;
+  for (let m = 1; m <= 60; m++) w = warmNext(w, look(WARM_SETTLE_MS + m * 60_000, { hidden: true })).state;
+  const back = warmNext(w, look(WARM_SETTLE_MS + 61 * 60_000));
+  assert.deepEqual([back.act, back.state.done, back.state.tries], ['bars', false, 2], 'shown again an hour later, it asks its second question');
+  // A list first seen more than three minutes into the page gives up no sooner for that.
+  const late = warmNext(warmNext(WARM_IDLE, look(10 * 60_000)).state, look(10 * 60_000 + WARM_SETTLE_MS));
+  assert.deepEqual([late.act, late.state.tries], ['bars', 1]);
+});
+
+test('row-blind readers keep the rows held unless more than four times finer than the zoom\x27s; the footprint and the Bar stats read rows', () => {
+  assert.equal(rowsBlind({ footprint: false, stats: false, warm: false }), true, 'the Flow history alone');
+  assert.equal(rowsBlind({ footprint: true, stats: false, warm: false }), false, 'the footprint draws rows');
+  assert.equal(rowsBlind({ footprint: false, stats: true, warm: false }), false, 'the Bar stats read them');
+  assert.equal(rowsBlind({ footprint: true, stats: true, warm: true }), true, 'the warm-up, before any reader shows');
+  assert.equal(askRowStep(true, 4, 8), 4, 'one level finer held: kept (the map grew shorter as the pane opened)');
+  assert.equal(askRowStep(true, 16, 8), 16, 'coarser held: kept');
+  assert.equal(askRowStep(true, 2, 8), 2, 'four times finer: kept');
+  assert.equal(askRowStep(true, 1, 8), 8, 'more than four times finer (a deep zoom\x27s): the zoom\x27s');
+  assert.equal(askRowStep(true, 0, 8), 8, 'nothing held');
+  assert.equal(askRowStep(false, 4, 8), 8, 'a reader of rows: always the zoom\x27s');
+});
+
+test('the pane says Loading only while a question is out for candles not yet answered for', () => {
+  const H = 3_600_000, times = [10 * H, 11 * H, 12 * H];
+  const answered = (from: number, to: number) => (f: number, t: number) => f >= from && t <= to;
+  assert.equal(historyLoading(true, times, H, answered(0, 0)), true, 'the first look');
+  assert.equal(historyLoading(true, times, H, answered(5 * H, 11 * H)), true, 'a pan into the past, past what was answered');
+  assert.equal(historyLoading(true, times, H, answered(5 * H, 13 * H)), false, 'answered and empty, a refresh out: empty, never Loading');
+  assert.equal(historyLoading(false, times, H, answered(0, 0)), false, 'nothing out: empty');
+  assert.equal(historyLoading(true, [], H, answered(0, 0)), true, 'no candles yet, a question out');
 });
 
 test('the liquidations counted begin where the record does, a week on a server and a day in the page\x27s engine, never before the recording', () => {

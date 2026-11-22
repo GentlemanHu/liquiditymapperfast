@@ -17,10 +17,8 @@ import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pan
 import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
-import { LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
-import type { LiquidationDays } from '../liq-days.ts';
+import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
 import { flowHistoryRows } from '../size-history/switch.ts';
-import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, depthRankBrief, liqCardLines, liqColumnRows, liqReading, liqTakesLine, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
@@ -2024,8 +2022,7 @@ export class BarStatsPane extends TimePane {
     // the loader), a UTC day per answer, over the days of the table's candles (none after now). A candle before the record reaches is not known:
     // the source keeps a week (a page's own engine a day), and only since the recording started. The edge is taken to the next whole minute (a
     // candle half expired is not known either), which also keeps it from changing on every frame.
-    const retention = this.hub.source.kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
-    const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = Math.max(Math.ceil((Date.now() - retention) / 60_000) * 60_000, this.hub.recordedSince > 0 ? this.hub.recordedSince : 0);
+    const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = liquidationCover(this.hub.source.kind, this.hub.recordedSince, Date.now());
     // A list without a perpetual (the chart market or chosen markets all spot, or every perpetual venue switched off) has none to count: its
     // cells stay empty rather than read 0.
     const liqMarkets = this.heat.liquidationMarkets(state), liqPerps = liqMarkets.some(id => kindOf(state.markets, id) !== 'spot');
