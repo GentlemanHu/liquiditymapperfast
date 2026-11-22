@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PressGuard, placeTip } from '../src/app/tip.ts';
+import { PressGuard, listAfterPress, placeTip } from '../src/app/tip.ts';
 import { HELP } from '../src/app/help.ts';
 
 const viewport = { w: 1000, h: 700 };
@@ -32,8 +32,8 @@ test('every help topic says what it is and points at a guide section', () => {
 });
 
 // Karl, 2026-11-22: the Depth pane's Source dropdown sometimes left its tip over the open list. The control a mouse or pen pressed keeps its
-// tip shut until the pointer moves to another element (tip.ts PressGuard): the press focuses it, and the open list hands the pointer back
-// over the same control, and either showed the tip again.
+// tip shut until the pointer moves on (tip.ts PressGuard): the press focuses it, and the open list hands the pointer back over the same
+// control, and either showed the tip again.
 test('the control just pressed shows no tip, on the pointer coming back over it or on the focus the press gave it, until the pointer moves on', () => {
   const guard = new PressGuard<string>();
   assert.equal(guard.over('source'), true, 'before any press, a tip may show');
@@ -45,10 +45,31 @@ test('the control just pressed shows no tip, on the pointer coming back over it 
   assert.equal(guard.over('bars'), true, 'the pointer over another control: its tip, and the guard ends');
   assert.equal(guard.over('source'), true, 'so coming back to the dropdown later shows its tip again');
   guard.press('source');
-  assert.equal(guard.over(null), false, 'over nothing with a tip: no tip, and the guard ends');
-  assert.equal(guard.over('source'), true);
+  assert.equal(guard.over(null), false, 'over the map, which has no tip: none, and the guard ends');
+  assert.equal(guard.over('source'), true, 'so hovering the dropdown again shows its tip');
   guard.press('source'); guard.key();
   assert.equal(guard.focus('source'), true, 'a key pressed: keyboard focus shows tips again');
-  guard.press(null);
-  assert.equal(guard.over('source'), true, 'a press on something without a tip guards nothing');
+  guard.press('source'); guard.press(null);
+  assert.equal(guard.over('source'), true, 'a later press on something without a tip ends the guard');
+});
+
+test('while the pressed control\x27s own list is open, the guard holds wherever the pointer goes; other controls still show their tips', () => {
+  let open = true;
+  const guard = new PressGuard<string>(node => node === 'source' && open);
+  guard.press('source');
+  assert.equal(guard.over(null), false, 'over a row of the list the page draws (no tip)');
+  assert.equal(guard.over('source'), false, 'back over the dropdown with its list open: no tip over the list');
+  assert.equal(guard.over('bars'), true, 'another control may show its tip');
+  assert.equal(guard.over('source'), false, 'and the dropdown still shows none');
+  open = false;
+  assert.equal(guard.over(null), false, 'the list closed, over the map: the guard ends');
+  assert.equal(guard.over('source'), true);
+});
+
+test('a press on a dropdown opens its list, a second press on it closes it, a press on anything else closes any', () => {
+  assert.equal(listAfterPress(null, 'source'), 'source', 'pressed: its list opens');
+  assert.equal(listAfterPress('source', 'source'), null, 'pressed again: it closes');
+  assert.equal(listAfterPress('source', 'bands'), 'bands', 'another dropdown pressed: its list is the open one');
+  assert.equal(listAfterPress('source', null), null, 'a press on the map: the list closes');
+  assert.equal(listAfterPress(null, null), null);
 });
