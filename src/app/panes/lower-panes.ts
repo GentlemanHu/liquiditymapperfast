@@ -52,6 +52,8 @@ import { fetchOiHistory, webGet } from '../../shared/history.ts';
 import { aggregateOi } from '../../shared/series.ts';
 import { BAR_CUT_H, BAR_CUT_PX, barScale, cutGap } from '../bar-scale.ts';
 import { OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, type OiLongHeld, type OiLongSeam } from './oi-long.ts';
+import { groupChanges, groupCandles, groupParts, groupWho, priceSidedShare } from './oi-group.ts';
+import { stripTimeframe } from '../measures/volume-strip.ts';
 import { DRAG_MIN_PX, selects } from '../range/selection.ts';
 import type { RangeTool } from '../range/tool.ts';
 import type { FlowBook } from '../flow-book.ts';
@@ -1150,7 +1152,7 @@ export class OiPane extends TimePane {
   readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
   #panel: Panel | null = null;
   /** `nlns`: the NL/NS model the Delta and Funding panes read too (delta/nlns-source.ts). */
-  constructor(host: HTMLElement, store: Store, view: View, flow: FlowBook, private readonly nlns: NlnsSource) {
+  constructor(host: HTMLElement, store: Store, view: View, flow: FlowBook, private readonly nlns: NlnsSource, private readonly reach: (t0: number) => void = () => {}) {
     super(host, store, view, 'oi');
     this.head.innerHTML = `<strong>${t('Open Interest')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('oiPane'));
@@ -1204,11 +1206,31 @@ export class OiPane extends TimePane {
     this.#lean = { who, delta, from, to, median };
     return median;
   }
+  /**
+   * The chart candles' level, venues, changes and candles as the drawn candles (oi-group.ts), kept while the same bars are drawn at the same
+   * length: a pointer move draws the pane again with them.
+   */
+  #group: { oi: readonly OiBar[]; parts: readonly OiPart[]; candles: readonly CandleRow[]; drawnMs: number; out: { oi: OiBar[]; parts: OiPart[]; change: Map<number, number>; candles: CandleRow[] } } | null = null;
+  #grouped(oi: readonly OiBar[], parts: readonly OiPart[], tfMs: number, drawnMs: number, candles: readonly CandleRow[]): { oi: OiBar[]; parts: OiPart[]; change: Map<number, number>; candles: CandleRow[] } {
+    const held = this.#group;
+    if (held && held.oi === oi && held.parts === parts && held.candles === candles && held.drawnMs === drawnMs) return held.out;
+    // Each chart candle's change as the bars count it: venues added together by their own changes, one market from its bar before.
+    const fine = parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : new Map(oi.slice(1).map((b, i) => [b[0], b[4] - oi[i]![4]] as const));
+    const { oi: level, change } = groupChanges(oi, fine, drawnMs);
+    const out = { oi: level, parts: parts.length > 1 ? groupParts(parts, drawnMs) : [...parts], change, candles: groupCandles(candles, drawnMs) };
+    this.#group = { oi, parts, candles, drawnMs, out };
+    return out;
+  }
+  #groupedWhoHeld: { fine: ReadonlyMap<number, NlnsCandle>; drawnMs: number; out: Map<number, NlnsCandle> } | null = null;
+  #groupedWho(fine: ReadonlyMap<number, NlnsCandle>, drawnMs: number): Map<number, NlnsCandle> {
+    if (this.#groupedWhoHeld?.fine !== fine || this.#groupedWhoHeld.drawnMs !== drawnMs) this.#groupedWhoHeld = { fine, drawnMs, out: groupWho(fine.values(), drawnMs) };
+    return this.#groupedWhoHeld.out;
+  }
   /** Each bar's change (oi-change.ts: venues added together count their own changes) and the ones that stand out. */
-  #analysis(oi: readonly OiBar[], highlight: HighlightOptions, parts: readonly OiPart[], tfMs: number) {
+  #analysis(oi: readonly OiBar[], highlight: HighlightOptions, parts: readonly OiPart[], tfMs: number, given: ReadonlyMap<number, number> | null = null) {
     const key = `${highlight.mult}|${highlight.length}|${tfMs}`;
     if (this.#cache && this.#cache.oi === oi && this.#cache.parts === parts && this.#cache.key === key) return this.#cache;
-    const change = parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : null;
+    const change = given ?? (parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : null);
     const delta = change ? Float64Array.from(oi, bar => change.get(bar[0]) ?? 0) : oiDeltas(oi), size = delta.map(Math.abs);
     const found = anomalies(size, highlight);
     this.#cache = { oi, parts, key, delta, flag: found.flag, sigma: found.sigma };
@@ -1233,17 +1255,18 @@ export class OiPane extends TimePane {
    * Keep what this drawing is made of: the same series, venues, cut and model the bars are drawn from. The same object while none of it
    * changed (a pointer move draws the pane again), so the summary is worked out again only for new data.
    */
-  #keep(state: AppState, oi: readonly OiBar[], parts: readonly OiPart[], tf: number, flag: Uint8Array | null, seam: number | null, who: ReadonlyMap<number, NlnsCandle> | null): void {
+  #keep(state: AppState, oi: readonly OiBar[], parts: readonly OiPart[], tf: number, flag: Uint8Array | null, seam: number | null, who: ReadonlyMap<number, NlnsCandle> | null,
+    drawn: { candles: readonly CandleRow[]; name: string; change: ReadonlyMap<number, number> } | null = null): void {
     const key = oiHeldKey(state), replayAt = replaying() ? Math.floor(pageNow() / tf) * tf : null, held = this.#held;
-    const whoOn = state.oiChange === 'who';
-    if (held && held.key === key && held.oi === oi && held.parts === (parts.length > 1 ? parts : held.parts) && held.who === who && held.whoOn === whoOn && held.flag === flag && held.candles === state.candles && held.seam === seam && held.replayAt === replayAt && held.tfMs === tf && held.usdAt === (parts.length > 1 ? 0 : state.oiPrice)) return;
+    const whoOn = state.oiChange === 'who', candles = drawn ? drawn.candles : state.candles;
+    if (held && held.key === key && held.oi === oi && held.parts === (parts.length > 1 ? parts : held.parts) && held.who === who && held.whoOn === whoOn && held.flag === flag && held.candles === candles && held.seam === seam && held.replayAt === replayAt && held.tfMs === tf && held.usdAt === (parts.length > 1 ? 0 : state.oiPrice)) return;
     const aggregated = parts.length > 1, inst = state.oiInstrument, chart = state.seriesInstrument || state.marketId;
     const own = aggregated ? state.seriesInstrument === state.marketId : inst === chart;
     const name = (id: string): string => `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`;
     const sum = aggregated ? oiSumOf(parts, tf) : null;
     this.#held = {
-      key, oi, tfMs: tf, tf: state.timeframe, venues: sum ? sum.venues : null, counted: sum ? oi.map(bar => sum.counted.get(bar[0]) ?? 0) : null, cohorts: aggregated ? oiCohorts(oi, parts, tf) : null, parts: aggregated ? parts : [], who, whoOn, flag,
-      candles: state.candles, ownPrice: own, priceMarket: chart ? name(chart) : '', coin: coinOf(state),
+      key, oi, tfMs: tf, tf: drawn ? drawn.name : state.timeframe, ...(drawn ? { change: drawn.change } : {}), venues: sum ? sum.venues : null, counted: sum ? oi.map(bar => sum.counted.get(bar[0]) ?? 0) : null, cohorts: aggregated ? oiCohorts(oi, parts, tf) : null, parts: aggregated ? parts : [], who, whoOn, flag,
+      candles, ownPrice: own, priceMarket: chart ? name(chart) : '', coin: coinOf(state),
       market: aggregated ? null : inst ? name(inst) : null, ids: aggregated ? parts.map(part => part.id) : inst ? [inst] : [], usdAt: aggregated ? 0 : state.oiPrice, seam, replayAt,
     };
   }
@@ -1291,14 +1314,21 @@ export class OiPane extends TimePane {
     if (this.#venues.value !== state.oiMarkets) this.#venues.value = state.oiMarkets;
     this.#choose.hidden = state.oiMarkets !== 'custom';
     // Venues added together: the sum is made of the bars that ended by the replay's moment (oiPartsUntil), as NL/NS makes its own.
-    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, parts = oiPartsUntil(state.oiParts, tf, replaying() ? Math.floor(pageNow() / tf) * tf : Infinity);
+    const chartTf = TIMEFRAMES[state.timeframe] ?? 3_600_000, chartParts = oiPartsUntil(state.oiParts, chartTf, replaying() ? Math.floor(pageNow() / chartTf) * chartTf : Infinity);
     // Venues added together: the level chained from the bars' changes (it ends at the total now), so a venue whose readings start or stop
     // makes no step the bars do not show.
-    const oi = parts.length > 1 ? chainedOi(oiSumOf(parts, tf)) : this.#oiAt(state.oi, tf), highlight = state.highlight;
+    const chartOi = chartParts.length > 1 ? chainedOi(oiSumOf(chartParts, chartTf)) : this.#oiAt(state.oi, chartTf), highlight = state.highlight;
+    // The view's start, for older bars than the recent ones (Hub.oiReach: read once, kept).
+    if (chartOi.length && !replaying()) this.reach(v.t0);
+    // Zoomed out, the map's longer candles (`stripTimeframe`, as the Volume strip): the bars are those candles, their changes and NL/NS parts
+    // the chart candles' added up (oi-group.ts), and everything below (hover, table, Highlights, the Range summary) reads them.
+    const drawnTf = stripTimeframe(chartTf, v.t1 - v.t0, pw), grouped = drawnTf.ms > chartTf && chartOi.length ? this.#grouped(chartOi, chartParts, chartTf, drawnTf.ms, state.candles) : null;
+    const tf = grouped ? drawnTf.ms : chartTf, parts = grouped ? grouped.parts : chartParts, oi = grouped ? grouped.oi : chartOi;
     const readout = this.head.querySelector('.readout');
     const say = (html: string): void => setHtml(readout, html);
     if (!oi.length) { this.#held = null; ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(state.oiReading ? t('Reading open interest…') : t('No open-interest history for this market yet.'), 12, ph / 2); say(''); return; }
-    const analysis = this.#analysis(oi, highlight, parts, tf);
+    const analysis = this.#analysis(oi, highlight, parts, tf, grouped ? grouped.change : null);
+    const drawn = grouped ? { candles: grouped.candles, name: drawnTf.name, change: grouped.change } : null;
     // Further back than the readings held, Bybit's history goes on from the seam (oi-long.ts): the bars before it, Bybit's readings alone, give
     // way to it. It is drawn as the level only, dashed: an estimate, and its readings a day or four hours apart beside the candles' changes.
     // (While its readings are read, the bars before the seam stay drawn.)
@@ -1309,7 +1339,7 @@ export class OiPane extends TimePane {
     // A view starting between the last reading's period and the seam: the last reading's level is what the line holds there.
     if (!shownEarly.length && early.length && early[early.length - 1]![0] < v.t0 && v.t0 < oi[seamI]![0]) shownEarly.push(early.length - 1);
     const seam = early.length ? oi[seamI]![0] : null;
-    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
+    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null, drawn); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
     // Geometry: the level on top, the change below (when the pane is tall enough to hold both).
     const split = ph >= 84, lineBottom = split ? Math.round(ph * 0.6) : ph - 6, bandTop = lineBottom + 12, bandBottom = ph - 5, mid = (bandTop + bandBottom) / 2, half = (bandBottom - bandTop) / 2;
     let lo = Infinity, hi = -Infinity;
@@ -1333,8 +1363,9 @@ export class OiPane extends TimePane {
     };
     // Who made each change (NL/NS), by candle start, while the bars are split by who: the view's candles from its left edge (the pane shows no
     // running sums, so the Delta pane's restart is not needed here).
-    const who = state.oiChange === 'who' ? this.#whoByStart(this.nlns.forView(state, v.t0, v.t1, pageNow(), 'none')) : null;
-    this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, who);
+    const fineWho = state.oiChange === 'who' ? this.#whoByStart(this.nlns.forView(state, v.t0, v.t1, pageNow(), 'none')) : null;
+    const who = fineWho && grouped ? this.#groupedWho(fineWho, tf) : fineWho;
+    this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, who, drawn);
     // Change histogram.
     if (split) {
       const emphasise = highlight.on;
@@ -1355,7 +1386,8 @@ export class OiPane extends TimePane {
         if (who) {
           // Outward from the zero line: the buyers' part, the sellers', then what went to no side, each its share of what opened (a rise) or
           // closed (a fall). A fall's parts are lighter, outlined where the bar is wide enough: closed, as the Delta pane's Four parts draws them.
-          const c = who.get(oi[i]![0]), parts = c ? whoParts(c, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
+          // A bar mostly sided by the way the price went (no flow recorded) is drawn as rising or falling: the who colours are the takers'.
+          const c = who.get(oi[i]![0]), measured = c && priceSidedShare(c) <= 0.5 ? c : undefined, parts = measured ? whoParts(measured, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
           // Each side's alpha as the volume strip sets it: worked out on the plain bar's weight (a fall's lighter: 0.55 of it, its stronger side at
           // most 0.8), then scaled by the bar's Highlights weight, so a bar that does not stand out stays fainter than one that does, its stronger
           // side too; the weaker side never fainter than OI_WEAK_ALPHA (or the bar).

@@ -173,7 +173,7 @@ async function main(): Promise<void> {
   const depth = new DepthPane(chart, store, heat.view, hub);
   // NL/NS, worked out once and read by the OI pane (its bars by who opened), the Delta pane and the Funding pane.
   const nlns = new NlnsSource(hub);
-  const oi = new OiPane(chart, store, heat.view, hub.flow, nlns);
+  const oi = new OiPane(chart, store, heat.view, hub.flow, nlns, t0 => hub.oiReach(t0));
   const delta = new DeltaPane(chart, store, heat.view, hub, nlns);
   heat.divergences = () => delta.divergences; delta.onDivergences = () => heat.invalidate();
   const ls = new LsPane(chart, store, heat.view, hub);

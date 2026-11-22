@@ -19,8 +19,14 @@ export interface OiPaneHeld {
   key: string;
   oi: readonly OiBar[];
   tfMs: number;
-  /** The timeframe's name ("1h"). */
+  /** The timeframe's name ("1h"): the drawn candles' ("4h") where the pane draws longer candles zoomed out (oi-group.ts). */
   tf: string;
+  /**
+   * Each bar's change by its start where the pane drew longer candles than the chart's: the sum of the chart candles' changes in it, so the
+   * summary adds up to the bars drawn (worked out again from the venues' grouped bars it could differ where a venue has a gap). Absent: the
+   * changes are worked out from `oi` and `parts` (`oiChangeByTime`).
+   */
+  change?: ReadonlyMap<number, number>;
   /** Venues added together: how many hold a level at each bar, and how many its change is made of (`OiSum`); null for one market. */
   venues: readonly number[] | null;
   counted: readonly number[] | null;
@@ -125,7 +131,7 @@ export class OiRangeSummary {
     const closes = new Map(held.candles.map(c => [c[0], c[4]] as const));
     const usdMap = held.ownPrice || usdAt > 0 ? oiUsdChangeByTime(held.oi, held.parts, held.tfMs, at => held.ownPrice ? closes.get(at) : undefined, usdAt) : null;
     const formingFrom = held.replayAt === null ? Math.floor(now / held.tfMs) * held.tfMs : Infinity;
-    const s = oiStretch({ oi: held.oi, change: oiChangeByTime(held.oi, held.parts, held.tfMs), i0, i1, tfMs: held.tfMs, venues: held.venues, counted: held.counted, cohorts: held.cohorts, formingFrom, parts: held.parts, who: held.who, candles: held.candles, ownPrice: held.ownPrice, usd: usdMap, flag: held.flag });
+    const s = oiStretch({ oi: held.oi, change: held.change ?? oiChangeByTime(held.oi, held.parts, held.tfMs), i0, i1, tfMs: held.tfMs, venues: held.venues, counted: held.counted, cohorts: held.cohorts, formingFrom, parts: held.parts, who: held.who, candles: held.candles, ownPrice: held.ownPrice, usd: usdMap, flag: held.flag });
     if (!s) return [title(spanText(sel.t0, sel.t1)), { key: 'oi-none', kind: 'note', tone: 'muted', cells: [t('No {tf} candle of the OI pane starts in this range.', { tf: held.tf })] }];
     const n = s.bars, forming = s.t1 > formingFrom;
     // The NL/NS result kept for this selection: the newest that covered every candle, unless the pane holds one as complete now.
