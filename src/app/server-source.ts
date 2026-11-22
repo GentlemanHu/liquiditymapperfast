@@ -4,6 +4,8 @@ import { stateOfStatus } from './venue-notice.ts';
 import { currentCoin } from './coin.ts';
 import { PriceHistoryCache, priceListing, priceTimeframeMs, type PriceHistoryAnswer } from '../shared/price-history.ts';
 import { webGet } from '../shared/history.ts';
+// This module's own requests are counted while they are out (quiet.ts), as net.ts's are.
+import { trackedFetch as fetch } from './quiet.ts';
 
 interface FeedCatalog { maxSelected: number; selectedVenues: string[]; venues: { id: string; name: string; supported: boolean; default?: boolean; status: string }[] }
 interface ExtraVenueInfo { id: string; name: string; enabled: boolean; default?: boolean; state: string; lastError: string | null; reconnects: number }

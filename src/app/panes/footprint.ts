@@ -231,6 +231,10 @@ export class FootprintData {
    * recorded; one outside it was not asked about (Bar stats' Range summary counts its minutes as unknown).
    */
   get answered(): { from: number; to: number } | null { const h = this.#held; return h ? { from: h.from, to: h.to } : null; }
+  /** A question is out (the Flow history says it is loading rather than that nothing was recorded). */
+  get busy(): boolean { return this.#busy; }
+  /** Whether the bars held were answered for all of [from, to) (on the last grid asked). */
+  covers(from: number, to: number): boolean { const h = this.#held; return !!h && h.from <= from && h.to >= to; }
   /**
    * Whether the bars held are those of `markets` (as the map asks for them, sorted) at `tf`: the context the last `ensure` set, or, with no
    * markets to count, the cleared one. The map switches it in its own frame, so a pane drawn first after a click still holds the old bars.
@@ -250,9 +254,11 @@ export class FootprintData {
   /**
    * Ask for what the view needs next, if anything: everything (another row size or size lines, or a view the bars held do not touch), the
    * bars that can still change (every FOOTPRINT_REFRESH_MS, or the view reaching past the newest), or the next older slice. `now` is the
-   * source's clock (a bar is settled by its time).
+   * source's clock (a bar is settled by its time). `warm`: no pane shows the bars yet (the Flow history's warm-up, HeatPane `#warmStep`):
+   * the view is asked for once, in its slices, and nothing on the clock (no refresh of the bars still changing, no late-trade recheck, no
+   * size-sum retry); the first pane to show them asks for what changed since.
    */
-  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: FootprintLoad, onLoad: () => void, cuts: readonly number[] = [], now = Date.now()): void {
+  ensure(inst: string, tf: string, view: Bounds, rowStep: number, load: FootprintLoad, onLoad: () => void, cuts: readonly number[] = [], now = Date.now(), warm = false): void {
     const tfMs = TIMEFRAMES[tf] ?? 3_600_000;
     // Rows of another market or timeframe are not rows of this one, whatever the window: they go now, rather than being drawn until the new
     // ones come (or for good, if they never do). A request still out for the old context is left to finish, and its answer is ignored.
@@ -279,7 +285,7 @@ export class FootprintData {
     // Every few minutes the tail reaches back an hour into the settled bars: a trade a venue sends late (after a reconnect) lands in a
     // minute already settled here, and is otherwise only seen when the view is loaded again. A view that ends in that hour is rechecked
     // too, with no bar still under way in it (panned a few minutes behind the live edge).
-    else if (want.to > h.to || (h.settled < want.to && clock - h.at >= FOOTPRINT_REFRESH_MS) || (clock - h.rechecked >= RECHECK_MS && want.to > h.settled - RECHECK_SPAN_MS)) {
+    else if (!warm && (want.to > h.to || (h.settled < want.to && clock - h.at >= FOOTPRINT_REFRESH_MS) || (clock - h.rechecked >= RECHECK_MS && want.to > h.settled - RECHECK_SPAN_MS))) {
       const recheck = clock - h.rechecked >= RECHECK_MS;
       if (recheck) h.rechecked = clock;
       // From the start of the bar an hour back is in (on 4 h or 1 d bars an hour back is inside the bar before): an answer's bars that start
@@ -290,7 +296,7 @@ export class FootprintData {
     // Settled bars without the sums of the size lines asked (minutes whose lists the server fills in after it starts) are asked again, once
     // a minute and at most REDO_TRIES times, from the first of them to where the tail starts.
     // A round goes on at once through the older slices a budgeted answer left (`redo.to`, where the last one reached).
-    else if (h.redo.from < Math.min(h.settled, h.to, h.redo.to) && (h.redo.to < Infinity || (h.redo.tries < REDO_TRIES && clock - h.redo.at >= REDO_MS))) {
+    else if (!warm && h.redo.from < Math.min(h.settled, h.to, h.redo.to) && (h.redo.to < Infinity || (h.redo.tries < REDO_TRIES && clock - h.redo.at >= REDO_MS))) {
       if (h.redo.to === Infinity) { h.redo.tries++; h.redo.at = clock; }
       ask = { from: Math.max(h.redo.from, h.from), to: Math.min(h.settled, h.to, h.redo.to), kind: 'redo' };
     }

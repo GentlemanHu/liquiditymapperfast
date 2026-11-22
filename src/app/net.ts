@@ -13,6 +13,8 @@ import type { CandleRow, OiBar } from './store.ts';
 import { parsePriceHistory, priceTimeframeMs, type PriceHistoryAnswer } from '../shared/price-history.ts';
 import type { BootstrapState, FootprintResponse, LayersMessage, LiquidationsMessage, LiveHandlers, OiPushMessage, PrintsMessage, TickMessage } from './source.ts';
 import { t } from './i18n.ts';
+// Every request of this module is counted while it is out (quiet.ts): the Flow history's warm-up waits for the page's own loads to drain.
+import { trackedFetch as fetch } from './quiet.ts';
 
 /** `priority`: where the browser puts the request among those waiting for one of its six connections to the server (Fetch Priority; ignored where unknown). */
 async function request(path: string, signal?: AbortSignal, priority?: 'high' | 'low'): Promise<Response> {

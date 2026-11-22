@@ -263,3 +263,70 @@ test('on bars longer than the hour, the late-trade recheck starts on a bar\x27s 
     assert.equal(asked.at(-1)!.from, 4 * H);
   } finally { time.restore(); }
 });
+
+// The Flow history's warm-up (2026-11-22, size-history/warm.ts): before any pane shows the bars, the view is asked for once, in its slices,
+// and nothing on the clock; the first pane to show them draws what is held and asks only for what changed since.
+test('warmed before any pane shows: the view once, in its slices, nothing on the clock; the first pane then asks for the bars still changing', async () => {
+  const time = clock(1_000_000);
+  try {
+    const { asked, load } = source(5), data = new FootprintData(), view = { t0: 10 * H, t1: 20 * H, p0: 0, p1: 1 };
+    const sourceNow = 20 * H + 30 * 60_000;
+    const warm = async () => { data.ensure('a,b', '1h', view, 5, load, () => {}, [], sourceNow, true); await turn(); };
+    await warm(); await warm(); await warm();
+    assert.deepEqual(asked.map(a => [a.from / H, a.to / H]), [[9, 21], [9, 16], [9, 11]], 'the view with its margin, then older slices, newest first');
+    assert.ok(data.covers(9 * H, 21 * H), 'the whole window is held');
+    assert.equal(data.busy, false);
+    time.advance(FOOTPRINT_REFRESH_MS * 3);
+    await warm(); await warm();
+    assert.equal(asked.length, 3, 'no refresh of the bars still changing while only the warm-up looks');
+    // The first pane to show the bars: the open bar alone, as a refresh asks it (the ones before it are settled).
+    data.ensure('a,b', '1h', view, 5, load, () => {}, [], sourceNow); await turn();
+    assert.deepEqual(asked.slice(3).map(a => [a.from / H, a.to / H]), [[20, 21]]);
+    assert.equal(data.bars.size, 12);
+  } finally { time.restore(); }
+});
+
+test('the warm-up never rechecks settled bars for late trades nor retries missing size sums: those wait for a pane', async () => {
+  const time = clock(1_000_000);
+  try {
+    const asked: number[][] = [];
+    // Every bar answered without the sums of the size line asked (no `over`): a pane asks those again once a minute (the test above).
+    const load = async (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
+      asked.push([from / H, to / H]);
+      const bars = [];
+      for (let t = Math.floor(from / H) * H; t < to; t += H) bars.push({ t, rows: [[100, 1, 1]] as [number, number, number][], buyUsd: 1, sellUsd: 1, minutes: 60, stats: { buyN: 1, sellN: 1, buy: [0, 0, 0, 0, 0, 0, 0, 0], sell: [0, 0, 0, 0, 0, 0, 0, 0] } });
+      return { step: 5, fine: 5, bars: bars as never, from };
+    };
+    const data = new FootprintData(), view = { t0: 10 * H, t1: 14 * H, p0: 0, p1: 1 }, sourceNow = 14 * H + 30 * 60_000;
+    data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow, true); await turn();
+    assert.equal(asked.length, 1);
+    assert.ok([...data.bars.values()].every(b => !b.over), 'the bars came without their sums');
+    time.advance(10 * 60_000);
+    for (let i = 0; i < 3; i++) { data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow, true); await turn(); }
+    assert.equal(asked.length, 1, 'ten minutes on (past the recheck and the retries\x27 minute), the warm-up has asked nothing more');
+    // A pane asks: the bars still changing, the hour back for late trades and the settled bars without their sums, as before.
+    data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow); await turn();
+    assert.ok(asked.length > 1, 'the pane asks again where the warm-up did not');
+  } finally { time.restore(); }
+});
+
+test('a pane that opens while a warm question is out waits for its answer rather than asking again, and draws it', async () => {
+  const asked: number[][] = [];
+  let release: (() => void) | null = null;
+  const load = (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
+    asked.push([from / H, to / H]);
+    return new Promise(resolve => {
+      release = () => { const bars = []; for (let t = Math.ceil(from / H) * H; t < to; t += H) bars.push({ t, rows: [[100, 1, 1]] as [number, number, number][], buyUsd: 1, sellUsd: 1, minutes: 60 }); resolve({ step: 5, fine: 5, bars }); };
+    });
+  };
+  const data = new FootprintData(), view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, sourceNow = 12 * H + 30 * 60_000;
+  data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow, true);
+  assert.equal(data.busy, true, 'the warm question is out');
+  assert.equal(data.answered, null, 'and nothing is answered yet (the pane says it is loading)');
+  data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow);
+  assert.equal(asked.length, 1, 'the pane does not ask again');
+  release!(); await turn();
+  assert.equal(data.busy, false);
+  assert.deepEqual([...data.bars.keys()].map(t => t / H), [9, 10, 11, 12], 'the warm answer is the pane\x27s');
+  assert.ok(data.holds(['a'], '1h'));
+});

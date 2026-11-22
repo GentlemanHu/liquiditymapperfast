@@ -160,7 +160,8 @@ export class SizeHistoryPane extends TimePane {
     for (const c of state.candles) if (near(c[0])) starts.add(c[0]);
     for (const b of data.bars.values()) if (near(b.t)) starts.add(b.t);
     const times = [...starts].sort((a, b) => a - b);
-    if (!times.length || !times.some(s => data.bars.has(s))) { this.#message(t('Flow history appears once market orders are recorded for these candles.')); this.#held = null; return; }
+    // Before the first answer for these markets and timeframe, a question still out: loading, not "nothing recorded".
+    if (!times.length || !times.some(s => data.bars.has(s))) { this.#message(data.busy && !data.answered ? t('Loading…') : t('Flow history appears once market orders are recorded for these candles.')); this.#held = null; return; }
     // Liquidations and open interest are the perpetuals': they count with the Spot filter on too, the size rows counting only its spot markets
     // (`liquidationMarkets`; Karl, 2026-11-21: they "don't show up"). Only a list without a perpetual (the chart market or chosen markets all
     // spot, or every perpetual venue switched off) leaves the two rows without values, and their cards say why. Liquidations a UTC day per answer (the shared loader), over the candles held; a candle
