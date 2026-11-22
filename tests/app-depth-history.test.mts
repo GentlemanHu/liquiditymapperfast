@@ -104,6 +104,19 @@ test('the words count the readings strictly lower or higher, rounded down, never
   assert.deepEqual(rankKind(r(10, 90, 0)), { kind: 'middle', pct: 50, extreme: false });
 });
 
+test('what a source really had: the windows holding any book, not the grid it was asked over (the browser engine answers a week with minutes)', () => {
+  const h = new BandHistory('k', [], RADII);
+  h.addBooks(['a', 'b']);
+  // A week asked for, minutes answered: the grid spans 200 windows, three hold a book.
+  h.put(frame(['a', 'b'], T0, 200, (id, x) => x >= 197 && id === 'a' ? 5 : null), T0, T0 + 200 * STEP);
+  assert.deepEqual([h.count, h.held()], [200, 3]);
+  // More held, by the other book too, counts once a window; a trim forgets what it drops.
+  h.put(frame(['a', 'b'], T0, 200, (id, x) => x >= 10 ? 5 : null), T0, T0 + 200 * STEP);
+  assert.equal(h.held(), 190);
+  h.trim(T0 + 50 * STEP);
+  assert.deepEqual([h.count, h.held()], [150, 150]);
+});
+
 test('a short table\'s one row (Karl, 2026-11-22): the band, or in a coarse view the time of the book ranked, then each side\'s place without the span; bold past the 5th or 95th percentile', () => {
   const r = (below: number, equal: number, above: number, at: number | null = null): BandRank => ({ p: (below + equal / 2) / (below + equal + above), n: below + equal + above, below, equal, above, coverMs: 7 * DAY, value: 1, at });
   const brief = (bid: BandRank | null, ask: BandRank | null, more: Partial<DepthHistoryLines> = {}) => depthRankBrief(0.00625, { bid, ask, loading: false, whole: true, ...more });
@@ -132,7 +145,7 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, keepBrief, /);
   // A source that can never reach the minimum (the public site's browser engine): once whole and still short, the card's rank in view as before
   // the history, no rank row and no room kept for one.
-  assert.match(depth, /const unranked = whole && history!\.count \* history!\.step < RANK_MIN_COVER_MS;/);
+  assert.match(depth, /const unranked = whole && history!\.held\(\) \* history!\.step < RANK_MIN_COVER_MS;/);
   assert.match(depth, /if \(unranked\) \{\n\s+const here = rows\[said\]!\.bid \+ rows\[said\]!\.ask;/);
   assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: settings\.units, coin, rank, of \}\);/);
   assert.match(depth, /keepBrief = liq \? !!liqHeld\?\.takeRows\?\.length : !unranked;/);

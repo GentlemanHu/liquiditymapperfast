@@ -55,6 +55,16 @@ export class BandHistory {
   /** The first and last moments held (ms), or null while nothing is. */
   get span(): { from: number; to: number } | null { return this.count ? { from: this.n0 * this.step, to: (this.n0 + this.count) * this.step } : null; }
   has(id: string): boolean { return this.#index.has(id); }
+  #held = { at: -1, n: 0 };
+  /** How many windows hold any book at all: the grid spans whatever was asked for, held or not, so this is what the source really had. */
+  held(): number {
+    if (this.#held.at !== this.version) {
+      let n = 0;
+      for (let g = 0; g < this.count; g++) if (this.present.some(p => p[g] === 1)) n++;
+      this.#held = { at: this.version, n };
+    }
+    return this.#held.n;
+  }
   /** Make room for books not held yet (absent from every window until a frame of theirs is put). */
   addBooks(ids: readonly string[]): void {
     const k = this.k;

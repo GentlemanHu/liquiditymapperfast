@@ -971,7 +971,7 @@ export class DepthPane extends TimePane {
     // A source that keeps less than the minimum can never rank (the public site's browser engine holds about a day of closing minutes, and the
     // long history's tiles are means): once its history is whole and still that short, the card says the band's rank in view as it did before
     // the history, and the table keeps no rank row.
-    const unranked = whole && history!.count * history!.step < RANK_MIN_COVER_MS;
+    const unranked = whole && history!.held() * history!.step < RANK_MIN_COVER_MS;
     // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
     const said = lit ? lit.j : top;
     if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
