@@ -2260,7 +2260,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "Buchstaben, solange ein Block hoch genug ist, einen aufzunehmen, darunter Blöcke (Auto), oder immer eines von beiden.",
  "Blocks": "Blöcke",
  "Letters": "Buchstaben",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "Nach der Zeit jedes Blocks, früh warm bis spät kühl; oder danach, wie viele Blöcke seine Zeile enthält.",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "Nach der Zeit jedes Blocks, von früh bis spät entlang einer Farbskala; oder danach, wie viele Blöcke seine Zeile enthält.",
  "By time": "Nach Zeit",
  "By row length": "Nach Zeilenlänge",
  "Laid out in time": "Zeitlich ausgelegt",

@@ -2318,7 +2318,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "Буквы, пока блок достаточно высок, чтобы вместить букву, ниже этого — блоки (Авто), либо всегда что-то одно.",
  "Blocks": "Блоки",
  "Letters": "Буквы",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "По времени каждого блока, от тёплого раннего до холодного позднего; или по тому, сколько блоков в его строке.",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "По времени каждого блока, от раннего к позднему по шкале цветов; или по тому, сколько блоков в его строке.",
  "By time": "По времени",
  "By row length": "По длине строки",
  "Laid out in time": "Разложено по времени",

@@ -2175,7 +2175,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "ブロックが文字を入れられる高さのうちは文字、それ未満ではブロック（自動）、または常にどちらか一方。",
  "Blocks": "ブロック",
  "Letters": "文字",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "各ブロックの時刻で、早い時間は暖色、遅い時間は寒色に。または、その行のブロック数で。",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "各ブロックの時刻で、早い時間から遅い時間へ色の段階に沿って。または、その行のブロック数で。",
  "By time": "時刻別",
  "By row length": "行の長さ別",
  "Laid out in time": "時間軸に展開",

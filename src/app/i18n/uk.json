@@ -2323,7 +2323,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "Літери, поки блок достатньо високий, щоб вмістити літеру, нижче — блоки (Авто), або завжди щось одне.",
  "Blocks": "Блоки",
  "Letters": "Літери",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "За часом кожного блока: від теплого раннього до холодного пізнього; або за тим, скільки блоків у його рядку.",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "За часом кожного блока: від раннього до пізнього за шкалою кольорів; або за тим, скільки блоків у його рядку.",
  "By time": "За часом",
  "By row length": "За довжиною рядка",
  "Laid out in time": "Розкладено за часом",

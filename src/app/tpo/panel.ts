@@ -47,7 +47,7 @@ export function buildTpoPanel(store: Store, tools: HTMLElement, body: HTMLElemen
   body.append(
     heading(t('Look')),
     selectRow(t('Draw as'), t('Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.'), [['auto', t('Auto')], ['blocks', t('Blocks')], ['letters', t('Letters')]], s.look, v => set({ look: v === 'blocks' || v === 'letters' ? v : 'auto' })),
-    selectRow(t('Colour'), t('By the time of each block, early warm to late cool; or by how many blocks its row holds.'), [['time', t('By time')], ['count', t('By row length')]], s.colour, v => set({ colour: v === 'count' ? 'count' : 'time' })),
+    selectRow(t('Colour'), t('By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.'), [['time', t('By time')], ['count', t('By row length')]], s.colour, v => set({ colour: v === 'count' ? 'count' : 'time' })),
     switchRow(t('Laid out in time'), t('Each block in its own column at its half hour, behind its own candles, instead of folded into the profile (U).'), s.unfold, unfold => set({ unfold })),
     selectRow(t('Value area'), t('The share of the TPOs around the point of control that the value area holds.'), ['60', '65', '68', '70', '75', '80'].map(v => [v, `${v} %`] as [string, string]), String(s.share), v => set({ share: Number(v) })),
     heading(t('Marks')),

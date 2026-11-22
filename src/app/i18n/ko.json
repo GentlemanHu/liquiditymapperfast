@@ -2175,7 +2175,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "블록이 글자를 담을 만큼 높으면 글자, 그보다 낮으면 블록(자동), 또는 항상 둘 중 하나.",
  "Blocks": "블록",
  "Letters": "글자",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "각 블록의 시간 기준으로 이른 때는 따뜻한 색, 늦은 때는 차가운 색; 또는 그 행에 든 블록 수 기준.",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "각 블록의 시간 기준으로 이른 때부터 늦은 때까지 색의 단계를 따라; 또는 그 행에 든 블록 수 기준.",
  "By time": "시간별",
  "By row length": "행 길이별",
  "Laid out in time": "시간에 따라 펼침",

@@ -2175,7 +2175,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "方块足够高、容得下一个字母时显示字母，低于此则显示方块（自动），或始终固定为二者之一。",
  "Blocks": "方块",
  "Letters": "字母",
- "By the time of each block, early warm to late cool; or by how many blocks its row holds.": "按每个方块的时间着色，早为暖色、晚为冷色；或按其所在行含有多少方块着色。",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "按每个方块的时间着色，从早到晚沿一组渐变颜色；或按其所在行含有多少方块着色。",
  "By time": "按时间",
  "By row length": "按行长度",
  "Laid out in time": "按时间展开",
