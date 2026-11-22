@@ -2,7 +2,8 @@
  * Two-sided figures take the colour of what their orders do (Karl, 2026-11-21, to cut mental load; AGENTS "Words and look"): the buy colour
  * for a side whose orders buy, the sell colour for one whose orders sell, whatever the side is called. The book's bids buy and its asks sell;
  * the liquidation levels are named after positions, and a position is closed by the opposite order, so their colours are the other way round
- * from their names' usual green and red. This module is that rule for the levels, pure, so every surface that draws them asks one question.
+ * from their names' usual green and red. This module is that rule for the levels, pure: new code that draws them asks it (older surfaces still
+ * restate it locally, each pinned by its own tests; AGENTS names them).
  */
 import type { LevelsKind } from './liq-levels.ts';
 

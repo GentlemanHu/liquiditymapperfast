@@ -58,6 +58,7 @@ import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
 import { curveOf, groupName, heldBack, kindName, levelsDescription, liveAsk, liveSplit, liveView, narrowView, pairKey, plusOn, viewKey, viewParts, type LiqPair, type LiqView } from '../liq-view.ts';
 import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, subNames } from '../liq-words.ts';
+import { levelsOrderSide } from '../order-side.ts';
 import { mirrorSplits, readingTexts, setBoxLines, stripeBoxLines } from '../liq-box.ts';
 import { layNote, paintStripe, stripeNote, stripeStands, type LaneCaption, type StripeHeld, type StripePainted } from '../liq-stripe.ts';
 import { toggleLevels } from '../levels-control.ts';
@@ -2462,7 +2463,8 @@ export class HeatPane {
       const y = this.view.yOf(level.price, ph);
       if (y < 0 || y > ph) continue;
       // Provider levels are coloured by where they sit relative to price: ask colour above the mark, bid colour below. Unreachable while only the
-      // liquidity layer exists; a stop-loss or take-profit layer brought back must colour by what its orders do instead (order-side.ts).
+      // liquidity layer exists; a stop-loss layer brought back must colour by what its orders do (order-side.ts: the buy-stops above buy), as a
+      // take-profit layer already does (the longs' above sell).
       ctx.fillStyle = level.price >= state.mark.price ? p.ask : p.bid; ctx.globalAlpha = 0.18 + 0.7 * Math.sqrt(level.notionalUsd / max);
       ctx.fillRect(0, y - 1.5, pw, 3);
     }
@@ -4569,9 +4571,9 @@ export class HeatPane {
     // The strip has no room for the band's pills: its box says the same.
     const wide = W >= PROFILE_W;
     dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.6);
-    // In the colours of what the orders would do, as the column and its box (order-side.ts): take profits alone sell above the price, buy below.
-    const sellsAbove = set.levels?.kind === 'takes';
-    paintBand(ctx, p, x0, W, { y: top, color: sellsAbove ? p.candleDown : p.candleUp, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: sellsAbove ? p.candleUp : p.candleDown, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
+    // In the colours of what the orders would do, as the column and its box: the shorts above are bought back, take profits alone sell there.
+    const buysAbove = levelsOrderSide(set.levels?.kind ?? 'liq', 'short') === 'buy';
+    paintBand(ctx, p, x0, W, { y: top, color: buysAbove ? p.candleUp : p.candleDown, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: buysAbove ? p.candleDown : p.candleUp, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
     // The row under the pointer: the column's row on the snapshot's own bins (`liqCardRow`), so what stands, the snapshot's amount, its count and
     // its largest describe the same prices.
     const row = liqCardRow(at, niceStep(v.p1 - v.p0, ph / 3), set.levels?.step ?? 0), { lo, hi } = row, step = hi - lo, side = at < price ? 'long' : 'short';

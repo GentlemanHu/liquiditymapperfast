@@ -119,27 +119,32 @@ test('the Range panel: the liquidation levels\' rows in the colour of what their
   assert.deepEqual(tones('takes', 3), ['Take profits of shorts: buy', 'Take profits of longs: sell']);
 });
 
-test('the drawings follow the rule too: the Depth pane\'s rings, edge, header and table, the map\'s liquidation Mirror band, the phone\'s verdict', () => {
-  // Canvas code, pinned by its source as tests/app-hover-rows.test.mts pins the map's boxes.
-  const depth = (() => {
-    const src = fs.readFileSync('src/app/panes/lower-panes.ts', 'utf8').replace(/\r\n/g, '\n'), cls = src.indexOf('export class DepthPane '), start = src.indexOf('  #paint(): void {', cls);
-    assert.ok(cls > 0 && start > cls, 'DepthPane #paint'); return src.slice(start, src.indexOf('\n  }\n', start));
-  })();
+test('the drawings follow the rule too: the Depth pane\'s rings, edge, header, table and card, the map\'s liquidation column box and Mirror band, the phone\'s verdict', () => {
+  // Canvas code, pinned by its source as tests/app-hover-rows.test.mts pins the map's boxes; every file read with LF line ends, whatever it has.
+  const read = (file: string): string => fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+  const method = (src: string, head: string, from = 0): string => { const start = src.indexOf(head, from); assert.ok(start >= 0, head); return src.slice(start, src.indexOf('\n  }\n', start)); };
+  const lower = read('src/app/panes/lower-panes.ts'), depthAt = lower.indexOf('export class DepthPane ');
+  assert.ok(depthAt > 0, 'DepthPane');
+  const depth = method(lower, '  #paint(): void {', depthAt), series = method(lower, '  #liqSeries(', depthAt);
+  // The arrays: `bid` holds the levels below the price (the 'long' array: longs, or the shorts' take profits), `ask` those above.
+  assert.match(series, /bid\[x \* k \+ j\] = row\.long\[b\]!; ask\[x \* k \+ j\] = row\.short\[b\]!; bidCoin\[x \* k \+ j\] = row\.longCoin\[b\]!; askCoin\[x \* k \+ j\] = row\.shortCoin\[b\]!;/);
+  assert.match(depth, /return \(coins \? \(side === 'long' \? row\.longCoin : row\.shortCoin\) : \(side === 'long' \? row\.long : row\.short\)\)\[b\] \?\? 0;/, 'liqFigure reads the side asked for');
   assert.match(depth, /const levelsKind = liq \? curveOf\(liqHeld!\.view\) : null, sides = depthOrderSides\(levelsKind\), upInk = p\[bidAskKey\(sides\.above\)\], downInk = p\[bidAskKey\(sides\.below\)\];/);
   // Up is the ask array (above the price: asks, or the shorts' levels), down the bid array (bids, or the longs').
   assert.match(depth, /ctx\.fillStyle = shade\(upInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(ask\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid - h,/);
   assert.match(depth, /ctx\.fillStyle = shade\(downInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(bid\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid,/);
   assert.match(depth, /\[\[ask, -1, edge\(upInk\)\], \[bid, 1, edge\(downInk\)\]\]/);
   assert.match(depth, /depthLiqReadout\(\{ whose, band: bandText\(s\.radii\[top\]!\), long: liqFigure\(row, 'long', top\), short: liqFigure\(row, 'short', top\), coins, unit, kind: curveOf\(view\),/);
+  assert.match(depth, /take: take \? \{ long: liqFigure\(take, 'long', top\), short: liqFigure\(take, 'short', top\) \} : null/, 'the take profits beside: the shorts\' below, the longs\' above');
   assert.match(depth, /bid: readRow \? liqFigure\(readRow, 'long', j\) : NaN, ask: readRow \? liqFigure\(readRow, 'short', j\) : NaN/, 'the table\'s first side is the longs below');
   assert.match(depth, /this\.#drawTable\(rows, [^;]*, depthHeads\(levelsKind\), sides, lines\)/);
-  const lower = fs.readFileSync('src/app/panes/lower-panes.ts', 'utf8').replace(/\r\n/g, '\n'), drawAt = lower.indexOf('  #drawTable(');
-  assert.match(lower.slice(drawAt, lower.indexOf('\n  }\n', drawAt)), /rows: depthTableRows\(rows, p, sides\)/);
-  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8'), mirrorAt = heat.indexOf('  #paintLiqColumnMirror('), mirror = heat.slice(mirrorAt, heat.indexOf('\n  }\n', mirrorAt));
-  assert.ok(mirrorAt > 0, '#paintLiqColumnMirror');
-  assert.match(mirror, /const sellsAbove = set\.levels\?\.kind === 'takes';\n\s+paintBand\(ctx, p, x0, W, \{ y: top, color: sellsAbove \? p\.candleDown : p\.candleUp, .*?\{ y: bottom, color: sellsAbove \? p\.candleUp : p\.candleDown,/, 'the band as its box: take profits alone sell above');
-  assert.equal(levelsOrderSide('takes', 'short'), 'sell', 'which is the rule');
-  const phone = fs.readFileSync('src/app/panes/liq-pane.ts', 'utf8');
+  assert.match(depth, /liqCardLines\(\{ asOf: readRow\.asOf, bands: rows, watched: top, units: settings\.units, coin, view: liqHeld!\.view, takes: tk \}\)/, 'the card knows the kind');
+  assert.match(method(lower, '  #drawTable('), /rows: depthTableRows\(rows, p, sides\)/);
+  const heat = read('src/app/panes/heat-pane.ts');
+  // The column's box: its colours by kind (above: shorts bought back, or take profits alone sold), and the Mirror band as the box.
+  assert.match(method(heat, '  #paintLiqColumn('), /k => k === 'above' \? \(alone \? p\.candleDown : p\.candleUp\) : k === 'below' \? \(alone \? p\.candleUp : p\.candleDown\)/);
+  assert.match(method(heat, '  #paintLiqColumnMirror('), /const buysAbove = levelsOrderSide\(set\.levels\?\.kind \?\? 'liq', 'short'\) === 'buy';\n\s+paintBand\(ctx, p, x0, W, \{ y: top, color: buysAbove \? p\.candleUp : p\.candleDown, .*?\{ y: bottom, color: buysAbove \? p\.candleDown : p\.candleUp,/);
+  const phone = read('src/app/panes/liq-pane.ts');
   assert.match(phone, /const verdict = liqRatioWords\(longs, shorts, alone\);\n\s+this\.#ratio\.textContent = verdict\.text;\n\s+this\.#ratio\.className = verdict\.side \? `liq-ratio \$\{verdict\.side\}` : 'liq-ratio';/);
 });
 
@@ -153,6 +158,7 @@ test('the phone Liq tab: "Balanced" under the boxes\' 2 %, never longs in the se
   assert.deepEqual(liqRatioWords(0, 0, false), { text: '', side: null });
   // The class each side takes: the falling colour for longs, the rising for shorts; take profits alone the other way round.
   const css = fs.readFileSync('src/app/mobile.css', 'utf8');
+  assert.match(css, /\.liq-ratio \{[^}]*color: var\(--text\);/, '"Balanced" in the text colour, not the muted line around it');
   assert.match(css, /\.liq-ratio\.long \{ color: var\(--candle-down\); \}/);
   assert.match(css, /\.liq-ratio\.short \{ color: var\(--candle-up\); \}/);
   assert.match(css, /\.liq-sum\.takes \.liq-usd\.long, \.liq-sum\.takes \.liq-ratio\.long \{ color: var\(--candle-up\); \}/);
