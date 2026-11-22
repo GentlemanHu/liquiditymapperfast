@@ -139,6 +139,32 @@ test('a window no book holds is the source\'s gap, not every book\'s: a 4-day so
   assert.deepEqual([newcomer.h.usualIn(['a', 'b', 'c'], T0 / STEP, end / STEP), newcomer.r?.n], [[0, 1], 630]);
 });
 
+test('a reading taken as shown is not ranked against windows unlike it: a large book back after a long outage (review round 2), healthy books still are', () => {
+  const end = T0 + 630 * STEP;
+  const history = (bigAt: (x: number) => boolean) => {
+    const h = new BandHistory('k', [], RADII); h.addBooks(['big', 'small']);
+    h.put(frame(['big', 'small'], T0, 630, (id, x) => id === 'small' ? 10 : bigAt(x) ? 15 : null), T0, end);
+    return h;
+  };
+  // big holds 60 % of the band and was out 200 windows (53 h): unusual, so the hold rule voids every window that holds it and only the outage
+  // counts. The reading now (both books, 25) would be the highest of those 200; the last windows held all void, so it has no rank at all.
+  const back = history(x => x < 200 || x >= 400);
+  assert.deepEqual(back.usualIn(['big', 'small'], T0 / STEP, end / STEP), [1]);
+  assert.equal(rankValue(back, 'ask', 0, end, 25, ['big', 'small']), null);
+  // Its coarse rank (a window total that passed the rule) is not touched by this.
+  assert.equal(rankValue(back, 'ask', 0, T0 + 300 * STEP, 10, ['big', 'small'], T0 + 300 * STEP), null, 'under 48 h of counted windows before it');
+  // Both books always there: both usual, every window counts, the reading ranks among all 630.
+  const healthy = history(() => true);
+  assert.equal(rankValue(healthy, 'ask', 0, end, 25, ['big', 'small'])?.n, 630);
+  // Half of the last eight held windows counting is enough: big out for the last four ranks as before (its usual windows do count).
+  const late = history(x => x < 626);
+  assert.equal(late.usualIn(['big', 'small'], T0 / STEP, end / STEP).length, 2);
+  assert.equal(rankValue(late, 'ask', 0, end, 25, ['big', 'small'])?.n, 626, '4 of the last 8 count');
+  const later = history(x => x < 625);
+  assert.equal(rankValue(later, 'ask', 0, end, 25, ['big', 'small']), null, '3 of the last 8 count');
+  assert.equal(rankValue(late, 'ask', 0, end, 10, ['big', 'small'], null, 1), null, 'a reading short of books is still not ranked');
+});
+
 test('whether a history can rank at all: a source whose own minutes began under 48 hours ago, known at once; a history read whole that holds fewer', () => {
   const NOW = T0 + 630 * STEP, h = new BandHistory('k', [], RADII);
   h.addBooks(['a']);
@@ -181,7 +207,9 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, keepBrief, /);
   // A source that can never reach the minimum (the public site's browser engine): once whole and still short, the card's rank in view as before
   // the history, no rank row and no room kept for one.
-  assert.match(depth, /const unranked = !liq && cannotRank\(history, whole, this\.hub\.source\.depthSince\?\.\(counted\) \?\? null, this\.hub\.sourceNow\(\)\);/);
+  assert.match(depth, /ruledOut = !liq && cannotRank\(null, false, this\.hub\.source\.depthSince\?\.\(counted\) \?\? null, this\.hub\.sourceNow\(\)\);/);
+  assert.match(depth, /const history = !liq && !ruledOut && \(pointed \|\| settings\.table\) \? this\.#bandHistory\.get\(counted, s\.radii\) : null;/, 'never asked where it cannot rank');
+  assert.match(depth, /const unranked = !liq && \(ruledOut \|\| cannotRank\(history, whole, null, this\.hub\.sourceNow\(\)\)\);/);
   assert.match(lower, /new DepthHistory\(\(ids, from, to, step\) => this\.hub\.source\.columns\(ids, from, to, step, true\), \(\) => this\.invalidate\(\), \(\) => this\.hub\.sourceNow\(\)\)/, 'the source\'s clock');
   assert.match(depth, /if \(unranked\) \{\n\s+const here = rows\[said\]!\.bid \+ rows\[said\]!\.ask;/);
   assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: settings\.units, coin, rank, of \}\);/);

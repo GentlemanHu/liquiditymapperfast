@@ -31,6 +31,8 @@ export const RANK_RECENT_MS = RANK_MIN_COVER_MS + 2 * 3_600_000;
 export const USUAL_SHARE = 0.9;
 /** A window counts only where the usual books hold at least this share of the band (the rest come and go). */
 export const USUAL_HOLD = 0.8;
+/** A reading taken as shown is ranked only where at least half of this many of the windows held just before it count (`rankValue`). */
+export const RANK_RECENT_CHECK = 8;
 /** The finest a column may be read and still be ranked as shown: a mean of up to this many milliseconds of minutes. */
 export const RANK_FINE_MS = 2 * 60_000;
 
@@ -216,6 +218,18 @@ export function rankValue(h: BandHistory, side: RankSide, j: number, t: number, 
   const step = h.step, nT = Math.floor(t / step), nLo = Math.max(h.n0, nT - Math.round(RANK_SPAN_MS / step)), usual = h.usualIn(among, nLo, nT);
   if (!usual.length || (present !== null && present < usual.length)) return null;
   const totals = h.totals(among, usual), all = totals.all[side], ok = totals.ok[side], k = h.k;
+  // A reading taken as shown (`at` null) counts the books present now. Where the windows just before it mostly did not count, it is not like those
+  // that did: a large book back after a long outage is unusual, the hold rule voids every window that holds it, and the windows left are the ones
+  // without it, so the reading would read as the highest of them (review round 2). At least half of the last few windows held must count.
+  if (at === null) {
+    const books = h.books(among);
+    let held = 0, counted = 0;
+    for (let m = nT - 1; m >= nLo && held < RANK_RECENT_CHECK; m--) {
+      const g = m - h.n0; if (g < 0 || g >= h.count || !books.some(b => h.present[b]![g])) continue;
+      held++; if (ok[g * k + j]) counted++;
+    }
+    if (counted * 2 < held) return null;
+  }
   let below = 0, equal = 0, n = 0, first = -1;
   for (let m = nLo; m < nT; m++) {
     const g = m - h.n0; if (g < 0 || g >= h.count) continue;

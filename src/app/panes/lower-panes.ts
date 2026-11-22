@@ -953,7 +953,10 @@ export class DepthPane extends TimePane {
     // A figure read finely (the books now, or a column of at most RANK_FINE_MS of minutes) is ranked as the table shows it, against the closing
     // minutes before its moment; a coarser view's column (a mean book, its inner bands spread thin by every move) is not, and there the newest
     // closing minute at or before the moment is ranked and said with its time.
-    const counted = liq ? [] : bookIds(state), history = !liq && (pointed || settings.table) ? this.#bandHistory.get(counted, s.radii) : null;
+    // A source whose own minutes began too recently to rank (the browser engine) is never asked for the history: an empty week and a window
+    // every 16 minutes, for nothing.
+    const counted = liq ? [] : bookIds(state), ruledOut = !liq && cannotRank(null, false, this.hub.source.depthSince?.(counted) ?? null, this.hub.sourceNow());
+    const history = !liq && !ruledOut && (pointed || settings.table) ? this.#bandHistory.get(counted, s.radii) : null;
     const inCoins = settings.units === 'coin', fine = live || (s.answer.stepMs ?? Infinity) <= RANK_FINE_MS;
     const rankSide = (b: 'bid' | 'ask'): RankSide => inCoins ? (b === 'bid' ? 'bidCoin' : 'askCoin') : b;
     // The moment ranked: the books now, or the column read (only where its books agreed on a price); in a coarser view the pointer's own moment
@@ -971,7 +974,7 @@ export class DepthPane extends TimePane {
     // A source that keeps less than the minimum can never rank (the public site's browser engine holds about a day of closing minutes, and the
     // long history's tiles are means): known from where its own minutes began, or once its history is whole and still that short, the card says
     // the band's rank in view as it did before the history, and the table keeps no rank row.
-    const unranked = !liq && cannotRank(history, whole, this.hub.source.depthSince?.(counted) ?? null, this.hub.sourceNow());
+    const unranked = !liq && (ruledOut || cannotRank(history, whole, null, this.hub.sourceNow()));
     // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
     const said = lit ? lit.j : top;
     if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
