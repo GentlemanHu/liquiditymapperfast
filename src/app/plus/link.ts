@@ -190,17 +190,23 @@ export interface LinkOptions { refusal(answer: LiqAnswer): boolean; now?: () => 
 
 /**
  * `read` with a member's Plus files read through the link (`linkable`): fetched from the link with no pass, and the answer given as it is
- * (a file, a 404, a 503, …) unless it is the gate's refusal. A refused link (it ran out, or the key behind it changed) is dropped and a new one
- * asked for once; a different one is tried once, and the same one again, or a second refusal, quiets the link for a while. That, no link, a
- * link on another origin than the file's, or one that cannot be reached, reads the file the old way with the pass, whose refusal then says
- * the pass is no good. A read without a pass is `read` itself, untouched.
+ * (a file, a 404, a 503, …) unless it is the gate's refusal, or a 403 with no JSON. A refused link (it ran out, or the key behind it changed)
+ * is dropped and a new one asked for once; a different one is tried once, and the same one again, or a second refusal, quiets the link for a
+ * while. That, no link, a link on another origin than the file's, or one that cannot be reached, reads the file the old way with the pass,
+ * whose refusal then says the pass is no good. A read without a pass is `read` itself, untouched.
  */
 export function withLink(read: LiqFetch, link: LinkSource, opts: LinkOptions): LiqFetch {
   const now = opts.now ?? Date.now;
   const get = async (pass: string): Promise<string | null> => { try { return await link.get(pass); } catch { return null; } };
-  /** A read of `rest` through `base`: its answer, `refused` (the gate's refusal), or `lost` (no answer). */
+  /**
+   * A read of `rest` through `base`: its answer, `refused` (the gate's refusal, or a 403 whose body is not JSON: a refusal cut short, or a
+   * firewall's page, is no file either, and the link may be a stale one; Sol, review round 3), or `lost` (no answer).
+   */
   const through = async (base: string, rest: string): Promise<LiqAnswer | 'refused' | 'lost'> => {
-    try { const answer = await read(base + rest, null); return opts.refusal(answer) ? 'refused' : answer; } catch { return 'lost'; }
+    try {
+      const answer = await read(base + rest, null);
+      return opts.refusal(answer) || (answer.status === 403 && answer.body === null) ? 'refused' : answer;
+    } catch { return 'lost'; }
   };
   const viaLink = async (url: string, pass: string, at: { origin: string; rest: string }): Promise<LiqAnswer> => {
     const base = await get(pass);

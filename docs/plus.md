@@ -98,10 +98,10 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   link instead, `https://<levels host>/v1/k/<token>/…`, with no pass: no CORS preflight, and one copy at the edge for every member,
   which answers an unchanged file with a 304. The Worker hands the link to a pass (`GET /v1/link`: `{ base, until, now }`); the token
   changes every 12 hours, and the page keeps the link in this tab's memory only, until two minutes before its slot ends by the server's
-  clock (one that arrives with two minutes or less left, until its slot ends), asking for it one request at a time. A refused link is
-  replaced once; the same link again, a second refusal, no link (a failed request stops the asking for five minutes, a link that ran out on
-  its way for 30 seconds, a refused pass for one minute), a file on another origin (a local stand-in) or a link that cannot be reached
-  reads the file the old way, with the pass.
+  clock (one that arrives with two minutes or less left, until its slot ends), asking for it one request at a time. A refused link (the
+  gate's refusal, or a 403 whose body is not JSON: one cut short, or a firewall's page) is replaced once; the same link again, a second
+  refusal, no link (a failed request stops the asking for five minutes, a link that ran out on its way for 30 seconds, a refused pass for
+  one minute), a file on another origin (a local stand-in) or a link that cannot be reached reads the file the old way, with the pass.
 
 `FREE_DAYS` (7) is one constant in `src/app/plus/config.ts`, and one variable of the server's. A day file is free when its UTC day starts
 at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.

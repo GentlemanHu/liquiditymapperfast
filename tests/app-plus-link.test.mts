@@ -123,7 +123,7 @@ test('a read without a pass, or of a file no link serves, is the read itself, at
   assert.equal(s.asks.length, 0);
 });
 
-test('a member\'s Plus file is read from the link without the pass, and whatever the link answers but the gate\'s refusal is the read\'s answer', async () => {
+test('a member\'s Plus file is read from the link without the pass, and whatever the link answers but a refusal (the gate\'s, or a 403 with no JSON) is the read\'s answer', async () => {
   const c = clock(), s = server(() => grant(A, c.t + 3 * DAY_MS));
   const answers: Record<string, LiqAnswer> = {
     [`${A}plus/btc/triggers.json`]: OK, [`${A}plus/btc/triggers-groups.json`]: { status: 404, body: null },
@@ -135,7 +135,7 @@ test('a member\'s Plus file is read from the link without the pass, and whatever
   assert.deepEqual(await read(`${LEVELS}/v1/plus/btc/triggers-groups.json`, PASS), { status: 404, body: null }, 'a 404 is the file\'s answer');
   assert.deepEqual(await read(GROUPS, PASS), { status: 503, body: null, retryAfter: 120 }, 'a 503 and its wait');
   assert.deepEqual(await read(`${LEVELS}/v1/btc/liquidation-history/2026-10-01.json`, PASS), { status: 200, body: { rows: [] } }, 'a paid history day');
-  assert.deepEqual(await read(`${LEVELS}/v1/plus/btc/trigger-history/2026-11-20.json`, PASS), { status: 403, body: { error: 'forbidden' } }, 'another 403 (a firewall\'s) is no refusal');
+  assert.deepEqual(await read(`${LEVELS}/v1/plus/btc/trigger-history/2026-11-20.json`, PASS), { status: 403, body: { error: 'forbidden' } }, 'a 403 in JSON that is not the gate\'s is no refusal');
   assert.deepEqual(s.asks, [{ url: `${API}/link`, pass: PASS }], 'one link for all of them');
   assert.ok(svc.reads.every(r => r.pass === null && r.url.startsWith(A)), 'no pass sent, nothing read the old way');
   // A file on another origin than the link's (a local stand-in, `?levels=`): the old way with the pass.
@@ -368,13 +368,13 @@ const brokenBody = (): ReadableStream<Uint8Array> => new ReadableStream({ start(
  * The page's `fetch` answering as `answer` says (`broken`: the headers, then a body that fails), every request noted with its Authorization
  * header and cache mode, until `restore`.
  */
-function stubFetch(answer: (url: string) => { status: number; body?: unknown; broken?: true; headers?: Record<string, string> }) {
+function stubFetch(answer: (url: string) => { status: number; body?: unknown; text?: string; broken?: true; headers?: Record<string, string> }) {
   const real = globalThis.fetch, seen: { url: string; auth: string | null; cache: RequestCache | undefined }[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     seen.push({ url, auth: new Headers(init?.headers).get('authorization'), cache: init?.cache });
     const a = answer(url);
-    return new Response(a.broken ? brokenBody() : JSON.stringify(a.body ?? null), { status: a.status, ...(a.headers ? { headers: a.headers } : {}) });
+    return new Response(a.broken ? brokenBody() : a.text ?? JSON.stringify(a.body ?? null), { status: a.status, ...(a.headers ? { headers: a.headers } : {}) });
   }) as typeof fetch;
   return { seen, count: (url: string): number => seen.filter(r => r.url === url).length, restore: (): void => { globalThis.fetch = real; } };
 }
@@ -417,6 +417,21 @@ test('a linked file whose body fails after its headers is no answer: the file is
     assert.deepEqual(await read(TRIGGERS, PASS), { status: 200, body: { v: 1 } });
     assert.deepEqual(stub.seen.map(r => [r.url, r.auth]), [[`${API}/link`, `Bearer ${PASS}`], [`${A}plus/btc/triggers.json`, null], [TRIGGERS, `Bearer ${PASS}`]]);
   } finally { stub.restore(); }
+});
+
+test('a linked 403 whose body is not JSON (a refusal cut short, a firewall\'s page) is no file: taken as the link refused, the file is read the old way, with the pass (Sol, review round 3)', async () => {
+  for (const kind of ['cut short', 'a firewall\'s page']) {
+    const stub = stubFetch(url => url === `${API}/link` ? { status: 200, body: { base: A, until: Date.now() + 6 * HOUR, now: Date.now() } }
+      : url.startsWith(A) ? (kind === 'cut short' ? { status: 403, broken: true } : { status: 403, text: '<!doctype html><title>Access denied</title>' })
+      : { status: 200, body: { v: 1 } });
+    try {
+      const read = withLink(webFetch, new DataLink(() => API), { refusal: isRefusal });
+      assert.deepEqual(await read(TRIGGERS, PASS), { status: 200, body: { v: 1 } }, kind);
+      // A new link is asked for once; the same one comes back, so the link rests and the file is read with the pass.
+      assert.deepEqual(stub.seen.map(r => [r.url, r.auth]),
+        [[`${API}/link`, `Bearer ${PASS}`], [`${A}plus/btc/triggers.json`, null], [`${API}/link`, `Bearer ${PASS}`], [TRIGGERS, `Bearer ${PASS}`]], kind);
+    } finally { stub.restore(); }
+  }
 });
 
 test('a body that fails after its headers makes webFetch reject (no answer, as its contract says), and the live levels and the history take it as a failed read (Sol, review 2026-11-21)', async () => {
