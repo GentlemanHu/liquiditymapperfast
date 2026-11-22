@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PressGuard, listAfterPress, placeTip } from '../src/app/tip.ts';
+import { PressGuard, placeTip } from '../src/app/tip.ts';
 import { HELP } from '../src/app/help.ts';
 
 const viewport = { w: 1000, h: 700 };
@@ -61,15 +61,12 @@ test('while the pressed control\x27s own list is open, the guard holds wherever 
   assert.equal(guard.over('source'), false, 'back over the dropdown with its list open: no tip over the list');
   assert.equal(guard.over('bars'), true, 'another control may show its tip');
   assert.equal(guard.over('source'), false, 'and the dropdown still shows none');
+  guard.key();
+  assert.equal(guard.over('source'), false, 'a key while its list is open (the arrows in it) does not end the guard');
   open = false;
   assert.equal(guard.over(null), false, 'the list closed, over the map: the guard ends');
   assert.equal(guard.over('source'), true);
+  guard.press('source'); open = true; guard.key(); open = false; guard.key();
+  assert.equal(guard.focus('source'), true, 'a key once its list is closed ends it');
 });
 
-test('a press on a dropdown opens its list, a second press on it closes it, a press on anything else closes any', () => {
-  assert.equal(listAfterPress(null, 'source'), 'source', 'pressed: its list opens');
-  assert.equal(listAfterPress('source', 'source'), null, 'pressed again: it closes');
-  assert.equal(listAfterPress('source', 'bands'), 'bands', 'another dropdown pressed: its list is the open one');
-  assert.equal(listAfterPress('source', null), null, 'a press on the map: the list closes');
-  assert.equal(listAfterPress(null, null), null);
-});
