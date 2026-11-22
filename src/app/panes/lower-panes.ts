@@ -23,7 +23,7 @@ import { flowHistoryRows } from '../size-history/switch.ts';
 import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
-import { barAt, columnAt, depthCardLines, depthColumns, depthKey, liqCardLines, liqColumnRows, liqReading, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
+import { barAt, columnAt, depthCardLines, depthColumns, depthKey, depthRankBrief, liqCardLines, liqColumnRows, liqReading, liqTakesLine, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
 import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
 import { TAKE_DASH, type LevelsKind } from '../liq-levels.ts';
 import { bidAskKey, depthOrderSides, levelsOrderSide, type DepthSides } from '../order-side.ts';
@@ -941,11 +941,12 @@ export class DepthPane extends TimePane {
       foot = Number.isFinite(readTime) ? (pointed && !live ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';
     }
     // The card of the moment read, whose lines the rows do not say are the table's too: the watched band's balance and rank, the take profits.
-    let card: InfoLine[] | null = null;
+    let card: InfoLine[] | null = null, brief: InfoLine[] = [];
     if (!pointed && !settings.table) { /* neither the card nor the table's lines are wanted */ }
     else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
       if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
+      if (readRow && tk) brief = [liqTakesLine(tk, settings.units, coin)];
     }
     // Where each band's reading stands in its own history (depth-history.ts): the order book's, once the table or a card wants it, at the moment
     // the table reads, in the units shown.
@@ -970,26 +971,34 @@ export class DepthPane extends TimePane {
     // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
     const said = lit ? lit.j : top;
     // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
-    if (!liq && (pointed || settings.table) && (live || readX >= 0))
-      card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole } });
-    // Under a heading naming the band they speak of. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
-    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`, fine ? ranks : [], lit ? lit.j : -1) : null;
-    if (pointed && card && !placed?.complete) this.#lines = card;
+    if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
+      const placeOf = { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole };
+      card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: placeOf });
+      brief = depthRankBrief(s.radii[said]!, placeOf);
+    }
+    // Under a heading naming the band they speak of; where they do not fit under the rows (a short pane), the one row in brief: the band's place in its
+    // history, or the take profits beside the liquidation levels. The table keeps that row's room in every frame where it has one to say at all (the
+    // book's history always, take profits where the view holds them), so a moment without one does not move its rows.
+    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card)), keepBrief = liq ? !!liqHeld?.takeRows?.length : true;
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, brief, keepBrief, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`, fine ? ranks : [], lit ? lit.j : -1) : null;
+    // With Table on the pane shows no card (Karl, 2026-11-22: a table selected, no pop-up; the pop-up only with Table off): the card only where no table
+    // is drawn, Table off or no room for one, even beside a table too short for every line (other panes keep theirs there, pane-table.ts).
+    if (pointed && card && !placed) this.#lines = card;
   }
 
   /**
    * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them, the card's
-   * `lines` the rows do not say under them and the time read under those. The header reads the watched band; where even a row a band does not fit, the
-   * table is not drawn and the card says it instead. Where it went, or null (complete: every column and every line, so the card is not needed).
+   * `lines` the rows do not say under them (where those do not fit, the one row of `brief`, whose room the rows keep with `keepBrief`) and the time read
+   * under those. The header reads the watched band; where even a row a band does not fit, the table is not drawn and the card says it instead. Where it
+   * went, or null (no table: the card's place).
    * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with); `restKey`: the source, the band and the
    * market the table is of (`TableSpec.restKey`).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], brief: readonly InfoLine[], keepBrief: boolean, restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', titles[0], titles[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
-      heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, restKey,
+      heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, brief, briefRoom: keepBrief, restKey,
     });
   }
 

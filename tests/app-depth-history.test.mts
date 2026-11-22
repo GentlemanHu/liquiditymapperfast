@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BandHistory, DepthHistory, RANK_MIN_COVER_MS, RANK_RECENT_MS, RANK_SPAN_MS, rankAt, rankKind, rankValue, SETTLE_MS, USUAL_SHARE } from '../src/app/depth-history.ts';
+import fs from 'node:fs';
+import { BandHistory, DepthHistory, RANK_MIN_COVER_MS, RANK_RECENT_MS, RANK_SPAN_MS, rankAt, rankKind, rankValue, SETTLE_MS, USUAL_SHARE, type BandRank } from '../src/app/depth-history.ts';
+import { depthRankBrief, liqCardLines, liqTakesLine, type DepthHistoryLines } from '../src/app/panes/pane-cards.ts';
+import { clock } from '../src/app/format.ts';
 import type { ColumnsFrame } from '../src/shared/columns.ts';
 
 const STEP = 16 * 60_000, HOUR = 3_600_000, DAY = 24 * HOUR, RADII = [0.01];
@@ -99,6 +102,34 @@ test('the words count the readings strictly lower or higher, rounded down, never
   // Astra's tie (round 1): none lower, 7 equal, 193 higher. Below 96 %, not 98.
   assert.deepEqual(rankKind(r(0, 7, 193)), { kind: 'below', pct: 96, extreme: true });
   assert.deepEqual(rankKind(r(10, 90, 0)), { kind: 'middle', pct: 50, extreme: false });
+});
+
+test('a short table\'s one row (Karl, 2026-11-22): the band, or in a coarse view the time of the book ranked, then each side\'s place without the span; bold past the 5th or 95th percentile', () => {
+  const r = (below: number, equal: number, above: number, at: number | null = null): BandRank => ({ p: (below + equal / 2) / (below + equal + above), n: below + equal + above, below, equal, above, coverMs: 7 * DAY, value: 1, at });
+  const brief = (bid: BandRank | null, ask: BandRank | null, more: Partial<DepthHistoryLines> = {}) => depthRankBrief(0.00625, { bid, ask, loading: false, whole: true, ...more });
+  assert.deepEqual(brief(r(13, 0, 87), r(62, 0, 38)), [{ label: '±0.63%', text: 'bids below 87 % · asks above 62 %', bold: false }]);
+  const t = Date.UTC(2026, 10, 22, 15, 12);
+  assert.deepEqual(brief(r(8, 0, 92, t), r(13, 0, 87, t)), [{ label: clock(t), text: 'bids below 92 % · asks below 87 %', bold: false }], 'a coarse view names the book ranked');
+  assert.deepEqual(brief(r(50, 0, 0), r(10, 90, 0)), [{ label: '±0.63%', text: 'bids highest · asks in the middle', bold: true }]);
+  assert.equal(brief(r(0, 0, 50), r(3, 0, 97))[0]!.text, 'bids lowest · asks below 97 %');
+  assert.equal(brief(r(40, 0, 60), r(4, 0, 96))[0]!.bold, true, 'one side past its 5th percentile');
+  assert.equal(brief(null, null, { loading: true, whole: false })[0]!.text, 'bids … · asks …');
+  assert.equal(brief(null, null, { whole: false })[0]!.text, 'bids … · asks …', 'older days still to come');
+  assert.equal(brief(null, r(62, 0, 38))[0]!.text, 'bids – · asks above 62 %');
+  assert.deepEqual(depthRankBrief(0.05, null), []);
+  // The liquidation levels' row is the card's take-profits line, as the card says it.
+  const takes = { bid: 1.5e6, ask: 4.2e6 }, said = liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid: 5, ask: 9 }], watched: 0, units: 'usd', coin: 'BTC', takes }).find(l => l.label === liqTakesLine(takes, 'usd', 'BTC').label)!;
+  assert.deepEqual({ label: said.label, text: said.text }, liqTakesLine(takes, 'usd', 'BTC'));
+});
+
+test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card only where no table is drawn; a short table says the band\'s place, or the take profits, in one row', () => {
+  const lower = fs.readFileSync('src/app/panes/lower-panes.ts', 'utf8').replace(/\r\n/g, '\n');
+  const depth = lower.slice(lower.indexOf('export class DepthPane '), lower.indexOf('  #drawTable(rows: readonly'));
+  assert.match(depth, /if \(pointed && card && !placed\) this\.#lines = card;/);
+  assert.doesNotMatch(depth, /!placed\?\.complete/);
+  assert.match(depth, /brief = depthRankBrief\(s\.radii\[said\]!, placeOf\);/);
+  assert.match(depth, /if \(readRow && tk\) brief = \[liqTakesLine\(tk, settings\.units, coin\)\];/);
+  assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, /);
 });
 
 test('the pane\'s history asks for a new book\'s recent hours first, then its older days, then each closed window; new books alone; new bands afresh', async () => {

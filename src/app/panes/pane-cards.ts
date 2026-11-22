@@ -227,6 +227,30 @@ export function depthCardLines(h: { time: number; bands: readonly { r: number; b
 }
 
 /**
+ * Where the band stands in its history in one row, for a table too short for the Depth card's lines (Karl, 2026-11-22: with Table on the pane shows no
+ * card): at the left the band, or the time of the book ranked where a coarser view could not rank the figure shown (the band is the lit row then), and
+ * each side's place without the span, which the lines and the help say. Bold where a side is past its 5th or 95th percentile; none without a history.
+ */
+export function depthRankBrief(band: number, history: DepthHistoryLines | null | undefined): InfoLine[] {
+  if (!history) return [];
+  const place = (r: BandRank | null): string => {
+    if (!r) return history.loading || !history.whole ? '…' : '–';
+    const k = rankKind(r);
+    return k.kind === 'highest' ? t('highest') : k.kind === 'lowest' ? t('lowest') : k.kind === 'middle' ? t('in the middle')
+      : k.kind === 'above' ? t('above {pct} %', { pct: k.pct }) : t('below {pct} %', { pct: k.pct });
+  };
+  const { bid, ask } = history, at = (bid ?? ask)?.at;
+  return [{ label: at != null ? clock(at) : `±${bandText(band)}%`, text: t('bids {bids} · asks {asks}', { bids: place(bid), asks: place(ask) }),
+    bold: [bid, ask].some(r => !!r && rankKind(r).extreme) }];
+}
+
+/** The watched band's take profits beside the liquidation levels (those above the price · those below), as the card says them and a short table's row. */
+export function liqTakesLine(takes: { bid: number; ask: number }, units: 'usd' | 'coin', coin: string): InfoLine {
+  const fmt = (value: number): string => units === 'coin' ? `${coinFigures.format(value)} ${coin}` : money(value);
+  return { label: t('Take profits above / below'), text: `${fmt(takes.ask)} · ${fmt(takes.bid)}` };
+}
+
+/**
  * One moment of the Depth pane's Liquidation levels where its table is not drawn: the snapshot in force (when its positions stood), each band's
  * longs and shorts, the watched band in bold with their difference. Where the money sits, not what was or will be liquidated. The larger side is
  * named in the colour of what its orders would do (order-side.ts: the longs' sell colour, a long being closed by a sell), as the table's ×. The
@@ -249,7 +273,7 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
     const ratio = ratioLine(w.bid, w.ask, kind === 'takes' ? [t('bids'), t('asks')] : [t('longs'), t('shorts')], colors); if (ratio) lines.push({ ...ratio, table: false });
   }
   // The take profits of the watched band: the sells that close longs above the price, the buys that close shorts below; never added to the rest.
-  if (h.takes) lines.push({ label: t('Take profits above / below'), text: `${fmt(h.takes.ask)} · ${fmt(h.takes.bid)}`, rule: true });
+  if (h.takes) lines.push({ ...liqTakesLine(h.takes, h.units, h.coin), rule: true });
   lines.push({ table: false, text: kind === 'takes' ? t('Take profits of shorts · longs within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will fill.')
     : kind === 'stops' ? t('Stops of longs · shorts within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will trigger.')
     : kind === 'both' ? t('Longs · shorts that would be liquidated or stopped out within each distance of the price, from HyperTracker\'s snapshot of Hyperliquid\'s BTC positions and orders: where the money sits, not what will happen.')

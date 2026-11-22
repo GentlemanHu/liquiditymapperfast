@@ -459,6 +459,51 @@ test('the card\'s lines hang under the foot where the pane has room below the ro
   assert.deepEqual([bare(109), bare(87), bare(64)], [[true, true, true], [false, true, false], [false, false, false]]);
 });
 
+test('a table too short for its card\'s lines says their brief in one row instead (Depth, Karl 2026-11-22), whole or not at all, never where the lines fit; at rest the room held is the brief\'s where only it fits', () => {
+  const brief: InfoLine[] = [{ label: '±5%', text: 'bids below 87 % · asks below 62 %' }];
+  const r = (h: number, w = 400 + 60 + 230): TableRoom => room({ w, h });
+  const s = { ...spec(), lines: OI_LINES, brief };
+  // Tall: the lines, complete; the brief is not said.
+  const tall = placeTable(measure, r(300), s)!;
+  assert.deepEqual([tall.complete, tall.summary.map(x => x.label ?? x.text)], [true, ['Open interest', 'Δ', '4 of 6 venues', 'New longs']]);
+  assert.equal(restLift(measure, r(300), s, OI_LINES, brief), 69, 'lines that fit at rest set the room as before');
+  // 140 px: rows of 105; the four lines (69) never fit, the brief (a hairline and a row, 20) does once the rows stand in the middle with it at rest.
+  const lift = restLift(measure, r(140), s, OI_LINES, brief), short = placeTable(measure, r(140), s, lift)!;
+  assert.deepEqual([lift, short.y0, short.complete, short.summary.map(x => [x.label, x.text]), short.summaryH], [20, 8, false, [['±5%', 'bids below 87 % · asks below 62 %']], 20]);
+  assert.deepEqual(rowsBlock(short), rowsBlock(placeTable(measure, r(140), { ...spec(), lines: [] }, lift)), 'the rows where the room held puts them, brief or none');
+  // Without that room the rows stand in the middle alone (18 to 123) and it does not fit under them; nor across a strip narrower than it; nor at all in 120.
+  assert.equal(placeTable(measure, r(140), s)!.summary.length, 0);
+  assert.equal(placeTable(measure, r(140, 400 + 60 + 150), s, lift)!.summary.length, 0);
+  assert.equal(restLift(measure, r(120), s, OI_LINES, brief), 0);
+  // The pane's table takes the brief's room at rest itself, and says it while a pointer reads another moment (its own brief).
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const table = new PaneTable(host, null, () => 0);
+  const draw = (over: Partial<TableRoom>, b: InfoLine[]) => table.draw(ctx, { panel: 'P', line: 'L', text: 'T', muted: 'M' }, { ...r(140), ...over }, { ...spec(), foot: 'then', focus: -1, lines: OI_LINES, brief: b });
+  const still = draw({ rest: true }, brief)!, moved = draw({ pointing: true }, [{ label: '12:12', text: 'bids below 92 % · asks below 87 %' }])!;
+  assert.deepEqual([still.y0, still.summary.length, moved.y0, moved.summary[0]?.label], [8, 1, 8, '12:12']);
+});
+
+test('a table that keeps room for its brief (Depth) closes its rows up for it and stands with that room under it in every frame: the row fits a 105 px pane', () => {
+  const brief: InfoLine[] = [{ label: '±5%', text: 'bids below 87 % · asks below 62 %' }];
+  const r = (h: number): TableRoom => room({ w: 400 + 60 + 230, h });
+  const kept = { ...spec(), lines: OI_LINES, brief, briefRoom: true };
+  // 105 px: the titles, five rows and the foot at 12 px (84) and the brief (a hairline and a row, 17) from 2 to 103, with no frame at rest before.
+  const at105 = placeTable(measure, r(105), kept)!;
+  assert.deepEqual([at105.rowH, at105.titles, at105.foot, at105.y0, at105.summary.map(x => x.label), at105.complete], [12, true, true, 2, ['±5%'], false]);
+  // A moment with no brief leaves the rows where they stand; one px shorter there is no room for it, and the rows are sized by themselves (14 px).
+  assert.equal(placeTable(measure, r(105), { ...kept, brief: [] })!.y0, 2);
+  const at104 = placeTable(measure, r(104), kept)!;
+  assert.deepEqual([at104.rowH, at104.summary.length], [14, 0]);
+  // The rows close up only as far as the brief needs: 13 px from 113, 14 from 121, 15 from 129; 140 says it with no frame at rest before either.
+  assert.deepEqual([112, 113, 120, 121, 128, 129].map(h => placeTable(measure, r(h), kept)!.rowH), [12, 13, 13, 14, 14, 15]);
+  assert.deepEqual(placeTable(measure, r(140), kept)!.summary.map(x => x.label), ['±5%']);
+  // A tall pane says the lines and keeps its rows' height; another table (no briefRoom) is sized by its rows alone, as before.
+  assert.deepEqual([placeTable(measure, r(300), kept)!.rowH, placeTable(measure, r(300), kept)!.complete], [15, true]);
+  assert.deepEqual([placeTable(measure, r(105), { ...spec(), lines: OI_LINES, brief })!.rowH, placeTable(measure, r(105), { ...spec(), lines: OI_LINES, brief })!.summary.length], [14, 0]);
+});
+
 test('the rows never move for the card\'s lines: two moments with more lines and fewer, or none, put them in the same place', () => {
   // Funding on Hyperliquid: an old hour says three lines, the newest (the pointer gone onto the table) six. The rows a click chooses stay put.
   const three: InfoLine[] = [{ text: 'Hyperliquid', bold: true }, { label: 'Each settlement', text: '+0.00041% / 1 h' }, { label: 'Settled at', text: 'Nov 21 09:00', color: 'muted' }];

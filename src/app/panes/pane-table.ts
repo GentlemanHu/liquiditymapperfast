@@ -15,7 +15,8 @@ import { layoutInfo, type InfoColor, type InfoLine, type InfoRow } from '../info
  * reads the newest) shifts nothing a row can be clicked on (review 2026-11-21); the columns and the place across are what they are without any lines. A
  * pane hides its hover card only beside a table that is complete (`TablePlace.complete`: its titles, its foot, the columns the card needs and every line),
  * since that table says all the card would (Karl, 2026-11-21: the card had gone wherever a table was drawn, and with it what only the card said); beside a
- * partial table, with Table off, or with no table, the card is there.
+ * partial table, with Table off, or with no table, the card is there. The Depth pane alone hides its card wherever its table is drawn (Karl, 2026-11-22:
+ * with Table on, no pop-up; the pop-up only with Table off), a short pane saying in one row the one thing only the lines said there (`TableSpec.brief`).
  */
 
 /** One cell: its words and, where it has one, its colour (else the text colour). */
@@ -52,6 +53,18 @@ export interface TableSpec {
    * None, or empty, where the rows say all the card does.
    */
   lines?: readonly InfoLine[];
+  /**
+   * The lines in brief: said in place of `lines` where those do not fit under the rows (a short pane), laid out as they are and, like them, whole or
+   * not at all; a table that says them is not complete. The Depth pane's one row for the band's rank, or for the take profits (Karl, 2026-11-22:
+   * with Table on that pane shows no card, so a short pane says the one thing only its lines said in one row).
+   */
+  brief?: readonly InfoLine[];
+  /**
+   * Whether the table keeps room under its rows for one row of `brief` (a hairline and a row): its rows close up for it first (down to 12 px, with
+   * their titles and foot) where the pane holds them and it, and stand in the middle with that room under them in every frame. Set by the table, never
+   * by the moment (a moment with no brief must not move the rows): the Depth pane's, so its rank row has a place in the pane's usual height.
+   */
+  briefRoom?: boolean;
   /**
    * The fewest columns a complete table keeps: those that say something the card says (Funding's APR and premium, Long/Short's shares, Depth's
    * bands and ×), by default all of them. A table whose card's figures are all in its lines (Open Interest, the Liquidity Tracker and Delta, whose
@@ -150,7 +163,7 @@ export function ratioCell(first: number, second: number, p: Pick<Palette, 'bid' 
 }
 
 type Measure = (text: string, bold?: boolean) => number;
-type PlaceSpec = Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'cardCols'>;
+type PlaceSpec = Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'lines' | 'brief' | 'briefRoom' | 'cardCols'>;
 
 /**
  * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face). The rows
@@ -160,37 +173,48 @@ type PlaceSpec = Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'li
  * (`restLift`), taken as it is, so that a table and its lines stand in the middle at rest (Karl, 2026-11-21: with its lines under it a table stood low)
  * and nothing of the moment read (its lines, its figures' widths and so its columns) moves the rows; kept inside the pane. The lines go under the foot
  * where the pane has room below and, beside the plot, the strip (on a plate, 60 % of the plot) has room across: as wide as the widest one that does not
- * wrap and never narrower than the rows, their sentences wrapped to that. Complete: the titles, the foot and the columns the card needs (`cardCols`),
- * with every line.
+ * wrap and never narrower than the rows, their sentences wrapped to that; where they do not fit, the lines in brief (`TableSpec.brief`) the same way.
+ * Complete: the titles, the foot and the columns the card needs (`cardCols`), with every line.
  */
 export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, lift = 0): TablePlace | null {
   const at = rowsIn(measure, room, spec);
   if (!at) return null;
-  const { rowH, titles, foot, cols, left, plate, widths, width, height, framed, under } = at, lines = spec.lines ?? [];
-  const y0 = lift > 0 ? Math.max(0, Math.round(room.h / 2 - (height + lift) / 2)) : Math.round(room.h / 2 - height / 2);
+  const { rowH, titles, foot, cols, left, plate, widths, width, height, framed, under, kept } = at, lines = spec.lines ?? [];
+  // A table that keeps room for its brief stands with at least that room under it, whatever stood at rest (`TableSpec.briefRoom`).
+  const under0 = Math.max(lift, kept ? SEP + rowH : 0);
+  const y0 = under0 > 0 ? Math.max(0, Math.round(room.h / 2 - (height + under0) / 2)) : Math.round(room.h / 2 - height / 2);
   const first = y0 + (titles ? rowH : 0), rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
   const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, widths: widths.slice(0, cols), summary: [], summaryW: width, summaryH: 0 };
   if (!lines.length || !framed) return { ...rowsOnly, complete: framed && !lines.length };
-  const laid = under(lines);
-  if (!laid || y0 + height + laid.summaryH > room.h - 2) return { ...rowsOnly, complete: false };
-  return { ...rowsOnly, ...laid, complete: true };
+  const fits = (shown: readonly InfoLine[] | undefined): ReturnType<typeof under> => {
+    const laid = shown?.length ? under(shown) : null;
+    return laid && y0 + height + laid.summaryH <= room.h - 2 ? laid : null;
+  };
+  const laid = fits(lines);
+  if (laid) return { ...rowsOnly, ...laid, complete: true };
+  const brief = fits(spec.brief);
+  return brief ? { ...rowsOnly, ...brief, complete: false } : { ...rowsOnly, complete: false };
 }
 
 /**
  * How much room a table keeps under its rows so that they and `rest`, the lines it says at rest, stand in the middle of the pane together: the height
  * those lines take where they would be drawn with the rows so placed (the titles, the foot, the columns the card needs, room across and in the height),
- * else 0. `PaneTable` works it out at rest only and holds it; `placeTable` takes it as it is.
+ * else the height their brief takes (`restBrief`, `TableSpec.brief`) where that is drawn instead, else 0. `PaneTable` works it out at rest only and
+ * holds it; `placeTable` takes it as it is.
  */
-export function restLift(measure: Measure, room: TableRoom, spec: PlaceSpec, rest: readonly InfoLine[]): number {
+export function restLift(measure: Measure, room: TableRoom, spec: PlaceSpec, rest: readonly InfoLine[], restBrief: readonly InfoLine[] = []): number {
   const at = rowsIn(measure, room, spec);
-  return at ? liftUnder(at, room, rest) : 0;
+  return at ? liftUnder(at, room, rest, restBrief) : 0;
 }
 
 /** `restLift` for rows already placed. */
-function liftUnder(at: NonNullable<ReturnType<typeof rowsIn>>, room: TableRoom, rest: readonly InfoLine[]): number {
-  const laid = at.framed && rest.length ? at.under(rest) : null;
-  return laid && leaves(room, at.height, laid.summaryH) ? laid.summaryH : 0;
+function liftUnder(at: NonNullable<ReturnType<typeof rowsIn>>, room: TableRoom, rest: readonly InfoLine[], brief: readonly InfoLine[] = []): number {
+  for (const shown of [rest, brief]) {
+    const laid = at.framed && shown.length ? at.under(shown) : null;
+    if (laid && leaves(room, at.height, laid.summaryH)) return laid.summaryH;
+  }
+  return 0;
 }
 
 /** Whether rows `height` px high, centred with `lift` px under them, stand inside the pane. */
@@ -202,8 +226,10 @@ const leaves = (room: TableRoom, height: number, lift: number): boolean => Math.
  */
 function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
   const k = spec.rows.length, n = spec.heads.length;
-  let rowH = 0, titles = true, foot = true;
-  fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
+  let rowH = 0, titles = true, foot = true, kept = false;
+  // Room kept for the brief: the titles, the rows, the foot, a hairline and one row more, closed up together where they fit (`TableSpec.briefRoom`).
+  if (spec.briefRoom) for (const h of ROW_HEIGHTS) if ((k + 3) * h + SEP + 4 <= room.h) { rowH = h; kept = true; break; }
+  if (!rowH) fit: for (const [withTitles, withFoot] of [[true, true], [false, true], [false, false]] as const) {
     for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
   }
   if (!rowH) return null;
@@ -234,7 +260,7 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
     // The first line's hairline is the one over them.
     return { summary, summaryW, summaryH: SEP + summary.length * rowH + summary.filter((row, i) => row.rule && i > 0).length * RULE };
   };
-  return { rowH, titles, foot, cols, left, plate, widths, width: width(cols), height, framed, under };
+  return { rowH, titles, foot, cols, left, plate, widths, width: width(cols), height, framed, under, kept: kept && framed };
 }
 
 /** The heavier face of a canvas font ("11px sans" -> "600 11px sans"), for the card's bold lines. */
@@ -406,7 +432,7 @@ export class PaneTable {
     const lines = spec.lines ?? [], now = this.now(), rows = rowsIn(measure, { ...room, pointing: true }, spec);
     const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${spec.restKey ?? ''}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; this.#misfit = null; }
-    const lift = rows ? liftUnder(rows, room, lines) : 0, said = this.#saying;
+    const lift = rows ? liftUnder(rows, room, lines, spec.brief ?? []) : 0, said = this.#saying;
     if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
     this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
     const stood = this.#stood;
