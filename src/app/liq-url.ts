@@ -68,10 +68,11 @@ export function readLiqLevels(saved: unknown): LiqLevelSettings {
 }
 
 /**
- * The levels service's public address: hlm-levels on hiverust behind a Cloudflare tunnel (2026-11-01). Empty would mean no service, and then the
- * Chart deck has no Liquidation levels button.
+ * The levels service's public address: hlm-levels behind a Cloudflare tunnel (2026-11-01; on this site's own domain since 2026-11-22, the
+ * hiverust.dev name serving the same files until older pages are gone). Empty would mean no service, and then the Chart deck has no
+ * Liquidation levels button.
  */
-export const LIQ_LEVELS_URL = 'https://levels.hiverust.dev/v1/btc/liquidations.json';
+export const LIQ_LEVELS_URL = 'https://levels.liquiditymapper.com/v1/btc/liquidations.json';
 
 let read: { search: string; url: string } | null = null;
 

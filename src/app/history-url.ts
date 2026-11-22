@@ -1,9 +1,9 @@
 /**
- * Where the recorded history is read (hlm-history on hiverust behind a Cloudflare tunnel, 2026-11-02): the address of the coin's folder, with
- * `latest.json` and one file per hour under it. Empty means no service: the page records what it sees from the moment it opens, as it always
- * did.
+ * Where the recorded history is read (hlm-history behind a Cloudflare tunnel, 2026-11-02; on this site's own domain since 2026-11-22, the
+ * hiverust.dev name serving the same files until older pages are gone): the address of the coin's folder, with `latest.json` and one file
+ * per hour under it. Empty means no service: the page records what it sees from the moment it opens, as it always did.
  */
-export const HISTORY_BASE = 'https://history.hiverust.dev/v1';
+export const HISTORY_BASE = 'https://history.liquiditymapper.com/v1';
 
 /**
  * The coins the service records (its folders are named by them, in lower case): BTC with its books and trade side, the others their trade

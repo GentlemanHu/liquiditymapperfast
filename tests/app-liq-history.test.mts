@@ -14,10 +14,10 @@ const row = (fetchedAt: number, at: Record<number, [number, number]> = {}, mark 
 };
 
 test('the history lives beside the levels file, and a day is named as the service names it', () => {
-  assert.deepEqual(historyUrls('https://levels.hiverust.dev/v1/btc/liquidations.json') && {
-    index: historyUrls('https://levels.hiverust.dev/v1/btc/liquidations.json')!.index,
-    day: historyUrls('https://levels.hiverust.dev/v1/btc/liquidations.json')!.day('2026-11-05'),
-  }, { index: 'https://levels.hiverust.dev/v1/btc/liquidation-history.json', day: 'https://levels.hiverust.dev/v1/btc/liquidation-history/2026-11-05.json' });
+  assert.deepEqual(historyUrls('https://levels.liquiditymapper.com/v1/btc/liquidations.json') && {
+    index: historyUrls('https://levels.liquiditymapper.com/v1/btc/liquidations.json')!.index,
+    day: historyUrls('https://levels.liquiditymapper.com/v1/btc/liquidations.json')!.day('2026-11-05'),
+  }, { index: 'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json', day: 'https://levels.liquiditymapper.com/v1/btc/liquidation-history/2026-11-05.json' });
   assert.equal(historyUrls(''), null, 'no levels service, no history');
   assert.equal(dayText(Date.UTC(2026, 10, 5, 23, 59)), '2026-11-05');
 });
@@ -52,14 +52,14 @@ test('the index and the days are checked: a row of the wrong shape is left out, 
 test('the pane asks for the index first, then the days its view needs (with the evening before), each once, today again when due', async () => {
   const asked: string[] = [], day = Date.UTC(2026, 10, 5), now = day + 10 * 3_600_000;
   const answers: Record<string, unknown> = {
-    'https://levels.hiverust.dev/v1/btc/liquidation-history.json': { edges: EDGES, first: day - 2 * DAY_MS + 3_600_000, last: now - 600_000 },
-    [`https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day - DAY_MS)}.json`]: { rows: [row(day - 1_800_000, { 40: [5, 6] })] },
-    [`https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [row(day + 3_600_000, { 40: [7, 8] }), row(day + 5_400_000)] },
+    'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json': { edges: EDGES, first: day - 2 * DAY_MS + 3_600_000, last: now - 600_000 },
+    [`https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day - DAY_MS)}.json`]: { rows: [row(day - 1_800_000, { 40: [5, 6] })] },
+    [`https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [row(day + 3_600_000, { 40: [7, 8] }), row(day + 5_400_000)] },
   };
   const h = new LiqHistory(url => { asked.push(url); return url in answers ? Promise.resolve(answers[url]) : Promise.reject(new Error('404')); });
   const settle = () => new Promise(r => setTimeout(r, 0));
   h.ensure(day + 3_000_000, now + 3_600_000, now, () => {});
-  assert.deepEqual(asked, ['https://levels.hiverust.dev/v1/btc/liquidation-history.json'], 'nothing but the index before it has come');
+  assert.deepEqual(asked, ['https://levels.liquiditymapper.com/v1/btc/liquidation-history.json'], 'nothing but the index before it has come');
   await settle(); await settle();
   h.ensure(day + 3_000_000, now + 3_600_000, now, () => {});
   assert.deepEqual(asked.slice(1).map(u => u.slice(-15)), [`${dayText(day - DAY_MS)}.json`, `${dayText(day)}.json`], 'the day before the view and the day in it, nothing before the history begins');
@@ -78,11 +78,11 @@ test('the pane asks for the index first, then the days its view needs (with the 
 test('a new UTC day with no snapshot yet is asked when the day before\'s newest says the next can be there, not each minute', async () => {
   const asked: string[] = [], day = Date.UTC(2026, 10, 6), MIN = 60_000;
   // Yesterday's newest was created at 23:52 (published 23:57); the next is published at 00:30:20.
-  const index = 'https://levels.hiverust.dev/v1/btc/liquidation-history.json';
+  const index = 'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json';
   const files: Record<string, unknown> = {
     [index]: { edges: EDGES, first: day - 3 * DAY_MS, last: day - 75_000 },
-    [`https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day - DAY_MS)}.json`]: { rows: [row(day - 3 * MIN)] },
-    [`https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [] },
+    [`https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day - DAY_MS)}.json`]: { rows: [row(day - 3 * MIN)] },
+    [`https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [] },
   };
   const h = new LiqHistory(url => { asked.push(url); return Promise.resolve(files[url]); });
   const settle = async (): Promise<void> => { await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0)); };
@@ -100,7 +100,7 @@ test('today is asked again when its next snapshot can be there, then each minute
   // SNAPSHOT_DUE_MS after its creation, less the first lead (the first read places it by its age): D minutes on.
   const D = (SNAPSHOT_DUE_MS - FIRST_LEAD_MS) / MIN - 9;
   let rows = [row(t0 - 4 * MIN)];
-  const index = 'https://levels.hiverust.dev/v1/btc/liquidation-history.json', today = `https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day)}.json`;
+  const index = 'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json', today = `https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day)}.json`;
   const h = new LiqHistory(url => { asked.push(url); return Promise.resolve(url === index ? { edges: EDGES, first: day + 3_600_000, last: t0 } : { rows }); });
   const settle = async (): Promise<void> => { await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0)); };
   const todays = (): number => asked.filter(u => u === today).length;

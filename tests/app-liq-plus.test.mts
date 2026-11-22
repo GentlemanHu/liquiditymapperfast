@@ -47,12 +47,12 @@ const STOPS = [[8, 300, 100, 0, 0, 2, 0, 300, 0], [12, 0, 0, 50, 150, 0, 3, 0, 1
 const TAKES = [[6, 0, 0, 0, 70, 0, 1, 0, 70], [14, 40, 20, 0, 0, 2, 0, 40, 0]];
 
 test('the Plus files live beside the levels file, so a local stand-in answers for them too', () => {
-  const u = plusUrls('https://levels.hiverust.dev/v1/btc/liquidations.json')!;
-  assert.equal(u.groups, 'https://levels.hiverust.dev/v1/plus/btc/liquidations-groups.json');
-  assert.equal(u.triggers, 'https://levels.hiverust.dev/v1/plus/btc/triggers.json');
-  assert.equal(u.groupsDay('2026-11-15'), 'https://levels.hiverust.dev/v1/plus/btc/liquidation-history-groups/2026-11-15.json');
-  assert.equal(u.triggersDay('2026-11-15'), 'https://levels.hiverust.dev/v1/plus/btc/trigger-history/2026-11-15.json');
-  assert.deepEqual(u.rollup, { free: 'https://levels.hiverust.dev/v1/plus/btc/liquidation-history-4h.json', groups: 'https://levels.hiverust.dev/v1/plus/btc/liquidation-history-groups-4h.json', triggers: 'https://levels.hiverust.dev/v1/plus/btc/trigger-history-4h.json', triggersGroups: 'https://levels.hiverust.dev/v1/plus/btc/trigger-history-groups-4h.json' });
+  const u = plusUrls('https://levels.liquiditymapper.com/v1/btc/liquidations.json')!;
+  assert.equal(u.groups, 'https://levels.liquiditymapper.com/v1/plus/btc/liquidations-groups.json');
+  assert.equal(u.triggers, 'https://levels.liquiditymapper.com/v1/plus/btc/triggers.json');
+  assert.equal(u.groupsDay('2026-11-15'), 'https://levels.liquiditymapper.com/v1/plus/btc/liquidation-history-groups/2026-11-15.json');
+  assert.equal(u.triggersDay('2026-11-15'), 'https://levels.liquiditymapper.com/v1/plus/btc/trigger-history/2026-11-15.json');
+  assert.deepEqual(u.rollup, { free: 'https://levels.liquiditymapper.com/v1/plus/btc/liquidation-history-4h.json', groups: 'https://levels.liquiditymapper.com/v1/plus/btc/liquidation-history-groups-4h.json', triggers: 'https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-4h.json', triggersGroups: 'https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-groups-4h.json' });
   assert.equal(plusUrls(LEVELS_URL)!.triggers, 'http://127.0.0.1:8791/v1/plus/btc/triggers.json');
   assert.equal(plusUrls('http://localhost:8790/x.json'), null, 'not the levels file\'s shape: no Plus files');
 });
@@ -287,7 +287,7 @@ test('the history asks for each choice\'s files (with the pass for every Plus on
   // `liqLevelsUrl()` reads the page's address; in Node it is the configured one, so the stand-in's files are found by their paths.
   const path = (u: string): string => u.replace(/^https?:\/\/[^/]+/, '');
   const ask = async (v: LiqView, from = day, to = now): Promise<string[]> => { asked.length = 0; for (let i = 0; i < 3; i++) { h.ensure(from, to, now, () => {}, v); await settle(); } return asked.map(a => path(a.url)); };
-  for (const [k, value] of Object.entries(files)) files[`https://levels.hiverust.dev${path(k)}`] = value;
+  for (const [k, value] of Object.entries(files)) files[`https://levels.liquiditymapper.com${path(k)}`] = value;
 
   const freeOnly = await ask(FREE_VIEW);
   assert.ok(freeOnly.every(u => !u.includes('/plus/')), 'the free view asks nothing paid');
@@ -451,13 +451,13 @@ test('where the server has no profitable orders (404 or 503) they are not availa
 });
 
 test('the history reads take profits alone from the orders, and the profitable traders\' orders from their own days (said as not available where the server has none)', async () => {
-  const day = Date.UTC(2026, 10, 15), now = day + 12 * 3_600_000, index = 'https://levels.hiverust.dev/v1/btc/liquidation-history.json';
+  const day = Date.UTC(2026, 10, 15), now = day + 12 * 3_600_000, index = 'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json';
   const t1 = day + 3_600_000, t3 = day + 5 * 3_600_000;
   const files: Record<string, unknown> = {
     [index]: { edges: EDGES, first: day - 3 * DAY_MS, last: now - 600_000 },
     [U.triggersDay(dayText(day))]: { rows: [plusRow(t1, part({ 20: [7, 8] }), part({ 20: [50, 0], 30: [0, 60] })), plusRow(t3, part({ 20: [9, 9] }), part({}))] },
   };
-  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.hiverust.dev');
+  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.liquiditymapper.com');
   for (const [k, value] of Object.entries(files)) files[host(k)] = value;
   const h = new LiqHistory(url => url in files ? Promise.resolve(files[url]) : Promise.reject(new Error('404')), { freeFrom: () => day - 7 * DAY_MS, pass: () => 'v1.member.sig', refused: () => {} });
   const ask = async (v: LiqView): Promise<void> => { for (let i = 0; i < 3; i++) { h.ensure(day, now, now, () => {}, v); await tick(); await tick(); } };
@@ -485,16 +485,16 @@ test('the history reads take profits alone from the orders, and the profitable t
 });
 
 test('the take-profit overlay is never cached across its two modes: alone they are the rows, beside the curve an overlay, in days and in the 4-hour history', async () => {
-  const day = Date.UTC(2026, 10, 15), now = day + 12 * 3_600_000, index = 'https://levels.hiverust.dev/v1/btc/liquidation-history.json';
+  const day = Date.UTC(2026, 10, 15), now = day + 12 * 3_600_000, index = 'https://levels.liquiditymapper.com/v1/btc/liquidation-history.json';
   const t1 = day + 3_600_000, t3 = day + 5 * 3_600_000;
   const files: Record<string, unknown> = {
     [index]: { edges: EDGES, first: day - 3 * DAY_MS, last: now - 600_000 },
-    [`https://levels.hiverust.dev/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [freeRow(t1, { 10: [100, 200] }), freeRow(t3, { 10: [500, 600] })] },
+    [`https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day)}.json`]: { rows: [freeRow(t1, { 10: [100, 200] }), freeRow(t3, { 10: [500, 600] })] },
     [U.triggersDay(dayText(day))]: { rows: [plusRow(t1, part({ 20: [7, 8] }), part({ 20: [50, 0], 30: [0, 60] })), plusRow(t3, part({ 20: [9, 9] }), part({ 30: [0, 5] }))] },
     [U.rollup.free]: { v: 1, coin: 'BTC', hours: 4, edges: ROLLUP_EDGES, rows: [freeRow(t1, {})].map(r => [...r.slice(0, 6), zeros(13).map((_, i) => i === 9 ? 1_000 : 0), zeros(13)]) },
     [U.rollup.triggers]: { v: 1, coin: 'BTC', hours: 4, edges: ROLLUP_EDGES, kinds: ['stops', 'takes'], rows: [plusRow(t1 + 30 * MIN, part({ 9: [11, 0] }, 13), part({ 9: [0, 22] }, 13))] },
   };
-  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.hiverust.dev');
+  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.liquiditymapper.com');
   for (const [k, value] of Object.entries(files)) files[host(k)] = value;
   const h = new LiqHistory(url => url in files ? Promise.resolve(files[url]) : Promise.reject(new Error('404')), { freeFrom: () => day - 7 * DAY_MS, pass: () => 'v1.member.sig', refused: () => {} });
   const alone = view({ liq: false, takes: true }), beside = view({ liq: true, takes: true });
@@ -877,7 +877,7 @@ test('the phone\'s Liq tab follows the order family both ways: its totals, its f
 /** One snapshot of every history family, everyone's amounts ten times the profitable traders' (1,000 against 100), in days and in the rollups. */
 function familyHistory() {
   const day = Date.UTC(2026, 10, 15), now = day + 12 * 3_600_000, t = day + 3 * 3_600_000, roll = (v: number): number[] => zeros(13).map((_, i) => i === 9 ? v : 0);
-  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.hiverust.dev');
+  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.liquiditymapper.com');
   const files: Record<string, unknown> = {};
   const put = (u: string, body: unknown): void => { files[host(u)] = body; };
   put('https://x/v1/btc/liquidation-history.json', { edges: EDGES, first: day - 3 * DAY_MS, last: now - 600_000 });
@@ -976,7 +976,7 @@ function absentHistory(answer: (url: string) => unknown | { fail: number; retryA
     return url in f.files ? Promise.resolve(f.files[url]) : Promise.reject(new Error('404'));
   }, { freeFrom: () => f.day - 7 * DAY_MS, pass: () => 'v1.member.sig', refused: () => {} });
   const ask = async (v: LiqView, now: number, from = f.day): Promise<void> => { for (let i = 0; i < 3; i++) { h.ensure(from, f.now, now, () => {}, v); await tick(); await tick(); } };
-  const dayUrl = `https://levels.hiverust.dev/v1/plus/btc/trigger-history-groups/${dayText(f.day)}.json`, rollUrl = 'https://levels.hiverust.dev/v1/plus/btc/trigger-history-groups-4h.json';
+  const dayUrl = `https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-groups/${dayText(f.day)}.json`, rollUrl = 'https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-groups-4h.json';
   return { ...f, h, ask, asks: (url: string): number => asks.get(url) ?? 0, dayUrl, rollUrl };
 }
 const MINE_STOPS = view({ liq: false, stops: true, group: 'profitable' });
@@ -1210,7 +1210,7 @@ test('the phone\'s Liq tab draws a new choice from its first frame, never the la
 
 /** A history reader over `files` (by path on the levels host), each ask counted; anything not there answers 404. */
 function historyOf(files: Record<string, unknown>, day: number) {
-  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.hiverust.dev'), asks = new Map<string, number>(), held: Record<string, unknown> = {};
+  const host = (u: string): string => u.replace(/^https?:\/\/[^/]+/, 'https://levels.liquiditymapper.com'), asks = new Map<string, number>(), held: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(files)) held[host(k)] = v;
   const h = new LiqHistory(url => { asks.set(url, (asks.get(url) ?? 0) + 1); return url in held ? Promise.resolve(held[url]) : Promise.reject(new Error('404')); },
     { freeFrom: () => day - 7 * DAY_MS, pass: () => 'v1.member.sig', refused: () => {} });
@@ -1240,7 +1240,7 @@ test('a day whose profitable orders are missing still says so after midnight, wh
 
 test('a wide view whose rollup could not be read says so instead of loading, keeps asking, and draws once a valid file comes (Sol, round 3)', async () => {
   const f = familyHistory(), both = view({ liq: true, stops: true, group: 'profitable' }), roll = U.rollup.triggersGroups;
-  const asks = new Map<string, number>(), count = (u: string): number => asks.get(u.replace(/^https?:\/\/[^/]+/, 'https://levels.hiverust.dev')) ?? 0;
+  const asks = new Map<string, number>(), count = (u: string): number => asks.get(u.replace(/^https?:\/\/[^/]+/, 'https://levels.liquiditymapper.com')) ?? 0;
   // Everyone's rollup where theirs is asked for (no group named): refused whole, every time it is read.
   f.put(roll, { hours: 4, edges: ROLLUP_EDGES, kinds: ['stops', 'takes'], rows: [plusRow(f.t, part({ 9: [1_000, 1_000] }, 13), part({}, 13))] });
   const h = new LiqHistory(url => { asks.set(url, (asks.get(url) ?? 0) + 1); return url in f.files ? Promise.resolve(f.files[url]) : Promise.reject(new Error('404')); },
@@ -1279,7 +1279,7 @@ test('a Retry-After header is read as delta-seconds or an HTTP date, and anythin
   let header: string | undefined;
   const stub = stubFetch(() => ({ status: 503, ...(header === undefined ? {} : { retryAfter: header }) }));
   try {
-    const read = async (h: string | undefined): Promise<number | undefined> => { header = h; return (await webFetch('https://levels.hiverust.dev/v1/plus/btc/triggers-groups.json')).retryAfter; };
+    const read = async (h: string | undefined): Promise<number | undefined> => { header = h; return (await webFetch('https://levels.liquiditymapper.com/v1/plus/btc/triggers-groups.json')).retryAfter; };
     const near = (got: number | undefined, want: number, what: string): void => assert.ok(got !== undefined && Math.abs(got - want) <= 2, `${what}: ${got} for ${want}`);
     near(await read(inMinutes(10)), 600, 'an HTTP date ten minutes on');
     near(await read('120'), 120, 'delta-seconds');
@@ -1312,7 +1312,7 @@ test('the profitable traders\' live orders, days and rollup wait what an HTTP-da
     now += 5 * MIN; src.ensure(BTC, () => {}, mine); await tick();
     assert.equal(live(), 2, 'live: asked again once the ten minutes are over');
     // Days and the rollup: the history's own read.
-    for (const [from, url] of [[day, `https://levels.hiverust.dev/v1/plus/btc/trigger-history-groups/${dayText(day)}.json`], [wideFrom, 'https://levels.hiverust.dev/v1/plus/btc/trigger-history-groups-4h.json']] as const) {
+    for (const [from, url] of [[day, `https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-groups/${dayText(day)}.json`], [wideFrom, 'https://levels.liquiditymapper.com/v1/plus/btc/trigger-history-groups-4h.json']] as const) {
       const h = new LiqHistory(undefined, { freeFrom: () => day - 7 * DAY_MS, pass: () => 'v1.member.sig', refused: () => {} }), at = day + 12 * 3_600_000;
       const ask = async (when: number): Promise<void> => { for (let i = 0; i < 3; i++) { h.ensure(from, day + 12 * 3_600_000, when, () => {}, mine); await tick(); await tick(); await tick(); } };
       await ask(at);
