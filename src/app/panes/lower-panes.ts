@@ -40,7 +40,7 @@ import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { BandLayer, LitPainter, bandUnder, depthLook, type LitBand } from './depth-look.ts';
-import { DepthHistory, RANK_FINE_MS, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
+import { DepthHistory, RANK_FINE_MS, RANK_MIN_COVER_MS, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
@@ -968,18 +968,29 @@ export class DepthPane extends TimePane {
       : { bid: rankAt(history, rankSide('bid'), j, rankMoment, counted), ask: rankAt(history, rankSide('ask'), j, rankMoment, counted) }) : [] };
     const ranks = this.#ranks.ranks;
     const whole = !!history && this.#bandHistory.wholeFor(counted);
+    // A source that keeps less than the minimum can never rank (the public site's browser engine holds about a day of closing minutes, and the
+    // long history's tiles are means): once its history is whole and still that short, the card says the band's rank in view as it did before
+    // the history, and the table keeps no rank row.
+    const unranked = whole && history!.count * history!.step < RANK_MIN_COVER_MS;
     // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
     const said = lit ? lit.j : top;
-    // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
     if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
-      const placeOf = { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole };
-      card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: placeOf });
-      brief = depthRankBrief(s.radii[said]!, placeOf);
+      if (unranked) {
+        const here = rows[said]!.bid + rows[said]!.ask;
+        let rank = 1, of = 0;
+        for (let x = 0; x < cutW; x++) { const total = bid[at(x, said)]! + ask[at(x, said)]!; if (total > 0) { of++; if (total > here) rank++; } }
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank, of });
+      } else {
+        // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
+        const placeOf = { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole };
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: placeOf });
+        brief = depthRankBrief(s.radii[said]!, placeOf);
+      }
     }
     // Under a heading naming the band they speak of; where they do not fit under the rows (a short pane), the one row in brief: the band's place in its
     // history, or the take profits beside the liquidation levels. The table keeps that row's room in every frame where it has one to say at all (the
     // book's history always, take profits where the view holds them), so a moment without one does not move its rows.
-    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card)), keepBrief = liq ? !!liqHeld?.takeRows?.length : true;
+    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card)), keepBrief = liq ? !!liqHeld?.takeRows?.length : !unranked;
     const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, brief, keepBrief, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`, fine ? ranks : [], lit ? lit.j : -1) : null;
     // With Table on the pane shows no card (Karl, 2026-11-22: a table selected, no pop-up; the pop-up only with Table off): the card only where no table
     // is drawn, Table off or no room for one, even beside a table too short for every line (other panes keep theirs there, pane-table.ts).

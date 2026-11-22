@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { BandHistory, DepthHistory, RANK_MIN_COVER_MS, RANK_RECENT_MS, RANK_SPAN_MS, rankAt, rankKind, rankValue, SETTLE_MS, USUAL_SHARE, type BandRank } from '../src/app/depth-history.ts';
-import { depthRankBrief, liqCardLines, liqTakesLine, type DepthHistoryLines } from '../src/app/panes/pane-cards.ts';
+import { depthCardLines, depthRankBrief, liqCardLines, liqTakesLine, type DepthHistoryLines } from '../src/app/panes/pane-cards.ts';
 import { clock } from '../src/app/format.ts';
 import type { ColumnsFrame } from '../src/shared/columns.ts';
 
@@ -129,7 +129,18 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.doesNotMatch(depth, /!placed\?\.complete/);
   assert.match(depth, /brief = depthRankBrief\(s\.radii\[said\]!, placeOf\);/);
   assert.match(depth, /if \(readRow && tk\) brief = \[liqTakesLine\(tk, settings\.units, coin\)\];/);
-  assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, /);
+  assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, keepBrief, /);
+  // A source that can never reach the minimum (the public site's browser engine): once whole and still short, the card's rank in view as before
+  // the history, no rank row and no room kept for one.
+  assert.match(depth, /const unranked = whole && history!\.count \* history!\.step < RANK_MIN_COVER_MS;/);
+  assert.match(depth, /if \(unranked\) \{\n\s+const here = rows\[said\]!\.bid \+ rows\[said\]!\.ask;/);
+  assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: settings\.units, coin, rank, of \}\);/);
+  assert.match(depth, /keepBrief = liq \? !!liqHeld\?\.takeRows\?\.length : !unranked;/);
+  // The card the browser engine's pane says then: its rank in view, no history lines.
+  const said = (h: Parameters<typeof depthCardLines>[0]) => depthCardLines(h).map(l => l.label ?? l.text);
+  const bands = [{ r: 0.01, bid: 3, ask: 1 }, { r: 0.05, bid: 5, ask: 9 }];
+  assert.ok(said({ time: 0, bands, watched: 1, units: 'usd', coin: 'BTC', rank: 4, of: 90 }).includes('Rank in view'));
+  assert.ok(!said({ time: 0, bands, watched: 1, units: 'usd', coin: 'BTC', rank: 4, of: 90 }).includes('Bids'));
 });
 
 test('the pane\'s history asks for a new book\'s recent hours first, then its older days, then each closed window; new books alone; new bands afresh', async () => {

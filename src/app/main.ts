@@ -772,7 +772,7 @@ async function main(): Promise<void> {
     const offer = (): void => { if (!toolbar.inviteToTour() && ++asked < 12) window.setTimeout(offer, 5_000); };
     window.setTimeout(offer, 2500);
   }
-  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update, depth };
+  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update };
 }
 
 main().catch(error => {
