@@ -37,7 +37,7 @@ export const OI: MeasureDef<'oi'> = {
   },
   priceNotes: ({ browser }) => [
     t('Each perpetual\'s change in open interest between its readings (about one a minute) spread over the prices that traded on it in between, by their share of the volume: where exposure grew (bid colour) and where it shrank (ask colour). An estimate of where, never of who: a change does not say which side opened or closed. Each venue counts on its own, and a change with no trades recorded under it, or between readings an hour apart, is not placed: the header says how much.'),
-    ...(browser ? [t('This page keeps a day of the open-interest readings it takes while it is open: Binance, Bybit and OKX also read back their five-minute history, Hyperliquid, Bitget and Deribit have only what the page took.')] : []),
+    ...(browser ? [t('This page keeps a day of the open-interest readings it takes while it is open: Binance and Bybit also read back their history; OKX, Hyperliquid, Bitget and Deribit have only what the page took.')] : []),
   ],
   timeNote: () => t('Where open interest grew (bid colour) and where it shrank (ask colour) in each stretch, each perpetual on its own, from its readings by the minute whatever the chart\'s timeframe: each change spread over the minutes it came about in by their volume and valued at the prices that traded, as the column does by price. A change across more than an hour, or with nothing traded under it, is not placed, and the header says how much. It never says who bought or sold.'),
   judgedByMarks: false, rangeAddsUp: false, perpetualsOnly: true,

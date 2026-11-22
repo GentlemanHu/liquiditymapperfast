@@ -51,7 +51,8 @@ import { currentCoin, scaledUsd, unscaledUsd } from '../coin.ts';
 import { fetchOiHistory, webGet } from '../../shared/history.ts';
 import { aggregateOi } from '../../shared/series.ts';
 import { BAR_CUT_H, BAR_CUT_PX, barScale, cutGap } from '../bar-scale.ts';
-import { OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, type OiLongHeld, type OiLongSeam } from './oi-long.ts';
+import { OiLongHistory, oiLongChain, oiLongPeriod, oiLongSeamOf, type OiLongAnchor, type OiLongHeld } from './oi-long.ts';
+import { binanceOiArchive } from '../../shared/oi-archive.ts';
 import { groupChanges, groupCandles, groupParts, groupWho, priceSidedShare } from './oi-group.ts';
 import { stripTimeframe } from '../measures/volume-strip.ts';
 import { DRAG_MIN_PX, selects } from '../range/selection.ts';
@@ -1280,33 +1281,55 @@ export class OiPane extends TimePane {
     this.#oiCut = { src: bars, slot, out };
     return out;
   }
-  /** Bybit's history further back than the readings held (oi-long.ts), read by the pane straight from Bybit: the server's store holds days of it. */
+  /**
+   * The venues' own history further back than the readings held (oi-long.ts), read by the pane straight from the venues in a page and on a
+   * server alike (the server's store holds a month): Bybit's from its API (years), Binance's from its daily archive (oi-archive.ts; years, about
+   * half of the open interest added up). Each its own reader, window and retries.
+   */
   readonly #long = new OiLongHistory((id, period, from, to) => {
     const listing = currentCoin().markets.bybit;
     if (!listing || `bybit:${listing.symbol}` !== id) return Promise.resolve([]);
     // Readings, each the close of the period that ends at it (`fetchOiHistory`): bars of the period they were read at.
     return fetchOiHistory(id, period, from, to, webGet, listing).then(rows => aggregateOi(rows, period));
   }, () => this.invalidate());
-  #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongSeam | null } | null = null;
-  #scaled: { held: OiLongHeld; t: number; k: number; bars: OiBar[] } | null = null;
+  readonly #longBinance = new OiLongHistory((id, period, from, to) => {
+    const listing = currentCoin().markets.binance;
+    if (!listing || listing.inverse || `binance:${listing.symbol}` !== id) return Promise.resolve([]);
+    // The archive's readings are in the market's own units (1000PEPEUSDT's thousands): in coins as every other reading.
+    return binanceOiArchive(listing.symbol, from, to, webGet).then(rows => aggregateOi(rows.map(r => ({ ...r, base: Number(r.base) * listing.unit })), period));
+  }, () => this.invalidate());
+  #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongAnchor | null } | null = null;
+  #chained: { seam: OiLongAnchor; period: number; rows: readonly (readonly OiBar[])[]; out: { bars: OiBar[]; venues: string[][]; sums: number[] } } | null = null;
   /**
-   * The long view, for venues added together that count Bybit's perpetual and a view that starts before the readings held: the seam, Bybit's
-   * readings before it put at its scale, and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows
-   * what was known at its moment. Not for a view inside the readings held: where only Bybit's go back (a coin with no Binance perpetual, or
-   * Binance's history not read), the seam is near the newest bar, and the estimate took the place of the readings in every view (review,
-   * 2026-10-30).
+   * The long view, for venues added together that count Binance's or Bybit's perpetual and a view that starts before the readings held: the
+   * seam (`oiLongSeamOf`), the venues' readings before it chained back from the line's level there (`oiLongChain`: each step moves by the
+   * venues read at both its ends), and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows what
+   * was known at its moment. Not for a view inside the readings held (review, 2026-10-30: the estimate took the place of the readings).
    */
-  #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongSeam; period: number; bars: readonly OiBar[] } | null {
-    const listing = currentCoin().markets.bybit;
-    if (replaying() || parts.length < 2 || !listing || listing.inverse) return null;
-    const id = `bybit:${listing.symbol}`;
-    if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== id) this.#seam = { parts, oi, id, seam: oiLongSeam(parts, id, oi) };
+  #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongAnchor; period: number; bars: readonly OiBar[]; venues: readonly (readonly string[])[]; sums: readonly number[] } | null {
+    if (replaying() || parts.length < 2) return null;
+    const markets = currentCoin().markets;
+    const bybit = markets.bybit && !markets.bybit.inverse ? `bybit:${markets.bybit.symbol}` : null, binance = markets.binance && !markets.binance.inverse ? `binance:${markets.binance.symbol}` : null;
+    const longIds = [binance, bybit].filter((id): id is string => id !== null && parts.some(part => part.id === id));
+    if (!longIds.length) return null;
+    const key = longIds.join(',');
+    if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== key) this.#seam = { parts, oi, id: key, seam: oiLongSeamOf(parts, longIds, oi) };
     const seam = this.#seam.seam, v = this.view;
     if (!seam || v.t0 >= oi[0]![0]) return null;
-    const held = this.#long.rows(id, oiLongPeriod(tf, v.t1 - v.t0, this.plotW), v, seam.t);
-    if (!held) return { seam, period: tf, bars: [] };
-    if (this.#scaled?.held !== held || this.#scaled.t !== seam.t || this.#scaled.k !== seam.k) this.#scaled = { held, t: seam.t, k: seam.k, bars: oiLongBars(held.bars, held.period, seam) };
-    return { seam, period: held.period, bars: this.#scaled.bars };
+    const period = oiLongPeriod(tf, v.t1 - v.t0, this.plotW), held = new Map<string, OiLongHeld>();
+    for (const [id, reader] of [[bybit, this.#long], [binance, this.#longBinance]] as const) {
+      if (!id || !seam.at.has(id)) continue;
+      const rows = reader.rows(id, period, v, seam.t);
+      if (rows) held.set(id, rows);
+    }
+    if (!held.size) return { seam, period: tf, bars: [], venues: [], sums: [] };
+    // One period for the chain: the one asked where a venue holds it, else the nearest held; a venue still being read at it waits.
+    const use = [...held.values()].some(h => h.period === period) ? period : [...held.values()][0]!.period;
+    const rows = new Map([...held].filter(([, h]) => h.period === use).map(([id, h]) => [id, h.bars] as const)), list = [...rows.values()];
+    const was = this.#chained;
+    if (!was || was.seam !== seam || was.period !== use || was.rows.length !== list.length || list.some((r, i) => r !== was.rows[i])) this.#chained = { seam, period: use, rows: list, out: oiLongChain(rows, use, seam) };
+    const out = this.#chained!.out;
+    return { seam, period: use, bars: out.bars, venues: out.venues, sums: out.sums };
   }
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state: AppState = this.store.state;
@@ -1339,7 +1362,7 @@ export class OiPane extends TimePane {
     // A view starting between the last reading's period and the seam: the last reading's level is what the line holds there.
     if (!shownEarly.length && early.length && early[early.length - 1]![0] < v.t0 && v.t0 < oi[seamI]![0]) shownEarly.push(early.length - 1);
     const seam = early.length ? oi[seamI]![0] : null;
-    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null, drawn); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
+    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null, drawn); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && (this.#long.loading || this.#longBinance.loading) ? t('Reading the venues\' open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
     // Geometry: the level on top, the change below (when the pane is tall enough to hold both).
     const split = ph >= 84, lineBottom = split ? Math.round(ph * 0.6) : ph - 6, bandTop = lineBottom + 12, bandBottom = ph - 5, mid = (bandTop + bandBottom) / 2, half = (bandBottom - bandTop) / 2;
     let lo = Infinity, hi = -Infinity;
@@ -1347,7 +1370,9 @@ export class OiPane extends TimePane {
     for (const j of shownEarly) { const b = early[j]!; lo = Math.min(lo, b[3], b[4]); hi = Math.max(hi, b[2], b[4]); }
     // The change bars against `barScale` (bar-scale.ts): the few changes far larger than the rest are cut at the band's edge and marked,
     // rather than drawing every other bar as a sliver.
-    const scaleDelta = barScale(visible.map(i => Math.abs(analysis.delta[i]!)));
+    // The estimate's bars before the seam share the scale: one length, one scale on both sides of it.
+    const earlyChange = (j: number): number => j > 0 ? early[j]![4] - early[j - 1]![4] : 0;
+    const scaleDelta = barScale([...visible.map(i => Math.abs(analysis.delta[i]!)), ...shownEarly.map(j => Math.abs(earlyChange(j)))]);
     const pad = Math.max((hi - lo) * 0.18, hi * 0.0004), min = lo - pad, max = hi + pad;
     const y = (value: number) => 6 + (1 - (value - min) / (max - min)) * (lineBottom - 6);
     this.scaleAt = at => at <= lineBottom ? amount(min + (1 - (at - 6) / (lineBottom - 6)) * (max - min))
@@ -1383,11 +1408,13 @@ export class OiPane extends TimePane {
         const x0 = v.xOf(oi[i - 1]![0] + tf, pw), x1 = v.xOf(oi[i]![0] + tf, pw), h = Math.max(1, Math.min(1, Math.abs(d) / (scaleDelta || 1)) * half), w = Math.max(1, x1 - x0 - 1);
         const alpha = !emphasise ? OI_BAR_ALPHA : analysis.flag[i] ? 1 : 0.38;
         let cap = d > 0 ? p.bid : p.ask;
-        if (who) {
+        // A bar mostly sided by the way the price went (no flow recorded) is drawn as rising or falling, as Bars: Net draws every bar: the who
+        // colours are the takers' (review, 2026-11-22).
+        const whoC = who?.get(oi[i]![0]);
+        if (who && !(whoC && priceSidedShare(whoC) > 0.5)) {
           // Outward from the zero line: the buyers' part, the sellers', then what went to no side, each its share of what opened (a rise) or
           // closed (a fall). A fall's parts are lighter, outlined where the bar is wide enough: closed, as the Delta pane's Four parts draws them.
-          // A bar mostly sided by the way the price went (no flow recorded) is drawn as rising or falling: the who colours are the takers'.
-          const c = who.get(oi[i]![0]), measured = c && priceSidedShare(c) <= 0.5 ? c : undefined, parts = measured ? whoParts(measured, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
+          const c = whoC, parts = c ? whoParts(c, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
           // Each side's alpha as the volume strip sets it: worked out on the plain bar's weight (a fall's lighter: 0.55 of it, its stronger side at
           // most 0.8), then scaled by the bar's Highlights weight, so a bar that does not stand out stays fainter than one that does, its stronger
           // side too; the weaker side never fainter than OI_WEAK_ALPHA (or the bar).
@@ -1418,14 +1445,22 @@ export class OiPane extends TimePane {
           ctx.fillRect(x0 + 0.5, d > 0 ? mid - h - 2.5 : mid + h + 0.5, w, 2);
         }
       }
+      // Before the seam: the estimate's changes, rising or falling only (no takers there), at the dashed line's weight.
+      for (const j of shownEarly) {
+        const d = earlyChange(j); if (d === 0) continue;
+        const x0 = v.xOf(early[j - 1]![0] + ep, pw), x1 = v.xOf(early[j]![0] + ep, pw), h = Math.max(1, Math.min(1, Math.abs(d) / (scaleDelta || 1)) * half), w = Math.max(1, x1 - x0 - 1);
+        ctx.globalAlpha = OI_BAR_ALPHA * 0.45; ctx.fillStyle = d > 0 ? p.bid : p.ask;
+        ctx.fillRect(x0 + 0.5, d > 0 ? mid - h : mid, w, h);
+        if (Math.abs(d) > scaleDelta) cutGap(ctx, x0 + 0.5, d > 0 ? mid - h + BAR_CUT_PX : mid + h - BAR_CUT_PX - BAR_CUT_H, w);
+      }
       ctx.globalAlpha = 1;
     }
     // Level: soft area, step line, dashed continuation, sample dots.
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     ctx.lineWidth = 1.6; ctx.strokeStyle = p.accent; ctx.fillStyle = p.accent;
     if (shownEarly.length) {
-      // Bybit's history: a step line through its readings, the last stepping to the line's level where the line starts (Bybit's reading
-      // there times k is that level), faint and dashed as the stretches with fewer venues are. Readings under 6 px apart (a day apart over
+      // The venues' history: a step line through the estimate's readings, the last stepping to the line's level where the line starts (the
+      // chain is anchored there), faint and dashed as the stretches with fewer venues are. Readings under 6 px apart (a day apart over
       // a year) are joined straight: steps that narrow broke the dashes into specks.
       const j0 = Math.max(0, shownEarly[0]! - 1), j1 = Math.min(early.length - 1, shownEarly[shownEarly.length - 1]! + 1), joins = j1 === early.length - 1;
       const endX = joins ? xc(seamI) : xe(j1), stepped = pw * ep / Math.max(1, v.t1 - v.t0) >= 6;
@@ -1470,13 +1505,16 @@ export class OiPane extends TimePane {
     if (split && visible.length) { ctx.fillText(`±${amount(scaleDelta)}`, this.w - AXIS_W + 6, mid); }
     // Readout: the hovered sample, else the newest, with where the data comes from and how old it is.
     const hover = state.hover;
-    // Over Bybit's history: its reading there, marked as the estimate it is.
+    // Over the venues' history: the estimate there, marked as one, with the venues it was chained over.
     if (hover && early.length && hover.t < oi[seamI]![0]) {
       let j = 0;
       while (j + 1 < early.length && early[j + 1]![0] <= hover.t) j++;
       const there = early[j]!, change = j > 0 ? there[4] - early[j - 1]![4] : null, sign = change === null ? '' : change > 0 ? '+' : change < 0 ? '−' : '';
       const name = Object.entries(TIMEFRAMES).find(([, ms]) => ms === ep)?.[0] ?? '';
-      const from = t('from Bybit\'s {period} history ×{k}, scaled to meet the line', { period: name, k: ext!.seam.k.toFixed(2) });
+      const venues = ext!.venues[j] ?? [], sum = ext!.sums[j] ?? 0, k = sum > 0 ? (there[4] / sum).toFixed(2) : '';
+      const from = venues.length > 1 ? t('from Binance\'s and Bybit\'s {period} history, scaled to meet the line', { period: name })
+        : venues[0]?.startsWith('binance:') ? t('from Binance\'s {period} history ×{k}, scaled to meet the line', { period: name, k })
+        : t('from Bybit\'s {period} history ×{k}, scaled to meet the line', { period: name, k });
       if (this.pointer) this.#lines = oiCardLines({ time: there[0], level: there[4], change, before: null, rank: null, of: 0, sigma: null, source: from, staleMin: null, estimate: true });
       say(`${t('base')} <b>≈ ${fmtPrice(there[4], 1)}</b>${change === null ? '' : ` Δ <b class="${change > 0 ? 'bid' : change < 0 ? 'ask' : ''}">≈ ${sign}${fmtPrice(Math.abs(change), 1)}</b>`} <span class="muted">${from}</span>`);
       return;

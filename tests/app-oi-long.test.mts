@@ -1,6 +1,6 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { OI_LONG_DEADLINE_MS, OI_LONG_MAX_ROWS, OI_LONG_RETRY_MS, OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, oiLongWindow, type OiLongHeld } from '../src/app/panes/oi-long.ts';
+import { OI_LONG_DEADLINE_MS, OI_LONG_MAX_ROWS, OI_LONG_RETRY_MS, OiLongHistory, oiLongBars, oiLongChain, oiLongPeriod, oiLongSeam, oiLongSeamOf, oiLongWindow, type OiLongHeld } from '../src/app/panes/oi-long.ts';
 import { chainedOi, oiSumOf, type OiPart } from '../src/app/oi-change.ts';
 import type { OiBar } from '../src/app/store.ts';
 
@@ -142,4 +142,42 @@ test('a read that never answers is given up at the deadline', async () => {
     assert.equal(history.loading, false);
     assert.equal(landed, 1);
   } finally { mock.timers.reset(); }
+});
+
+test('the seam with venues that keep history: where a second venue\'s readings begin, with each long-history venue\'s reading there', () => {
+  // Bybit's readings go back furthest, Binance's begin later, a third venue later still: the held line is two venues from Binance's start.
+  const bybit: OiPart = { id: 'bybit:BTCUSDT', bars: bars(NOW - 40 * HOUR, 40, HOUR, () => 30) };
+  const binance: OiPart = { id: 'binance:BTCUSDT', bars: bars(NOW - 20 * HOUR, 20, HOUR, () => 90) };
+  const okx: OiPart = { id: 'okx:BTC-USDT-SWAP', bars: bars(NOW - 5 * HOUR, 5, HOUR, () => 20) };
+  const parts = [bybit, binance, okx], chained = chainedOi(oiSumOf(parts, HOUR));
+  const seam = oiLongSeamOf(parts, ['binance:BTCUSDT', 'bybit:BTCUSDT'], chained)!;
+  assert.equal(seam.t, NOW - 20 * HOUR, 'from Binance\'s first reading');
+  assert.equal(seam.level, chained[seam.index]![4]);
+  assert.deepEqual([...seam.at], [['binance:BTCUSDT', 90], ['bybit:BTCUSDT', 30]]);
+  assert.equal(oiLongSeamOf([bybit], ['bybit:BTCUSDT'], chainedOi(oiSumOf([bybit], HOUR))), null, 'one venue: its own line, no seam');
+  assert.equal(oiLongSeamOf([okx, binance], ['bybit:BTCUSDT'], chainedOi(oiSumOf([okx, binance], HOUR))), null, 'no long-history venue counted');
+});
+
+test('the long view is chained over the venues read at both ends of each step; with one venue it is that venue scaled to meet the line', () => {
+  const P = DAY, seamT = NOW, at = new Map([['binance:BTCUSDT', 100], ['bybit:BTCUSDT', 50]]);
+  // Two days back: Binance 90 and Bybit 45 (sum 135 against 150 at the seam), then 80 and 40.
+  const rows = new Map<string, OiBar[]>([['binance:BTCUSDT', bars(NOW - 2 * P, 2, P, i => [80, 90][i]!)], ['bybit:BTCUSDT', bars(NOW - 2 * P, 2, P, i => [40, 45][i]!)]]);
+  const both = oiLongChain(rows, P, { t: seamT, level: 300, at });
+  assert.deepEqual(both.bars.map(b => b[4]), [300 * 135 / 150 * 120 / 135, 300 * 135 / 150]);
+  assert.deepEqual(both.venues, [['binance:BTCUSDT', 'bybit:BTCUSDT'], ['binance:BTCUSDT', 'bybit:BTCUSDT']]);
+  // Bybit alone: its readings times the line over its own at the seam (the shipped long view, `oiLongBars`).
+  const one = oiLongChain(new Map([['bybit:BTCUSDT', rows.get('bybit:BTCUSDT')!]]), P, { t: seamT, level: 300, at: new Map([['bybit:BTCUSDT', 50]]) });
+  assert.deepEqual(one.bars.map(b => b[4]), oiLongBars(rows.get('bybit:BTCUSDT')!, P, { t: seamT, k: 300 / 50 }).map(b => b[4]));
+});
+
+test('a venue missing at one end is left out of that step, and the chain goes on with the others', () => {
+  const P = DAY, at = new Map([['binance:BTCUSDT', 100], ['bybit:BTCUSDT', 50]]);
+  // Binance has no reading the day before the seam (an archive day with no file); Bybit carries that step alone, then both again.
+  const rows = new Map<string, OiBar[]>([['binance:BTCUSDT', [[NOW - 3 * P, 70, 70, 70, 70]]], ['bybit:BTCUSDT', bars(NOW - 3 * P, 3, P, i => [35, 40, 45][i]!)]]);
+  const c = oiLongChain(rows, P, { t: NOW, level: 300, at });
+  const l1 = 300 * 45 / 50, l2 = l1 * 40 / 45;
+  assert.deepEqual(c.venues, [['bybit:BTCUSDT'], ['bybit:BTCUSDT'], ['bybit:BTCUSDT']], 'Binance is not read at both ends of any step');
+  assert.deepEqual(c.bars.map(b => b[4]), [l2 * 35 / 40, l2, l1]);
+  // A bar whose period ends after the seam is not drawn before it.
+  assert.equal(oiLongChain(new Map([['bybit:BTCUSDT', [[NOW - P / 2, 1, 1, 1, 1]]]]), P, { t: NOW, level: 300, at }).bars.length, 0);
 });

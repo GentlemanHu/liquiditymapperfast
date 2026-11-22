@@ -49,6 +49,62 @@ export function oiLongSeam(parts: readonly OiPart[], bybitId: string, chained: r
 }
 
 /**
+ * Where the readings held give way to the venues' own history (2026-11-22): the first bar of the line from where a second venue's readings
+ * begin (before it the held line is one venue's readings alone), its level, and each long-history venue's reading there (`at`, by market id),
+ * the anchor the history is chained from. Null where no venue in `longIds` is among the parts, fewer than two venues have readings, or a
+ * long-history venue has no reading at the seam.
+ */
+export interface OiLongAnchor { index: number; t: number; level: number; at: ReadonlyMap<string, number> }
+export function oiLongSeamOf(parts: readonly OiPart[], longIds: readonly string[], chained: readonly OiBar[]): OiLongAnchor | null {
+  const starts = parts.filter(part => part.bars.length).map(part => part.bars[0]![0]).sort((a, b) => a - b);
+  if (starts.length < 2) return null;
+  const index = chained.findIndex(bar => bar[0] >= starts[1]!);
+  if (index < 0) return null;
+  const t = chained[index]![0], level = chained[index]![4], at = new Map<string, number>();
+  for (const id of longIds) {
+    const part = parts.find(p => p.id === id), bar = part?.bars.find(b => b[0] === t);
+    if (bar && bar[4] > 0) at.set(id, bar[4]);
+  }
+  return at.size && level > 0 ? { index, t, level, at } : null;
+}
+
+/**
+ * The long view chained back from the seam over the venues with history (Karl, 2026-11-22: "load multiple venues, the history that they have
+ * when zooming out"). Each step back moves the line by the venues read at both its ends: level(t) = level(t + P) x the sum of their readings at
+ * t over the sum at t + P. With one venue that is its readings times the line over its own at the seam (the shipped Bybit-only line); with
+ * Binance and Bybit, about 70 % of the open interest added up, the rest taken to move with them. Measured on 83 days of four venues (Binance,
+ * Bybit, OKX, Hyperliquid at 16:00 UTC, every day as the seam): mean error 2.4 % against 9.0 % for Bybit alone (16 % against 4 % 41-88 days
+ * back; Bybit's share went from 14 % to 19 %). `rows`: each venue's bars of `periodMs` (oldest first); only those whose period ends by the seam.
+ * Each bar's open, high and low are the sum's at the same scale as its close. `venues` names the venues each bar was chained over and `sums`
+ * their summed reading there (the bar's level over it is the scale the venues' readings were put at).
+ */
+export function oiLongChain(rows: ReadonlyMap<string, readonly OiBar[]>, periodMs: number, anchor: Pick<OiLongAnchor, 't' | 'level' | 'at'>): { bars: OiBar[]; venues: string[][]; sums: number[] } {
+  const byTime = new Map<number, Map<string, OiBar>>();
+  for (const [id, bars] of rows) for (const b of bars) if (b[0] + periodMs <= anchor.t && b[4] > 0) {
+    let m = byTime.get(b[0]); if (!m) byTime.set(b[0], m = new Map()); m.set(id, b);
+  }
+  const bars: OiBar[] = [], venues: string[][] = [], sums: number[] = [];
+  let level = anchor.level, then: ReadonlyMap<string, number> = anchor.at;
+  for (const t of [...byTime.keys()].sort((a, b) => b - a)) {
+    // A venue missing at one end (a day its archive has no file for) is left out of that step; with none at both ends the step waits for
+    // the next reading back, measured from the last one chained.
+    const here = byTime.get(t)!, both = [...here.keys()].filter(id => then.has(id)).sort();
+    if (!both.length) continue;
+    let now = 0, before = 0;
+    for (const id of both) { now += here.get(id)![4]; before += then.get(id)!; }
+    level = level * now / before;
+    // The bar's shape: the venues' summed open, high and low at the scale that puts their summed close at the level.
+    let o = 0, h = 0, l = 0;
+    for (const id of both) { const b = here.get(id)!; o += b[1]; h += b[2]; l += b[3]; }
+    const k = level / now;
+    bars.push([t, o * k, h * k, l * k, level]); venues.push(both); sums.push(now);
+    then = new Map([...here].map(([id, b]) => [id, b[4]] as const));
+  }
+  bars.reverse(); venues.reverse(); sums.reverse();
+  return { bars, venues, sums };
+}
+
+/**
  * Bybit's readings drawn before the seam: those whose period ends by it (a daily reading drawn at its day's middle would otherwise stand
  * right of the line's first point), each times `k`.
  */
