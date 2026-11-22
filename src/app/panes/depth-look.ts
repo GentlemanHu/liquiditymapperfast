@@ -321,7 +321,8 @@ export class LitPainter {
       if (this.#overlay.height !== H) this.#overlay.height = H;
       const o = layerContext(this.#overlay);
       o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, W, H); o.setTransform(dpr, 0, 0, dpr, 0, 0);
-      const soft = p.frame !== 'bevel' && p.frame !== 'textmode', weights = litWeights(input.top, lit);
+      // A compact pane (its usual height) takes thinner lit lines and no halo: there a band is a few pixels, and the glow filled them.
+      const compact = input.ph <= 160, soft = p.frame !== 'bevel' && p.frame !== 'textmode', glow = soft && !compact, weights = litWeights(input.top, lit);
       // The lit strips first, then the halo under the edges (drawn opaque on a layer of its own and laid on once at low alpha, so overlapping
       // pieces never add up), then the edges.
       this.#sides.forEach((s, i) => {
@@ -332,7 +333,7 @@ export class LitPainter {
         }
         o.globalAlpha = 1;
       });
-      if (soft) {
+      if (glow) {
         this.#halo ??= layer(W, H);
         if (this.#halo.width !== W) this.#halo.width = W;
         if (this.#halo.height !== H) this.#halo.height = H;
@@ -351,7 +352,7 @@ export class LitPainter {
         const w = i === 0 ? weights.up : weights.down;
         for (let j = input.top; j >= 0; j--) {
           const k = Math.min(1, Math.max(w[j]!, j < input.top ? w[j + 1]! : 0)) ** 1.5; if (k < 0.05) continue;
-          o.fillStyle = s.ink[j]!; o.globalAlpha = 0.25 + 0.75 * k; litEdge(o, s.runs[j]!, 1 + (soft ? 1.5 : 1) * k, dpr); o.globalAlpha = 1;
+          o.fillStyle = s.ink[j]!; o.globalAlpha = 0.25 + 0.75 * k; litEdge(o, s.runs[j]!, 1 + (glow ? 1.5 : 1) * k, dpr); o.globalAlpha = 1;
         }
       });
       this.#litKey = litKey;

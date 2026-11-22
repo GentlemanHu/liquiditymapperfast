@@ -119,7 +119,7 @@ test('the Range panel: the liquidation levels\' rows in the colour of what their
   assert.deepEqual(tones('takes', 3), ['Take profits of shorts: buy', 'Take profits of longs: sell']);
 });
 
-test('the drawings follow the rule too: the Depth pane\'s rings, edge, header, table and card, the map\'s liquidation column box and Mirror band, the phone\'s verdict', () => {
+test('the drawings follow the rule too: the Depth pane\'s rings, terraces, lit band, edge, header, table and card, the map\'s liquidation column box and Mirror band, the phone\'s verdict', () => {
   // Canvas code, pinned by its source as tests/app-hover-rows.test.mts pins the map's boxes; every file read with LF line ends, whatever it has.
   const read = (file: string): string => fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   const method = (src: string, head: string, from = 0): string => { const start = src.indexOf(head, from); assert.ok(start >= 0, head); return src.slice(start, src.indexOf('\n  }\n', start)); };
@@ -134,12 +134,18 @@ test('the drawings follow the rule too: the Depth pane\'s rings, edge, header, t
   assert.match(depth, /ctx\.fillStyle = shade\(upInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(ask\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid - h,/);
   assert.match(depth, /ctx\.fillStyle = shade\(downInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(bid\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid,/);
   assert.match(depth, /\[\[ask, -1, edge\(upInk\)\], \[bid, 1, edge\(downInk\)\]\]/);
+  // The terraces (the default look) and the lit band take the same inks; depth-look.ts draws `up` from the ask array above the price.
+  assert.match(depth, /this\.#bandLayer\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid, ask, /, 'the terraces');
+  assert.match(depth, /this\.#litPainter\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid, ask, /, 'the lit band');
+  const look = read('src/app/panes/depth-look.ts');
+  assert.match(look, /u\[x\] = yOf\(ask\[x \* k \+ j\]!\); d\[x\] = yOf\(bid\[x \* k \+ j\]!\);/);
+  assert.match(look, /return \[\{ hs: up, sign: -1, ink: input\.up \}, \{ hs: down, sign: 1, ink: input\.down \}\];/);
   assert.match(depth, /depthLiqReadout\(\{ whose, band: bandText\(s\.radii\[top\]!\), long: liqFigure\(row, 'long', top\), short: liqFigure\(row, 'short', top\), coins, unit, kind: curveOf\(view\),/);
   assert.match(depth, /take: take \? \{ long: liqFigure\(take, 'long', top\), short: liqFigure\(take, 'short', top\) \} : null/, 'the take profits beside: the shorts\' below, the longs\' above');
   assert.match(depth, /bid: readRow \? liqFigure\(readRow, 'long', j\) : NaN, ask: readRow \? liqFigure\(readRow, 'short', j\) : NaN/, 'the table\'s first side is the longs below');
   assert.match(depth, /this\.#drawTable\(rows, [^;]*, depthHeads\(levelsKind\), sides, lines, /);
   assert.match(depth, /liqCardLines\(\{ asOf: readRow\.asOf, bands: rows, watched: top, units: settings\.units, coin, view: liqHeld!\.view, takes: tk \}\)/, 'the card knows the kind');
-  assert.match(method(lower, '  #drawTable('), /rows: depthTableRows\(rows, p, sides\)/);
+  assert.match(method(lower, '  #drawTable('), /rows: depthTableRows\(rows, p, sides, ranks\)/);
   const heat = read('src/app/panes/heat-pane.ts');
   // The column's box: its colours by kind (above: shorts bought back, or take profits alone sold), and the Mirror band as the box.
   assert.match(method(heat, '  #paintLiqColumn('), /k => k === 'above' \? \(alone \? p\.candleDown : p\.candleUp\) : k === 'below' \? \(alone \? p\.candleUp : p\.candleDown\)/);
