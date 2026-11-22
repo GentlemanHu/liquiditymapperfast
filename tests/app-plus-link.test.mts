@@ -368,13 +368,13 @@ const brokenBody = (): ReadableStream<Uint8Array> => new ReadableStream({ start(
  * The page's `fetch` answering as `answer` says (`broken`: the headers, then a body that fails), every request noted with its Authorization
  * header and cache mode, until `restore`.
  */
-function stubFetch(answer: (url: string) => { status: number; body?: unknown; broken?: true }) {
+function stubFetch(answer: (url: string) => { status: number; body?: unknown; broken?: true; headers?: Record<string, string> }) {
   const real = globalThis.fetch, seen: { url: string; auth: string | null; cache: RequestCache | undefined }[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     seen.push({ url, auth: new Headers(init?.headers).get('authorization'), cache: init?.cache });
     const a = answer(url);
-    return new Response(a.broken ? brokenBody() : JSON.stringify(a.body ?? null), { status: a.status });
+    return new Response(a.broken ? brokenBody() : JSON.stringify(a.body ?? null), { status: a.status, ...(a.headers ? { headers: a.headers } : {}) });
   }) as typeof fetch;
   return { seen, count: (url: string): number => seen.filter(r => r.url === url).length, restore: (): void => { globalThis.fetch = real; } };
 }
@@ -400,6 +400,14 @@ const triggersFile = (): Record<string, unknown> => ({ v: 1, coin: 'BTC', venue:
   snapshot: { asOf: AS_OF, createdAt: AS_OF + 35 * MIN, fetchedAt: AS_OF + 41 * MIN, ordersAt: AS_OF }, mark: 100, markFrom: 'positions', step: 10, orders: 9, triggers: 8, entries: 0, unsized: { orders: 0, wallets: 0 },
   stops: { orders: 4, wallets: 4, bins: [[8, 300, 100, 0, 0, 2, 0, 300, 0], [12, 0, 0, 50, 150, 0, 3, 0, 100]], beyond: { longUsd: 0, shortUsd: 0 }, cut: { longUsd: 0, shortUsd: 0 } },
   takes: { orders: 4, wallets: 4, bins: [[6, 0, 0, 0, 70, 0, 1, 0, 70], [14, 40, 20, 0, 0, 2, 0, 40, 0]], beyond: { longUsd: 0, shortUsd: 0 }, cut: { longUsd: 0, shortUsd: 0 } } });
+
+test('an answer that is not a file keeps its status and its wait however its body ends; a file whose body fails is no answer (Sol, review round 2)', async () => {
+  const stub = stubFetch(url => url.endsWith('/wait.json') ? { status: 503, broken: true, headers: { 'retry-after': '600' } } : { status: 200, broken: true });
+  try {
+    assert.deepEqual(await webFetch(`${LEVELS}/v1/plus/btc/wait.json`, PASS), { status: 503, body: null, retryAfter: 600 }, 'the wait the server named survives its broken body');
+    await assert.rejects(webFetch(`${LEVELS}/v1/plus/btc/triggers.json`, PASS), 'a file cut short is no answer at all');
+  } finally { stub.restore(); }
+});
 
 test('a linked file whose body fails after its headers is no answer: the file is read the old way, with the pass (Sol, review 2026-11-21)', async () => {
   const stub = stubFetch(url => url === `${API}/link` ? { status: 200, body: { base: A, until: Date.now() + 6 * HOUR, now: Date.now() } }

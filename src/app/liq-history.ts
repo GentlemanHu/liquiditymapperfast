@@ -51,12 +51,14 @@ export type LiqFetch = (url: string, pass?: string | null) => Promise<LiqAnswer>
 const READ_TIMEOUT_MS = 30_000;
 export const webFetch: LiqFetch = async (url, pass) => {
   const answer = await fetch(url, { cache: 'no-cache', signal: AbortSignal.timeout(READ_TIMEOUT_MS), ...(pass ? { headers: { authorization: `Bearer ${pass}` } } : {}) });
-  // The body is taken whole before it is read as JSON: a connection lost or given up while it comes rejects, as no answer at all, never a
-  // file with nothing in it (the data link then reads the file the old way, and a day is not held as empty).
-  const text = await answer.text();
-  let body: unknown = null;
-  try { body = JSON.parse(text); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
   const wait = retryAfterSeconds(answer.headers.get('retry-after'), Date.now());
+  // The body is taken whole before it is read as JSON: a connection lost or given up while a file comes rejects, as no answer at all, never a
+  // file with nothing in it (the data link then reads the file the old way, and a day is not held as empty). An answer that is not a file (an
+  // error, a wait) keeps its status and its wait however its body ends (Sol, review round 2: a 503's Retry-After was lost with its body).
+  let text: string | null;
+  try { text = await answer.text(); } catch (error) { if (answer.ok) throw error; text = null; }
+  let body: unknown = null;
+  if (text !== null) try { body = JSON.parse(text); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
   return { status: answer.status, body, ...(wait !== undefined ? { retryAfter: wait } : {}) };
 };
 /**
