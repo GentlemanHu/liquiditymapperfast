@@ -365,7 +365,7 @@ function placedBefore(measure: (text: string) => number, room: TableRoom, spec: 
   const rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
   // Complete: with its titles, its foot and the columns the card needs (all of them unless the table says fewer).
-  return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, summary: [], summaryW: width(cols), summaryH: 0, complete: titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n)) };
+  return { rowH, titles, foot, cols, left, plate, width: width(cols), y0, first, rights, height, widths: widths.slice(0, cols), summary: [], summaryW: width(cols), summaryH: 0, complete: titles && foot && cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n)) };
 }
 
 /** What of a placed table the moment's lines must never move: the rows, their columns, their place and their height. */

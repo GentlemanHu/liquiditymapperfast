@@ -19,7 +19,13 @@ import { layoutInfo, type InfoColor, type InfoLine, type InfoRow } from '../info
  */
 
 /** One cell: its words and, where it has one, its colour (else the text colour). */
-export interface TableCell { text: string; color?: string | undefined }
+export interface TableCell {
+  text: string; color?: string | undefined;
+  /** Where the figure stands in its own history, 0..1: a short bar under it across the column, filled from the left that far, in its colour. */
+  bar?: number | undefined;
+  /** The figure in the heavier face (a reading past the history's 95th percentile, or under its 5th). */
+  bold?: boolean | undefined;
+}
 
 export interface TableSpec {
   /** The column titles, the first over the rows' names (usually empty). */
@@ -38,6 +44,8 @@ export interface TableSpec {
   plateMin?: number;
   /** The row lit as the one chosen; -1 for none. */
   focus: number;
+  /** A row lit as one under the pointer is (the band under the pointer on the plot), unless the pointer is over another row. */
+  lit?: number;
   /**
    * What the pane's card says of the moment read that the rows do not (`tableLines`), drawn under the foot after a hairline: a label at the left
    * and its value at the lines' right edge, a plain line at the left, a long sentence wrapped to the lines' width, the card's own hairlines kept.
@@ -73,6 +81,8 @@ export interface TableRoom { w: number; h: number; plotW: number; axisW: number;
  */
 export interface TablePlace {
   rowH: number; titles: boolean; foot: boolean; cols: number; left: number; plate: boolean; width: number; y0: number; first: number; rights: number[]; height: number;
+  /** Each column's width (its widest title or figure), for what is drawn across a column behind a figure (`TableCell.bar`). */
+  widths?: number[];
   summary: readonly InfoRow[]; summaryW: number; summaryH: number; complete: boolean;
 }
 
@@ -160,7 +170,7 @@ export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, l
   const y0 = lift > 0 ? Math.max(0, Math.round(room.h / 2 - (height + lift) / 2)) : Math.round(room.h / 2 - height / 2);
   const first = y0 + (titles ? rowH : 0), rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
-  const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, summary: [], summaryW: width, summaryH: 0 };
+  const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, widths: widths.slice(0, cols), summary: [], summaryW: width, summaryH: 0 };
   if (!lines.length || !framed) return { ...rowsOnly, complete: framed && !lines.length };
   const laid = under(lines);
   if (!laid || y0 + height + laid.summaryH > room.h - 2) return { ...rowsOnly, complete: false };
@@ -197,7 +207,7 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
     for (const h of ROW_HEIGHTS) if ((k + (withTitles ? 1 : 0) + (withFoot ? 1 : 0)) * h + 4 <= room.h) { rowH = h; titles = withTitles; foot = withFoot; break fit; }
   }
   if (!rowH) return null;
-  const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? ''))));
+  const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? '', row[c]?.bold === true))));
   const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
   const free = room.w - room.axisW - room.plotW;
   let cols = n, left = room.plotW + 4, plate = false;
@@ -259,7 +269,18 @@ export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: T
     if (j === spec.focus || j === hover) { ctx.fillStyle = p.text; ctx.globalAlpha = j === spec.focus ? 0.1 : 0.05; ctx.fillRect(at.left + 2, y, at.width - 4, at.rowH); ctx.globalAlpha = 1; }
     ctx.textAlign = 'left'; ctx.fillStyle = row[0]!.color ?? (j === spec.focus ? p.text : p.muted); ctx.fillText(row[0]!.text, at.left + PAD, mid);
     ctx.textAlign = 'right';
-    for (let c = 1; c < at.cols; c++) { ctx.fillStyle = row[c]!.color ?? p.text; ctx.fillText(row[c]!.text, at.rights[c]!, mid); }
+    for (let c = 1; c < at.cols; c++) {
+      const cell = row[c]!, base = ctx.font;
+      ctx.fillStyle = cell.color ?? p.text;
+      // How unusual the figure is: a faint fill behind it, from the column's left edge as far across as its rank (a spreadsheet's data bar).
+      if (cell.bar !== undefined && Number.isFinite(cell.bar)) {
+        const right = at.rights[c]!, w = at.widths?.[c] ?? 0, pad = Math.max(1, Math.round(at.rowH * 0.12));
+        ctx.globalAlpha = 0.2; ctx.fillRect(right - w - 2, y + pad, Math.max(1, (w + 4) * Math.max(0, Math.min(1, cell.bar))), at.rowH - 2 * pad); ctx.globalAlpha = 1;
+      }
+      if (cell.bold) ctx.font = boldFont(base);
+      ctx.fillText(cell.text, at.rights[c]!, mid);
+      ctx.font = base;
+    }
   }
   ctx.textAlign = 'left'; ctx.fillStyle = p.muted;
   if (at.foot && spec.foot) ctx.fillText(spec.foot, at.left + PAD, at.first + k * at.rowH + at.rowH / 2);
@@ -334,7 +355,7 @@ export class PaneTable {
     if (room.rest === true && !room.pointing) this.#takeRest(measure, room, spec);
     const at = placeTable(measure, room, spec, this.#lift);
     this.#at = at; this.#rows = spec.rows.length;
-    if (at) paintTable(ctx, p, at, spec, this.#hover);
+    if (at) paintTable(ctx, p, at, spec, this.#hover >= 0 ? this.#hover : spec.lit ?? -1);
     return at;
   }
 

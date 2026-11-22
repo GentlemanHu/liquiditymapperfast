@@ -39,6 +39,8 @@ import { el } from '../dom.ts';
 import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
+import { BandLayer, LitPainter, bandUnder, depthLook, type LitBand } from './depth-look.ts';
+import { DepthHistory, RANK_FINE_MS, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
@@ -457,6 +459,16 @@ export class DepthPane extends TimePane {
   #lines: InfoLine[] | null = null;
   /** The bands' figures on the pane (pane-table.ts): a click on a row brings that band forward, or puts it back. */
   readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() }, row => this.#clickRow(row));
+  /** The bands drawn as terraces (depth-look.ts), cached: a pointer move only copies them. */
+  readonly #bandLayer = new BandLayer();
+  /** The band under the pointer, lit with its neighbours (depth-look.ts), and the one lit last (kept while the pointer stays near its edges). */
+  readonly #litPainter = new LitPainter();
+  #lit: LitBand | null = null;
+  /** Each band's history at a fixed step (depth-history.ts), read once the order book's table or card wants a rank, for where a reading stands in it. */
+  readonly #bandHistory = new DepthHistory((ids, from, to, step) => this.hub.source.columns(ids, from, to, step, true), () => this.invalidate());
+  get bandHistory(): DepthHistory { return this.#bandHistory; }
+  /** The ranks last worked out, and of what (`rankKey`). */
+  #ranks: { key: string; ranks: { bid: BandRank | null; ask: BandRank | null }[] } = { key: '', ranks: [] };
   /** The Sound box in the header (the depth sound's switch). */
   #bell = document.createElement('input');
   readonly #preset = document.createElement('select');
@@ -822,30 +834,40 @@ export class DepthPane extends TimePane {
     // shorts above are bought back and their longs below sold, so they draw the other way round (as the map's liquidation column does); take
     // profits alone as the book. Up and down stay the price's.
     const levelsKind = liq ? curveOf(liqHeld!.view) : null, sides = depthOrderSides(levelsKind), upInk = p[bidAskKey(sides.above)], downInk = p[bidAskKey(sides.below)];
-    // The rings, the widest first: its colour the lightest, the band at the centre the side's own colour; each is opaque, so no layer shows through another.
-    const shade = (side: string, j: number): string => mixHex(p.bg, side, top === 0 ? 1 : 0.3 + 0.7 * (1 - j / top));
-    for (let j = top; j >= 0; j--) {
-      ctx.fillStyle = shade(upInk, j);
-      for (let x = 0; x < s.w; x++) { const h = yOf(ask[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid - h, xs[x + 1]! - xs[x]! + 0.6, h); }
-      ctx.fillStyle = shade(downInk, j);
-      for (let x = 0; x < s.w; x++) { const h = yOf(bid[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid, xs[x + 1]! - xs[x]! + 0.6, h); }
-    }
-    // The widest band's edge, in a stronger ink than its fill: darker on a light theme, lighter on a dark one.
+    // The widest band's edge in a stronger ink than its fill (darker on a light theme, lighter on a dark one): Highlights mark it.
     const edge = (side: string): string => mixHex(side, p.text, 0.35);
-    ctx.lineWidth = 1.25; ctx.lineJoin = 'round';
-    for (const [values, sign, colour] of [[ask, -1, edge(upInk)], [bid, 1, edge(downInk)]] as const) {
-      ctx.strokeStyle = colour; ctx.beginPath();
-      let open = false;
-      for (let x = 0; x < s.w; x++) {
-        const h = yOf(values[at(x, top)]!);
-        if (!(h > 0)) { open = false; continue; }
-        const y = mid + sign * h;
-        if (!open) { ctx.moveTo(xs[x]!, y); open = true; } else ctx.lineTo(xs[x]!, y);
-        ctx.lineTo(xs[x + 1]!, y);
+    // The bands as terraces (depth-look.ts): each band a sheet on the next wider one, every band's true edge inked, a contact seam and a thin
+    // bevel; drawn once into a cached layer per answer, view, size and palette. `?depthLook=today` draws the plain rings, for comparing.
+    if (depthLook() !== 'today') this.#bandLayer.paint(ctx, { look: depthLook() === 'edges' ? 'edges' : 'terraces', palette: p, up: upInk, down: downInk, w: s.w, k, top, bid, ask, xs, mid, yOf, pw, ph }, this.dpr);
+    else {
+      // The rings, the widest first: its colour the lightest, the band at the centre the side's own colour; each is opaque, so no layer shows through another.
+      const shade = (side: string, j: number): string => mixHex(p.bg, side, top === 0 ? 1 : 0.3 + 0.7 * (1 - j / top));
+      for (let j = top; j >= 0; j--) {
+        ctx.fillStyle = shade(upInk, j);
+        for (let x = 0; x < s.w; x++) { const h = yOf(ask[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid - h, xs[x + 1]! - xs[x]! + 0.6, h); }
+        ctx.fillStyle = shade(downInk, j);
+        for (let x = 0; x < s.w; x++) { const h = yOf(bid[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid, xs[x + 1]! - xs[x]! + 0.6, h); }
       }
-      ctx.stroke();
+      ctx.lineWidth = 1.25; ctx.lineJoin = 'round';
+      for (const [values, sign, colour] of [[ask, -1, edge(upInk)], [bid, 1, edge(downInk)]] as const) {
+        ctx.strokeStyle = colour; ctx.beginPath();
+        let open = false;
+        for (let x = 0; x < s.w; x++) {
+          const h = yOf(values[at(x, top)]!);
+          if (!(h > 0)) { open = false; continue; }
+          const y = mid + sign * h;
+          if (!open) { ctx.moveTo(xs[x]!, y); open = true; } else ctx.lineTo(xs[x]!, y);
+          ctx.lineTo(xs[x + 1]!, y);
+        }
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
     }
-    ctx.lineWidth = 1;
+    // The band under the pointer, in this pane, lit with its neighbours and the same band across the price; the table lights its row and its
+    // lines speak of it (Karl, 2026-11-22). Over bare ground, past the newest column or in another pane, nothing is lit.
+    const overPlot = pointed && hv!.source === 'depth' && under >= 0 && hv!.y >= 0 && hv!.y <= ph;
+    const lit = this.#lit = overPlot ? bandUnder({ k, top, bid, ask, mid, yOf }, under, hv!.y, this.#lit, ph > 320 ? 3 : 1.5) : null;
+    if (lit) this.#litPainter.paint(ctx, { look: 'terraces', palette: p, up: upInk, down: downInk, w: s.w, k, top, bid, ask, xs, mid, yOf, pw, ph }, lit, this.dpr);
     // The take profits of the watched band: a dashed line in the text's ink each side (`TAKE_DASH`, their look everywhere), so they read apart
     // from the levels' rings; each dash cased in the page's ground, so it stands out on the bands' fills as well as on the empty plot.
     if (takes && takeBid && takeAsk) {
@@ -924,15 +946,35 @@ export class DepthPane extends TimePane {
     else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
       if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
-    } else if (live || readX >= 0) {
-      const here = rows[top]!.bid + rows[top]!.ask;
-      let rank = 1, of = 0;
-      for (let x = 0; x < cutW; x++) { const total = bid[at(x, top)]! + ask[at(x, top)]!; if (total > 0) { of++; if (total > here) rank++; } }
-      card = depthCardLines({ time: readTime, bands: rows, watched: top, units: settings.units, coin, rank, of });
     }
-    // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
-    const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
+    // Where each band's reading stands in its own history (depth-history.ts): the order book's, once the table or a card wants it, at the moment
+    // the table reads, in the units shown.
+    // A figure read finely (the books now, or a column of at most RANK_FINE_MS of minutes) is ranked as the table shows it, against the closing
+    // minutes before its moment; a coarser view's column (a mean book, its inner bands spread thin by every move) is not, and there the newest
+    // closing minute at or before the moment is ranked and said with its time.
+    const counted = liq ? [] : bookIds(state), history = !liq && (pointed || settings.table) ? this.#bandHistory.get(counted, s.radii) : null;
+    const inCoins = settings.units === 'coin', fine = live || (s.answer.stepMs ?? Infinity) <= RANK_FINE_MS;
+    const rankSide = (b: 'bid' | 'ask'): RankSide => inCoins ? (b === 'bid' ? 'bidCoin' : 'askCoin') : b;
+    // The moment ranked: the books now, or the column read (only where its books agreed on a price); in a coarser view the pointer's own moment
+    // (not its column's start, which the zoom moves), or the newest with no pointer.
+    const fineMoment = live && liveNow ? liveNow.at : readX >= 0 && (s.answer.centred?.[readX] ?? 1) > 0 ? colT(readX) : NaN;
+    const presentNow = live && liveNow ? liveNow.present : readX >= 0 ? s.answer.present?.[readX] ?? null : null;
+    const rankMoment = fine ? fineMoment : pointed ? Math.min(hv!.t, newestT) : newestT;
+    // Worked out again only when the reading or the history changes, not on every frame the pointer moves within a column.
+    const rankKey = history ? `${history.version}|${history.key}|${counted.join(',')}|${inCoins}|${fine}|${rankMoment}|${presentNow}|${rows.map(r => `${r.bid},${r.ask}`).join(';')}` : '';
+    if (this.#ranks.key !== rankKey) this.#ranks = { key: rankKey, ranks: history && Number.isFinite(rankMoment) ? s.radii.map((_, j) => fine
+      ? { bid: rankValue(history, rankSide('bid'), j, rankMoment, rows[j]!.bid, counted, null, presentNow), ask: rankValue(history, rankSide('ask'), j, rankMoment, rows[j]!.ask, counted, null, presentNow) }
+      : { bid: rankAt(history, rankSide('bid'), j, rankMoment, counted), ask: rankAt(history, rankSide('ask'), j, rankMoment, counted) }) : [] };
+    const ranks = this.#ranks.ranks;
+    const whole = !!history && this.#bandHistory.wholeFor(counted);
+    // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
+    const said = lit ? lit.j : top;
+    // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
+    if (!liq && (pointed || settings.table) && (live || readX >= 0))
+      card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole } });
+    // Under a heading naming the band they speak of. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
+    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card));
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`, fine ? ranks : [], lit ? lit.j : -1) : null;
     if (pointed && card && !placed?.complete) this.#lines = card;
   }
 
@@ -943,11 +985,11 @@ export class DepthPane extends TimePane {
    * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with); `restKey`: the source, the band and the
    * market the table is of (`TableSpec.restKey`).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], restKey: string): TablePlace | null {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', titles[0], titles[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
-      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides), lines, restKey,
+      heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, restKey,
     });
   }
 
@@ -1035,10 +1077,13 @@ export function depthHeads(kind: LevelsKind | null): [string, string] {
  * (`sides`, order-side.ts): the bids' buy colour, the longs' sell colour (a long is closed by a sell), so × points at the column of its colour. A
  * band not read has dashes.
  */
-export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null)): TableCell[][] {
+export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null),
+  ranks: readonly ({ bid: BandRank | null; ask: BandRank | null } | undefined)[] = []): TableCell[][] {
   // The palette `ratioCell` reads, its first side (`bid`) in the colour of the side below the price.
   const ink = { bid: p[bidAskKey(sides.below)], ask: p[bidAskKey(sides.above)], text: p.text, muted: p.muted };
-  return rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p) }, { text: tableText(row.ask), color: tableInk(ink.ask, p) },
+  // Where a figure stands in its own history (depth-history.ts): a bar under it that far across, and the figure bold past the 95th percentile or under the 5th.
+  const ranked = (r: BandRank | null | undefined): Pick<TableCell, 'bar' | 'bold'> => r ? { bar: r.p, bold: rankKind(r).extreme } : {};
+  return rows.map((row, j) => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p), ...ranked(ranks[j]?.bid) }, { text: tableText(row.ask), color: tableInk(ink.ask, p), ...ranked(ranks[j]?.ask) },
     { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, ink)]);
 }
 

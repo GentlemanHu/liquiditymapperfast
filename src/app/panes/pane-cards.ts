@@ -6,7 +6,27 @@ import { t } from '../i18n.ts';
 import { bandText } from '../depth-settings.ts';
 import { curveOf, viewParts, type LiqView } from '../liq-view.ts';
 import { depthOrderSides, type OrderSide } from '../order-side.ts';
+import { rankKind, type BandRank } from '../depth-history.ts';
 import { ratioFigure, sideRatio } from './pane-table.ts';
+
+/** The history's span a rank stands on, in words: whole days from two on, else hours. */
+const spanWords = (ms: number): string => ms >= 2 * 86_400_000 ? t('{n} days', { n: Math.floor(ms / 86_400_000) }) : t('{n} h', { n: Math.floor(ms / 3_600_000) });
+/**
+ * Where a band's reading stands in its own history (depth-history.ts), in words: past every window held ("highest in 6 days"), under every one,
+ * or the share on its side of the middle ("above 87 % of 6 days", "below 98 % of 6 days"). A dash where there is no rank (too little history,
+ * or the moment's window missed a book the history usually has).
+ */
+export function rankWords(r: BandRank | null): string {
+  if (!r) return '–';
+  const k = rankKind(r), span = spanWords(r.coverMs);
+  return k.kind === 'highest' ? t('highest in {span}', { span }) : k.kind === 'lowest' ? t('lowest in {span}', { span }) : k.kind === 'middle' ? t('in the middle of {span}', { span })
+    : k.kind === 'above' ? t('above {pct} % of {span}', { pct: k.pct, span }) : t('below {pct} % of {span}', { pct: k.pct, span });
+}
+/**
+ * A band's place in its history on each side, for the Depth card's and table's lines: `loading` until the newest hours are read, `whole` once the
+ * older days are too (a moment with no rank before then may still get one: "…", not "–").
+ */
+export interface DepthHistoryLines { bid: BandRank | null; ask: BandRank | null; loading: boolean; whole: boolean }
 
 /** The card colour of the book's pair for what a side's orders do (order-side.ts): the bid colour ('below') for buys, the ask colour ('above') for sells. */
 const pairColor = (side: OrderSide): InfoColor => side === 'buy' ? 'below' : 'above';
@@ -174,7 +194,7 @@ const coinFigures = new Intl.NumberFormat('en-US', { notation: 'compact', maximu
  * One moment of the Depth pane where its table is not drawn (no room beside the plot, or the table switched off): each band's bids and asks, the
  * watched band (the one brought forward, else the widest) in bold with its difference and balance, and where that band's total stands in the view.
  */
-export function depthCardLines(h: { time: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; rank: number | null; of: number }): InfoLine[] {
+export function depthCardLines(h: { time: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; rank: number | null; of: number; history?: DepthHistoryLines | null }): InfoLine[] {
   const fmt = (value: number): string => h.units === 'coin' ? `${coinFigures.format(value)} ${h.coin}` : money(value);
   // The table says the time, every band and the watched band's difference and ratio in its rows: it keeps the balance and the rank.
   const lines: InfoLine[] = [{ text: t('Depth'), bold: true, table: false }, { label: t('Time'), text: clock(h.time, true), table: false }];
@@ -186,7 +206,22 @@ export function depthCardLines(h: { time: number; bands: readonly { r: number; b
     const imbalance = imbalanceLine(w.bid, w.ask); if (imbalance) lines.push(imbalance);
     const ratio = ratioLine(w.bid, w.ask, [t('bids'), t('asks')]); if (ratio) lines.push({ ...ratio, table: false });
   }
-  if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });
+  // Where the watched band's bids and asks stand in their own history (the 16 minutes around the moment against those of the days before), in
+  // place of its rank among the columns in view, which changed with the zoom. Said from the first frame ("…" while the history is read), so the
+  // lines under the table do not move when it arrives.
+  const hist = h.history;
+  if (hist) {
+    for (const [side, label, color] of [['bid', t('Bids'), 'below'], ['ask', t('Asks'), 'above']] as const) {
+      const r = hist[side];
+      lines.push({ label, text: r ? rankWords(r) : hist.loading || !hist.whole ? '…' : '–', color, bold: !!r && rankKind(r).extreme });
+    }
+    // What the ranks stand on, in the table too: how many earlier readings, and, where a coarser view's column could not be ranked as shown,
+    // which closing minute was. Said from the first frame, so the lines do not move when the history arrives.
+    const r = hist.bid ?? hist.ask;
+    lines.push({ text: r?.at != null ? t('The book at {time}, against {n} earlier readings, one every 16 minutes', { time: clock(r.at), n: r.n })
+      : t('Against {n} earlier readings, one every 16 minutes', { n: r ? r.n : '…' }), color: 'muted', wrap: true });
+  }
+  else if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });
   lines.push({ text: t('Bids · asks resting within each distance of the price, added up over the books counted (Venues); each band holds the ones inside it.'), color: 'muted', wrap: true, rule: true, table: false });
   return lines;
 }
