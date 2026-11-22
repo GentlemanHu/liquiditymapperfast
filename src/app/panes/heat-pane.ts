@@ -2461,7 +2461,8 @@ export class HeatPane {
     for (const level of levels) {
       const y = this.view.yOf(level.price, ph);
       if (y < 0 || y > ph) continue;
-      // Provider levels are coloured by where they sit relative to price: ask colour above the mark, bid colour below.
+      // Provider levels are coloured by where they sit relative to price: ask colour above the mark, bid colour below. Unreachable while only the
+      // liquidity layer exists; a stop-loss or take-profit layer brought back must colour by what its orders do instead (order-side.ts).
       ctx.fillStyle = level.price >= state.mark.price ? p.ask : p.bid; ctx.globalAlpha = 0.18 + 0.7 * Math.sqrt(level.notionalUsd / max);
       ctx.fillRect(0, y - 1.5, pw, 3);
     }

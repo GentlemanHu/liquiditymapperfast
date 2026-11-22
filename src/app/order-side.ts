@@ -20,16 +20,19 @@ export function levelsOrderSide(kind: LevelsKind, side: 'long' | 'short'): Order
   return (side === 'long') === (kind === 'takes') ? 'buy' : 'sell';
 }
 
+/** What the two sides of a pane like Depth do: the side above the price and the side below it. */
+export interface DepthSides { above: OrderSide; below: OrderSide }
+
 /**
  * What the Depth pane's two sides do: `kind` null for the order book (its asks above sell, its bids below buy), else the liquidation levels'
  * kind as drawn (`curveOf`), whose shorts above are bought back and longs below sold, and whose take profits alone are like the book.
  */
-export function depthOrderSides(kind: LevelsKind | null): { above: OrderSide; below: OrderSide } {
+export function depthOrderSides(kind: LevelsKind | null): DepthSides {
   return kind === null ? { above: 'sell', below: 'buy' } : { above: levelsOrderSide(kind, 'short'), below: levelsOrderSide(kind, 'long') };
 }
 
 /**
- * Which colour of the book's pair a side's orders take: 'bid' for buys, 'ask' for sells. The surface picks the pair (the Depth pane and every
- * pane table ink in bid and ask, the map's liquidation column in the candle colours); the side's orders pick which of its two colours.
+ * Which colour of the book's pair a side's orders take, as the palette's key: 'bid' for buys, 'ask' for sells. The surface picks the pair (the
+ * Depth pane and every pane table ink in bid and ask, the map's liquidation column in the candle colours); the side's orders pick which of its two.
  */
-export const pairKey = (side: OrderSide): 'bid' | 'ask' => side === 'buy' ? 'bid' : 'ask';
+export const bidAskKey = (side: OrderSide): 'bid' | 'ask' => side === 'buy' ? 'bid' : 'ask';

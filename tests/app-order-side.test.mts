@@ -4,12 +4,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { depthOrderSides, levelsOrderSide, pairKey } from '../src/app/order-side.ts';
+import { bidAskKey, depthOrderSides, levelsOrderSide } from '../src/app/order-side.ts';
 import { liquidationOrderSide } from '../src/app/script/inputs.ts';
 import { depthHeads, depthLiqReadout, depthTableRows } from '../src/app/panes/lower-panes.ts';
-import { depthCardLines, liqCardLines, ltCardLines } from '../src/app/panes/pane-cards.ts';
+import { depthCardLines, liqCardLines, ltCardLines, oiCardLines } from '../src/app/panes/pane-cards.ts';
 import { DepthRangeSummary, depthHeldKey, type DepthLiqRow, type DepthPaneHeld } from '../src/app/range/depth-lines.ts';
 import { liqRatioWords } from '../src/app/liq-words.ts';
+import { probeBoxLines } from '../src/app/liq-box.ts';
 import { tableInk } from '../src/app/panes/pane-table.ts';
 import { viewKey, type LiqView } from '../src/app/liq-view.ts';
 import type { LevelsKind } from '../src/app/liq-levels.ts';
@@ -32,13 +33,20 @@ test('the rule: a long is closed by a sell and a short by a buy; take profits al
   assert.deepEqual(depthOrderSides(null), { above: 'sell', below: 'buy' }, 'the book: asks above sell, bids below buy');
   assert.deepEqual(depthOrderSides('liq'), { above: 'buy', below: 'sell' }, 'liquidation levels: the other way round');
   assert.deepEqual(depthOrderSides('takes'), depthOrderSides(null), 'take profits alone are resting orders like the book\'s');
-  assert.deepEqual([pairKey('buy'), pairKey('sell')], ['bid', 'ask']);
+  assert.deepEqual([bidAskKey('buy'), bidAskKey('sell')], ['bid', 'ask']);
+});
+
+test('the phone\'s finger box, which says the rule in its own words, agrees with it for every kind and side', () => {
+  for (const kind of KINDS) for (const side of ['long', 'short'] as const) {
+    const lines = probeBoxLines({ kind, side, at: side === 'long' ? 90 : 110, price: 100, way: 1_000, other: 500, level: 200, lo: 80, hi: 90, positions: 1, top: 0, parts: null });
+    assert.equal(lines[0]!.color, levelsOrderSide(kind, side), `${kind} ${side}`);
+  }
 });
 
 test('the Depth table: longs lead in the sell colour, so × points at the longs\' column (Karl\'s screenshot: 33.7M, 24.9M, +8.76M, 1.35×)', () => {
-  const rows = [{ r: 0.0125, bid: 33.7e6, ask: 24.9e6 }, { r: 0.05, bid: 86e6, ask: 99.6e6 }];
+  const rows = [{ r: 0.0125, bid: 33.66e6, ask: 24.9e6 }, { r: 0.05, bid: 86e6, ask: 99.6e6 }];
   const liq = depthTableRows(rows, P, depthOrderSides('liq'));
-  assert.deepEqual(liq[0]!.map(c => c.text), ['±1.25%', '33.7M', '24.9M', '+8.8M', '1.35×']);
+  assert.deepEqual(liq[0]!.map(c => c.text), ['±1.25%', '33.7M', '24.9M', '+8.76M', '1.35×']);
   assert.deepEqual([liq[0]![1]!.color, liq[0]![2]!.color], [SELL, BUY], 'longs in the sell colour, shorts in the buy colour');
   assert.equal(liq[0]![4]!.color, SELL, 'more long liquidations: × in the sell colour');
   assert.equal(liq[1]![4]!.color, BUY, 'more short liquidations: × in the buy colour');
@@ -75,17 +83,21 @@ test('the Depth header over the liquidation levels: each figure and the named la
   assert.match(beside, /take profits <b class="ask">▲4M<\/b> <b class="bid">▼3M<\/b>/, 'the longs\' take profits above sell, the shorts\' below buy');
 });
 
-test('the Depth card: the larger side in the colour of what its orders would do; the difference uncoloured; the book, tracker and OI cards as before', () => {
+test('the Depth card: the larger side in the colour of what its orders would do; the difference coloured only as buying less selling; the book, tracker and OI cards as before', () => {
   const by = (lines: InfoLine[], label: string): InfoLine | undefined => lines.find(l => l.label === label);
   const card = (kind: LevelsKind, bid: number, ask: number): InfoLine[] => liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid, ask }], watched: 0, units: 'usd', coin: 'BTC', view: VIEWS[kind] });
   assert.deepEqual([by(card('liq', 25e6, 10e6), 'Ratio')!.text, by(card('liq', 25e6, 10e6), 'Ratio')!.color], ['longs 2.50×', 'above'], 'longs lead: the sell (ask) colour');
   assert.deepEqual([by(card('both', 10e6, 25e6), 'Ratio')!.text, by(card('both', 10e6, 25e6), 'Ratio')!.color], ['shorts 2.50×', 'below']);
   assert.deepEqual([by(card('takes', 25e6, 10e6), 'Ratio')!.text, by(card('takes', 25e6, 10e6), 'Ratio')!.color], ['bids 2.50×', 'below']);
-  for (const kind of KINDS) assert.equal(by(card(kind, 25e6, 10e6), 'Δ')!.color, undefined, `${kind}: no colour on longs less shorts`);
+  for (const kind of ['liq', 'stops', 'both'] as const) assert.equal(by(card(kind, 25e6, 10e6), 'Δ')!.color, undefined, `${kind}: no colour on longs less shorts`);
+  // Take profits alone are bids less asks, buying less selling: coloured by the sign, as the book's card.
+  assert.deepEqual([by(card('takes', 25e6, 10e6), 'Δ')!.color, by(card('takes', 10e6, 25e6), 'Δ')!.color], ['below', 'above']);
   assert.equal(by(liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid: 25e6, ask: 10e6 }], watched: 0, units: 'usd', coin: 'BTC' }), 'Ratio')!.color, 'above', 'no view: liquidations');
   const book = depthCardLines({ time: 0, bands: [{ r: 0.05, bid: 30e6, ask: 10e6 }], watched: 0, units: 'usd', coin: 'BTC', rank: null, of: 0 });
   assert.deepEqual([by(book, 'Δ')!.color, by(book, 'Ratio')!.color], ['below', 'below'], 'the book: bids less asks is buying less selling');
   assert.equal(by(ltCardLines({ time: 0, bid: 1, ask: 3, halfLifeBp: 10, venues: 2 }), 'Ratio')!.color, 'above');
+  const oi = (change: number): InfoLine[] => oiCardLines({ time: 0, level: 100, change, before: null, rank: null, of: 0, sigma: null, source: null, staleMin: null });
+  assert.deepEqual([by(oi(5), 'Δ')!.color, by(oi(-5), 'Δ')!.color], ['below', 'above'], 'open interest\'s change keeps the colour of its direction');
 });
 
 test('the Range panel: the liquidation levels\' rows in the colour of what their orders would do', () => {
@@ -94,12 +106,41 @@ test('the Range panel: the liquidation levels\' rows in the colour of what their
   const held = (kind: LevelsKind): DepthPaneHeld => ({ key: depthHeldKey('liq', [], RADII, viewKey(VIEWS[kind])), source: 'liq', ids: [], t0: T, t1: T + 200 * M, w: 20, radii: RADII,
     bid: new Float32Array(40), ask: new Float32Array(40), bidCoin: new Float32Array(40), askCoin: new Float32Array(40), present: null, centred: null, stepMs: 0, answeredAt: Infinity,
     rows: [row(0, 10, 20), row(4, 30, 10)], buckets: [0, 1], omitted: [], coins: false, coin: 'BTC', focus: 1, view: VIEWS[kind] });
-  const tones = (kind: LevelsKind): string[] => {
-    const h = held(kind), lines = new DepthRangeSummary().lines({ t0: T, t1: T + 10 * M, p0: null, p1: null, live: false, draft: false, pane: 'depth', step: M }, h, true, h.key, T + 600 * M);
+  // `m1` minutes of selection: up to 3, only the first snapshot is in force (the second is fetched at minute 4), so the rows say one figure each.
+  const tones = (kind: LevelsKind, m1 = 10): string[] => {
+    const h = held(kind), lines = new DepthRangeSummary().lines({ t0: T, t1: T + m1 * M, p0: null, p1: null, live: false, draft: false, pane: 'depth', step: M }, h, true, h.key, T + 600 * M);
     return lines.flatMap(l => l.grid ?? [])[0]!.rows!.map(r => `${r.label}: ${r.tone}`);
   };
-  for (const kind of ['liq', 'stops', 'both'] as const) assert.deepEqual(tones(kind), ['Longs first → last: sell', 'Shorts first → last: buy'], kind);
+  for (const kind of ['liq', 'stops', 'both'] as const) {
+    assert.deepEqual(tones(kind), ['Longs first → last: sell', 'Shorts first → last: buy'], kind);
+    assert.deepEqual(tones(kind, 3), ['Longs: sell', 'Shorts: buy'], `${kind}, one snapshot`);
+  }
   assert.deepEqual(tones('takes'), ['Take profits of shorts: buy', 'Take profits of longs: sell']);
+  assert.deepEqual(tones('takes', 3), ['Take profits of shorts: buy', 'Take profits of longs: sell']);
+});
+
+test('the drawings follow the rule too: the Depth pane\'s rings, edge, header and table, the map\'s liquidation Mirror band, the phone\'s verdict', () => {
+  // Canvas code, pinned by its source as tests/app-hover-rows.test.mts pins the map's boxes.
+  const depth = (() => {
+    const src = fs.readFileSync('src/app/panes/lower-panes.ts', 'utf8').replace(/\r\n/g, '\n'), cls = src.indexOf('export class DepthPane '), start = src.indexOf('  #paint(): void {', cls);
+    assert.ok(cls > 0 && start > cls, 'DepthPane #paint'); return src.slice(start, src.indexOf('\n  }\n', start));
+  })();
+  assert.match(depth, /const levelsKind = liq \? curveOf\(liqHeld!\.view\) : null, sides = depthOrderSides\(levelsKind\), upInk = p\[bidAskKey\(sides\.above\)\], downInk = p\[bidAskKey\(sides\.below\)\];/);
+  // Up is the ask array (above the price: asks, or the shorts' levels), down the bid array (bids, or the longs').
+  assert.match(depth, /ctx\.fillStyle = shade\(upInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(ask\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid - h,/);
+  assert.match(depth, /ctx\.fillStyle = shade\(downInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(bid\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid,/);
+  assert.match(depth, /\[\[ask, -1, edge\(upInk\)\], \[bid, 1, edge\(downInk\)\]\]/);
+  assert.match(depth, /depthLiqReadout\(\{ whose, band: bandText\(s\.radii\[top\]!\), long: liqFigure\(row, 'long', top\), short: liqFigure\(row, 'short', top\), coins, unit, kind: curveOf\(view\),/);
+  assert.match(depth, /bid: readRow \? liqFigure\(readRow, 'long', j\) : NaN, ask: readRow \? liqFigure\(readRow, 'short', j\) : NaN/, 'the table\'s first side is the longs below');
+  assert.match(depth, /this\.#drawTable\(rows, [^;]*, depthHeads\(levelsKind\), sides, lines\)/);
+  const lower = fs.readFileSync('src/app/panes/lower-panes.ts', 'utf8').replace(/\r\n/g, '\n'), drawAt = lower.indexOf('  #drawTable(');
+  assert.match(lower.slice(drawAt, lower.indexOf('\n  }\n', drawAt)), /rows: depthTableRows\(rows, p, sides\)/);
+  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8'), mirrorAt = heat.indexOf('  #paintLiqColumnMirror('), mirror = heat.slice(mirrorAt, heat.indexOf('\n  }\n', mirrorAt));
+  assert.ok(mirrorAt > 0, '#paintLiqColumnMirror');
+  assert.match(mirror, /const sellsAbove = set\.levels\?\.kind === 'takes';\n\s+paintBand\(ctx, p, x0, W, \{ y: top, color: sellsAbove \? p\.candleDown : p\.candleUp, .*?\{ y: bottom, color: sellsAbove \? p\.candleUp : p\.candleDown,/, 'the band as its box: take profits alone sell above');
+  assert.equal(levelsOrderSide('takes', 'short'), 'sell', 'which is the rule');
+  const phone = fs.readFileSync('src/app/panes/liq-pane.ts', 'utf8');
+  assert.match(phone, /const verdict = liqRatioWords\(longs, shorts, alone\);\n\s+this\.#ratio\.textContent = verdict\.text;\n\s+this\.#ratio\.className = verdict\.side \? `liq-ratio \$\{verdict\.side\}` : 'liq-ratio';/);
 });
 
 test('the phone Liq tab: "Balanced" under the boxes\' 2 %, never longs in the sell colour on a tie', () => {

@@ -382,7 +382,7 @@ html[data-layout="phone-landscape"] main[data-tab="liq"] > .pane.liq { display: 
 .liq-balance .long { background: linear-gradient(90deg, var(--candle-down), color-mix(in srgb, var(--candle-down) 45%, transparent)); box-shadow: 0 0 10px color-mix(in srgb, var(--candle-down) 45%, transparent); }
 .liq-balance .short { background: linear-gradient(90deg, color-mix(in srgb, var(--candle-up) 45%, transparent), var(--candle-up)); box-shadow: 0 0 10px color-mix(in srgb, var(--candle-up) 45%, transparent); }
 .liq-meta { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.liq-ratio { font-weight: 700; white-space: nowrap; }
+.liq-ratio { font-weight: 700; white-space: nowrap; color: var(--text); }
 .liq-ratio.long { color: var(--candle-down); }
 .liq-ratio.short { color: var(--candle-up); }
 .pane.liq .liq-range { display: flex; margin: 0 10px 8px; }
