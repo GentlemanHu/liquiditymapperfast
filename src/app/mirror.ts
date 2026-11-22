@@ -67,16 +67,16 @@ const known = (x: number): number => Number.isFinite(x) && x > 0 ? x : 0;
  * Which band holds more, as a line of its own: the heavier side named by its price side, in its colour, with how many times the other it is
  * ("Bids 1.13× the asks"); about even under the Mirror's balance; only one side where the other holds nothing. The test and the words of the
  * profile box's `depthBandVerdict` (hover-rows.ts), without its "Within ≈±…:" lead-in, which the order book's box says on its first line, and
- * the words of the guide's picture of it.
+ * the words of the guide's picture of it. Every case wraps, as there: in German or Russian the sentence is wider than a narrow book's box.
  */
 export function bandVerdict(bid: number, ask: number): MirrorLine {
   const b = known(bid), a = known(ask);
-  if (!b && !a) return { text: t('No bids or asks'), color: 'muted' };
-  if (!a) return { text: t('Only bids'), color: 'below', bold: true };
-  if (!b) return { text: t('Only asks'), color: 'above', bold: true };
-  if (Math.max(b, a) / Math.min(b, a) < BALANCED_RATIO) return { text: t('Bids and asks about even'), bold: true };
-  return b > a ? { text: t('Bids {ratio} the asks', { ratio: ratioWords(b, a) }), color: 'below', bold: true }
-    : { text: t('Asks {ratio} the bids', { ratio: ratioWords(a, b) }), color: 'above', bold: true };
+  if (!b && !a) return { text: t('No bids or asks'), color: 'muted', wrap: true };
+  if (!a) return { text: t('Only bids'), color: 'below', bold: true, wrap: true };
+  if (!b) return { text: t('Only asks'), color: 'above', bold: true, wrap: true };
+  if (Math.max(b, a) / Math.min(b, a) < BALANCED_RATIO) return { text: t('Bids and asks about even'), bold: true, wrap: true };
+  return b > a ? { text: t('Bids {ratio} the asks', { ratio: ratioWords(b, a) }), color: 'below', bold: true, wrap: true }
+    : { text: t('Asks {ratio} the bids', { ratio: ratioWords(a, b) }), color: 'above', bold: true, wrap: true };
 }
 
 /**

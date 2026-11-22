@@ -44,10 +44,11 @@ test('the order book\'s box says each band by its price side, then the heavier s
   // Named by price side, never this side or the opposite: the pointer below the price with the same bands says the same.
   const below = mirrorLines(mirrorStats(85_000, 84_700, 100e6, 113e6)!);
   assert.deepEqual(below.slice(1).map(l => l.text), above.slice(2).map(l => l.text), 'the same words on either side of the price');
-  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 5)!).at(-1), { text: 'Bids and asks about even', bold: true }, 'within 2 %, in no side\'s colour');
-  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 0)!).at(-1), { text: 'Only asks', color: 'above', bold: true }, 'not a ratio over nothing');
-  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 5)!).at(-1), { text: 'Only bids', color: 'below', bold: true });
-  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 0)!).at(-1), { text: 'No bids or asks', color: 'muted' });
+  assert.equal(above.at(-1)!.wrap, true, 'wraps in a narrow book, as the profile box\'s verdict does');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 5)!).at(-1), { text: 'Bids and asks about even', bold: true, wrap: true }, 'within 2 %, in no side\'s colour');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 0)!).at(-1), { text: 'Only asks', color: 'above', bold: true, wrap: true }, 'not a ratio over nothing');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 5)!).at(-1), { text: 'Only bids', color: 'below', bold: true, wrap: true });
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 0)!).at(-1), { text: 'No bids or asks', color: 'muted', wrap: true });
   assert.equal(mirrorLines(mirrorStats(100, 101, 5, 4, true)!).at(-1)!.text, 'part of the range is outside the data');
 });
 
