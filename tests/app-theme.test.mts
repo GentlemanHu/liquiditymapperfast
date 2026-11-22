@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_THEME, PHONE_DARK_THEME, autoTheme, flippedTheme, initialState, themeChange } from '../src/app/store.ts';
+import { DEFAULTS_REV, DEFAULT_THEME, PHONE_DARK_THEME, autoTheme, flippedTheme, initialState, themeChange } from '../src/app/store.ts';
 import { CAUTION, FRAMES, FRAME_STRENGTH, PALETTES, THEME_ORDER, chromeFor, mixHex, resolveThemeId, rgb, textOn, themeColorOf, themeVars, type Palette } from '../src/app/theme.ts';
 import { WEAK_ALPHA, emphasisRamps } from '../src/app/traded/emphasis.ts';
 
@@ -167,9 +167,13 @@ test('a page opens in Colour-blind safe, light; a saved Light or Terminal that w
     // A pick stays, Light too.
     assert.deepEqual(load({ theme: 'light', themePicked: true }), { theme: 'light', themePicked: true });
     assert.deepEqual(load({ theme: 'terminal', themePicked: true }), { theme: 'terminal', themePicked: true });
-    // Any other theme saved without the flag was picked before the flag existed: it stays, and now counts as picked.
+    // Any other theme saved without the flag was picked before the flag existed: it stays, and now counts as picked. Colour-blind safe, light
+    // too: it came hours before the flag, as a theme to pick.
     assert.deepEqual(load({ theme: 'dark' }), { theme: 'dark', themePicked: true });
+    assert.deepEqual(load({ theme: 'daylight' }), { theme: 'daylight', themePicked: true });
     assert.deepEqual(load({ theme: 'no-such-theme' }), { theme: 'daylight', themePicked: false });
+    // A save with the flag says itself, whatever theme it wrote down: so a default that is replaced one day needs no list of former ones.
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false }), { theme: 'daylight', themePicked: false });
   } finally {
     if (real === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real;
   }
@@ -200,6 +204,7 @@ test('a phone follows its own light or dark setting until a theme is picked, dar
     // Revision 7: every older save wrote Light down as the light-or-dark key's light theme. One that never picked a theme, on a phone set to
     // dark, has the key bring today's light default; a save that picked one keeps its slots, and so does a save of revision 7 (Light, picked,
     // then Automatic) or one holding another light theme.
+    assert.ok(DEFAULTS_REV >= 7);
     const older = load({ theme: 'terminal', themePicked: false, themeSlots: { light: 'light', dark: 'terminal' }, defaultsRev: 6 }, true, true);
     assert.deepEqual(older, { theme: 'terminal', themePicked: false, slots: { light: 'daylight', dark: 'terminal' } });
     assert.equal(flippedTheme({ theme: older.theme, themeSlots: older.slots }), 'daylight');
