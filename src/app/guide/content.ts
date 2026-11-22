@@ -30,7 +30,7 @@ export const SECTIONS: readonly Section[] = [
         '**The profile**, the bars at the right edge of the chart, is the order book right now.',
         '**The flow column** at the far left shows what traders did, exchange by exchange.',
         '**The order book** on the far right is the same book as a ladder of prices.',
-        '**The panes underneath** (Depth, Open Interest, Delta, Liquidity Tracker, Long/Short, Funding and Bar stats) share the chart\'s time axis. You switch them on with the **Panels** buttons of the toolbar; your own Scripts switch on in the Chart deck.',
+        '**The panes underneath** (Depth, Open Interest, Delta, Liquidity Tracker, Long/Short, Funding, Bar stats and Flow history) share the chart\'s time axis. You switch them on with the **Panels** buttons of the toolbar; your own Scripts switch on in the Chart deck.',
         '**The map\'s corner**, on a computer, holds Layouts, Go to, Select (a range), Draw and Recenter. On a phone or tablet Layouts and Range are in Settings, Recenter sits beside the timeframes, Draw is a button at the map\'s top right, and Go to is not offered.',
         '**The toolbar** at the top chooses what to show and how. It is a row of boxes, called decks here: Market, Time, Heatmap, Panels, Chart, Alerts, and the page\'s own (Plus, Guide, Author, Install, Screenshot).',
         'Most buttons of the Chart and Alerts decks are **split buttons**: the button switches the feature on or off, its lamp says which, and the small key joined to its right opens its settings.',
@@ -252,7 +252,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'flow-history', title: 'Flow history: order sizes candle by candle',
     blocks: [
-      { t: 'p', text: 'The **Flow history** pane puts the order sizes of the flow column on the chart\'s time axis: a row for each kind of flow, a bar for each candle. Switch it on in the flow column\'s settings (its sliders key), in the **Bar stats** settings, or on a phone in **Settings** under Panels; its × closes it.' },
+      { t: 'p', text: 'The **Flow history** pane puts the order sizes of the flow column on the chart\'s time axis: a row for each kind of flow, a bar for each candle. Switch it on with its button in the **Panels** deck (on a phone or tablet, in **Settings** under Panels), in the flow column\'s settings (its sliders key) or in the **Bar stats** settings; its × closes it.' },
       { t: 'list', items: [
         '**Liquidations**: shorts liquidated drawn up, longs liquidated drawn down, as the venues that publish them report them.',
         '**OI change**: how open interest changed over the candle, up where it rose, in one neutral colour (the OI pane\'s markets).',
@@ -380,7 +380,7 @@ export const SECTIONS: readonly Section[] = [
         '**Long/Short** shows the share of each exchange\'s accounts that is net long.',
         '**Funding** shows a perpetual\'s funding and premium.',
         '**Bar stats** and **Scripts**, described above, also stand here.',
-        '**Flow history**, described above, stands here too; it has no Panels button: the flow column\'s and the Bar stats\' settings switch it on.',
+        '**Flow history**, described above, stands here too; the flow column\'s and the Bar stats\' settings switch it on as well.',
       ] },
       { t: 'p', text: 'Where a pane has several things of one kind at one moment, such as every band or every exchange, it reads them in a **table** at the pointer\'s time, or the newest: beside the plot where there is room, otherwise over its left end while you point at the pane. Under the rows it says what the popup would of that moment and the rows do not, such as the total, who opened and closed, or the rank. Where the whole table fits it takes the popup\'s place; where it does not, the popup shows as well. The Table switch in its header hides it.' },
       { t: 'p', text: 'Where there are more of them than the pane has rows for, as with the exchanges of the Liquidity Tracker and of Delta, the largest get a row each and the rest are added up in the last row.' },
@@ -479,7 +479,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'maximize', title: 'Maximize a chart',
     blocks: [
-      { t: 'p', text: '**Maximize** gives one chart the whole screen between the top bar and the status bar: the map itself, or one of the panels under it (Depth, Open interest, Delta, Long/Short, Funding, LT, Bar stats or Scripts). The other panels, the flow column and the order book fold away, keep their places and sizes, and come back as they were.' },
+      { t: 'p', text: '**Maximize** gives one chart the whole screen between the top bar and the status bar: the map itself, or one of the panels under it (Depth, Open interest, Delta, Long/Short, Funding, LT, Bar stats, Flow history or Scripts). The other panels, the flow column and the order book fold away, keep their places and sizes, and come back as they were.' },
       { t: 'list', items: [
         '**Double-click** the chart or the panel to maximize it, and again to bring the other panels back.',
         '**The four-corner button** does the same: on the title bar of each panel under the map, beside its ⋯ menu, and last among the map\'s corner buttons. It is lit while its chart is maximized, and the ⋯ menu offers the same.',

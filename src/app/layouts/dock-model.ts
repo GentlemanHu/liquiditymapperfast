@@ -2,8 +2,8 @@ import type { AppState } from '../store.ts';
 
 /**
  * Where the panes stand. The map and the panes that share its time axis (Bar stats, Flow history, Depth, Open interest, Delta, Long/Short,
- * the Liquidity Tracker and the Scripts) make the middle column: their x axis is the map's, so they stay under it. The two panes that have an axis of their
- * own, the flow column and the order book, stand beside it, each on either side, alone or one over the other.
+ * Funding, the Liquidity Tracker and the Scripts) make the middle column: their x axis is the map's, so they stay under it. The two panes that
+ * have an axis of their own, the flow column and the order book, stand beside it, each on either side, alone or one over the other.
  *
  * This file is the arithmetic of that and nothing else (no page, no storage): where a side pane is, what each side shows, how wide the columns
  * may be, and how a file or a saved page is read back. `layout.ts` puts the result on the screen.

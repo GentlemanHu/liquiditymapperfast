@@ -559,7 +559,8 @@ html[data-layout^="phone"] .pane-head.tuned > strong { align-self: center; }
 .sheet .tune-body > button { width: 100%; margin-top: 8px; }
 .sheet .tune-body > [hidden] { display: none; }
 
-/* The Liquidity Tracker's header: the tab says "LT", so the title goes, and the half-lives are chips, one tap each. */
+/* The Liquidity Tracker's header: the half-lives are chips, one tap each, and the title goes (a rule from when a tab said "LT": it has had
+   none since 2026-11-01, when Liq took its place). */
 .lt-halves { display: none; }
 html[data-layout^="phone"] .pane.lt .pane-head .lt-halves { display: flex; flex: 1 1 0; min-width: 0; margin: 0; }
 html[data-layout^="phone"] .pane.lt .pane-head > strong { display: none; }

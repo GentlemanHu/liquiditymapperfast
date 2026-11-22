@@ -5,12 +5,14 @@ import { t } from './i18n.ts';
 
 /**
  * The phone's tab bar. Most tabs keep the map on screen and pick which one other pane sits beside it (below in portrait, to the right
- * in landscape), or none ("Map" gives the map the whole screen). The panes themselves are the same elements the desktop arranges as a
- * column; the choice is only a `data-tab` attribute on `<main>` that the phone stylesheet reads, so nothing is rebuilt when it changes.
+ * in landscape), or none ("Map" gives the map the whole screen, but for LT, Funding and Flow history, which stand under it there when
+ * switched on). The panes themselves are the same elements the desktop arranges as a column; the choice is only a `data-tab` attribute on
+ * `<main>` that the phone stylesheet reads, so nothing is rebuilt when it changes.
  * A tab exists only while its pane is switched on in Settings.
  * A handle between the map and the pane resizes it, and the size is remembered per tab and orientation. A tab with no share in the
  * orientation (`DEFAULT_SHARE`) has no map beside it: it fills the area, so it has no handle. The Tape and the Flow view fill it both
- * ways, and so does the Book held upright (twice the price rows, Karl 2026-10-26); held sideways the Book stays beside the map.
+ * ways, and so do the Book and Liq held upright (twice the price rows for the Book, Karl 2026-10-26); held sideways they stay beside the
+ * map.
  *
  * The order is the order of the bar (Karl, 2026-10-26: the tab a phone opens on is the leftmost): what has been traded (Tape, Flow), what
  * rests in the book and what would be forced out of it (Map, Book, Liq, Depth), then the figures worked out from both (OI, Delta, L/S,

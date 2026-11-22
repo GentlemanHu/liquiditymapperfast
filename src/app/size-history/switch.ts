@@ -4,7 +4,8 @@ import { heading, switchRow } from '../ui.ts';
 
 /**
  * The Flow history's switch (`show.sizes`), the same rows in the flow column's settings and in the Bar stats' settings (Karl, 2026-11-20:
- * reachable from both), on a phone too. It is no button of the top bar: a pane that only these two read from does not take one there.
+ * reachable from both), on a phone too. Its button in the top bar's Panels deck (toolbar.ts `PANE_TOGGLES`; Karl, 2026-11-21: these two alone
+ * were hard to discover), which a phone's Settings also lists, is the same switch.
  */
 export function flowHistoryRows(store: Store): HTMLElement[] {
   return [

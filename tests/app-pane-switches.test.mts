@@ -17,6 +17,33 @@ test('every pane under the map follows its switch, the Funding pane included', (
   assert.doesNotMatch(main, /depth\.root\.hidden = !s\.show\.depth/, 'no list written out by hand');
 });
 
+/**
+ * A pane with a switch has a button in the Panels deck, which a phone's or tablet's Settings also lists. Flow history had none until
+ * 2026-11-21: only its rows in the flow column's and the Bar stats' settings switched it on, and Karl found it hard to discover. Scripts is the
+ * one without: a script switched on in the Chart deck shows its pane.
+ */
+test('every pane under the map has its button in the Panels deck, Scripts aside, and a phone lists Flow history once', () => {
+  const toolbar = fs.readFileSync('src/app/toolbar.ts', 'utf8');
+  const line = toolbar.split('\n').find(l => l.startsWith('const PANE_TOGGLES'));
+  assert.ok(line, 'PANE_TOGGLES is one line of toolbar.ts');
+  const buttons = new Set([...line.matchAll(/\['(\w+)', /g)].map(m => m[1]!));
+  for (const p of STRIP_PANES) {
+    const key = PANE_SHOW_KEY[p.id];
+    assert.ok(key, `${p.id} has a switch`);
+    if (p.id === 'script') assert.ok(!buttons.has(key), 'Scripts has no Panels button');
+    else assert.ok(buttons.has(key), `${p.id} has a Panels button`);
+  }
+  // The phone's Settings shows the deck's own buttons and no second Flow history switch beside them: not the phone's own button it had
+  // before (sizesToggle), not the flow column's and Bar stats' switch rows (size-history/switch.ts), and the toolbar names Flow history once.
+  assert.match(toolbar, /section\(t\('Panels'\), \[this\.#toggles, el\('p', /);
+  assert.doesNotMatch(toolbar, /sizesToggle/);
+  assert.doesNotMatch(toolbar, /size-history\/switch|flowHistoryRows/, "the flow column's switch rows stay in their panels");
+  assert.equal(toolbar.match(/t\('Flow history'\)/g)?.length, 1, "the toolbar names Flow history once: its button in PANE_TOGGLES");
+  // Switched on in a phone's Settings it closes them, the page having opened the Map tab under which the pane stands (main.ts).
+  assert.match(toolbar, /if \(key === 'sizes' && on && isPhone\(\)\) this\.#sheet\?\.close\(\);/);
+  assert.match(fs.readFileSync('src/app/main.ts', 'utf8'), /if \(sizesOn && isPhone\(\)\) dock\.show\('map'\);/);
+});
+
 test('a theme previewed by hover repaints every pane, the Funding and Flow history panes included', () => {
   const main = fs.readFileSync('src/app/main.ts', 'utf8');
   assert.match(main, /const themed = \[heat, ladder, depth, oi, delta, ls, funding, lt, bars, sizes, script, cvd, candle, liq\];/);

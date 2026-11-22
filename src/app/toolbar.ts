@@ -104,9 +104,14 @@ const CANDLE_COLOURS_ITEM = 'candle-colours';
  * The pane switches in the top bar, in order: the two side columns first (they vanish and return at once), then what the map shows. The
  * candles have no switch here since 2026-11-12: the Chart type button takes them off the map (Hidden) and is lit while they are drawn. Nor
  * has Mirror (the same day, Karl: each button a precious resource): it is no pane but what hovering the profile column or the book shows, and
- * its switch is in the order book's Cues panel.
+ * its switch is in the order book's Cues panel. Flow history has one since 2026-11-21 (Karl: found only in the flow column's and the Bar
+ * stats' settings, it was hard to discover). The deck is a grid of six columns, each as wide as its widest name, so the order sets its width:
+ * Flow history ends the first row, over Funding, which widened the deck by 5 px in English where beside Stats it took 16 and in the empty
+ * twelfth cell 36; with the buttons' sides at 3 px (styles.css; 12 px back), 1,366 px in English stays one row at 0.85 in the default frame
+ * (measured in Chrome: 7.5 px to spare, 1.9 before it; docs/reference.md "Flow history" names the languages whose deck ends wider). A
+ * phone's Settings shows the same buttons.
  */
-const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['delta', t('Delta')], ['ls', t('L/S')], ['funding', t('Funding')], ['lt', 'LT'], ['volume', t('Volume')], ['stats', t('Stats')]];
+const PANE_TOGGLES: readonly (readonly [keyof AppState['show'], string])[] = [['cvd', t('Flow')], ['book', t('Book')], ['profile', t('Profile')], ['depth', t('Depth')], ['oi', 'OI'], ['sizes', t('Flow history')], ['ls', t('L/S')], ['stats', t('Stats')], ['volume', t('Volume')], ['delta', t('Delta')], ['lt', 'LT'], ['funding', t('Funding')]];
 
 /** Assign a form control's value only when it differs: assigning to an open select closes its popup. */
 function setValue(control: HTMLSelectElement | HTMLInputElement, value: string): void { if (control.value !== value) control.value = value; }
@@ -155,15 +160,6 @@ export class Toolbar {
   #timeframes = el('div', { class: 'seg' });
   #layer = el('select', { ariaLabel: t('Layer'), tip: t('Layer drawn on the map. Liquidity is the order-book heatmap; stop-loss and take-profit layers are upcoming (they need data a static page cannot hold a key for).') });
   #toggles = el('div', { class: 'seg toggles' });
-  /** The Flow history's switch in a phone's Settings (Panels): it is no button of the top bar (the flow column's and the Bar stats' settings have it). */
-  #sizesToggle = el('button', { textContent: t('Flow history'), tip: HELP.sizes.tip, onclick: () => {
-    const on = !this.store.state.show.sizes;
-    this.store.set({ show: { ...this.store.state.show, sizes: on } });
-    // It sits under the map on the Map tab: switched on, the sheet closes on that tab so it is seen at once.
-    if (on) { this.#sheet?.close(); this.onShowMap(); }
-  } });
-  /** Show the map's tab of a phone (the page sets it: the dock is its). */
-  onShowMap: () => void = () => {};
   #chips = el('div', { class: 'chips' });
   /** Venues this location cannot reach, beside the live ones, so their absence is explained where it is noticed. */
   #blocked = el('div', { class: 'chips blocked-chips' });
@@ -479,7 +475,13 @@ export class Toolbar {
     }
     this.#layer.onchange = () => this.store.set({ layer: this.#layer.value as Layer });
     for (const [key, label] of PANE_TOGGLES) {
-      const button = el('button', { textContent: label, tip: HELP[key as HelpId].tip, onclick: () => this.store.set({ show: { ...this.store.state.show, [key]: !this.store.state.show[key] } }) });
+      const button = el('button', { textContent: label, tip: HELP[key as HelpId].tip, onclick: () => {
+        const on = !this.store.state.show[key];
+        this.store.set({ show: { ...this.store.state.show, [key]: on } });
+        // Flow history sits under the map on a phone's Map tab, which the page opens as it is switched on (main.ts): Settings closes so that
+        // it is seen at once.
+        if (key === 'sizes' && on && isPhone()) this.#sheet?.close();
+      } });
       button.dataset.pane = key;
       this.#toggleButtons.push(button); this.#toggles.append(button);
     }
@@ -1015,7 +1017,7 @@ export class Toolbar {
       this.#heatctl.replaceChildren();
       body.append(
         section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#plus, this.#tour, this.#range, this.#guide, this.#shot, this.#author, this.#install.root, ...(isPhone() ? [backup] : []))]),
-        section(t('Panels'), [this.#toggles, ...(isPhone() ? [el('div', { class: 'seg toggles' }, this.#sizesToggle)] : []), el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S and Stats each add a tab to the bar under the map.') })]),
+        section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S and Stats each add a tab to the bar under the map.') })]),
         // A phone arranges its panes by tab; a touch tablet that keeps the desktop's arrangement has the layouts here, its map's corner being clear of buttons.
         ...(isPhone() ? [] : [section(t('Layouts'), [el('div', { class: 'sheet-tiles' }, button(t('Layouts'), () => { this.#sheet?.close(); this.#openLayouts(this.#more); }, t('Layouts: choose a ready-made arrangement of the panels, or save your own')), backup)])]),
         section(t('Chart'), [el('div', { class: 'sheet-tiles' }, ...(['footprint', 'trades', 'liquidations', ...(liqLevelsUrl() ? ['liqLevels'] as const : []), 'absorption', 'traded', 'tpo', 'keyLevels', 'vwap'] as const).map(f => this.#splits![f]), this.#scriptsSplit)]),
@@ -1070,7 +1072,6 @@ export class Toolbar {
     }
     setValue(this.#layer, state.layer);
     this.#toggleButtons.forEach((b, i) => b.classList.toggle('on', state.show[PANE_TOGGLES[i]![0]]));
-    this.#sizesToggle.classList.toggle('on', state.show.sizes);
     lamp(this.#heat.auto, state.heat.auto); lamp(this.#trades, state.show.bubbles); lamp(this.#liquidations, state.liquidations.on); lamp(this.#liqLevels, state.liqLevels.on); lamp(this.#absorption, state.absorption.on); lamp(this.#highlights, state.highlight.on); lamp(this.#traded, state.show.traded); lamp(this.#keyLevels, state.keyLevels.on); lamp(this.#vwap, state.vwap.on); lamp(this.#tpo, state.tpo.on); lamp(this.#scripts, state.show.script); lamp(this.#footprint, state.show.footprint); lamp(this.#range, state.rangeTool || state.range !== null); lamp(this.#rangeCorner, state.rangeTool || state.range !== null);
     if (this.#awake.checked !== state.keepAwake) this.#awake.checked = state.keepAwake;
     if (this.#tabPrice.checked !== state.tabPrice) this.#tabPrice.checked = state.tabPrice;
