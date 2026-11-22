@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { DEFAULT_SHARE, DOCK_TABS, axisOf, clampSize, defaultTab, fillsArea, resolveTab, tabsFor } from '../src/app/dock.ts';
 import { DEFAULT_SHOW } from '../src/app/store.ts';
+import { starterScripts } from '../src/app/script/starter.ts';
 
 test('a window opens on the map on a desktop and on the Tape on a phone, in either direction of holding it', () => {
   assert.equal(defaultTab('desktop'), 'map');
@@ -22,10 +23,17 @@ test('the tab a phone opens on is the leftmost of the bar (Karl, 2026-10-26), an
   assert.deepEqual(tabsFor(all), ['candle', 'flow', 'map', 'book', 'liq', 'depth', 'oi', 'delta', 'ls', 'stats']);
   assert.equal(tabsFor(all)[0], defaultTab('phone'), 'the first tab is the one a phone opens on');
   assert.equal(tabsFor({ ...all, script: true }).at(-1), 'script', 'the Scripts tab comes last, once its pane is switched on');
-  // The panes a phone starts with (Flow and the Book are on, Liquidation levels with an address, and Scripts with the heat map since
-  // 2026-10-27; the rest are one switch away) give six tabs, the Tape first and Scripts last. The Liquidity Tracker has no tab on a phone:
-  // Liq took its place next to the Book (Karl, 2026-11-01); without an address for the levels there is no Liq tab either.
-  assert.deepEqual(tabsFor({ ...DEFAULT_SHOW, cvd: true, book: true, lt: true, liq: true }), ['candle', 'flow', 'map', 'book', 'liq', 'script']);
+  // The panes a phone starts with (Flow and the Book are on, Liquidation levels with an address; the rest are one switch away) give five
+  // tabs, the Tape first. The Scripts tab needs the Scripts switch on and a script on in the Scripts pane (main.ts passes `scriptRows`), and
+  // no script a page starts with is on there (the VWAP, on, draws on the map; the heat map in the pane was on from 2026-10-27 to 10-28). The
+  // Liquidity Tracker has no tab on a phone: Liq took its place next to the Book (Karl, 2026-11-01); without an address for the levels there
+  // is no Liq tab either.
+  const main = fs.readFileSync('src/app/main.ts', 'utf8');
+  assert.match(main, /dock\.sync\(\{ \.\.\.s\.show, script: scriptRows\(s\), liq: s\.liqLevels\.on && !!liqLevelsUrl\(\) \}\)/);
+  assert.match(main, /const scriptRows = \(s: typeof store\.state\): boolean => s\.show\.script && script\.hasRows;/);
+  assert.match(fs.readFileSync('src/app/panes/script-pane.ts', 'utf8'), /get hasRows\(\): boolean \{ return this\.#records\.some\(r => r\.on && r\.place === 'pane'\); \}/);
+  assert.ok(!starterScripts().some(s => s.on && s.place === 'pane'), 'no script a page starts with is on in the Scripts pane');
+  assert.deepEqual(tabsFor({ ...DEFAULT_SHOW, cvd: true, book: true, lt: true, liq: true, script: false }), ['candle', 'flow', 'map', 'book', 'liq']);
   assert.ok(!tabsFor({ ...DEFAULT_SHOW, lt: true, liq: false }).some(tab => tab === 'liq' || (tab as string) === 'lt'));
   // Every tab is in the bar once.
   assert.equal(new Set(DOCK_TABS.map(tab => tab.id)).size, DOCK_TABS.length);
