@@ -29,7 +29,7 @@ export interface MirrorStats {
   clipped: boolean;
 }
 
-/** Under this, the larger side over the smaller, two sides are called even (the order book's Balanced, the column boxes' about even). */
+/** Under this, the larger side over the smaller, two sides are called even (every Mirror box's "about even", the phone's Liq tab's Balanced). */
 export const BALANCED_RATIO = 1.02;
 
 export function mirrorStats(mid: number, price: number, aboveUsd: number, belowUsd: number, clipped = false): MirrorStats | null {
@@ -67,7 +67,8 @@ const known = (x: number): number => Number.isFinite(x) && x > 0 ? x : 0;
  * Which band holds more, as a line of its own: the heavier side named by its price side, in its colour, with how many times the other it is
  * ("Bids 1.13× the asks"); about even under the Mirror's balance; only one side where the other holds nothing. The test and the words of the
  * profile box's `depthBandVerdict` (hover-rows.ts), without its "Within ≈±…:" lead-in, which the order book's box says on its first line, and
- * the words of the guide's picture of it. Every case wraps, as there: in German or Russian the sentence is wider than a narrow book's box.
+ * the words of the guide's picture of it. Every case wraps, as there, so no language runs past a narrow box (the book's is 250 px at least,
+ * where today's longest, about 170 px, still fits on one line).
  */
 export function bandVerdict(bid: number, ask: number): MirrorLine {
   const b = known(bid), a = known(ask);
@@ -90,7 +91,8 @@ export function mirrorLines(stats: MirrorStats, title?: string): MirrorLine[] {
   lines.push({ text: t('±{distance} ({bp} bp) from {mid}', { distance: fmtPrice(stats.distance), bp: stats.distanceBp < 10 ? stats.distanceBp.toFixed(1) : Math.round(stats.distanceBp), mid: fmtPrice(stats.mid) }), color: 'muted' });
   lines.push({ text: `${t('Asks')}  $${usd(stats.aboveUsd)}`, color: 'above' }, { text: `${t('Bids')}  $${usd(stats.belowUsd)}`, color: 'below' });
   lines.push(bandVerdict(stats.belowUsd, stats.aboveUsd));
-  if (stats.clipped) lines.push({ text: t('part of the range is outside the data'), color: 'muted' });
+  // Wrapped too: in German it is the box's widest line, near the edge of the narrowest book (review, 2026-11-22).
+  if (stats.clipped) lines.push({ text: t('part of the range is outside the data'), color: 'muted', wrap: true });
   return lines;
 }
 

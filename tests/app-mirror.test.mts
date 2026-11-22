@@ -43,7 +43,9 @@ test('the order book\'s box says each band by its price side, then the heavier s
   assert.equal(above.at(-1)!.bold, true);
   // Named by price side, never this side or the opposite: the pointer below the price with the same bands says the same.
   const below = mirrorLines(mirrorStats(85_000, 84_700, 100e6, 113e6)!);
-  assert.deepEqual(below.slice(1).map(l => l.text), above.slice(2).map(l => l.text), 'the same words on either side of the price');
+  const said = (l: { text: string; color?: string; bold?: boolean }): unknown[] => [l.text, l.color, l.bold];
+  assert.deepEqual(below.slice(1).map(said), above.slice(2).map(said), 'the same words in the same colours on either side of the price');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 113, 100)!).at(-1), { text: 'Asks 1.13× the bids', color: 'above', bold: true, wrap: true }, 'the asks heavier');
   assert.equal(above.at(-1)!.wrap, true, 'wraps in a narrow book, as the profile box\'s verdict does');
   assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 5)!).at(-1), { text: 'Bids and asks about even', bold: true, wrap: true }, 'within 2 %, in no side\'s colour');
   assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 0)!).at(-1), { text: 'Only asks', color: 'above', bold: true, wrap: true }, 'not a ratio over nothing');
@@ -58,6 +60,7 @@ test('the order book\'s box and the profile\'s agree on every pair of bands, wit
     const book = bandVerdict(bid, ask), profile = depthBandVerdict(bid, ask, '1%'), where = `bids ${bid}, asks ${ask}`;
     assert.equal(book.text.toLowerCase(), profile.text.replace('Within ≈±1%: ', '').toLowerCase(), where);
     assert.equal(book.color, profile.color, `${where}: colour`);
+    assert.deepEqual([book.bold, book.wrap, book.rule], [profile.bold, profile.wrap, profile.rule], `${where}: bold, wrap and rule`);
   }
 });
 

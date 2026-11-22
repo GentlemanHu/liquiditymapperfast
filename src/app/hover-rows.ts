@@ -121,7 +121,7 @@ export interface DepthBand { bid: number; ask: number; pct: string; reach: { bid
 
 /**
  * The band's two sides in one line: the heavier named, in its colour, with how many times the other it is ("bids 1.41× the asks"); about even
- * under the Mirror's balance (`BALANCED_RATIO`, as the order book's box says Balanced); only one side where the other holds nothing. Karl,
+ * under the Mirror's balance (`BALANCED_RATIO`, as the order book's box says it, `bandVerdict`); only one side where the other holds nothing. Karl,
  * 2026-11-21: a ratio in one fixed order ("bids / asks 0.71×", "longs / shorts 0.20×") made him work out which side leads, where the box
  * before it said so ("This side has 1.4× more"). Named by price side, never this side or that, so moving the pointer across the price
  * does not turn it over. Every case wraps: in German or Russian the sentence is wider than a phone's map leaves the box (`wrapWithin`).
