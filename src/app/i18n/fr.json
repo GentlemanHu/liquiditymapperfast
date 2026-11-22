@@ -2289,7 +2289,7 @@
  "Letters while a block is tall enough to hold one, blocks below that (Auto), or always one of the two.": "Des lettres tant qu'un bloc est assez haut pour en contenir une, des blocs en dessous (Auto), ou toujours l'un des deux.",
  "Blocks": "Blocs",
  "Letters": "Lettres",
- "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "Selon l'heure de chaque bloc, du plus tôt au plus tard le long d'une gamme de couleurs ; ou selon le nombre de blocs que contient sa ligne.",
+ "By the time of each block, early to late along a ramp of colours; or by how many blocks its row holds.": "Selon l'heure de chaque bloc, du plus ancien au plus récent le long d'une gamme de couleurs ; ou selon le nombre de blocs que contient sa ligne.",
  "By time": "Selon l'heure",
  "By row length": "Par longueur de ligne",
  "Laid out in time": "Déployé dans le temps",

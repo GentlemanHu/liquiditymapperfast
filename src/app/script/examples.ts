@@ -299,7 +299,7 @@ if (markCandles && z > cascadeZ) $price.color = shorts >= longs ? "rgb(150,105,2
 ` },
     // Each candle's volume by the side that led it, dim while ordinary and bright when unusual, with a mark where its delta is unusual
     // too.
-    { key: 'volume-anomalies', name: t('Volume anomalies'), source: `// Volume anomalies: each candle's volume, in the buy colour where more was bought at market and the sell colour where more
+    { key: 'volume-anomalies', name: t('Volume anomalies'), source: `// Volume anomalies: each candle's volume, in teal where more was bought at market and pink where more
 // was sold. A bar is dim while its volume is ordinary and bright when it is more than Threshold deviations above its average
 // over the last candles. A grey bar marks a candle whose delta (bought less sold) is unusual in the same way.
 
@@ -331,7 +331,7 @@ if (showDelta && size > dMean + mult * dSpread) histogram({ time: time, value: s
 if (colorCandles && unusual) $price.color = bought ? upBright : downBright
 ` },
     { key: 'cumulative-delta', name: t('Cumulative delta'), source: '// What was bought at market less what was sold, added up candle after candle.\nline(cum(vbuy - vsell), title=CVD)\n' },
-    { key: 'delta-histogram', name: t('Delta histogram'), source: '// Each candle\'s delta, in the buy colour where buyers led and the sell colour where sellers did.\nup = option(type=color, default=rgb(38,166,154), label=Buys)\ndown = option(type=color, default=rgb(239,83,80), label=Sells)\nvar delta = vbuy - vsell\nhistogram({ time: time, value: delta, color: delta > 0 ? up : down }, title=Delta)\n' },
+    { key: 'delta-histogram', name: t('Delta histogram'), source: '// Each candle\'s delta, in green where buyers led and red where sellers did.\nup = option(type=color, default=rgb(38,166,154), label=Buys)\ndown = option(type=color, default=rgb(239,83,80), label=Sells)\nvar delta = vbuy - vsell\nhistogram({ time: time, value: delta, color: delta > 0 ? up : down }, title=Delta)\n' },
     { key: 'buy-share', name: t('Buy share'), source: '// The share of the volume bought at market over the last candles, in percent.\nlength = option(default=20, min=1, label=Candles)\nline(100 * sum(vbuy, length) / sum(vbuy + vsell, length), title="Buy share %")\nline(50, color=rgba(128,128,128,0.6), title=Even)\n' },
   ];
 }
