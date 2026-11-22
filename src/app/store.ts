@@ -390,9 +390,9 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
 /** The first-visit themes (theme.ts, where the Plus page reads them too). */
 export { DEFAULT_THEME, PHONE_DARK_THEME };
 /**
- * The themes a page opened in by default before saves said whether the theme was picked (`themePicked`, since 2026-10-17): Light, and Terminal
- * for a day that morning. A save without the flag that holds one of them holds a default; any other theme in such a save was picked
- * (`initialState`). Fixed for good: a save with the flag says itself, whatever the default is now.
+ * The themes a page opened in by default before revision 7: Light, and Terminal (for a day on 2026-10-17, and on a phone set to dark since
+ * 2026-11-01). A save from before revision 7 that holds one of them unpicked holds a default; any other theme in it was picked (`initialState`).
+ * Fixed for good: from revision 7 a save's flag says itself, whatever the default is now.
  */
 const DEFAULTS_BEFORE_THE_FLAG: ReadonlySet<string> = new Set(['light', 'terminal']);
 /**
@@ -512,10 +512,11 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   if (rev < 6 && tradesRev5Default(saved.trades)) state.trades = { ...TRADES_DEFAULTS };
   state.defaultsRev = DEFAULTS_REV;
   const savedTheme = resolveThemeId(state.theme);
-  // A save with the flag says itself: one that never picked a theme follows today's default whatever default it wrote down (Light until
-  // 2026-11-21). A save from before the flag (2026-10-17) holding Light or Terminal holds a default too; any other theme in it was picked before
-  // the flag existed, so it counts as picked, and the device's setting never replaces it.
-  if (typeof saved.themePicked !== 'boolean' && typeof saved.theme === 'string' && !DEFAULTS_BEFORE_THE_FLAG.has(savedTheme)) state.themePicked = true;
+  // A save of revision 7 or later says itself: one that never picked a theme follows today's default, whatever default it wrote down. An older
+  // save cannot be taken at its word: the flag came on 2026-10-17, and until 2026-11-01 the page kept an earlier pick on the screen but saved it
+  // as not picked. So there a theme other than Light or Terminal (the defaults then) was picked: it counts as picked, and the device's setting
+  // never replaces it; an unpicked Light or Terminal is a default and follows today's (Light was it until 2026-11-21).
+  if ((typeof saved.themePicked !== 'boolean' || rev < 7) && typeof saved.theme === 'string' && !DEFAULTS_BEFORE_THE_FLAG.has(savedTheme)) state.themePicked = true;
   // Revision 7: the light-or-dark key's light slot of a save that never picked a theme is the light default of its time, Light until 2026-11-21.
   if (rev < 7 && !state.themePicked && state.themeSlots.light === 'light') state.themeSlots = { ...state.themeSlots, light: DEFAULT_THEME };
   state.theme = state.themePicked ? savedTheme : autoTheme(phone && touch, prefersDark());

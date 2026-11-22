@@ -159,11 +159,12 @@ test('a page opens in Colour-blind safe, light; a saved Light or Terminal that w
     assert.deepEqual(load(null), { theme: 'daylight', themePicked: false });
     assert.deepEqual(load({ theme: 'terminal' }), { theme: 'daylight', themePicked: false });
     // Light, the default until 2026-11-21, was written down by every save: one that never picked it follows today's default, flag or no flag,
-    // and so does a save of today's default (neither counts as a pick).
+    // and so does a save of today's default written from revision 7 (neither counts as a pick).
     assert.deepEqual(load({ theme: 'light' }), { theme: 'daylight', themePicked: false });
     assert.deepEqual(load({ theme: 'light', themePicked: false }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'light', themePicked: false, defaultsRev: 6 }), { theme: 'daylight', themePicked: false });
     assert.deepEqual(load({ theme: 'legacyLight' }), { theme: 'daylight', themePicked: false });
-    assert.deepEqual(load({ theme: 'daylight', themePicked: false }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'daylight', themePicked: false, defaultsRev: 7 }), { theme: 'daylight', themePicked: false });
     // A pick stays, Light too.
     assert.deepEqual(load({ theme: 'light', themePicked: true }), { theme: 'light', themePicked: true });
     assert.deepEqual(load({ theme: 'terminal', themePicked: true }), { theme: 'terminal', themePicked: true });
@@ -172,8 +173,13 @@ test('a page opens in Colour-blind safe, light; a saved Light or Terminal that w
     assert.deepEqual(load({ theme: 'dark' }), { theme: 'dark', themePicked: true });
     assert.deepEqual(load({ theme: 'daylight' }), { theme: 'daylight', themePicked: true });
     assert.deepEqual(load({ theme: 'no-such-theme' }), { theme: 'daylight', themePicked: false });
-    // A save with the flag says itself, whatever theme it wrote down: so a default that is replaced one day needs no list of former ones.
-    assert.deepEqual(load({ theme: 'midnight', themePicked: false }), { theme: 'daylight', themePicked: false });
+    // An older save cannot be taken at its word: from 2026-10-17 to 11-01 the page kept an earlier pick on the screen but saved it as not
+    // picked. Another theme in it, flag or no flag, stays picked.
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false }), { theme: 'midnight', themePicked: true });
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 4 }), { theme: 'midnight', themePicked: true });
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 6 }), { theme: 'midnight', themePicked: true });
+    // From revision 7 a save says itself, whatever theme it wrote down: so a default that is replaced one day needs no list of former ones.
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 7 }), { theme: 'daylight', themePicked: false });
   } finally {
     if (real === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real;
   }
