@@ -205,7 +205,7 @@ export function pairDescription(p: LiqPair): string {
     ...(p.split === 'kinds' ? [t('Traders: {who}.', { who: groupName(p.left.group) })] : [])].join(' ');
 }
 /**
- * Said under the column's button (or on the Liq tab) when a split has no room for its two columns: that, and what is drawn instead
+ * Said in the column's heading (or on the Liq tab) when a split has no room for its two columns: that, and what is drawn instead
  * ("Too narrow to split: Liq + stops"). Liquidations beside stops fall back to the two added up, as with no split; everyone beside the
  * profitable traders to everyone's.
  */

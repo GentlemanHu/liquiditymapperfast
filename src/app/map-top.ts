@@ -7,8 +7,10 @@
  * figures. What stands there has three roles, each with one look:
  * - a control (pressed) is a map button (`styles.css`): the corner tools, the levels button, History; 26 px tall, 23 in the Bevel frame;
  * - a name (what a column, a sub-column or a lane is) is `nameFont` in the text colour;
- * - a figure or a note (how much; why) is `bodyFont`, muted; a warning (a group's orders not on the server) is the theme's caution words
- *   colour (theme.ts `chromeFor(...).caution`: amber moved toward the text until it reads), as every caution on the page is.
+ * - a figure or a note (how much; why) is `bodyFont`, muted; a warning (a group's orders not on the server, a measure's record cut short) is
+ *   the theme's caution words colour (theme.ts `cautionInk`: amber moved toward the text until it reads), as every caution on the page is.
+ * A compact map (a phone's, under 520 px) has no corner tools' row and an 84 px profile column: that column keeps its two figure lines at the
+ * top, as before (heat-pane.ts `#paintProfile`).
  * Pure: the painters (panes/heat-pane.ts) read the numbers here, and `tests/app-map-top.test.mts` holds them.
  */
 
@@ -41,6 +43,18 @@ export const headBand = (frame: string | undefined, lines: number): number => fi
 export function liqHeading(frame: string | undefined, lines: number, history: boolean): { first: number; historyTop: number; band: number } {
   const text = headBand(frame, lines);
   return { first: firstLine(frame), historyTop: text, band: history ? text + toolsH(frame) + TOOLS_SHADOW + HEAD_GAP : text };
+}
+
+/**
+ * The split's two names on the levels button, which under a drawn split is as wide as the column (`room` px, its left edge at the column's
+ * inset): each name stands as far into its own sub-column as the first does into the left one (the button's inset, its border `border` and
+ * its left padding `pad`), the divider on the sub-columns' own (`subX` px from the column's left edge), neither name past the divider or
+ * the arrow in the button's right padding (`arrow`). Positions are from the left of the button's padding box, where its absolutely placed
+ * children are measured from.
+ */
+export function splitNames(o: { subX: number; room: number; border: number; pad: number; arrow: number }): { firstMax: number; divider: number; secondLeft: number; secondMax: number } {
+  const divider = o.subX - HEAD_INSET - o.border, into = HEAD_INSET + o.border + o.pad, secondLeft = divider + into;
+  return { firstMax: Math.max(0, divider - o.pad - 4), divider, secondLeft, secondMax: Math.max(0, o.room - 2 * o.border - o.arrow - secondLeft) };
 }
 
 /** What a line of a heading is: a name (whose levels), a note (what the curve leaves out), or a warning. */

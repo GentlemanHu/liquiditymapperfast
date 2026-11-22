@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { PALETTES, chromeFor, contrastRatio } from '../src/app/theme.ts';
-import { HEAD_INSET, HEAD_PITCH, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, toolsH } from '../src/app/map-top.ts';
+import { PALETTES, cautionInk, chromeFor, contrastRatio } from '../src/app/theme.ts';
+import { HEAD_INSET, HEAD_PITCH, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, splitNames, toolsH } from '../src/app/map-top.ts';
 
 test('the map\'s top strip is one grid: the tools\' row, then every column\'s first line (Karl, 2026-11-21)', () => {
   // A map button is 26 px from 8 px down; the Bevel frame's are 23 px (styles.css), so its first line is 3 px higher.
@@ -37,7 +37,25 @@ test('three roles, one look each: a name is bold in the text colour, a figure or
   assert.match(nameFont(), /^600 10px /); assert.match(bodyFont(), /^10px /);
   assert.equal(roleInk('name', ink), ink.text); assert.equal(roleInk('note', ink), ink.muted); assert.equal(roleInk('warn', ink), ink.caution);
   // The caution words colour reads on every theme's panel (the raw amber #e6a700 is 2:1 on white).
-  for (const [name, p] of Object.entries(PALETTES)) assert.ok(contrastRatio(chromeFor(p).caution, p.panel) >= 4.5, `${name}: a warning reads on the panel`);
+  for (const [name, p] of Object.entries(PALETTES)) {
+    assert.equal(cautionInk(p), chromeFor(p).caution, `${name}: the caution words colour`);
+    assert.ok(contrastRatio(cautionInk(p), p.panel) >= 4.5, `${name}: a warning reads on the panel`);
+  }
+});
+
+test('the split\'s names on the levels button: each as far into its own sub-column as the first into the left one, the divider on the column\'s', () => {
+  // A 200 px split column: the button 189 px wide from the column's inset, a 1 px border, 9 px of padding before the words, 22 after (the arrow).
+  const plan = splitNames({ subX: 100, room: 189, border: 1, pad: 9, arrow: 22 });
+  assert.deepEqual(plan, { firstMax: 79, divider: 92, secondLeft: 109, secondMax: 56 });
+  // In the column's own pixels: the button starts at the inset and its padding box a border further.
+  const box = HEAD_INSET + 1;
+  assert.equal(box + plan.divider, 100, 'the divider through the button continues the column\'s');
+  assert.equal(box + 9 - 0, 17, 'the first name stands 17 px into the left sub-column');
+  assert.equal(box + plan.secondLeft - 100, 17, 'and the second as far into the right one');
+  assert.ok(9 + plan.firstMax < plan.divider, 'the first name never reaches the divider');
+  assert.equal(plan.secondLeft + plan.secondMax, 189 - 2 - 22, 'the second never reaches the arrow');
+  // The Bevel frame's button (23 px, the same border and paddings here) and a narrower button keep the rule; no room gives no width, not less.
+  assert.deepEqual(splitNames({ subX: 100, room: 120, border: 2, pad: 9, arrow: 22 }).secondMax, 0);
 });
 
 test('every column\'s heading draws on the grid: its name on the tools\' row, its figures from the first line', () => {
@@ -47,18 +65,31 @@ test('every column\'s heading draws on the grid: its name on the tools\' row, it
   assert.match(heat, /measure\(def\.name\(\)\) <= headRoom \? def\.name\(\) : fitText\(measure, def\.short\(\), headRoom\), x0 \+ HEAD_INSET, rowNameTop\(look\)\)/);
   // Their figures, and the liquidation column's, start on the first line; the split's sub-columns too, then the words across, then the notes.
   assert.match(heat, /fit\(t\('LEVEL MAX \{value\}', \{ value: usd\(maxLevel\) \}\)\), x0 \+ HEAD_INSET, first\)/);
-  assert.match(heat, /ctx\.fillText\(head, x0 \+ HEAD_INSET, first\);/);
+  assert.match(heat, /ctx\.fillText\(head, x0 \+ HEAD_INSET, firstY\);/);
   assert.match(heat, /t\('LEVEL MAX \{value\}', \{ value: usd\(maxLevel\) \}\), liqRoom\(W\)\), x0 \+ HEAD_INSET, heading\.first\)/);
   assert.match(heat, /h\.scale\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ HEAD_INSET, top \+ HEAD_PITCH \* n\)\)/);
   // The split's button names both sub-columns, each over its own (no caption rows on the canvas).
-  assert.match(heat, /splitHeads\(wide, \{ captions: null,/);
+  assert.match(heat, /splitHeads\(wide, \{ maxima:/);
+  // History stands where the heading puts it, and the band covers it (the boxes and the readout keep below the band).
+  assert.match(heat, /this\.#liqHeadH = heading\.band;/);
+  assert.match(heat, /top = `\$\{heading\.historyTop\}px`/);
+  // The split's look is taken off the button wherever it is not drawn split (too narrow, unsplit, locked).
+  assert.equal(heat.match(/button\.classList\.remove\('split-names'\); button\.style\.width = '';/g)?.length, 2);
+  // The names placed by the pure plan, from the button's own border and paddings.
+  assert.match(heat, /plan = splitNames\(\{ subX: subColumns\(0, W\)\[1\]\.x0, room, border: button\.clientLeft,/);
+  // A press on a measure column's heading selects nothing: only a press under its band starts a selection.
+  assert.match(heat, /this\.#columnHeads\.set\(`\$\{side\}\|\$\{i\}`, headH\);/);
+  assert.match(heat, /column && y >= head && y <= this\.plotH/);
   assert.match(heat, /button\.classList\.add\('split-names'\)/);
   // A name with no room on the split's button gives way to its half of the split's short name, as the button said before.
   assert.match(heat, /const \[shortA, shortB\] = splitName\(pair\.split\)\.split\('\|'\)\.map\(half => half\.trim\(\)\);/);
   // A compact map's profile column (84 px, no corner tools' row above it) keeps its two figure lines at the top.
   assert.match(heat, /if \(!strip && COMPACT\) \{[\s\S]{0,800}?x0 \+ 4, 4\); ctx\.fillText\(t\('CUM MAX \{value\}', \{ value: usd\(maxCum\) \}\), x0 \+ 4, 16\);/);
   // The heading lines' warning ink is the theme's caution words colour, worked out once a palette.
-  assert.match(heat, /caution: chromeFor\(p\)\.caution/);
+  assert.match(heat, /caution: cautionInk\(p\)/);
+  // A measure column's cut record says it in the same caution words colour, as the band's header does (measures/paint.ts).
+  assert.match(heat, /ctx\.fillStyle = cautionInk\(p\); else if \(loaded\) ctx\.fillStyle = p\.poc;/);
+  assert.match(fs.readFileSync('src/app/measures/paint.ts', 'utf8'), /if \(d\.warn\) ctx\.fillStyle = cautionInk\(p\);/);
   // The stripe's captions are labels, not buttons: a plate without an edge.
   assert.doesNotMatch(heat, /ctx\.strokeRect\(x \+ 0\.5, y \+ 0\.5, w - 1, 14\)/);
   // No leftovers of the old constants.

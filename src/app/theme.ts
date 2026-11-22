@@ -209,6 +209,13 @@ export function chromeFor(p: Palette, strength: number = FRAME_STRENGTH[p.frame]
   }
   return { ...out, warn: wordsOf(p.ask, p, out.face, out.title), caution: wordsOf(CAUTION, p, out.face, out.title) };
 }
+const cautions = new WeakMap<Palette, string>();
+/** A palette's caution words colour (`chromeFor(p).caution`), worked out once a palette: what a canvas draws a warning in (map-top.ts). */
+export function cautionInk(p: Palette): string {
+  let ink = cautions.get(p);
+  if (ink === undefined) { ink = chromeFor(p).caution; cautions.set(p, ink); }
+  return ink;
+}
 
 function derivedChrome(p: Palette, s: number): Omit<Chrome, 'warn' | 'caution'> {
   const edgeOf = (c: Omit<Chrome, 'edgeLit' | 'warn' | 'caution'>): Omit<Chrome, 'warn' | 'caution'> => ({ ...c, edgeLit: c.edge });
