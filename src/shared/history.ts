@@ -29,15 +29,36 @@ function socketRequest(url: string, body: string, timeoutMs: number): Promise<un
     socket.onclose = () => settle(() => reject(new Error('the socket closed before it answered')));
   });
 }
-/** The fetcher a page or a worker uses: HTTP with a 15 s limit, and a `wss://` URL as one request over a socket. */
-export const webGet: Fetcher = async (url, init) => {
-  if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', 15_000);
-  const timeout = AbortSignal.timeout(15_000);
-  const response = await fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
-  // The status and the start of the answer go with the error: a venue may say why in it (Gate answers a contract it does not list with a
-  // 400 that says `CONTRACT_NOT_FOUND`).
-  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body: (await response.text().catch(() => '')).slice(0, 500) });
-  return url.endsWith('.zip') ? new Uint8Array(await response.arrayBuffer()) : response.json();
+/** How long `webGet` waits for an answer, its body included. */
+export const WEB_GET_TIMEOUT_MS = 15_000;
+
+/**
+ * The fetcher a page, a worker and the server use: HTTP given up after `WEB_GET_TIMEOUT_MS` (a `TimeoutError`), and a `wss://` URL as one
+ * request over a socket. The limit is a race against a timer, not only the signal handed to `fetch`: on the 8787 server a Bitget open-interest
+ * read under `AbortSignal.timeout(15_000)` alone neither answered nor failed for three days (2026-11-19 20:22Z on), and the open-interest
+ * sampler's round, which waits for each read, stopped with it (Bybit's REST poll, the Long/Short reader and the Plus requests had each grown a
+ * deadline of their own for the same reason). The timer also aborts the request, so whatever fetch does with that, the caller has its answer
+ * or its error in time. A caller's own signal still aborts it at once.
+ */
+export const webGet: Fetcher = (url, init) => webGetWithin(WEB_GET_TIMEOUT_MS)(url, init);
+
+/** `webGet` with another limit (tests). */
+export const webGetWithin = (ms: number): Fetcher => async (url, init) => {
+  if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', ms);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { const error = new DOMException('The operation was aborted due to timeout', 'TimeoutError'); controller.abort(error); reject(error); }, ms);
+  });
+  const read = async (): Promise<unknown> => {
+    const response = await fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal });
+    // The status and the start of the answer go with the error: a venue may say why in it (Gate answers a contract it does not list with a
+    // 400 that says `CONTRACT_NOT_FOUND`).
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body: (await response.text().catch(() => '')).slice(0, 500) });
+    return url.endsWith('.zip') ? new Uint8Array(await response.arrayBuffer()) : response.json();
+  };
+  try { return await Promise.race([read(), late]); }
+  finally { clearTimeout(timer); }
 };
 
 const num = (value: unknown): number => Number(value);

@@ -26,13 +26,27 @@ const ROWS_PER_TURN = 200;
 const RETRY_MS = 60_000, RETRY_MAX_MS = 3_600_000;
 /** Failures of one venue are logged at most this often. */
 const OI_LOG_EVERY_MS = 10 * 60_000;
+/**
+ * A live reading that has not settled by then is a failure, so one venue can never hold up the round. On 2026-11-19 20:22Z a Bitget read
+ * neither answered nor failed for three days and the round, which reads every instrument in turn and waits for each, stopped for every venue
+ * with nothing in the diagnostics (failures 0, no error): Bitget's and Deribit's parts went missing from the summed open interest.
+ */
+export const OI_READ_DEADLINE_MS = 30_000;
+/**
+ * A round, or a read of one instrument, still under way after this long is taken as stuck: it is logged and no longer waited for (the next
+ * round starts beside it; a read of the same instrument starts again). Longer than the slowest history read (two reads of at most `OI_PAGES`
+ * pages, each given up after `webGet`'s 15 s).
+ */
+export const OI_STALL_MS = 10 * 60_000;
 
 export interface OiSampleMessage { kind: 'openInterest'; instrumentId: string; sourceTimestamp: number | null; observationTimestamp?: number; receivedAt: number; base: number; quality: 'native' | 'sampled'; source?: string;
   /** Set on a venue's history reading: the store puts it only in a minute no live sample is in (`HistoryStore.recordOi`). */
   historySource?: string }
 
 /** One sampled venue's outcome, for the diagnostics route. */
-export interface OiVenueStatus { lastSuccess: number | null; failures: number; lastError: string | null; nextHistoryAt: number | null; fast: boolean }
+export interface OiVenueStatus { lastSuccess: number | null; failures: number; lastError: string | null; nextHistoryAt: number | null; fast: boolean;
+  /** When the venue was last asked, and since when a read of it has been under way (null: none): a stuck read shows here. */
+  lastAttempt?: number | null; pendingSince?: number | null }
 
 /**
  * How a perpetual lists its coin, from its own instrument id (`venue:SYMBOL`): its symbol, its unit as the coin list reads it (1000PEPEUSDT and
@@ -49,6 +63,13 @@ export function oiListingOf(id: string): HistoryListing | null {
   return { symbol, unit: unitOf(base, venue as CoinVenue)[1], ...((venue === 'deribit' && /^[A-Z]+-PERPETUAL$/.test(symbol)) || bybitInverse ? { inverse: true } : {}) };
 }
 
+/** `work`, or an error saying `late` once `ms` have passed without it settling; the timer is let go either way. */
+function within<T>(work: Promise<T>, ms: number, late: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(late)), ms); });
+  return Promise.race([work, deadline]).finally(() => clearTimeout(timer));
+}
+
 /**
  * The sampler's `record` for a history store: false only while the store has stopped writing (over its budget), so the history is read again
  * later. A row the store already holds is turned away too (a restart reads the history again over what it wrote before), and that is no
@@ -63,6 +84,8 @@ export class OiSampler {
   #timer: ReturnType<typeof setInterval> | null = null;
   #fastTimer: ReturnType<typeof setInterval> | null = null;
   #running: Promise<void> | null = null; #fastRunning: Promise<void> | null = null; #closed = false;
+  /** When the round under way started (`OI_STALL_MS`). */
+  #roundSince = 0;
   /** Each instrument's history: read, or when to try again and how many times it failed. */
   readonly #history = new Map<string, { done: boolean; tries: number; nextAt: number }>();
   /** Per venue: the last outcome, for the diagnostics route and the ten-minute failure log. */
@@ -76,19 +99,24 @@ export class OiSampler {
 
   /**
    * `apply` hands a live reading to the server's reducer; `record` writes a history row to the store (false: refused). `get` and `now` are the network and
-   * the clock (tests pass fakes). `log` receives the ten-minute failure lines.
+   * the clock (tests pass fakes). `log` receives the ten-minute failure lines. `readDeadlineMs` and `stallMs` are `OI_READ_DEADLINE_MS` and
+   * `OI_STALL_MS` (tests pass short ones).
    */
   constructor(private apply: (message: OiSampleMessage, venue: string) => void, private record: (message: OiSampleMessage) => unknown,
-    private get: Fetcher = webGet, private now: () => number = Date.now, private everyMs = OI_SAMPLE_MS, log: (message: string) => void = message => console.warn(message)) {
+    private get: Fetcher = webGet, private now: () => number = Date.now, private everyMs = OI_SAMPLE_MS, log: (message: string) => void = message => console.warn(message),
+    private readDeadlineMs = OI_READ_DEADLINE_MS, private stallMs = OI_STALL_MS) {
     this.#log = log;
   }
 
-  /** What each sampled venue did last, for the diagnostics route. */
+  /** What each sampled venue did last, for the diagnostics route: with when it was last asked and since when a read of it is under way. */
   status(): Record<string, OiVenueStatus> {
     const out: Record<string, OiVenueStatus> = {};
     for (const venue of SAMPLED_OI_VENUES) {
       const held = this.#status.get(venue) ?? { lastSuccess: null, failures: 0, lastError: null, nextHistoryAt: null, fast: false };
-      out[venue] = { ...held, fast: this.#fast.has(venue) };
+      let lastAttempt: number | null = null, pendingSince: number | null = null;
+      for (const [id, at] of this.#lastAsked) if (venueOf(id) === venue && (lastAttempt === null || at > lastAttempt)) lastAttempt = at;
+      for (const [id, read] of this.#inflight) if (venueOf(id) === venue && (pendingSince === null || read.since < pendingSince)) pendingSince = read.since;
+      out[venue] = { ...held, fast: this.#fast.has(venue), lastAttempt, pendingSince };
     }
     return out;
   }
@@ -114,7 +142,17 @@ export class OiSampler {
   /** One reading of every instrument (after its history, when due); a round under way is the one returned. The timer calls it. */
   round(): Promise<void> {
     if (this.#closed) return Promise.resolve();
-    this.#running ??= this.#round().finally(() => { this.#running = null; });
+    // A round still under way past the stall limit is no longer waited for (logged): the next one starts beside it, and the reads it waits
+    // on are let go by the same limit (`#held`), so one stuck answer cannot stop the sampling of every venue again.
+    if (this.#running && this.now() - this.#roundSince > this.stallMs) {
+      this.#log(`open interest sampling: a round has been under way for ${Math.round((this.now() - this.#roundSince) / 60_000)} min; starting another`);
+      this.#running = null;
+    }
+    if (!this.#running) {
+      this.#roundSince = this.now();
+      const run: Promise<void> = this.#round().finally(() => { if (this.#running === run) this.#running = null; });
+      this.#running = run;
+    }
     return this.#running;
   }
 
@@ -146,20 +184,37 @@ export class OiSampler {
    * time the two met, and a failed history read would never be tried again.
    */
   #once(id: string, withHistory: boolean): Promise<void> {
-    const held = this.#inflight.get(id);
+    const held = this.#held(id);
     if (held) return withHistory ? held.then(() => this.#readHistoryDue(id)) : held;
-    const read = this.#read(id, withHistory).finally(() => { this.#inflight.delete(id); });
-    this.#inflight.set(id, read);
+    return this.#start(id, () => this.#read(id, withHistory));
+  }
+  /** Each instrument's read under way and when it started. */
+  readonly #inflight = new Map<string, { read: Promise<void>; since: number }>();
+
+  /** The read of `id` under way, unless it has been under way past the stall limit: then it is counted as a failure and no longer waited for. */
+  #held(id: string): Promise<void> | null {
+    const held = this.#inflight.get(id);
+    if (!held) return null;
+    if (this.now() - held.since <= this.stallMs) return held.read;
+    this.#inflight.delete(id);
+    const venue = venueOf(id);
+    this.#failure(venue, `${venue} open interest read under way for ${Math.round((this.now() - held.since) / 60_000)} min; no longer waited for`);
+    return null;
+  }
+
+  /** Starts a read of `id`, held until it settles (a later read in its place is not let go by this one's end). */
+  #start(id: string, work: () => Promise<void>): Promise<void> {
+    const entry = { read: Promise.resolve(), since: this.now() };
+    const read = work().finally(() => { if (this.#inflight.get(id) === entry) this.#inflight.delete(id); });
+    entry.read = read;
+    this.#inflight.set(id, entry);
     return read;
   }
-  readonly #inflight = new Map<string, Promise<void>>();
 
   /** The history alone, when due, as one read of the instrument: after a read under way, never beside it. */
   #readHistoryDue(id: string): Promise<void> {
-    const held = this.#inflight.get(id); if (held) return held.then(() => this.#readHistoryDue(id));
-    const read = this.#historyStep(id).finally(() => { this.#inflight.delete(id); });
-    this.#inflight.set(id, read);
-    return read;
+    const held = this.#held(id); if (held) return held.then(() => this.#readHistoryDue(id));
+    return this.#start(id, () => this.#historyStep(id));
   }
 
   /** One instrument's history, when it is due. */
@@ -189,7 +244,7 @@ export class OiSampler {
     // arrived in.
     this.#lastAsked.set(id, this.now());
     try {
-      const reading = await fetchOiReading(venue, this.get, listing);
+      const reading = await within(fetchOiReading(venue, this.get, listing), this.readDeadlineMs, `no answer in ${Math.round(this.readDeadlineMs / 1000)} s`);
       if (this.#closed) return;
       // An answer with no reading in it (an error body sent with 200, a field gone) is a failure as much as one that did not come.
       if (reading === null) { this.#failure(venue, `${venue} open interest sample had no reading`); return; }
