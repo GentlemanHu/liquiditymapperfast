@@ -94,6 +94,13 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   not have yet; an answer of an older snapshot (no order file read yet) is asked again two minutes later, three times a snapshot at most.
   The gate's refusal drops the pass (`Plus.refused`); a 503 waits its `Retry-After` (30 s to 15 min), or a minute when the page cannot
   read one; anything else is a failed read (30 s). Every read of the levels service or the gate is given up after 30 s.
+- **The data link** (`plus/link.ts`, 2026-11-21): a paid day, a rollup or a live Plus file read with a pass goes to the same path under a
+  link instead, `https://levels.hiverust.dev/v1/k/<token>/…`, with no pass: no CORS preflight, and one copy at the edge for every member,
+  which answers an unchanged file with a 304. The Worker hands the link to a pass (`GET /v1/link`: `{ base, until, now }`); the token
+  changes every 12 hours, and the page keeps the link in this tab's memory only, until two minutes before its slot ends by the server's
+  clock, asking for it one request at a time. A refused link is replaced once; the same link again, a second refusal, no link (a failed
+  request stops the asking for five minutes, a refused pass for one), a file on another origin (a local stand-in) or a link that cannot be
+  reached reads the file the old way, with the pass.
 
 `FREE_DAYS` (7) is one constant in `src/app/plus/config.ts`, and one variable of the server's. A day file is free when its UTC day starts
 at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
@@ -102,19 +109,19 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
 
 - **The levels service** (a separate Rust project on hiverust, reached through the Cloudflare tunnel) is the gate: it serves a free
   day and the live files to anyone, and a paid day or file only with a valid pass in `Authorization: Bearer`, which it checks itself
-  with the Worker's key (since 2026-11-17; "the gate" below means it). Its refusal is the one this page knows: 403
-  `{"error":"plus_required"}`.
+  with the Worker's key (since 2026-11-17; "the gate" below means it), and the same paid days and files without a pass under the data
+  link (above). Its refusal is the one this page knows: 403 `{"error":"plus_required"}`.
 - **The Worker** (a Cloudflare Worker, a project of its own) answers on `plus.liquiditymapper.com` (and `plus.hiverust.dev`, its name until 2026-11-22, for older pages); no data request passes through it. It gives a key and a
   pass after a checkout (`POST /v1/pass`), renews a pass for a key
-  (`POST /v1/pass/renew`), finds a membership by the receipt's email and invoice number (`POST /v1/restore`), and keeps each
-  subscription's state from Paddle's notifications.
+  (`POST /v1/pass/renew`), finds a membership by the receipt's email and invoice number (`POST /v1/restore`), hands a pass the data link
+  (`GET /v1/link`), and keeps each subscription's state from Paddle's notifications.
 - **The page**: `src/app/plus/`.
   - `config.ts`: the free days, the Worker's address, Paddle's client-side token, price ids, prices and portal link.
   - `pass.ts`: the membership as the browser holds it (`{ key, pass, until, ended, why, renews, skew, next }`): in the Plus database where
     it opens, mirrored to `localStorage` `lmf.plus` / `lmf.plus.gen`, else in `localStorage` alone (below), and its renewal.
   - `plus-db.ts`: the Plus database (IndexedDB `lmf-plus`, store `kv`: `seed`, `member`, `paid:<txn>`, `migrated`) and the gate that
     builds every request that issues a key; `schedule.ts`: when a payment's key is asked for; `request-timeout.ts`: a request given up
-    after 20 s in every browser.
+    after 20 s in every browser; `link.ts`: the data link (above), which `liq-history.ts` and `liq-levels.ts` read the paid files through.
   - `panel.ts`: the Plus button's status pop-up (a browser with a key) and the locks' way in (`togglePlus`), which open the presentation.
   - `key.ts`, `key.css`: a key entered in the app (the pop-up, the presentation's access card) or on the Plus page: the renewal call, what
     its answer means, the form and its styles (one file the app and the page both load).
