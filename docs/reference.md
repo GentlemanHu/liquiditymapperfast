@@ -1,4 +1,6 @@
-# LiquidityMapperFast
+# LiquidityMapperFast: reference
+
+Every feature in detail, for people working on the code. The short introduction is the [README](../README.md); the Guide inside the page explains it to its users.
 
 **Open it: https://liquiditymapper.com/** — free, no sign-up, MIT licence. A one-minute **tour** inside shows you around (offered on a first visit, and the Guide's first button), and the **Guide** explains everything.
 
@@ -372,8 +374,8 @@ English, Spanish, German, French, Portuguese, Italian, Russian, Ukrainian, Turki
 
 ## Performance and history of this codebase
 
-The previous implementation spent most of its CPU on memory accounting (client frame time 133 ms under interaction, server 90 % busy in byte estimation, history responses rejected by a 761 MB estimate). The measurements, method and what replaced it are in `Research_Findings.md`. Agent and contributor rules, including the Rust/WASM policy, are in [AGENTS.md](./AGENTS.md).
+The previous implementation spent most of its CPU on memory accounting (client frame time 133 ms under interaction, server 90 % busy in byte estimation, history responses rejected by a 761 MB estimate). The measurements, method and what replaced it are in `Research_Findings.md`. Agent and contributor rules, including the Rust/WASM policy, are in [AGENTS.md](../AGENTS.md).
 
 ## Licence
 
-MIT, see [LICENSE](./LICENSE). Free to use, change and share.
+MIT, see [LICENSE](../LICENSE). Free to use, change and share.
