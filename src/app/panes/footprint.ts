@@ -586,7 +586,7 @@ export function rowCellLines(cell: RowCell, bar: Bar, step: number, tf: string, 
     shown.forEach(([id, buy, sell], i) => lines.push({ mark: id, label: venueLabel(venueOfInstrument(id)), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'text', ...(i === 0 ? { rule: true } : {}) }));
     if (rest.length) {
       const buy = rest.reduce((s, r) => s + r[1], 0), sell = rest.reduce((s, r) => s + r[2], 0);
-      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: 'muted', ...(shown.length ? {} : { rule: true }) });
+      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'muted', ...(shown.length ? {} : { rule: true }) });
     }
   }
   lines.push({ label: t('Candle volume'), text: `$${volText(cell.barBuy + cell.barSell)}`, rule: true });

@@ -210,6 +210,10 @@ export function coinText(v: number, coin: string): string {
   return `${v > 0 ? '+' : v < 0 ? '−' : ''}${body}${coin ? ` ${coin}` : ''}`;
 }
 
+/** An amount of the coin without a sign, for a part whose word says which way it went ("Shorts closed 8.4K BTC"): in the colour of what its orders
+ * did, a minus or a plus beside it would say something else (a minus in the buy colour; Karl, 2026-11-22). */
+export const coinSize = (v: number, coin: string): string => coinText(Math.abs(v), coin).replace(/^\+/, '');
+
 /**
  * What a candle's change of open interest was made of, for the OI pane's bar: on a rise, the new longs (buyers opened), the new shorts (sellers
  * opened) and what went to no side; on a fall, the shorts closed (buyers closed), the longs closed (sellers closed) and what went to no side.
@@ -222,7 +226,7 @@ export function whoParts(c: NlnsCandle, rising: boolean): { buy: number; sell: n
 export function nlnsWhoLines(c: NlnsCandle, coin: string): InfoLine[] {
   const lines: InfoLine[] = [];
   for (const [label, x, color] of [[t('New longs'), c.longOpened, 'buy'], [t('New shorts'), c.shortOpened, 'sell'], [t('Longs closed'), -c.longClosed, 'sell'], [t('Shorts closed'), -c.shortClosed, 'buy']] as const)
-    if (x !== 0) lines.push({ label, text: coinText(x, coin), color });
+    if (x !== 0) lines.push({ label, text: coinSize(x, coin), color });
   if (c.unassigned > 0) lines.push({ label: t('Takers even'), text: coinText(c.unassigned, coin), color: 'muted' });
   if (c.unknown > 0) lines.push({ label: t('Side unknown'), text: coinText(c.unknown, coin), color: 'muted' });
   if (lines.length) lines[0] = { ...lines[0]!, rule: true };
@@ -250,14 +254,15 @@ export function nlnsCardLines(c: NlnsCandle, tf: string, coin: string, market: s
     { label: t('Read as'), text: c.kind ? KIND_TEXT[c.kind]() : c.unassigned > 0 ? t('takers even') : c.unknown > 0 ? t('side unknown') : t('no change'), color: c.v > 0 ? 'buy' : c.v < 0 ? 'sell' : 'text' },
   ];
   for (const [label, x, color] of [[t('New longs'), c.longOpened, 'buy'], [t('Longs closed'), -c.longClosed, 'sell'], [t('New shorts'), c.shortOpened, 'sell'], [t('Shorts closed'), -c.shortClosed, 'buy']] as const)
-    if (x !== 0) lines.push({ label, text: coinText(x, coin), color });
+    if (x !== 0) lines.push({ label, text: coinSize(x, coin), color });
   if (c.unassigned > 0) lines.push({ label: t('Takers even'), text: coinText(c.unassigned, coin), color: 'muted' });
   // Neither the flow (not recorded over the whole stretch) nor the price (another market's candles) said which way.
   if (c.unknown > 0) lines.push({ label: t('Side unknown'), text: coinText(c.unknown, coin), color: 'muted' });
   lines.push(
     { label: t('Longs'), text: `${coinText(c.longs, coin)} · ${t('since the start')} ${coinText(c.cumLongs, coin)}`, color: c.longs > 0 ? 'buy' : c.longs < 0 ? 'sell' : 'text', rule: true },
     { label: t('Shorts'), text: `${coinText(c.shorts, coin)} · ${t('since the start')} ${coinText(c.cumShorts, coin)}`, color: c.shorts > 0 ? 'sell' : c.shorts < 0 ? 'buy' : 'text' },
-    { label: t('Net'), text: `${coinText(c.v, coin)} · ${t('since the start')} ${coinText(c.cum, coin)}`, color: c.cum > 0 ? 'buy' : c.cum < 0 ? 'sell' : 'text' },
+    // The candle's net in the colour of its own sign (it took the running sum's: a buying candle in the sell colour; review 2026-11-22).
+    { label: t('Net'), text: `${coinText(c.v, coin)} · ${t('since the start')} ${coinText(c.cum, coin)}`, color: c.v > 0 ? 'buy' : c.v < 0 ? 'sell' : 'text' },
   );
   if (markets > 1 && c.covered < markets) lines.push({ text: t('{n} of {m} venues', { n: c.covered, m: markets }), color: 'muted' });
   // How it was worked out: minute by minute where the market's minute readings and flow cover the candle, else once for the candle.

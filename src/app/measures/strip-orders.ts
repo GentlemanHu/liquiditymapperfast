@@ -59,7 +59,9 @@ export function orderLines(orders: StripOrders | 'loading' | 'failed' | null | u
     { label: t('Average sell order'), text: per(o.sellUsd, o.sellN), color: 'sell' },
     { label: t('Average order'), text: per(orderUsd, n) },
   ];
-  if (orderUsd > 0) lines.push({ label: t('Whale orders from {size}', { size: `$${usd(whaleUsd)}` }), text: `${o.whale.exact ? '' : '≈ '}${pct(whale / orderUsd)} · Δ ${signedUsd(o.whale.buy - o.whale.sell)}` });
+  if (orderUsd > 0) lines.push({ label: t('Whale orders from {size}', { size: `$${usd(whaleUsd)}` }), text: `${o.whale.exact ? '' : '≈ '}${pct(whale / orderUsd)} · Δ ${signedUsd(o.whale.buy - o.whale.sell)}`,
+    // Their buying less selling, in the colour of its sign (Karl, 2026-11-22: a leaning figure is never left in the plain text colour).
+    ...(o.whale.buy > o.whale.sell ? { color: 'buy' as const } : o.whale.buy < o.whale.sell ? { color: 'sell' as const } : {}) });
   if (o.venues.length) lines.push({ label: t('Largest venues'), text: o.venues.map(v => `${venueLabel(v.id)} ${pct(v.share)}`).join(' · ') });
   if (o.minutes !== null && o.minutes < o.of) lines.push({ text: t('Orders are counted for {n} of the {total} minutes.', { n: o.minutes, total: o.of }), color: 'muted', wrap: true });
   lines.push({ text: t('Each order counts once, at the minute its first fill came, with its own dollars: they can differ a little from the bar\'s.'), color: 'muted', wrap: true });

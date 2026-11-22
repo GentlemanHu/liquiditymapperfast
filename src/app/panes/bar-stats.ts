@@ -146,7 +146,8 @@ export function coverageOf(bar: Bar, start: number, tfMs: number, now: number): 
 
 /** A row's values at the visible slots, those there are. */
 const seen = (at: readonly number[], values: readonly (number | null)[]): number[] => at.flatMap(i => { const v = values[i]; return v === null || v === undefined ? [] : [v]; });
-const signTone = (value: number): StatTone => value >= 0 ? 'buy' : 'sell';
+/** A signed figure's tone: zero leans to neither side (it was the buy colour). */
+const signTone = (value: number): StatTone => value > 0 ? 'buy' : value < 0 ? 'sell' : 'text';
 const sumView = (format: (v: number) => string, signed: boolean) => (_input: StatInput, at: readonly number[], values: readonly (number | null)[]): ViewCell | null => {
   const found = seen(at, values); if (!found.length) return null;
   const sum = found.reduce((a, b) => a + b, 0);

@@ -135,5 +135,5 @@ function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, set: (change:
 
   const recent = alerts.log.slice(-5).reverse();
   body.append(heading(t('Recent')));
-  body.append(recent.length ? el('div', { class: 'alert-log' }, ...recent.map(e => el('p', { class: 'panel-note', textContent: `${clock(e.at)}  ${e.text}${e.audible ? '' : ' ' + t('(not heard: sound was locked)')}` }))) : note(t('Nothing yet.')));
+  body.append(recent.length ? el('div', { class: 'alert-log' }, ...recent.map(e => el('p', { class: e.side ? `panel-note alert-${e.side}` : 'panel-note', textContent: `${clock(e.at)}  ${e.text}${e.audible ? '' : ' ' + t('(not heard: sound was locked)')}` }))) : note(t('Nothing yet.')));
 }

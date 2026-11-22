@@ -5,7 +5,7 @@ import { signedUsd } from '../cvd/text.ts';
 import { t } from '../i18n.ts';
 import { bandText } from '../depth-settings.ts';
 import { curveOf, viewParts, type LiqView } from '../liq-view.ts';
-import { depthOrderSides, type OrderSide } from '../order-side.ts';
+import { depthBuyLessSell, depthOrderSides, type OrderSide } from '../order-side.ts';
 import { rankKind, type BandRank } from '../depth-history.ts';
 import { ratioFigure, sideRatio } from './pane-table.ts';
 
@@ -255,8 +255,9 @@ export function liqTakesLine(takes: { bid: number; ask: number }, units: 'usd' |
  * One moment of the Depth pane's Liquidation levels where its table is not drawn: the snapshot in force (when its positions stood), each band's
  * longs and shorts, the watched band in bold with their difference. Where the money sits, not what was or will be liquidated. The larger side is
  * named in the colour of what its orders would do (order-side.ts: the longs' sell colour, a long being closed by a sell), as the table's ×. The
- * difference is coloured only where it is buying less selling: longs less shorts is not, so it has none; take profits alone are bids less asks
- * (the shorts' buys below the price, the longs' sells above), coloured by their sign as the book's card colours bids less asks.
+ * difference is what they would buy less what they would sell, as the table's Δ (`depthBuyLessSell`): the shorts less the longs (a short is closed
+ * by a buy), take profits alone the bids less the asks (the shorts' buys below the price, the longs' sells above), coloured by its sign as the
+ * book's card colours bids less asks.
  */
 export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; view?: LiqView; takes?: { bid: number; ask: number } | null }): InfoLine[] {
   const fmt = (value: number): string => h.units === 'coin' ? `${coinFigures.format(value)} ${h.coin}` : money(value);
@@ -267,10 +268,9 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
   h.bands.forEach((band, j) => lines.push({ label: `±${bandText(band.r)}%`, text: `${fmt(band.bid)} · ${fmt(band.ask)}`, bold: j === h.watched, table: false }));
   const w = h.bands[h.watched];
   if (w) {
-    const diff = w.bid - w.ask;
-    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), ...(kind === 'takes' ? { color: sideColor(diff) } : {}), bold: true, table: false });
     // Take profits on alone are resting orders: the buys below the price are bids, the sells above asks.
-    const sides = depthOrderSides(kind), colors = [pairColor(sides.below), pairColor(sides.above)] as const;
+    const sides = depthOrderSides(kind), colors = [pairColor(sides.below), pairColor(sides.above)] as const, diff = depthBuyLessSell(w.bid, w.ask, sides);
+    lines.push({ label: 'Δ', text: h.units === 'coin' ? `${diff >= 0 ? '+' : '−'}${fmt(Math.abs(diff))}` : signedUsd(diff), color: sideColor(diff), bold: true, table: false });
     const ratio = ratioLine(w.bid, w.ask, kind === 'takes' ? [t('bids'), t('asks')] : [t('longs'), t('shorts')], colors); if (ratio) lines.push({ ...ratio, table: false });
   }
   // The take profits of the watched band: the sells that close longs above the price, the buys that close shorts below; never added to the rest.

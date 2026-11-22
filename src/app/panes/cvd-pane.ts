@@ -777,7 +777,8 @@ export class CvdPane {
       // The price's legend is the short line it is drawn with over the chart.
       if (line.swatch) { ctx.strokeStyle = p.text; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(x - 1, ly); ctx.lineTo(x + 8, ly); ctx.stroke(); x += 11; }
       ctx.font = line.bold ? `600 11px ${SANS}` : `11px ${line.dot || line.swatch ? MONO : SANS}`;
-      ctx.fillStyle = line.tone === 'muted' ? p.muted : p.text;
+      // A delta in the colour of its sign, as the line's end flashes (`buy` and `sell`, cvd/text.ts `leanTone`).
+      ctx.fillStyle = line.tone === 'muted' ? p.muted : line.tone === 'buy' ? p.bid : line.tone === 'sell' ? p.ask : p.text;
       ctx.fillText(fit(ctx, line.text, room - (x - PAD)), x, ly);
     });
     ctx.restore();

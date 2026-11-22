@@ -3380,6 +3380,7 @@
  "longs": "largos",
  "shorts": "cortos",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "× en la tabla es cuántas veces el lado mayor es el menor, en su color: 2.50× es dos veces y media más en ese lado; ∞, el otro lado no tiene nada.",
+ "Δ in the table is what would be bought less what would be sold, in the colour of the larger side: the bids less the asks; with the liquidation levels the shorts less the longs, as a short is closed by a buy and a long by a sale.": "Δ en la tabla es lo que se compraría menos lo que se vendería, en el color del lado mayor: los bids menos los asks; con los niveles de liquidación, los cortos menos los largos, ya que un corto se cierra con una compra y un largo con una venta.",
  "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "Bajo los exchanges, la tabla también dice lo que diría el popup del exchange mostrado: cuándo se paga y, en Hyperliquid, quién abrió. Donde cabe todo eso ocupa el lugar del popup; donde no, el popup se queda.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "Un tipo sigue activado. Para ocultar los niveles, usa Niveles liq. en la barra superior.",
  "How levels work": "Cómo funcionan los niveles",

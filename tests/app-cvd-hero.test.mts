@@ -131,7 +131,9 @@ test('the legend of the chart names the window, gives each kind its net and the 
   const lines = heroLabel(model, '5m', true, 80_520.1);
   assert.deepEqual(lines.map(l => l.text), ['ALL VENUES', 'S +$2.5M', 'P −$3M', 'Δ5M −$500K', '80,520.1']);
   assert.deepEqual(lines.map(l => l.dot ?? l.swatch ?? null), [null, 'spot', 'perp', null, 'price']);
-  assert.ok(lines[0]!.bold && lines[3]!.tone === 'muted');
+  assert.ok(lines[0]!.bold);
+  // Each net in the colour of its sign, the total too (Karl, 2026-11-22); the dot keeps the lane's colour.
+  assert.deepEqual(lines.slice(1, 4).map(l => l.tone), ['buy', 'sell', 'sell']);
   // The figures are the lines' ends, never the ranking window's (`delta` is 999 here to show it).
   assert.ok(!lines.some(l => l.text.includes('999')));
   // A filter names itself and counts what it leaves out; no price, no price line; no lines, no total.

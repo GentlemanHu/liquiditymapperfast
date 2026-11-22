@@ -954,6 +954,9 @@ ol.steps { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 8px; line
 /* The Depth pane's own bands (lower-panes.ts `#openEdit`): the typed list, why it cannot be used, and Apply under it. */
 .panel-body input.depth-bands-input { width: 100%; margin: 8px 0 0; box-sizing: border-box; font-variant-numeric: tabular-nums; }
 .panel-note.depth-band-error { color: var(--ask); }
+/* A recent alert in the colour of what it says the orders did (bids outweighing asks, a candle closed with net buying). */
+.alert-log .alert-buy { color: var(--bid); }
+.alert-log .alert-sell { color: var(--ask); }
 .panel-body .depth-bands-apply { margin-top: 8px; }
 /* The Volume profile's key to the brightened stronger side: three rows of one length, a label before each (traded/panel.ts). */
 .emphasis-key { display: grid; gap: 3px; margin: 2px 0 6px; }
