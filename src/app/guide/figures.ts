@@ -189,16 +189,17 @@ export function phraseEdges(text: string, breaks: WordBreaks | null = browserBre
   return out;
 }
 /**
- * `text` in at most two lines for `room`: one line at `size`, or a little smaller (to 85 %); else two, broken at the space (or, in a script
- * written without spaces, the phrase's edge: `phraseEdges`) that leaves the wider line narrowest, smaller where two are too wide; one line
- * where there is nowhere to break. Never below `MIN_TEXT`, so `fits` says whether the lines are in fact no wider than `room`.
+ * `text` in at most two lines for `room`: one line at `size`, or a little smaller (to 85 %, and not under 10 px: smaller than that, two
+ * lines read better); else two, broken at the space (or, in a script written without spaces, the phrase's edge: `phraseEdges`) that leaves
+ * the wider line narrowest, smaller where two are too wide; one line where there is nowhere to break. Never below `MIN_TEXT`, so `fits` says
+ * whether the lines are in fact no wider than `room`.
  */
 export function fitLines(g: Ctx, text: string, room: number, size: number, weight = 400): { lines: string[]; size: number; fits: boolean } {
   font(g, size, weight);
   const whole = g.measureText(text).width;
   if (!(whole > room)) return { lines: [text], size, fits: true }; // it fits, or cannot be measured
   const shrunk = Math.floor(size * room / whole * 10) / 10;
-  if (shrunk >= Math.max(MIN_TEXT, size * 0.85)) return { lines: [text], size: shrunk, fits: true };
+  if (shrunk >= Math.max(MIN_TEXT, size * 0.85, Math.min(size, 10))) return { lines: [text], size: shrunk, fits: true };
   const chars = [...text], spaces = chars.flatMap((c, i) => (c === ' ' ? [i] : []));
   let cuts = spaces.length ? spaces : phraseEdges(text);
   // With no phrase's edge found (no word breaks in this browser) and one line too wide even at the smallest size: any character, rather

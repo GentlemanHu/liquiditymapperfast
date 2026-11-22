@@ -58,7 +58,8 @@ test('the Mirror picture and the profile box agree on every pair of bands, with 
 test('a picture\'s line keeps to its room: one line, a little smaller, two lines at a space or a phrase\'s edge, then smaller', () => {
   const { g } = measuringCanvas();
   assert.deepEqual(fitLines(g, 'Asks 1.40× the bids', 200, 10), { lines: ['Asks 1.40× the bids'], size: 10, fits: true }, 'it fits');
-  assert.deepEqual(fitLines(g, 'Asks 1.40× the bids', 90, 10), { lines: ['Asks 1.40× the bids'], size: 9.4, fits: true }, 'a little smaller, on one line');
+  assert.deepEqual(fitLines(g, 'Asks 1.40× the bids', 115, 13), { lines: ['Asks 1.40× the bids'], size: 12.1, fits: true }, 'a little smaller, on one line');
+  assert.deepEqual(fitLines(g, 'Move outward: the balance changes', 160, 10.5), { lines: ['Move outward: the', 'balance changes'], size: 10.5, fits: true }, 'small words take two lines rather than going under 10 px');
   assert.deepEqual(fitLines(g, 'Asks 1.40× so groß wie die Bids', 100, 10), { lines: ['Asks 1.40× so', 'groß wie die Bids'], size: 10, fits: true }, 'two lines, the wider as narrow as can be');
   assert.deepEqual(fitLines(g, 'Asks 1.40× so groß wie die Bids', 70, 10), { lines: ['Asks 1.40× so', 'groß wie die Bids'], size: 8.2, fits: true }, 'two smaller lines');
   assert.deepEqual(fitLines(g, 'Asks 1.40× so groß wie die Bids', 50, 10), { lines: ['Asks 1.40× so', 'groß wie die Bids'], size: 8, fits: false }, 'never below the smallest size, and says so');
