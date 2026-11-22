@@ -104,7 +104,7 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
   day and the live files to anyone, and a paid day or file only with a valid pass in `Authorization: Bearer`, which it checks itself
   with the Worker's key (since 2026-11-17; "the gate" below means it). Its refusal is the one this page knows: 403
   `{"error":"plus_required"}`.
-- **The Worker** (a Cloudflare Worker, a project of its own) answers only `plus.hiverust.dev`; no data request passes through it. It gives a key and a
+- **The Worker** (a Cloudflare Worker, a project of its own) answers on `plus.liquiditymapper.com` (and `plus.hiverust.dev`, its name until 2026-11-22, for older pages); no data request passes through it. It gives a key and a
   pass after a checkout (`POST /v1/pass`), renews a pass for a key
   (`POST /v1/pass/renew`), finds a membership by the receipt's email and invoice number (`POST /v1/restore`), and keeps each
   subscription's state from Paddle's notifications.
