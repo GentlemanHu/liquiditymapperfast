@@ -9,7 +9,18 @@
  */
 import type { CandleRow, OiBar } from '../store.ts';
 import type { NlnsCandle, NlnsKind } from '../delta/nlns.ts';
-import type { OiPart } from '../oi-change.ts';
+import { heldOiAt, type OiPart } from '../oi-change.ts';
+
+/**
+ * What the OI pane draws zoomed out: the level and the venues' bars as drawn candles, each candle's change, the candles, each venue's own
+ * changes with the venues counted and their cohorts (`groupVenues`), what they were grouped from (`fine`) and the drawn candles' length.
+ */
+export interface OiGrouped {
+  oi: OiBar[]; parts: OiPart[]; change: Map<number, number>; candles: CandleRow[];
+  venues: { change: Map<string, Map<number, number>>; counted: Map<number, number>; cohorts: Map<number, string> };
+  fine: { oi: readonly OiBar[]; parts: readonly OiPart[]; tfMs: number; candles: readonly CandleRow[] };
+  drawnMs: number;
+}
 
 /** The start of the drawn candle a time falls in (drawn candles are whole UTC days at most, so they start on the epoch grid). */
 export const drawnStart = (t: number, drawnMs: number): number => Math.floor(t / drawnMs) * drawnMs;
@@ -30,15 +41,52 @@ export const groupParts = (parts: readonly OiPart[], drawnMs: number): OiPart[] 
 
 /**
  * The pane's level and changes as drawn candles: `oi` its level per chart candle (oldest first), `change` each chart candle's change by its
- * start where known. A drawn candle's change is the sum of the known changes in it, and absent where none of them is known.
+ * start where known. A drawn candle's change is the sum of the known changes in it, and absent where none of them is known; the first drawn
+ * candle has none (it holds only the chart candles from where the bars start, and the pane draws no bar for its first candle), so the Range
+ * summary and the bars count the same candles.
  */
 export function groupChanges(oi: readonly OiBar[], change: ReadonlyMap<number, number>, drawnMs: number): { oi: OiBar[]; change: Map<number, number> } {
-  const sums = new Map<number, number>();
+  const sums = new Map<number, number>(), first = oi.length ? drawnStart(oi[0]![0], drawnMs) : NaN;
   for (const b of oi) {
-    const d = change.get(b[0]); if (d === undefined) continue;
-    const s = drawnStart(b[0], drawnMs); sums.set(s, (sums.get(s) ?? 0) + d);
+    const d = change.get(b[0]), s = drawnStart(b[0], drawnMs);
+    if (d === undefined || s === first) continue;
+    sums.set(s, (sums.get(s) ?? 0) + d);
   }
   return { oi: groupBars(oi, drawnMs), change: sums };
+}
+
+/**
+ * Each venue's own change per drawn candle as the chart candles count it (`sumOi`: a venue between its readings one chart candle apart, each
+ * held up to max(2 candles, 10 min)), and per drawn candle how many venues and which had a change counted (`counted`, `cohorts`). The Range
+ * summary's per-venue rows, venue counts and cohorts then add up to the drawn bars: worked out again from the venues' grouped bars they did
+ * not where a venue starts inside a drawn candle or has a gap longer than two chart candles (review, 2026-11-22). The first drawn candle has
+ * none, as in `groupChanges`.
+ */
+export function groupVenues(oi: readonly OiBar[], parts: readonly OiPart[], tfMs: number, drawnMs: number): { change: Map<string, Map<number, number>>; counted: Map<number, number>; cohorts: Map<number, string> } {
+  const carry = Math.max(2 * tfMs, 10 * 60_000), first = oi.length ? drawnStart(oi[0]![0], drawnMs) : NaN;
+  const change = new Map<string, Map<number, number>>(), members = new Map<number, Set<string>>();
+  for (const part of parts) {
+    const bars = [...part.bars].sort((a, b) => a[0] - b[0]), mine = new Map<number, number>();
+    for (const b of oi) {
+      const t = b[0], s = drawnStart(t, drawnMs);
+      if (s === first) continue;
+      const now = heldOiAt(bars, t, carry), before = heldOiAt(bars, t - tfMs, carry);
+      if (!now || !before) continue;
+      mine.set(s, (mine.get(s) ?? 0) + now[4] - before[4]);
+      let m = members.get(s); if (!m) members.set(s, m = new Set()); m.add(part.id);
+    }
+    change.set(part.id, mine);
+  }
+  const counted = new Map<number, number>(), cohorts = new Map<number, string>();
+  for (const [s, m] of members) { counted.set(s, m.size); cohorts.set(s, [...m].sort().join(',')); }
+  return { change, counted, cohorts };
+}
+
+/** Each bar's change in USD by drawn candle: the chart candles' USD changes (`oiUsdChangeByTime`) added up, the first drawn candle without. */
+export function groupUsd(usd: ReadonlyMap<number, number>, oi: readonly OiBar[], drawnMs: number): Map<number, number> {
+  const first = oi.length ? drawnStart(oi[0]![0], drawnMs) : NaN, out = new Map<number, number>();
+  for (const [t, x] of usd) { const s = drawnStart(t, drawnMs); if (s !== first) out.set(s, (out.get(s) ?? 0) + x); }
+  return out;
 }
 
 /** The NL/NS label a candle's parts give (the same rule as `nlnsModel`): its largest part, `mixed` when parts pulled both ways, null with none. */
@@ -83,10 +131,12 @@ export function groupCandles(candles: readonly CandleRow[], drawnMs: number): Ca
 }
 
 /**
- * The share of a candle's sided change that was sided by the way the price went (no flow recorded): bars mostly sided so are drawn as
- * rising or falling, not split by who (`OiPane`).
+ * The share of a candle's change that its takers gave a side: of the four parts and what went to no side for want of a record (`unknown`),
+ * what the flow decided (not the way the price went, `byPriceOi`, nor nothing at all). A bar under half is drawn as rising or falling, not
+ * split by who (`OiPane`): the who colours are the takers'. Older than the chart's candles a bar with no flow has no price to go by either,
+ * and was drawn grey (review, 2026-11-22). 1 where nothing was to be sided (takers even, or no change).
  */
-export const priceSidedShare = (c: NlnsCandle): number => {
-  const sided = c.longOpened + c.longClosed + c.shortOpened + c.shortClosed;
-  return sided > 0 ? Math.min(1, (c.byPriceOi ?? 0) / sided) : 0;
+export const takerSidedShare = (c: NlnsCandle): number => {
+  const sided = c.longOpened + c.longClosed + c.shortOpened + c.shortClosed, all = sided + c.unknown;
+  return all > 0 ? Math.max(0, sided - (c.byPriceOi ?? 0)) / all : 1;
 };

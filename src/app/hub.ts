@@ -134,6 +134,15 @@ export const OI_RECENT_BARS = 500;
 export const OI_OLDER_MAX_BARS = 3_000;
 /** How long the view must stay before older bars are asked for: a zoom passing through asks nothing. */
 const OI_REACH_SETTLE_MS = 400;
+/** An older read that brought nothing back where history was expected is asked again this much later, this many times at most. */
+const OI_OLDER_RETRY_MS = 60_000, OI_OLDER_TRIES = 3;
+/** Two runs of bars by time, oldest first, `b`'s bar where both have one. */
+export function byTime(a: readonly OiBar[], b: readonly OiBar[]): OiBar[] {
+  const m = new Map<number, OiBar>();
+  for (const bar of a) m.set(bar[0], bar);
+  for (const bar of b) m.set(bar[0], bar);
+  return [...m.values()].sort((x, y) => x[0] - y[0]);
+}
 /**
  * Bars read at one price (`held.usdAt`: an inverse market's USD put in coins at it) put at another (`usdAt`): the same USD over the other price.
  * A market in coins, or either price unknown, as they are.
@@ -1020,10 +1029,11 @@ export class Hub {
 
   async #loadOi(own: string, key: string, added: string[] | null, venues: string[]): Promise<void> {
     const { timeframe } = this.store.state;
-    // The recent candles, and from where the older stretch read for this key ends (`#oiOlder`), so the two never leave a hole between them as
-    // the window's start moves on with the clock.
+    // The recent candles only: the bars that leave them as the clock moves on go to the older stretch (`#foldOlder`, before a whole read
+    // replaces the parts), so the two never leave a hole. Asked from where the older stretch ends instead, a page's Binance read (its newest
+    // 500 readings, `fetchOiHistory`) left a hole that grew with the tab's age, and a server's window grew a bar a candle (review, 2026-11-22).
     const tf = TIMEFRAMES[timeframe] ?? 3_600_000, now = Date.now(), older = this.#olderFor(key), to = now + tf;
-    const from = Math.min(now - OI_RECENT_BARS * tf, older ? older.to : Infinity);
+    const from = (Math.floor(now / tf) - OI_RECENT_BARS) * tf;
     // The same markets read whole within OI_WHOLE_MS: only their last bars are read again (`#loadOiTail`); a venue that answered nothing, or
     // a reference market standing in, is looked at again at the next whole read. Decided before anything is awaited, so the generation a
     // load in flight is held under (`loadOi`) is its own.
@@ -1150,6 +1160,7 @@ export class Hub {
       const read: OiPart[] = await Promise.all(venues.map(async id => ({ id, ...await this.oiSeries(id, timeframe, from, to).catch(() => ({ bars: [] as OiBar[] })) })));
       if (this.#oiKey !== key || generation !== this.#oiGen) return;
       const answered = read.filter(part => part.bars.length);
+      this.#foldOlder(key, from, tf);
       const pushed = late(), parts = this.#withOlder(key, answered.map(part => withPushed(part, pushed, tf)));
       this.#oiTf = tf;
       if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiInstrument: '', oiParts: parts, oiPrice: 0, oiReading: false });
@@ -1169,6 +1180,7 @@ export class Hub {
     if (!chosen) return;
     const usdAt = prices.get(chosen.inst);
     this.#oiTf = tf;
+    this.#foldOlder(key, from, tf);
     const part = this.#withOlder(key, [withPushed({ id: chosen.inst, bars: chosen.bars, ...(usdAt ? { usdAt } : {}) }, late(), tf)])[0]!;
     this.store.set({ oi: [...part.bars], oiInstrument: chosen.inst, oiParts: [], oiPrice: usdAt ?? 0, oiReading: false });
     this.#oiHeld = { key, at: now }; this.#oiShown = key; if (part.bars.length) this.#oiRemember([part], tf, now);
@@ -1192,13 +1204,20 @@ export class Hub {
     const want = Math.max(floor, (Math.floor(t0 / tf) - 1) * tf), older = this.#olderFor(key);
     const held = older ? older.from : (Math.floor(now / tf) - OI_RECENT_BARS) * tf;
     if (want >= held || this.#olderReading === key) { if (this.#reachTimer && want >= held) { clearTimeout(this.#reachTimer); this.#reachTimer = null; } return; }
+    // An older read that came back empty where history was expected waits a minute before it is asked again.
+    if (this.#olderEmpty?.key === key && now < this.#olderEmpty.retryAt) return;
     if (this.#reachTimer) clearTimeout(this.#reachTimer);
-    this.#reachTimer = setTimeout(() => { this.#reachTimer = null; if (this.#oiKey === key) void this.#loadOiOlder(key, want, held); }, OI_REACH_SETTLE_MS);
+    // Up to the recent candles' first bar included: a page's Binance read answers the newest 500 readings of the recent window's 501, so that bar
+    // may be in neither read otherwise.
+    const to = older ? older.from : held + tf;
+    this.#reachTimer = setTimeout(() => { this.#reachTimer = null; if (this.#oiKey === key) void this.#loadOiOlder(key, want, to); }, OI_REACH_SETTLE_MS);
     (this.#reachTimer as { unref?: () => void }).unref?.();
   }
   #reachTimer: ReturnType<typeof setTimeout> | null = null;
   /** The key an older read is under way for. */
   #olderReading: string | null = null;
+  /** An older read for `key` that came back empty where history was expected: when it may be asked again, and how often it was. */
+  #olderEmpty: { key: string; from: number; retryAt: number; tries: number } | null = null;
   /**
    * The bars read older than the recent ones, for one key (markets and timeframe): asked from `from` to `to` (the recent window's start when
    * first asked), each market's bars with the one price an inverse market's were put at.
@@ -1214,10 +1233,18 @@ export class Hub {
     try {
       const read = await Promise.all(parts.map(async part => ({ id: part.id, usdAt: part.usdAt, bars: await this.oiSeries(part.id, timeframe, from, to, part.usdAt).then(series => series.bars, (): OiBar[] => []) })));
       if (this.#oiKey !== key) return;
+      // Nothing came back for any market, though one had readings where the window ends (its history should go on before it): a failure as a
+      // page's sources report one (an empty answer), asked again a minute later, three times, before the window is taken as having none.
+      const got = read.some(r => r.bars.some(b => b[0] >= from && b[0] < to)), expected = parts.some(part => (part.bars[0]?.[0] ?? Infinity) <= to + this.#oiTf);
+      if (!got && expected) {
+        const tries = this.#olderEmpty?.key === key && this.#olderEmpty.from === from ? this.#olderEmpty.tries + 1 : 1;
+        if (tries < OI_OLDER_TRIES) { this.#olderEmpty = { key, from, retryAt: Date.now() + OI_OLDER_RETRY_MS, tries }; return; }
+      }
+      this.#olderEmpty = null;
       const was = this.#olderFor(key), bars = new Map(was?.bars ?? []);
       for (const r of read) {
         const old = bars.get(r.id), mine = r.bars.filter(b => b[0] >= from && b[0] < to);
-        bars.set(r.id, { ...(r.usdAt ? { usdAt: r.usdAt } : {}), bars: [...mine, ...(old ? atPrice(old, r.usdAt) : [])] });
+        bars.set(r.id, { ...(r.usdAt ? { usdAt: r.usdAt } : {}), bars: byTime(mine, old ? atPrice(old, r.usdAt) : []) });
       }
       this.#oiOlder = { key, from, to: was ? was.to : to, bars };
       const held = this.#oiHeldParts(this.#oiTf);
@@ -1227,6 +1254,26 @@ export class Hub {
       if (merged.length > 1) this.store.set({ oiParts: merged, oi: oiSumOf(merged, this.#oiTf).bars });
       else this.store.set({ oi: [...merged[0]!.bars] });
     } finally { if (this.#olderReading === key) this.#olderReading = null; }
+  }
+
+  /**
+   * Before a whole read replaces the parts: the bars on screen older than its window (`from`) and not yet in the older stretch go there, so
+   * the stretch ends where the recent candles begin; what is older than `OI_OLDER_MAX_BARS` past the recent candles is let go.
+   */
+  #foldOlder(key: string, from: number, tf: number): void {
+    const older = this.#olderFor(key); if (!older || from < older.to) return;
+    const held = this.#oiHeldParts(tf);
+    if (!held) return;
+    const floor = (Math.floor(Date.now() / tf) - OI_RECENT_BARS - OI_OLDER_MAX_BARS) * tf, bars = new Map<string, { usdAt?: number; bars: OiBar[] }>();
+    for (const [id, was] of older.bars) bars.set(id, was);
+    for (const part of held) {
+      const leaving = part.bars.filter(b => b[0] >= older.to && b[0] <= from), was = bars.get(part.id);
+      if (!leaving.length && !was) continue;
+      bars.set(part.id, { ...(part.usdAt ? { usdAt: part.usdAt } : {}), bars: byTime(was ? atPrice(was, part.usdAt) : [], leaving) });
+    }
+    for (const [id, was] of bars) bars.set(id, { ...was, bars: was.bars.filter(b => b[0] >= floor) });
+    // The window's first bar goes too (a read answering its newest 500 of 501 may leave it out): the stretch ends after it.
+    this.#oiOlder = { key, from: Math.max(older.from, floor), to: from + tf, bars };
   }
 
   /**
@@ -1262,11 +1309,13 @@ export class Hub {
     const floor = Math.max(keepFrom, (Math.floor(now / tf) - OI_TAIL_BARS) * tf), froms = held.map(part => Math.max(floor, part.bars[part.bars.length - 1]![0] - tf));
     const tails = await Promise.all(held.map((part, i) => this.oiSeries(part.id, timeframe, froms[i]!, now + tf, part.usdAt).then(series => series.bars, (): OiBar[] => [])));
     if (this.#oiKey !== key || generation !== this.#oiGen) return;
+    // The older bars an older read put on screen while the tails were out are kept (worked out before the wait, the floor trimmed them).
+    const older = this.#olderFor(key), keep = older ? Math.min(keepFrom, older.from) : keepFrom;
     const pushed = this.#oiDuring.filter(entry => entry.at >= now).map(entry => entry.reading);
     // On the bars on screen now: pushes may have moved them while the tails were read.
     const current = this.#oiHeldParts(tf);
     if (!current || current.length !== held.length || current.some((part, i) => part.id !== held[i]!.id)) return;
-    const parts = current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keepFrom) }, pushed, tf));
+    const parts = this.#withOlder(key, current.map((part, i) => withPushed({ ...part, bars: oiTail(part.bars, tails[i]!, froms[i]!, keep) }, pushed, tf)));
     if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiParts: parts });
     else this.store.set({ oi: [...parts[0]!.bars] });
     // A tail that did not answer leaves its market as old as it was.

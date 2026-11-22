@@ -27,6 +27,11 @@ export interface OiStretchInput {
   formingFrom?: number;
   /** The venues added together (each its own bars); one market: empty. */
   parts: readonly OiPart[];
+  /**
+   * Each venue's own change by bar start where the pane drew longer candles than the chart's (oi-group.ts `groupVenues`): its part is the sum of
+   * these over the stretch, so the parts add up to the known change; absent, each venue's part is worked out from its bars.
+   */
+  venueChange?: ReadonlyMap<string, ReadonlyMap<number, number>> | null;
   /** The NL/NS candles by start, where the bars are split by who. */
   who: ReadonlyMap<number, NlnsCandle> | null;
   /** The chart's candles (oldest first), for the price across the same candles. */
@@ -166,6 +171,12 @@ export function oiStretch(input: OiStretchInput): OiStretch | null {
   // Each venue's own part, bar by bar as the sum counts it (a venue whose readings start inside the stretch counts from its first).
   const carry = Math.max(2 * tfMs, 10 * 60_000);
   const venues: OiVenueChange[] = input.parts.map(part => {
+    const own = input.venueChange?.get(part.id);
+    if (input.venueChange) {
+      let x = 0, counted = 0;
+      for (let i = i0; i <= i1; i++) { const c = own?.get(oi[i]![0]); if (c !== undefined) { x += c; counted++; } }
+      return { id: part.id, change: x, bars: counted };
+    }
     const bars = [...part.bars].sort((a, b) => a[0] - b[0]);
     let x = 0, counted = 0;
     for (let i = i0; i <= i1; i++) {

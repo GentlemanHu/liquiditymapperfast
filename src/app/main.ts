@@ -307,7 +307,8 @@ async function main(): Promise<void> {
   // A drag in the OI pane sums up its own bars (range/oi-lines.ts): what it drew, and the liquidations the map holds on its markets.
   const oiSummary = new OiRangeSummary();
   range.useProvider({
-    pane: 'oi', title: () => t('Open interest'), shown: () => store.state.show.oi, barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
+    // Its bars: the map's longer candles where the pane draws them zoomed out (oi-group.ts), so a drag holds whole drawn candles.
+    pane: 'oi', title: () => t('Open interest'), shown: () => store.state.show.oi, barMs: () => oi.rangeHeld?.tfMs ?? TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
     lines: (sel, shown) => oiSummary.lines(sel, oi.rangeHeld, shown, store.state.liquidations.on ? { items: hub.liquidations.items, version: hub.liquidations.version, min: scaledUsd(store.state.liquidations.minUsd), held: hub.liquidationsHeld } : null, oiHeldKey(store.state), pageNow(), store.state.timeZone),
   });
   // A drag in the Bar stats pane sums up its chosen statistics over the candles (range/bars-lines.ts), each by its own rule.

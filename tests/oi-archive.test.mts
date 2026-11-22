@@ -75,3 +75,11 @@ test('a day that fails is left out and asked again next time; every day failing 
   const down = { get: async (): Promise<unknown> => { throw Object.assign(new Error('HTTP 503'), { status: 503 }); } };
   await assert.rejects(binanceOiArchive('BTCUSDT', DAY0, DAY0 + 2 * D, down.get), /503/);
 });
+
+test('an outage stops the read after its first days: the long view asks again each minute, not the whole window each time', async () => {
+  forgetOiArchive();
+  let asked = 0;
+  const down = async (): Promise<unknown> => { asked++; throw Object.assign(new Error('HTTP 503'), { status: 503 }); };
+  await assert.rejects(binanceOiArchive('BTCUSDT', DAY0, DAY0 + 100 * D, down), /503/);
+  assert.ok(asked <= 16, `one batch of days, not a hundred (${asked})`);
+});
