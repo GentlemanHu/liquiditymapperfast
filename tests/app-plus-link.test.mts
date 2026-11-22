@@ -7,11 +7,13 @@ import { DataLink, LINK_EARLY_MS, LINK_FAILED_MS, LINK_LONGEST_MS, LINK_REFUSED_
 import { DAY_MS, PLUS_API, freeFrom } from '../src/app/plus/config.ts';
 import { LiqHistory, MAX_DAYS, dayText, isRefusal, webFetch, type LiqAnswer, type LiqFetch } from '../src/app/liq-history.ts';
 import { LiqLevelsSource } from '../src/app/liq-levels.ts';
+import { LIQ_LEVELS_URL } from '../src/app/liq-url.ts';
 import { FREE_VIEW, type LiqView } from '../src/app/liq-view.ts';
 import { BTC } from '../src/shared/coins.ts';
 
 const MIN = 60_000, HOUR = 3_600_000;
-const LEVELS = 'https://levels.hiverust.dev';
+/** The levels service's origin, as the page's readers build their addresses from it (`liqLevelsUrl`, without a stand-in). */
+const LEVELS = new URL(LIQ_LEVELS_URL).origin;
 const API = 'https://plus.example.test/v1';
 /** A made-up token of 43 characters, and the link it makes on an origin. */
 const token = (c: string): string => c.repeat(43);
@@ -68,11 +70,11 @@ test('a link is taken only in the shape the levels service serves: https (http o
   assert.deepEqual(read(A), { base: A, until: at + HOUR, now: at });
   assert.equal(read(linkOf('c', 'http://127.0.0.1:8790'))?.base, linkOf('c', 'http://127.0.0.1:8790'), 'local work');
   assert.equal(read(linkOf('c', 'http://localhost:8790'))?.base, linkOf('c', 'http://localhost:8790'));
-  assert.equal(read(`https://LEVELS.hiverust.dev:443/v1/k/${token('c')}/`)?.base, linkOf('c'), 'kept as the URL parser writes it');
+  assert.equal(read(`https://${new URL(LEVELS).hostname.toUpperCase()}:443/v1/k/${token('c')}/`)?.base, linkOf('c'), 'kept as the URL parser writes it');
   for (const bad of [
-    linkOf('a', 'http://levels.hiverust.dev'), linkOf('a', 'http://192.168.1.2:8790'), linkOf('a', 'ftp://levels.hiverust.dev'),
+    linkOf('a', LEVELS.replace('https://', 'http://')), linkOf('a', 'http://192.168.1.2:8790'), linkOf('a', LEVELS.replace('https://', 'ftp://')),
     `${A}?`, `${A}#`, `${A}?k=1`, `${A}#k`,
-    linkOf('a', 'https://user:secret@levels.hiverust.dev'), linkOf('a', 'https://user@levels.hiverust.dev'),
+    linkOf('a', LEVELS.replace('https://', 'https://user:secret@')), linkOf('a', LEVELS.replace('https://', 'https://user@')),
     `${LEVELS}/v1/k/${'a'.repeat(42)}/`, `${LEVELS}/v1/k/${'a'.repeat(44)}/`, `${LEVELS}/v1/k/${'a'.repeat(42)}+/`, `${LEVELS}/v1/k/${'a'.repeat(40)}%2B/`,
     `${LEVELS}/v1/k/${token('a')}`, `${LEVELS}/x/v1/k/${token('a')}/`, `${A}plus/`, `${LEVELS}/v2/k/${token('a')}/`, 'not a link', '',
   ]) assert.equal(read(bad), null, bad);
@@ -107,7 +109,7 @@ test('what goes through the link: the Plus files and a history day before the fr
   assert.equal(linkable(`${LEVELS}/v1/plus/btc/x/y/triggers.json`, now), null);
   assert.equal(linkable(`${LEVELS}/v2/plus/btc/triggers.json`, now), null);
   assert.equal(linkable(`${LEVELS}/v1/plus/../k/${token('z')}/plus/btc/triggers.json`, now), null, 'read as the parser writes the path: climbing out of it lands nowhere linked');
-  assert.equal(linkable(`https://user:secret@levels.hiverust.dev/v1/plus/btc/triggers.json`, now), null);
+  assert.equal(linkable(TRIGGERS.replace('https://', 'https://user:secret@'), now), null);
   assert.equal(linkable('not a url', now), null);
   assert.deepEqual(linkable('http://127.0.0.1:8790/v1/plus/btc/triggers.json', now), { origin: 'http://127.0.0.1:8790', rest: 'plus/btc/triggers.json' }, 'a local stand-in: its own origin');
 });
