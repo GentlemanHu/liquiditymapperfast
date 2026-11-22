@@ -71,7 +71,7 @@ export interface StatDef {
   /** One line shown as a tooltip and in the configuration list. */
   title: string;
   /**
-   * sequential: pale to strong by magnitude; diverging: red / green by sign around `center`; plain: no colour scale; category: a mark per
+   * sequential: pale to strong by magnitude; diverging: the theme's falling / rising candle colours by sign around `center`; plain: no colour scale; category: a mark per
    * candle (`format` says it, `tone` colours it), empty where the value is 0.
    */
   scale: StatScale;
@@ -407,7 +407,7 @@ export const BAR_STATS: readonly StatDef[] = [
       for (const i of at) { const c = input.taker?.get(slotTime(input, i)); if (c?.[9] !== undefined && c[8] !== undefined) { q += c[9]; n += c[8]; } }
       return n > 0 ? { value: volText(q / n), tone: 'text', how: t('Worked out from the candles in view added together.') } : null;
     } },
-  { ...tradeStat('sizeSkew', t('size skew'), t('The average market buy against the average market sell: ×2 in green, buy orders were twice the size of sell orders; in red, sell orders were'), 'diverging', v => `×${(2 ** Math.abs(v)).toFixed(1)}`,
+  { ...tradeStat('sizeSkew', t('size skew'), t('The average market buy against the average market sell: ×2 in the rising colour, buy orders were twice the size of sell orders; in the falling colour, sell orders were'), 'diverging', v => `×${(2 ** Math.abs(v)).toFixed(1)}`,
     stats => { const buy = sumBuckets(stats.buy, 0, 7), sell = sumBuckets(stats.sell, 0, 7); return stats.buyN > 0 && stats.sellN > 0 && buy > 0 && sell > 0 ? Math.log2((buy / stats.buyN) / (sell / stats.sellN)) : null; },
     ratioView(v => `×${(2 ** Math.abs(v)).toFixed(1)}`, signTone, bars => pooledSkew(orderPool(bars)))),
     // The table keeps the logarithm, so a skew either way is shaded alike; the file gives the ratio itself.

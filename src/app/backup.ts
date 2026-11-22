@@ -1,17 +1,29 @@
-import { DONE_KEY, handedKey, plusKey } from './handover.ts';
-
 /**
  * A backup: everything this page keeps in this browser's storage, in one file a person can keep or carry to another browser or computer:
- * the settings, the saved layouts, the scripts, the drawings, their own themes, the coin and the venues (every key `handedKey` lets through:
+ * the settings, the saved layouts, the scripts, the drawings, their own themes, the coin and the venues (every key `ownKey` lets through:
  * the page's own `hlm-…` and `lmf.…` keys, never the cached coin list, a Plus key (`lmf.plus*`) or the page's own marks). Not the recorded
  * market history, which lives in IndexedDB and is rebuilt as the page runs, and never the Plus database (`plus/plus-db.ts`: the seed, the
  * membership and the payments belong to this browser).
  *
  * Restoring replaces what the page keeps, all or none, and never mixes a backup into a running page: the backup is left in `sessionStorage`
- * and the page reloads; `takeRestore`, the second thing boot.ts runs (after the hand-over from the old address), writes it before anything
- * reads storage, so no part of the page that is still open can write its own state back over it. Each key's own reader checks what it reads
- * as it always does, so a backup from anywhere is read like a saved page.
+ * and the page reloads; `takeRestore`, the first thing boot.ts runs, writes it before anything reads storage, so no part of the page that is
+ * still open can write its own state back over it. Each key's own reader checks what it reads as it always does, so a backup from anywhere
+ * is read like a saved page.
  */
+
+/**
+ * A Plus key (`lmf.plus` and every `lmf.plus.…`: the membership, its generation, the marker of the Plus database, payment records): it belongs
+ * to this browser and never travels in a backup (the checkout recovery, 2026-11-20).
+ */
+export const plusKey = (key: string): boolean => key === 'lmf.plus' || key.startsWith('lmf.plus.');
+/**
+ * One of the page's own keys (`hlm-…`, `lmf.…`), never the cached coin list, a Plus key, the stale-build marks or the mark the old
+ * address's hand-over left in the browsers that took one (`hlm-handover-v1`; the hand-over ended with that address on 2026-11-21).
+ */
+export function ownKey(key: string): boolean {
+  if (!/^(?:hlm-[a-z0-9][a-z0-9:._-]{0,79}|lmf\.[a-z0-9][a-z0-9._-]{0,79})$/.test(key)) return false;
+  return key !== 'lmf.coins' && !plusKey(key) && key !== 'hlm-stale' && key !== 'hlm-stale-reload' && key !== 'hlm-handover-v1';
+}
 
 export const BACKUP_FORMAT = 'liquiditymapperfast-backup', BACKUP_VERSION = 1;
 /** Where a restore waits for the reload (this tab only), and where the reloaded page finds how it went. */
@@ -25,8 +37,8 @@ export const RESTORED_KEY = 'hlm-restored-at';
  * (coin.ts `keepCoinRecordings`; another browser's dates would delete recordings made here), and the restore's own mark.
  */
 const LOCAL_ONLY: readonly string[] = ['lmf.coins.opened', RESTORED_KEY];
-/** A key a backup holds and a restore replaces: one of the page's own (`handedKey`) that is not this browser's alone. */
-export const backedKey = (key: string): boolean => handedKey(key) && !LOCAL_ONLY.includes(key);
+/** A key a backup holds and a restore replaces: one of the page's own (`ownKey`) that is not this browser's alone. */
+export const backedKey = (key: string): boolean => ownKey(key) && !LOCAL_ONLY.includes(key);
 
 type Readable = Pick<Storage, 'length' | 'key' | 'getItem'>;
 type Writable = Pick<Storage, 'length' | 'key' | 'getItem' | 'setItem' | 'removeItem'>;
@@ -73,7 +85,7 @@ export function readBackup(text: string): BackupRead {
   for (const [key, value] of Object.entries(r.items)) {
     // A Plus key never travels; a backup made before 2026-11-20 may hold `lmf.plus.gen`, and is read without it rather than refused.
     if (plusKey(key) && typeof value === 'string') continue;
-    if (!handedKey(key) || typeof value !== 'string') return { error: 'not-backup' };
+    if (!ownKey(key) || typeof value !== 'string') return { error: 'not-backup' };
     // This browser's own bookkeeping in a file from another one is left out, never written.
     if (!backedKey(key)) continue;
     items[key] = value;
@@ -126,8 +138,6 @@ export function takeRestore(local: Writable | null = safe('localStorage'), sessi
   try { local.setItem(RESTORED_KEY, String(Date.now())); } catch { /* storage full: the replacement below says so */ }
   const ok = replaceAll(local, read.items);
   try { session.setItem(RESULT_KEY, ok ? 'ok' : 'failed'); } catch { /* the page then says nothing */ }
-  // A later visit from the old address hands nothing over this setup (handover.ts).
-  if (ok) try { if (local.getItem(DONE_KEY) === null) local.setItem(DONE_KEY, String(Date.now())); } catch { /* storage full: the restore stands */ }
   return ok;
 }
 /** How a restore at this page's start went, once (null: there was none). */

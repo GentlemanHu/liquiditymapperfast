@@ -12,7 +12,7 @@ import { webGet, type Fetcher } from '../shared/history.ts';
 import { KeyLevelHistory, type HistoryTarget } from './keylevels/history.ts';
 import { MAX_LEAD_MS, ON_TIME_MS, clockSetBack, nextAskAt, pageHidden, placeSnapshot } from './liq-schedule.ts';
 import { liqLevelsUrl, plusUrls } from './liq-url.ts';
-import { isRefusal, webFetch, type LiqFetch } from './liq-history.ts';
+import { isRefusal, linkedWebFetch, type LiqFetch } from './liq-history.ts';
 import { FREE_VIEW, curveOf, ordersShown, takesBeside, viewKey, type LiqView } from './liq-view.ts';
 import { plus } from './plus/pass.ts';
 import type { AppState, CandleRow } from './store.ts';
@@ -783,7 +783,7 @@ export class LiqLevelsSource implements LiqSet {
   #blame: 'liq' | 'orders' = 'liq';
 
   constructor(private get: Fetcher = webGet, private now: () => number = Date.now, private url: () => string = () => liqLevelsUrl(),
-    private read: LiqFetch = webFetch, private access: LiqPlusAccess = MEMBER) {
+    private read: LiqFetch = linkedWebFetch, private access: LiqPlusAccess = MEMBER) {
     this.candles = new KeyLevelHistory(get, now, CANDLES_MS, 12 * HOUR);
   }
 

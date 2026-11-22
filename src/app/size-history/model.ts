@@ -13,7 +13,7 @@ import { sizeText } from '../sizes.ts';
 /**
  * The Flow history pane's model (pure; tests/app-size-history.test.mts): per candle, the liquidations, the change of open interest and the
  * market orders in six size bands, each row's bars, and how unusual each bar is. Designed with the advisor and Astra (2026-11-20, three
- * rounds, measured on seven days of the local recording; the figures are in the local Research_Findings.md and README "Flow history"):
+ * rounds, measured on seven days of the local recording; the figures are in the local Research_Findings.md and docs/reference.md "Flow history"):
  *
  * - The size bands are runs of the footprint's eight size boxes (`SIZE_EDGES`), so every edge is exact and no size line is asked for.
  * - A bar's height is the square root of its amount on its row's own scale (`barScale` of the square roots, so a lone giant is cut and

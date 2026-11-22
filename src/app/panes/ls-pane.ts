@@ -389,9 +389,9 @@ export class LsPane extends TimePane {
     const hover = state.hover;
     // The readings in the table's rows, and under them the card's lines (why a venue has none, who each line counts): a table that holds all of it takes
     // the card's place, as on every pane with one; beside one that cannot, the card stays.
-    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null }, card = lsCardLines(series, time, state.timeframe);
+    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, card = lsCardLines(series, time, state.timeframe);
     // One series: a row that repeats the header; no table, and the popup stays.
-    const placed = state.lsTable && !blank && series.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: `${hover ? clock(time, true) : `${t('newest')} ${clock(time)}`} · ${state.timeframe}`, rows: lsTableRows(series, time, p), lines: tableLines(card) }) : null;
+    const placed = state.lsTable && !blank && series.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: `${hover ? clock(time, true) : `${t('newest')} ${clock(time)}`} · ${state.timeframe}`, rows: lsTableRows(series, time, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.lsMetric}` }) : null;
     if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const parts = series.map(s => {
       const q = lsAt(s.points, time, s.periodMs), name = venueLabel(s.id);

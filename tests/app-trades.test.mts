@@ -299,7 +299,7 @@ test('the view takes the tape only while it shows, and asks no source', () => {
 });
 
 test('nothing in the code or the docs names another product used for reference (AGENTS.md)', () => {
-  for (const f of ['README.md', 'src/app/panes/trades-view.ts', 'src/app/panes/trades-orders.ts', 'src/app/panes/trades-blocks.ts', 'src/app/panes/trades-inspector.ts', 'src/app/trades/style.ts', 'src/app/trades/index.ts', 'src/app/trades/settings.ts', 'src/app/trades/tally.ts', 'src/app/trades/blocks.ts', 'src/app/tape/ring.ts', 'src/app/guide/content.ts', 'src/app/help.ts']) {
+  for (const f of ['README.md', 'docs/reference.md', 'src/app/panes/trades-view.ts', 'src/app/panes/trades-orders.ts', 'src/app/panes/trades-blocks.ts', 'src/app/panes/trades-inspector.ts', 'src/app/trades/style.ts', 'src/app/trades/index.ts', 'src/app/trades/settings.ts', 'src/app/trades/tally.ts', 'src/app/trades/blocks.ts', 'src/app/tape/ring.ts', 'src/app/guide/content.ts', 'src/app/help.ts']) {
     assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /\baggr(\.trade)?\b/i, f);
   }
 });

@@ -11,8 +11,8 @@ export const FREE_DAYS = 7;
 /** The first moment whose liquidation history is free at `now`: the start of the UTC day `FREE_DAYS` before today's (the server's rule). */
 export const freeFrom = (now: number): number => Math.floor(now / DAY_MS) * DAY_MS - FREE_DAYS * DAY_MS;
 
-/** Where passes are given and renewed (the Worker's own address). */
-export const PLUS_API = 'https://plus.hiverust.dev/v1';
+/** Where passes are given and renewed (the Worker's own address; on this site's own domain since 2026-11-22, plus.hiverust.dev answering too). */
+export const PLUS_API = 'https://plus.liquiditymapper.com/v1';
 
 /**
  * Paddle's side of the checkout (Paddle is the seller of record): the client-side token and the price ids are public by design. While the

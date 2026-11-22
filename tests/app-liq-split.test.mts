@@ -50,7 +50,7 @@ test('liquidations beside stops share one scale (a bar compares across the divid
   assert.deepEqual(splitScales({ maxLevel: 0, maxCum: 0 }, { maxLevel: 0, maxCum: 0 }, false), [{ maxLevel: 1, maxCum: 1 }, { maxLevel: 1, maxCum: 1 }], 'never divided by zero');
 });
 
-test('the split column\'s heading: each caption over its column with its own maxima under it; where both share one scale, words across and no figure; nothing cut', () => {
+test('the split column\'s heading: each column\'s own maxima under the button that names it; where both share one scale, words across and no figure; nothing cut', () => {
   // Liquidations beside stops (owner, 2026-11-21): the liquidations' largest row $12.3M with the take profits' $14.0M beside them, their curve
   // $120.0M; the stops' $1.2M and $9.0M. The bars share the larger of each, but each heading says its own.
   const own = ownScales({ maxLevel: 12.3e6, maxCum: 120e6 }, { maxLevel: 14e6, maxCum: 30e6 }, { maxLevel: 1.2e6, maxCum: 9e6 });
@@ -59,23 +59,23 @@ test('the split column\'s heading: each caption over its column with its own max
   assert.deepEqual(ownScales(null, null, { maxLevel: 1, maxCum: 2 }), [null, { maxLevel: 1, maxCum: 2 }], 'nothing drawn, no maxima');
   const money = (v: number): string => `$${(v / 1e6).toFixed(1)}M`;
   const maxima = (sc: { maxLevel: number; maxCum: number } | null): [string, string] | null => sc && [`LEVEL MAX ${money(sc.maxLevel)}`, `CUM MAX ${money(sc.maxCum)}`];
-  const kinds = splitHeads(measure, { captions: ['Liquidations', 'Stops'], maxima: [maxima(own[0]), maxima(own[1])], across: 'Both columns on one dollar scale', subRoom: 89, wholeRoom: 189 });
+  const kinds = splitHeads(measure, { maxima: [maxima(own[0]), maxima(own[1])], across: 'Both columns on one dollar scale', subRoom: 89, wholeRoom: 189 });
   // At 6 px a letter "LEVEL MAX $14.0M" (96 px) does not fit 89 px: it wraps under itself, the value whole on the next line.
   assert.deepEqual(kinds.subs[0].scale, ['LEVEL MAX', '$14.0M', 'CUM MAX', '$120.0M'], 'the liquidations\' own');
   assert.deepEqual(kinds.subs[1].scale, ['LEVEL MAX', '$1.2M', 'CUM MAX $9.0M'], 'the stops\' own, not the shared scale\'s');
   assert.deepEqual(kinds.across, ['Both columns on one dollar', 'scale'], 'the words wrap across the column, never cut');
   assert.ok(kinds.across.every(line => !/\d/.test(line)), 'no figure across: at the column\'s left edge it reads as the liquidations\'');
-  assert.equal(kinds.rows, 1 + 4 + 2);
-  const waiting = splitHeads(measure, { captions: ['Liquidations', 'Stops'], maxima: [maxima(own[0]), null], across: 'One scale', subRoom: 89, wholeRoom: 189 });
+  assert.equal(kinds.rows, 4 + 2, 'its figures and the words across (the names are on the button)');
+  const waiting = splitHeads(measure, { maxima: [maxima(own[0]), null], across: 'One scale', subRoom: 89, wholeRoom: 189 });
   assert.deepEqual(waiting.subs[1].scale, [], 'a column with nothing to draw prints no figure: it says why instead');
-  assert.equal(waiting.rows, 1 + 4 + 1);
-  const groups = splitHeads(measure, { captions: ['Everyone', 'Profitable'], across: null, subRoom: 89, wholeRoom: 189,
+  assert.equal(waiting.rows, 4 + 1);
+  const groups = splitHeads(measure, { across: null, subRoom: 89, wholeRoom: 189,
     maxima: [['LEVEL MAX $12.3M', 'CUM MAX $120.0M'], ['LEVEL MAX $1.2M', 'CUM MAX $9.0M']] });
   assert.deepEqual(groups.across, []);
   assert.deepEqual(groups.subs[0].scale, ['LEVEL MAX', '$12.3M', 'CUM MAX', '$120.0M']);
   assert.deepEqual(groups.subs[1].scale, ['LEVEL MAX', '$1.2M', 'CUM MAX $9.0M']);
-  assert.equal(groups.rows, 1 + 4);
-  for (const line of [...kinds.subs, ...groups.subs].flatMap(s => [...s.caption, ...s.scale]).concat(kinds.across)) assert.ok(!line.includes('…'), `never cut: ${line}`);
+  assert.equal(groups.rows, 4);
+  for (const line of [...kinds.subs, ...groups.subs].flatMap(s => s.scale).concat(kinds.across)) assert.ok(!line.includes('…'), `never cut: ${line}`);
   // The map feeds each heading its column's own figures (not the shared scale's), and says the one scale in words only where it is shared.
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   assert.match(heat, /own = ownScales\(profs\[0\], tprof, profs\[1\]\)/);
@@ -93,7 +93,7 @@ test('a sub-column\'s why-text never runs past the plot\'s foot under a taller h
   // Drawn under the heading band (the History link's row included), not under its text rows, where the band veiled its first lines; and the
   // words across both columns painted after the Mirror, whose dimming would split the sentence at the divider.
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
-  assert.match(heat, /const from = this\.#liqHeadH;\n.*\n\s+wrapText\(wide, why, subRoom\(sub\), whyLines\(ph, from\)\)\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ LIQ_PAD, from \+ 4 \+ 12 \* n\)\)/);
+  assert.match(heat, /const from = this\.#liqHeadH;\n.*\n\s+wrapText\(wide, why, subRoom\(sub\), whyLines\(ph, from\)\)\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ HEAD_INSET, from \+ 4 \+ 12 \* n\)\)/);
   assert.ok(heat.indexOf('heads.across.forEach') > heat.indexOf('if (ms && mset) this.#paintLiqColumnMirror(ctx, state, ms, price, subs[at].x0'), 'the words across after the Mirror');
 });
 

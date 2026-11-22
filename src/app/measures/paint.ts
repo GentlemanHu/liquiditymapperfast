@@ -1,4 +1,4 @@
-import type { Palette } from '../theme.ts';
+import { cautionInk, type Palette } from '../theme.ts';
 import type { View } from '../view.ts';
 import { t } from '../i18n.ts';
 import { bucketsMedian, emphasisFloor, splitStyles } from '../traded/emphasis.ts';
@@ -27,8 +27,6 @@ export interface BandDraw {
 
 /** A plot narrower than this (a phone) gets the header in a smaller font, as the column's (NARROW_PLOT in heat-pane.ts). */
 const NARROW_PLOT = 420;
-/** The amber a cut record is said in, as the column's header says it. */
-const WARN = '#e6a700';
 
 /**
  * The volume profile along the top of the map: the column beside it laid on the time axis. On the column's panel background, each bucket's
@@ -116,7 +114,8 @@ export function paintBand(ctx: CanvasRenderingContext2D, rows: TimeRows, band: {
   ctx.globalAlpha = 0.9; ctx.fillStyle = p.panel; ctx.fillRect(0, top, headW, H); ctx.globalAlpha = 1;
   ctx.font = font; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = p.muted;
   ctx.fillText(d.head, 4, top + 4, headW - 8);
-  if (d.sub) { if (d.warn) ctx.fillStyle = WARN; ctx.fillText(d.sub, 4, top + 16, headW - 8); }
+  // A cut record in the caution words colour, as the column's header says it (theme.ts `cautionInk`: amber moved toward the text until it reads).
+  if (d.sub) { if (d.warn) ctx.fillStyle = cautionInk(p); ctx.fillText(d.sub, 4, top + 16, headW - 8); }
   if (d.net) { ctx.fillStyle = d.net.sign > 0 ? p.bid : d.net.sign < 0 ? p.ask : p.muted; ctx.fillText(d.net.text, 4, top + 28, headW - 8); }
   if (d.caption && captionW + headW + 12 < pw) {
     ctx.globalAlpha = 0.85; ctx.fillStyle = p.panel; ctx.fillRect(pw - captionW - 4, top + H - 15, captionW, 13); ctx.globalAlpha = 1;

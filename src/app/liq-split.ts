@@ -244,22 +244,23 @@ export function ownScales(left: SubScale | null, takes: SubScale | null, right: 
   return [left ? { maxLevel: Math.max(left.maxLevel, takes?.maxLevel ?? 0), maxCum: left.maxCum } : null, right ? { maxLevel: right.maxLevel, maxCum: right.maxCum } : null];
 }
 
-/** One sub-column's heading as `splitHeads` lays it out: its caption, then its own maxima, each a line or two. */
-export interface SubHead { caption: string[]; scale: string[] }
+/** One sub-column's heading as `splitHeads` lays it out: its own maxima, each a line or two (its name is on the column's button, over it). */
+export interface SubHead { scale: string[] }
 /**
- * The heading of a split column, as lines fitted to the room by `measure`: each sub-column's caption (what it shows) and its own LEVEL MAX and
- * CUM MAX under it (`maxima`, null for one with nothing to draw, which says why instead), in its own `subRoom`; then, across the column
+ * The heading of a split column, as lines fitted to the room by `measure`, under the button that names each sub-column over its own
+ * (map-top.ts, 2026-11-21: the caption rows that stood here before are gone): each sub-column's own LEVEL MAX and CUM MAX (`maxima`, null
+ * for one with nothing to draw, which says why instead), in its own `subRoom`; then, across the column
  * (`wholeRoom`), words only (`across`): where the two share one scale (liquidations beside stops), that they do. No figure goes across: a line
- * at the column's left edge reads as the left caption's. A line that does not fit wraps under itself (at most two lines), never cut short:
- * every column is captioned with exactly what it shows. `rows` is how many lines the heading takes.
+ * at the column's left edge reads as the left sub-column's. A line that does not fit wraps under itself (at most two lines), never cut short:
+ * every figure is printed whole. `rows` is how many lines the heading takes.
  */
-export function splitHeads(measure: (text: string) => number, o: { captions: readonly [string, string]; maxima: readonly [readonly [string, string] | null, readonly [string, string] | null]; across: string | null; subRoom: number; wholeRoom: number }):
+export function splitHeads(measure: (text: string) => number, o: { maxima: readonly [readonly [string, string] | null, readonly [string, string] | null]; across: string | null; subRoom: number; wholeRoom: number }):
   { subs: [SubHead, SubHead]; across: string[]; rows: number } {
   const wrap = (text: string, room: number): string[] => wrapText(measure, text, room, 2);
-  const per = (i: 0 | 1): SubHead => ({ caption: wrap(o.captions[i], o.subRoom), scale: (o.maxima[i] ?? []).flatMap(line => wrap(line, o.subRoom)) });
+  const per = (i: 0 | 1): SubHead => ({ scale: (o.maxima[i] ?? []).flatMap(line => wrap(line, o.subRoom)) });
   const subs: [SubHead, SubHead] = [per(0), per(1)];
   const across = o.across ? wrap(o.across, o.wholeRoom) : [];
-  const tall = (sub: SubHead): number => sub.caption.length + sub.scale.length;
+  const tall = (sub: SubHead): number => sub.scale.length;
   return { subs, across, rows: Math.max(tall(subs[0]), tall(subs[1])) + across.length };
 }
 

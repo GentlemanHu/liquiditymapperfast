@@ -4,7 +4,7 @@ import type { TimeZone } from './format.ts';
 import { HEAT_STYLES, type HeatStyleId } from './heatmap/lut.ts';
 import { clampContrast } from './heatmap/window.ts';
 import { LT_DEFAULTS, LT_REV4_HALF_LIFE_BP, type LtParams } from './lt.ts';
-import { resolveThemeId, paletteOf } from './theme.ts';
+import { DEFAULT_THEME, PHONE_DARK_THEME, resolveThemeId, paletteOf } from './theme.ts';
 import { readStatOptions, type StatOptions } from './stat-options.ts';
 import { readHighlight, type HighlightOptions } from './anomaly.ts';
 import { DEFAULT_SOUNDS, readSounds, type SoundSettings } from './sound/rules.ts';
@@ -387,14 +387,18 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
   };
 }
 
-/** The theme a page opens in, on a desktop, and on a phone set to light. */
-export const DEFAULT_THEME = 'light';
-/** The theme a phone set to dark opens in, and the dark one its light-or-dark key brings first (Karl, 2026-11-01). */
-export const PHONE_DARK_THEME = 'terminal';
+/** The first-visit themes (theme.ts, where the Plus page reads them too). */
+export { DEFAULT_THEME, PHONE_DARK_THEME };
 /**
- * The theme a page shows until one is picked: Light on a desktop; on a phone, the phone's own light or dark setting, dark being Terminal (Karl,
- * 2026-11-01: "make the terminal theme the default for mobile ... according to whether the user has his mobile device set on dark theme or
- * light theme"). Followed live while nothing is picked (main.ts).
+ * The themes a page opened in by default before revision 7: Light, and Terminal (for a day on 2026-10-17, and on a phone set to dark since
+ * 2026-11-01). A save from before revision 7 that holds one of them unpicked holds a default; any other theme in it was picked (`initialState`).
+ * Fixed for good: from revision 7 a save's flag says itself, whatever the default is now.
+ */
+const DEFAULTS_BEFORE_THE_FLAG: ReadonlySet<string> = new Set(['light', 'terminal']);
+/**
+ * The theme a page shows until one is picked: Colour-blind safe, light on a desktop; on a phone, the phone's own light or dark setting, dark
+ * being Terminal (Karl, 2026-11-01: "make the terminal theme the default for mobile ... according to whether the user has his mobile device set
+ * on dark theme or light theme"). Followed live while nothing is picked (main.ts).
  */
 export function autoTheme(phone: boolean, dark: boolean): string { return phone && dark ? PHONE_DARK_THEME : DEFAULT_THEME; }
 /** Whether the device asks pages to be dark. */
@@ -453,8 +457,13 @@ function slotTheme(v: unknown, dark: boolean): string | null {
  * opens on Each order, any size, a burst of orders one row. A save of revision 5 or older holding revision 5's Trades settings (a second a
  * row, any size, both sides, grouping off), which every save wrote down whether chosen or not, reads the new ones once; a field it lacks (a
  * save from before Trades had it) counts as that default. A save that changed any of them keeps what it holds, and so does one of revision 6.
+ * Revision 7 (2026-11-21, Karl: "currently it's the light theme, and I want it to be the colorblind safe light version"): a page opens in
+ * Colour-blind safe, light. A theme counts only where it was picked (`themePicked`), so a save that never picked one follows the new default
+ * without a revision; this one is for the light-or-dark key, whose light slot every save wrote down as Light. A save of revision 6 or older
+ * that never picked a theme reads that slot as Colour-blind safe, light once; a save that picked one keeps its slots, and so does one of
+ * revision 7.
  */
-export const DEFAULTS_REV = 6;
+export const DEFAULTS_REV = 7;
 
 export function initialState(phone: boolean = isPhone(), touch: boolean = isCoarse()): AppState {
   const saved = readSaved();
@@ -503,9 +512,13 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   if (rev < 6 && tradesRev5Default(saved.trades)) state.trades = { ...TRADES_DEFAULTS };
   state.defaultsRev = DEFAULTS_REV;
   const savedTheme = resolveThemeId(state.theme);
-  // A theme saved without the flag is a default of its time when it is Light or Terminal; any other was picked before the flag existed (it came
-  // on 2026-10-17), so it counts as picked, and the device's setting never replaces it.
-  if (!state.themePicked && typeof saved.theme === 'string' && savedTheme !== DEFAULT_THEME && savedTheme !== PHONE_DARK_THEME) state.themePicked = true;
+  // A save of revision 7 or later says itself: one that never picked a theme follows today's default, whatever default it wrote down. An older
+  // save cannot be taken at its word: the flag came on 2026-10-17, and until 2026-11-01 the page kept an earlier pick on the screen but saved it
+  // as not picked. So there a theme other than Light or Terminal (the defaults then) was picked: it counts as picked, and the device's setting
+  // never replaces it; an unpicked Light or Terminal is a default and follows today's (Light was it until 2026-11-21).
+  if ((typeof saved.themePicked !== 'boolean' || rev < 7) && typeof saved.theme === 'string' && !DEFAULTS_BEFORE_THE_FLAG.has(savedTheme)) state.themePicked = true;
+  // Revision 7: the light-or-dark key's light slot of a save that never picked a theme is the light default of its time, Light until 2026-11-21.
+  if (rev < 7 && !state.themePicked && state.themeSlots.light === 'light') state.themeSlots = { ...state.themeSlots, light: DEFAULT_THEME };
   state.theme = state.themePicked ? savedTheme : autoTheme(phone && touch, prefersDark());
   state.themeSlots = { ...state.themeSlots, [paletteOf(state.theme).dark ? 'dark' : 'light']: state.theme };
   state.material = saved.material === 'glass' ? 'glass' : 'solid';

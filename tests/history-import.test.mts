@@ -195,14 +195,14 @@ test('the whole import against a stand-in service: the hours it lacks, then a fi
   assert.ok(late.error);
 });
 
-test('the address: the service on hiverust, a local stand-in or off from the page address, and only for coins the service records', () => {
-  assert.equal(historyUrl('BTC', ''), 'https://history.hiverust.dev/v1/btc', 'the service on hiverust');
+test('the address: the service on the data host, a local stand-in or off from the page address, and only for coins the service records', () => {
+  assert.equal(historyUrl('BTC', ''), 'https://history.liquiditymapper.com/v1/btc', 'the service on the data host');
   assert.equal(historyUrl('BTC', '?history=http://127.0.0.1:8791/v1/btc/'), 'http://127.0.0.1:8791/v1/btc');
-  assert.equal(historyUrl('BTC', '?history=https://evil.example/v1/btc'), 'https://history.hiverust.dev/v1/btc', 'only a local stand-in may replace it');
+  assert.equal(historyUrl('BTC', '?history=https://evil.example/v1/btc'), 'https://history.liquiditymapper.com/v1/btc', 'only a local stand-in may replace it');
   assert.equal(historyUrl('BTC', '?history=off'), '');
   assert.equal(historyUrl('ADA', '?history=http://127.0.0.1:8791/v1/btc'), '', 'a coin the service does not record');
   // The other coins the service records (their trade side): each its own folder, on the service or a local stand-in.
-  assert.equal(historyUrl('ETH', ''), OTHER_COINS_SERVED ? 'https://history.hiverust.dev/v1/eth' : '', 'the public address serves the other coins once its route does');
+  assert.equal(historyUrl('ETH', ''), OTHER_COINS_SERVED ? 'https://history.liquiditymapper.com/v1/eth' : '', 'the public address serves the other coins once its route does');
   assert.equal(historyUrl('PEPE', '?history=http://127.0.0.1:8791/v1/btc'), 'http://127.0.0.1:8791/v1/pepe', 'the folder of one coin names the service');
   assert.equal(historyUrl('SOL', '?history=http://127.0.0.1:8791/v1/'), 'http://127.0.0.1:8791/v1/sol');
 });

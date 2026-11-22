@@ -160,7 +160,7 @@ test('Scripts is on for a first visit and for a save from before it existed; a s
   saved({ defaultsRev: 4, show: { ...DEFAULT_SHOW, script: false } }, () => assert.equal(initialState().show.script, false));
 });
 test('revision 6: Trades opens on each order, any size, bursts one row (Karl, 2026-11-14); a save holding revision 5 defaults moves once, a choice stays', () => {
-  assert.equal(DEFAULTS_REV, 6);
+  assert.ok(DEFAULTS_REV >= 6);
   const now = { unit: 0, minUsd: 0, side: 'both', group: true }, rev5 = { unit: 1, minUsd: 0, side: 'both', group: false };
   const screens = (): AppState[] => [initialState(true, true), initialState(false, false)];
   // A first visit, a phone and a desktop.

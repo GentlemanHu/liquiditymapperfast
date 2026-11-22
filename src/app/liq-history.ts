@@ -17,6 +17,7 @@
 import { DUE_EVERY_MS, MAX_LEAD_MS, ON_TIME_MS, clockSetBack, nextAskAt, placeSnapshot } from './liq-schedule.ts';
 import { liqLevelsUrl, plusUrls } from './liq-url.ts';
 import { FREE_VIEW, curveOf, ordersShown, takesBeside, viewKey, type LiqView } from './liq-view.ts';
+import { dataLink, withLink } from './plus/link.ts';
 
 /**
  * Who may read which days (Plus, `plus/config.ts`): the days from `freeFrom` on are everyone's; an older one is asked for only with a
@@ -41,15 +42,23 @@ export const LIQ_REFUSED = 'plus_required';
 
 /** An answer of the levels service or its gate: its status, its body (JSON, or null), and how long it asked to wait (`Retry-After`, s). */
 export interface LiqAnswer { status: number; body: unknown; retryAfter?: number }
-/** A read that gives the answer whatever its status (a failure to reach the server rejects): the address, and the pass to send with it. */
+/**
+ * A read that gives the answer whatever its status (a failure to reach the server, or to receive the whole body, rejects): the address, and
+ * the pass to send with it.
+ */
 export type LiqFetch = (url: string, pass?: string | null) => Promise<LiqAnswer>;
 /** A read of the levels service or its gate is given up after this long (a rollup is the largest file, a few MB). */
 const READ_TIMEOUT_MS = 30_000;
 export const webFetch: LiqFetch = async (url, pass) => {
   const answer = await fetch(url, { cache: 'no-cache', signal: AbortSignal.timeout(READ_TIMEOUT_MS), ...(pass ? { headers: { authorization: `Bearer ${pass}` } } : {}) });
-  let body: unknown = null;
-  try { body = await answer.json(); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
   const wait = retryAfterSeconds(answer.headers.get('retry-after'), Date.now());
+  // The body is taken whole before it is read as JSON: a connection lost or given up while a file comes rejects, as no answer at all, never a
+  // file with nothing in it (the data link then reads the file the old way, and a day is not held as empty). An answer that is not a file (an
+  // error, a wait) keeps its status and its wait however its body ends (Sol, review round 2: a 503's Retry-After was lost with its body).
+  let text: string | null;
+  try { text = await answer.text(); } catch (error) { if (answer.ok) throw error; text = null; }
+  let body: unknown = null;
+  if (text !== null) try { body = JSON.parse(text); } catch { /* a body that is not JSON (a 503's plain text) says nothing more than its status */ }
   return { status: answer.status, body, ...(wait !== undefined ? { retryAfter: wait } : {}) };
 };
 /**
@@ -75,6 +84,13 @@ const ASCTIME = new RegExp(`^${WEEKDAY} ${MONTH} [ \\d]\\d ${TIME} \\d{4}$`);
 export const isRefusal = (answer: LiqAnswer): boolean =>
   answer.status === 403 && !!answer.body && typeof answer.body === 'object' && (answer.body as { error?: unknown }).error === LIQ_REFUSED;
 
+let linked: LiqFetch | null = null;
+/**
+ * The page's own reads of the levels service and its gate: `webFetch`, except that a member's Plus files go through the tab's data link where
+ * they can (`plus/link.ts`: no pass sent, one copy at the edge for every member), else the old way with the pass. Made at its first use.
+ */
+export const linkedWebFetch: LiqFetch = (url, pass) => (linked ??= withLink(webFetch, dataLink(), { refusal: isRefusal }))(url, pass);
+
 /**
  * Whether a failed read was answered for that file by the server: a 4xx other than the gate's refusal and a rate limit (a day the service
  * has no file for). The pass then got through, and the file is not asked again for a while. A 5xx, a 429 or no answer says nothing of the
@@ -91,7 +107,7 @@ function statusOf(error: unknown): number { return error instanceof Error && /^\
 /** A read: the address, and the pass to send with it when the file is a Plus one. It throws `LIQ_REFUSED` for the gate's refusal, else the status (with `retryAfter` where the server said one). */
 export type LiqGet = (url: string, pass?: string | null) => Promise<unknown>;
 const webRead: LiqGet = async (url, pass) => {
-  const answer = await webFetch(url, pass);
+  const answer = await linkedWebFetch(url, pass);
   if (answer.status >= 200 && answer.status < 300) return answer.body;
   throw Object.assign(new Error(isRefusal(answer) ? LIQ_REFUSED : String(answer.status)), answer.retryAfter !== undefined ? { retryAfter: answer.retryAfter } : {});
 };

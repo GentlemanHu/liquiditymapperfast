@@ -800,14 +800,21 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
 /* Plus (plus/): its button in the bar is lit (`on`) while this browser has Plus, and a lit button does not change under the pointer or while held: held, it
    fades a little, so that a press answers in every frame. */
 .toolbar .plus-btn.on:active:not(:disabled) { opacity: .75; }
-/* The lock on a pane whose older history is Plus (the Depth pane's Liquidation levels), and the History link over the liquidation column: small page
-   elements over the drawing, so that they can be pressed and read like any button. */
-.pane .plus-lock, .pane.heat .liq-history { position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
-.pane .plus-lock[hidden], .pane.heat .liq-history[hidden] { display: none; }
+/* The lock on a pane whose older history is Plus (the Depth pane's Liquidation levels): a small page element over the drawing, so that it can be
+   pressed and read like any button. */
+.pane .plus-lock { position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; font-size: 11px; white-space: nowrap; }
+.pane .plus-lock[hidden] { display: none; }
 .pane .plus-lock::before { content: ""; flex: none; width: 11px; height: 11px; background: currentColor;
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='9' rx='1.5'/%3E%3Cpath d='M8 11V8a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='9' rx='1.5'/%3E%3Cpath d='M8 11V8a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E") center / contain no-repeat; }
-.pane.heat .liq-history { height: 16px; padding: 0 5px; font-size: 10px; }
+/* History (heat-pane.ts `#placeLiqHistory`), under the liquidation column's figures: a map button like the levels button above it and the corner tools
+   (map-top.ts: one look for everything pressed over the map; Karl, 2026-11-21: people must see it to find it), a drawn clock turning back before its word. */
+.pane.heat .liq-history { position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 5px; box-sizing: border-box; height: 26px; padding: 0 10px 0 8px;
+  border-radius: var(--radius); background: color-mix(in srgb, var(--panel) 86%, transparent); color: var(--text); box-shadow: 3px 3px 0 var(--shadow); font-size: 11px; white-space: nowrap; }
+.pane.heat .liq-history[hidden] { display: none; }
+.pane.heat .liq-history:hover { background: var(--panel); }
+.pane.heat .liq-history::before { content: ""; flex: none; width: 13px; height: 13px; background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 12a7.5 7.5 0 1 0 2.2-5.3'/%3E%3Cpath d='M4.5 4.6v3.8h3.8'/%3E%3Cpath d='M12 8.2v4.1l2.7 1.7'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 12a7.5 7.5 0 1 0 2.2-5.3'/%3E%3Cpath d='M4.5 4.6v3.8h3.8'/%3E%3Cpath d='M12 8.2v4.1l2.7 1.7'/%3E%3C/svg%3E") center / contain no-repeat; }
 /* What the liquidation column shows (liq-menu.ts): the button at the top of the column that opens its menu, a sibling of the map's corner tools
    on their row (their height, type, ground, corners, shadow and hover; Karl, 2026-11-18: at 16 px with no ground it read as a caption), an
    arrow at its right, a lock at its left while a Plus choice is held back; its words never run past the column (the script fits them, the rest
@@ -823,6 +830,14 @@ table.keys td:first-child { width: 34%; white-space: nowrap; }
 .pane.heat .liq-kind.locked::before { position: absolute; left: 8px; top: 50%; width: 11px; height: 11px; margin-top: -5.5px; }
 /* In the Bevel frame the corner tools are 23 px and cast no shadow (their bevel is the edge): the button too. */
 :root[data-frame="bevel"] .pane.heat .liq-kind { height: 23px; line-height: 21px; box-shadow: none; }
+:root[data-frame="bevel"] .pane.heat .liq-history { height: 23px; box-shadow: none; }
+/* Under a drawn split the button is as wide as the column and names each sub-column over its own (heat-pane.ts `#placeLiqKind`), the divider
+   through it; a name too long for its half gives way to the half of the split's short name ("Liq | Stops"), and only a name too long even then ends in
+   an ellipsis (the tip says both whole). */
+.pane.heat .liq-kind.split-names { text-overflow: clip; }
+.pane.heat .liq-kind.split-names > span:not(.lk-div) { display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
+.pane.heat .liq-kind.split-names .lk-b { position: absolute; top: 0; }
+.pane.heat .liq-kind.split-names .lk-div { position: absolute; top: 6px; bottom: 6px; width: 1px; background: currentColor; opacity: .3; }
 /* The paid part's name on a choice that is part of it, small, after the choice's words; with a lock while this browser has no Plus. */
 .plus-tag, .menu-item .tag { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 0 4px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 3px; font-size: 9px; font-weight: 600; line-height: 12px; letter-spacing: .02em; vertical-align: 1px; opacity: .85; }
 .plus-tag.locked::before, .menu-item .tag.locked::before { flex: none; width: 8px; height: 8px; }

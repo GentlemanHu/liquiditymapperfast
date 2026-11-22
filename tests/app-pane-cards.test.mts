@@ -117,7 +117,8 @@ test("right of the newest point, or over the price axis, the popup keeps showing
 test('the liquidation levels popup names the larger side and how many times the other it is, and says nothing where both are empty', () => {
   const bands = [{ r: 0.0125, bid: 0, ask: 3_000_000 }, { r: 0.05, bid: 25_000_000, ask: 10_000_000 }];
   const lines = liqCardLines({ asOf: 0, bands, watched: 1, units: 'usd', coin: 'BTC' });
-  assert.deepEqual([by(lines, 'Ratio')!.text, by(lines, 'Ratio')!.color], ['longs 2.50×', 'below']);
+  // In the colour of what the larger side's orders would do (order-side.ts): a long is closed by a sell, so the ask (sell) colour.
+  assert.deepEqual([by(lines, 'Ratio')!.text, by(lines, 'Ratio')!.color], ['longs 2.50×', 'above']);
   assert.equal(by(liqCardLines({ asOf: 0, bands, watched: 0, units: 'usd', coin: 'BTC' }), 'Ratio')!.text, 'shorts ∞', 'no longs in the band: only shorts');
   assert.equal(by(liqCardLines({ asOf: 0, bands: [{ r: 0.01, bid: 0, ask: 0 }], watched: 0, units: 'usd', coin: 'BTC' }), 'Ratio'), undefined);
 });

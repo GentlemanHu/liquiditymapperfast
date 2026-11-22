@@ -18,7 +18,7 @@ import { el } from '../dom.ts';
 import { language, t } from '../i18n.ts';
 import { historyUrls, readIndex } from '../liq-history.ts';
 import { LIQ_LEVELS_URL } from '../liq-url.ts';
-import { applyTheme } from '../theme.ts';
+import { DEFAULT_THEME, PHONE_DARK_THEME, applyTheme } from '../theme.ts';
 import { LEGAL, PADDLE, PLUS_CONTACT, offersReceipt, plusApi, plusOnSale, type PlusPrice } from './config.ts';
 import { PLUS_NAME } from './name.ts';
 import { plus, plusChannel, webPost } from './pass.ts';
@@ -55,7 +55,7 @@ const day = (time: number): string => new Intl.DateTimeFormat(language(), { date
 
 /**
  * The app's theme, as this browser wears it there (the app saves the one in use, picked or its own choice for the device). A visitor who
- * never opened the app gets the app's choice for a first visit: the dark theme on a phone set to dark, else the light one.
+ * never opened the app gets the app's choice for a first visit: Terminal on a phone set to dark, else Colour-blind safe, light (theme.ts).
  */
 function wearTheme(): boolean {
   let name: string | null = null;
@@ -63,8 +63,8 @@ function wearTheme(): boolean {
   try { const saved = JSON.parse(localStorage.getItem('hlm-app-v2') ?? 'null') as { theme?: unknown; themePicked?: unknown } | null; if (saved && saved.themePicked === true && typeof saved.theme === 'string') name = saved.theme; } catch { /* no saved theme */ }
   if (name === null) {
     let phoneDark = false;
-    try { phoneDark = matchMedia('(prefers-color-scheme: dark)').matches && matchMedia('(pointer: coarse)').matches; } catch { /* the light theme */ }
-    name = phoneDark ? 'terminal' : 'light';
+    try { phoneDark = matchMedia('(prefers-color-scheme: dark)').matches && matchMedia('(pointer: coarse)').matches; } catch { /* the light default */ }
+    name = phoneDark ? PHONE_DARK_THEME : DEFAULT_THEME;
   }
   return applyTheme(name).dark;
 }

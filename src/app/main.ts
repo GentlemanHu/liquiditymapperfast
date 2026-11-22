@@ -537,11 +537,12 @@ async function main(): Promise<void> {
     // sizes) would undo part of the restore. Nothing but memory is lost by starting again, so it reloads, and opens with the restored setup.
     if (e.key === RESTORED_KEY) { store.stopSaving(); window.location.reload(); return; }
     // Another tab made, changed or deleted a theme of one's own: known here too, and drawn again where it is the one on the screen; a deleted one
-    // leaves the page, and the light-or-dark key, for the built-in themes (as Delete does in the tab it was deleted in).
+    // leaves the page for the built-in Light or Dark of its kind, as Delete does in the tab it was deleted in (docs/guides/your-setup.md), and the
+    // light-or-dark key forgets it.
     if (e.key === CUSTOM_THEMES_KEY && store.saving) {
       registerCustomThemes(loadCustomThemes());
       const s = store.state, alive = resolveThemeId(s.theme) === s.theme, slots = slotsFor(s.themeSlots, s.theme);
-      const theme = alive ? s.theme : s.themeSlots.dark === s.theme ? slots.dark : slots.light;
+      const theme = alive ? s.theme : s.themeSlots.dark === s.theme ? 'dark' : 'light';
       if (s.theme.startsWith('custom-') || slots.light !== s.themeSlots.light || slots.dark !== s.themeSlots.dark) store.set({ theme, themeSlots: slotsFor(slots, theme) });
     }
   });

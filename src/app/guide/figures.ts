@@ -160,9 +160,9 @@ const REGIONS = (w: number, h: number): { id: string; box: Box; title: string; t
   const chartW = Math.round(usable * 0.62), profileW = Math.round(usable * 0.08), bookX = left + chartW + profileW + 44;
   return [
     { id: 'toolbar', box: { x: 6, y: 4, w: w - 12, h: 20 }, title: tg('Toolbar'), text: tg('The toolbar: market, timeframe, which panes to show, colours, exchanges, Screenshot and Guide.') },
-    { id: 'flow', box: { x: 6, y: top, w: flowW, h: h - top - 6 }, title: tg('Flow column'), text: tg('The flow column: what each exchange bought and sold at market, spot in blue and perpetual in amber, the biggest exchange first.') },
+    { id: 'flow', box: { x: 6, y: top, w: flowW, h: h - top - 6 }, title: tg('Flow column'), text: tg('The flow column: what each exchange bought and sold at market, spot and perpetual each in a colour of its own, the biggest exchange first.') },
     { id: 'chart', box: { x: left, y: top, w: chartW, h: chartH }, title: tg('The chart'), text: tg('The chart: candles show what price did, and the coloured map behind them is the order book through time. Warmer means more size waiting at that price.') },
-    { id: 'profile', box: { x: left + chartW, y: top, w: profileW, h: chartH }, title: tg('Profile'), text: tg('The profile: the order book right now, one bar per price. Pink above the price are asks (sellers), green below are bids (buyers).') },
+    { id: 'profile', box: { x: left + chartW, y: top, w: profileW, h: chartH }, title: tg('Profile'), text: tg('The profile: the order book right now, one bar per price. Above the price are asks (sellers) in the sell colour, below are bids (buyers) in the buy colour.') },
     { id: 'depth', box: { x: left, y: top + chartH + 8, w: chartW + profileW, h: lowerH }, title: tg('Depth'), text: tg('The Depth pane: total bid and ask liquidity near the price, over time.') },
     { id: 'oi', box: { x: left, y: top + chartH + 16 + lowerH, w: chartW + profileW, h: lowerH }, title: tg('Open interest'), text: tg('The Open Interest pane: how many contracts are open, and how that changes with each candle.') },
     { id: 'book', box: { x: bookX, y: top, w: w - bookX - 6, h: h - top - 6 }, title: tg('Order book'), text: tg('The order book ladder: every price with the size resting there, one column per exchange and a bar for the combined size.') },

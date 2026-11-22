@@ -262,13 +262,15 @@ export class FundingPane extends TimePane {
    * `lines`: what the card says that the rows do not (one venue: when it settles, who opened), under the rows.
    */
   #drawTable(venue: FundingVenue | null, shown: FundingView | null, tf: number, at: number, now: number, pointed: boolean, all?: { views: ReadonlyMap<FundingVenue, FundingView>; venues: readonly VenueFunding[]; median: { per8h: number } | null }, lines: readonly InfoLine[] = []): ReturnType<PaneTable['draw']> {
-    const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null };
+    const { ctx, palette: p, view: v } = this, coin = currentCoin(), room: TableRoom = { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing: this.pointer !== null, rest: !pointed };
     const listed = FUNDING_VENUES.filter(x => coin.markets[x]), heads = ['', t('Funding'), 'APR', t('Premium')], minCols = 2;
     // One venue: a row that repeats the header; no table, and the popup stays.
     if (listed.length < 2) return null;
-    const sample = listed.map(x => ({ name: venueLabel(x), per8h: 0.0001, premium: -0.0004 }));
+    const sample = listed.map(x => ({ name: venueLabel(x), per8h: 0.0001, premium: -0.0004 })), restKey = `${venue ?? 'all'}\u0001${coin.coin}\u0001${tf}`;
     if (all) sample.push({ name: t('Median'), per8h: 0.0001, premium: -0.0004 });
-    if (!placeTable(text => ctx.measureText(text).width, room, { heads, minCols, rows: fundingTableRows(sample, p) })) return null;
+    const typical = fundingTableRows(sample, p);
+    // No room beside the plot: at rest its lines still set the room a plate keeps under its rows when a pointer brings one.
+    if (!placeTable(text => ctx.measureText(text).width, room, { heads, minCols, rows: typical })) { this.#table.observe(ctx, room, { heads, minCols, focus: -1, foot: '', rows: typical, lines, restKey }); return null; }
     // With every venue shown, each is read by `fundingIn`, as the median, its popup and its line read it; names in their line's colour, mixed
     // towards the text so that amber and teal read at this size.
     const readings = listed.map((x, i): FundingReading => {
@@ -282,7 +284,7 @@ export class FundingPane extends TimePane {
     // A rate still accruing says so, as the card does: beside it where some rates have settled, once in the foot where none has (at rest the foot's
     // "newest" says it).
     const foot = pointed ? `${clock(at, true)}${fundingAllNow(readings) ? ` ${t('(now)')}` : ''}` : `${t('newest')} ${clock(at)}`;
-    return this.#table.draw(ctx, p, room, { heads, minCols, focus: all ? readings.length - 1 : listed.indexOf(venue!), foot, rows: fundingTableRows(readings, p), lines });
+    return this.#table.draw(ctx, p, room, { heads, minCols, focus: all ? readings.length - 1 : listed.indexOf(venue!), foot, rows: fundingTableRows(readings, p), lines, restKey });
   }
 
   /**

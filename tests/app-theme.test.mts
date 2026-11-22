@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_THEME, PHONE_DARK_THEME, autoTheme, flippedTheme, initialState, themeChange } from '../src/app/store.ts';
+import { DEFAULTS_REV, DEFAULT_THEME, PHONE_DARK_THEME, autoTheme, flippedTheme, initialState, themeChange } from '../src/app/store.ts';
 import { CAUTION, FRAMES, FRAME_STRENGTH, PALETTES, THEME_ORDER, chromeFor, mixHex, resolveThemeId, rgb, textOn, themeColorOf, themeVars, type Palette } from '../src/app/theme.ts';
 import { WEAK_ALPHA, emphasisRamps } from '../src/app/traded/emphasis.ts';
 
@@ -145,7 +145,7 @@ test(`the browser's own bars take the page's colour, and in the bevel frame the 
   assert.equal(themeColorOf(PALETTES.terminal!), PALETTES.terminal!.bg);
 });
 
-test('a page opens in Light, and a saved Terminal that was never picked (written while it was the default) goes back to it', () => {
+test('a page opens in Colour-blind safe, light; a saved Light or Terminal that was never picked (written while it was the default) follows it', () => {
   const real = (globalThis as { window?: unknown }).window;
   const load = (saved: Record<string, unknown> | null): { theme: string; themePicked: boolean } => {
     (globalThis as { window?: unknown }).window = { innerWidth: 1600, localStorage: { getItem: () => saved ? JSON.stringify(saved) : null, setItem: () => {} } };
@@ -153,19 +153,39 @@ test('a page opens in Light, and a saved Terminal that was never picked (written
     return { theme: state.theme, themePicked: state.themePicked };
   };
   try {
-    assert.equal(DEFAULT_THEME, 'light');
-    assert.deepEqual(load(null), { theme: 'light', themePicked: false });
-    assert.deepEqual(load({ theme: 'terminal' }), { theme: 'light', themePicked: false });
+    assert.equal(DEFAULT_THEME, 'daylight');
+    assert.equal(PALETTES[DEFAULT_THEME]!.dark, false);
+    assert.equal(PALETTES[DEFAULT_THEME]!.colourSafe, true);
+    assert.deepEqual(load(null), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'terminal' }), { theme: 'daylight', themePicked: false });
+    // Light, the default until 2026-11-21, was written down by every save: one that never picked it follows today's default, flag or no flag,
+    // and so does a save of today's default written from revision 7 (neither counts as a pick).
+    assert.deepEqual(load({ theme: 'light' }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'light', themePicked: false }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'light', themePicked: false, defaultsRev: 6 }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'legacyLight' }), { theme: 'daylight', themePicked: false });
+    assert.deepEqual(load({ theme: 'daylight', themePicked: false, defaultsRev: 7 }), { theme: 'daylight', themePicked: false });
+    // A pick stays, Light too.
+    assert.deepEqual(load({ theme: 'light', themePicked: true }), { theme: 'light', themePicked: true });
     assert.deepEqual(load({ theme: 'terminal', themePicked: true }), { theme: 'terminal', themePicked: true });
-    // Any other theme saved without the flag was picked before the flag existed: it stays, and now counts as picked.
+    // Any other theme saved without the flag was picked before the flag existed: it stays, and now counts as picked. Colour-blind safe, light
+    // too: it came hours before the flag, as a theme to pick.
     assert.deepEqual(load({ theme: 'dark' }), { theme: 'dark', themePicked: true });
-    assert.deepEqual(load({ theme: 'no-such-theme' }), { theme: 'light', themePicked: false });
+    assert.deepEqual(load({ theme: 'daylight' }), { theme: 'daylight', themePicked: true });
+    assert.deepEqual(load({ theme: 'no-such-theme' }), { theme: 'daylight', themePicked: false });
+    // An older save cannot be taken at its word: from 2026-10-17 to 11-01 the page kept an earlier pick on the screen but saved it as not
+    // picked. Another theme in it, flag or no flag, stays picked.
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false }), { theme: 'midnight', themePicked: true });
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 4 }), { theme: 'midnight', themePicked: true });
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 6 }), { theme: 'midnight', themePicked: true });
+    // From revision 7 a save says itself, whatever theme it wrote down: so a default that is replaced one day needs no list of former ones.
+    assert.deepEqual(load({ theme: 'midnight', themePicked: false, defaultsRev: 7 }), { theme: 'daylight', themePicked: false });
   } finally {
     if (real === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real;
   }
 });
 
-test('a phone follows its own light or dark setting until a theme is picked, dark being Terminal; a desktop opens in Light', () => {
+test('a phone follows its own light or dark setting until a theme is picked, dark being Terminal; a desktop opens in Colour-blind safe, light', () => {
   const real = { window: (globalThis as { window?: unknown }).window, matchMedia: (globalThis as { matchMedia?: unknown }).matchMedia };
   const load = (saved: Record<string, unknown> | null, phone: boolean, dark: boolean): { theme: string; themePicked: boolean; slots: { light: string; dark: string } } => {
     (globalThis as { window?: unknown }).window = { innerWidth: phone ? 390 : 1600, localStorage: { getItem: () => saved ? JSON.stringify(saved) : null, setItem: () => {} } };
@@ -174,17 +194,29 @@ test('a phone follows its own light or dark setting until a theme is picked, dar
     return { theme: state.theme, themePicked: state.themePicked, slots: state.themeSlots };
   };
   try {
-    assert.equal(autoTheme(true, true), 'terminal'); assert.equal(autoTheme(true, false), 'light'); assert.equal(autoTheme(false, true), 'light');
+    assert.equal(autoTheme(true, true), 'terminal'); assert.equal(autoTheme(true, false), 'daylight'); assert.equal(autoTheme(false, true), 'daylight');
     assert.equal(PALETTES[PHONE_DARK_THEME]!.dark, true);
-    assert.deepEqual(load(null, true, true), { theme: 'terminal', themePicked: false, slots: { light: 'light', dark: 'terminal' } });
-    assert.deepEqual(load(null, true, false), { theme: 'light', themePicked: false, slots: { light: 'light', dark: 'terminal' } });
-    assert.equal(load(null, false, true).theme, 'light');
-    // The default written down with everything else follows the phone again; a pick stays whatever the phone says.
+    assert.deepEqual(load(null, true, true), { theme: 'terminal', themePicked: false, slots: { light: 'daylight', dark: 'terminal' } });
+    assert.deepEqual(load(null, true, false), { theme: 'daylight', themePicked: false, slots: { light: 'daylight', dark: 'terminal' } });
+    assert.equal(load(null, false, true).theme, 'daylight');
+    // The default written down with everything else follows the phone again (Light, the default until 2026-11-21, too); a pick stays whatever
+    // the phone says.
     assert.equal(load({ theme: 'light' }, true, true).theme, 'terminal');
-    assert.equal(load({ theme: 'terminal' }, true, false).theme, 'light');
+    assert.deepEqual(load({ theme: 'light', themePicked: false }, true, true), { theme: 'terminal', themePicked: false, slots: { light: 'daylight', dark: 'terminal' } });
+    assert.equal(load({ theme: 'terminal' }, true, false).theme, 'daylight');
     assert.deepEqual(load({ theme: 'light', themePicked: true }, true, true), { theme: 'light', themePicked: true, slots: { light: 'light', dark: 'terminal' } });
     // The remembered themes keep their kind: a light one is no dark slot.
-    assert.deepEqual(load({ theme: 'midnight', themePicked: true, themeSlots: { light: 'terminal', dark: 'amber' } }, true, false).slots, { light: 'light', dark: 'midnight' });
+    assert.deepEqual(load({ theme: 'midnight', themePicked: true, themeSlots: { light: 'terminal', dark: 'amber' } }, true, false).slots, { light: 'daylight', dark: 'midnight' });
+    // Revision 7: every older save wrote Light down as the light-or-dark key's light theme. One that never picked a theme, on a phone set to
+    // dark, has the key bring today's light default; a save that picked one keeps its slots, and so does a save of revision 7 (Light, picked,
+    // then Automatic) or one holding another light theme.
+    assert.ok(DEFAULTS_REV >= 7);
+    const older = load({ theme: 'terminal', themePicked: false, themeSlots: { light: 'light', dark: 'terminal' }, defaultsRev: 6 }, true, true);
+    assert.deepEqual(older, { theme: 'terminal', themePicked: false, slots: { light: 'daylight', dark: 'terminal' } });
+    assert.equal(flippedTheme({ theme: older.theme, themeSlots: older.slots }), 'daylight');
+    assert.deepEqual(load({ theme: 'midnight', themePicked: true, themeSlots: { light: 'light', dark: 'midnight' }, defaultsRev: 6 }, true, true).slots, { light: 'light', dark: 'midnight' });
+    assert.deepEqual(load({ theme: 'terminal', themePicked: false, themeSlots: { light: 'light', dark: 'terminal' }, defaultsRev: 7 }, true, true).slots, { light: 'light', dark: 'terminal' });
+    assert.deepEqual(load({ theme: 'terminal', themePicked: false, themeSlots: { light: 'latte', dark: 'terminal' }, defaultsRev: 6 }, true, true).slots, { light: 'latte', dark: 'terminal' });
   } finally {
     if (real.window === undefined) delete (globalThis as { window?: unknown }).window; else (globalThis as { window?: unknown }).window = real.window;
     if (real.matchMedia === undefined) delete (globalThis as { matchMedia?: unknown }).matchMedia; else (globalThis as { matchMedia?: unknown }).matchMedia = real.matchMedia;

@@ -41,7 +41,7 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   `liq-levels.ts`): beside the others a lane of their own by the live edge (`stripeLanes`: the levels' lane is the one beside the
   liquidation column, whose curve sums them), bars from the column's right edge, bars on the Liq tab, a line in the Depth pane; on alone
   they are the curve, dashed and never filled. Coloured by what they do: sells in the falling colour. The take profits' lane carries a
-  caption ("Take profits"); while take profits show beside the curve, a note under the column's button says they are not in it.
+  caption ("Take profits"); while take profits show beside the curve, a note in the column's heading, after its figures, says they are not in it.
 - **The +PnL traders** are one group for every kind: the wallets in HyperTracker's four cohorts with a positive
   all-time perp profit. Their liquidations come from the groups files, their stops and take profits from `triggers-groups.json` and the
   group history files only, never everyone's under their name. A 404 or 503 for those says they are **not available yet** (the note
@@ -94,27 +94,35 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   not have yet; an answer of an older snapshot (no order file read yet) is asked again two minutes later, three times a snapshot at most.
   The gate's refusal drops the pass (`Plus.refused`); a 503 waits its `Retry-After` (30 s to 15 min), or a minute when the page cannot
   read one; anything else is a failed read (30 s). Every read of the levels service or the gate is given up after 30 s.
+- **The data link** (`plus/link.ts`, 2026-11-21): a paid day, a rollup or a live Plus file read with a pass goes to the same path under a
+  link instead, `https://<levels host>/v1/k/<token>/…`, with no pass: no CORS preflight, and one copy at the edge for every member,
+  which answers an unchanged file with a 304. The Worker hands the link to a pass (`GET /v1/link`: `{ base, until, now }`); the token
+  changes every 12 hours, and the page keeps the link in this tab's memory only, until two minutes before its slot ends by the server's
+  clock (one that arrives with two minutes or less left, until its slot ends), asking for it one request at a time. A refused link (the
+  gate's refusal, or a 403 whose body is not JSON: one cut short, or a firewall's page) is replaced once; the same link again, a second
+  refusal, no link (a failed request stops the asking for five minutes, a link that ran out on its way for 30 seconds, a refused pass for
+  one minute), a file on another origin (a local stand-in) or a link that cannot be reached reads the file the old way, with the pass.
 
 `FREE_DAYS` (7) is one constant in `src/app/plus/config.ts`, and one variable of the server's. A day file is free when its UTC day starts
 at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
 
 ## The pieces
 
-- **The levels service** (`HyperLiquidMap_Levels`, on hiverust, reached through the Cloudflare tunnel) is the gate: it serves a free
+- **The levels service** (a separate Rust project on hiverust, reached through the Cloudflare tunnel) is the gate: it serves a free
   day and the live files to anyone, and a paid day or file only with a valid pass in `Authorization: Bearer`, which it checks itself
-  with the Worker's key (since 2026-11-17; "the gate" below means it). Its refusal is the one this page knows: 403
-  `{"error":"plus_required"}`.
-- **The Worker** (`HyperLiquidMap_Plus`) answers only `plus.hiverust.dev`; no data request passes through it. It gives a key and a
+  with the Worker's key (since 2026-11-17; "the gate" below means it), and the same paid days and files without a pass under the data
+  link (above). Its refusal is the one this page knows: 403 `{"error":"plus_required"}`.
+- **The Worker** (a Cloudflare Worker, a project of its own) answers on `plus.liquiditymapper.com` (and `plus.hiverust.dev`, its name until 2026-11-22, for older pages); no data request passes through it. It gives a key and a
   pass after a checkout (`POST /v1/pass`), renews a pass for a key
-  (`POST /v1/pass/renew`), finds a membership by the receipt's email and invoice number (`POST /v1/restore`), and keeps each
-  subscription's state from Paddle's notifications.
+  (`POST /v1/pass/renew`), finds a membership by the receipt's email and invoice number (`POST /v1/restore`), hands a pass the data link
+  (`GET /v1/link`), and keeps each subscription's state from Paddle's notifications.
 - **The page**: `src/app/plus/`.
   - `config.ts`: the free days, the Worker's address, Paddle's client-side token, price ids, prices and portal link.
   - `pass.ts`: the membership as the browser holds it (`{ key, pass, until, ended, why, renews, skew, next }`): in the Plus database where
     it opens, mirrored to `localStorage` `lmf.plus` / `lmf.plus.gen`, else in `localStorage` alone (below), and its renewal.
   - `plus-db.ts`: the Plus database (IndexedDB `lmf-plus`, store `kv`: `seed`, `member`, `paid:<txn>`, `migrated`) and the gate that
     builds every request that issues a key; `schedule.ts`: when a payment's key is asked for; `request-timeout.ts`: a request given up
-    after 20 s in every browser.
+    after 20 s in every browser; `link.ts`: the data link (above), which `liq-history.ts` and `liq-levels.ts` read the paid files through.
   - `panel.ts`: the Plus button's status pop-up (a browser with a key) and the locks' way in (`togglePlus`), which open the presentation.
   - `key.ts`, `key.css`: a key entered in the app (the pop-up, the presentation's access card) or on the Plus page: the renewal call, what
     its answer means, the form and its styles (one file the app and the page both load).
@@ -159,13 +167,13 @@ at or after `floor(now / 86,400,000) * 86,400,000 - FREE_DAYS * 86,400,000`.
 
 ## The checkout's recovery (2026-11-20, Option B)
 
-The design and its reviews are in HyperLiquidMap_Plus `docs/checkout-recovery-2026-11-20/` (`page-build-spec.md` is what was built). In
+The design and its reviews are in the Worker's project, `docs/checkout-recovery-2026-11-20/` (`page-build-spec.md` is what was built). In
 short:
 
 - **One seed per browser.** The Plus database holds a seed, 32 random bytes made once (`plus-db.ts` `readSeed`), sent with every
   `/v1/pass` and `/v1/restore`. The Worker names the key by it (`<sub>.<HMAC(seed, sub)>`), so every request from this browser for one
   subscription gives the same key: two tabs, a press during another tab's setting-up, a lost answer, a late request and a receipt all end
-  with it, and that key renews. The seed is never shown, never in a URL, a log, the hand-over or a backup.
+  with it, and that key renews. The seed is never shown, never in a URL, a log or a backup.
 - **The modes.** Every tab with IndexedDB starts by opening the database (3 s). Once it opens, the browser moves to it for good: the marker
   `lmf.plus.idb` first, then a one-time import of `lmf.plus` / `lmf.plus.gen`. In IDB mode the database is the authority and every write is
   one transaction (`Plus` commit) that checks the stored baseline `{ seed, gen }` the operation began with (a reset makes a new seed, so an
@@ -183,8 +191,8 @@ short:
   receipt, a payment's grant, Remove) begins with one readwrite transaction that makes the seed if there is none, so each has an epoch; a
   request whose seed differs from the one its operation began with sends nothing. (A browser whose storage is full and that has no seed yet
   therefore refuses key entry in IDB mode with the "cannot be set up in this tab" text.)
-- **Nothing of Plus travels.** A hand-over from the old address and a backup never write an `lmf.plus*` key: they are skipped, and the rest
-  of the visitor's settings are taken (the old address's page deployed before 2026-11-20 still sends them).
+- **Nothing of Plus travels.** A backup never writes an `lmf.plus*` key: it is skipped, and the rest of the visitor's settings are taken
+  (a backup made before 2026-11-20 may hold `lmf.plus.gen`). The old address's hand-over, which skipped them too, ended on 2026-11-21.
 - **A payment's record** (`paid:<txn>` = `{ at }`) is written once when its checkout completes and waits from a day before that time to a
   day after it. Nothing asks for it by itself: loading the page shows it with "Set up Plus" (Try again after this tab's own attempt ended
   without Plus). Before every ask one transaction reads the seed and confirms the record still waits. The asks follow `schedule.ts`: backoff
@@ -252,8 +260,8 @@ short:
    (`support@liquiditymapper.com`, forwarded by Cloudflare Email Routing); the Plus page's footer names the same address
    (`PLUS_CONTACT`). The prices on the Plus page and in Paddle must say the same.
 4. The refund policy (since 2026-11-20, matching Paddle's own buyer terms) refunds any payment, the first or a renewal, in
-   full within 14 days, and says a refund ends the subscription. The Plus server does not act on refunds (HyperLiquidMap_Plus
-   README, "Refunds and chargebacks"), so a refund is done in Paddle together with cancelling that subscription there.
+   full within 14 days, and says a refund ends the subscription. The Plus server does not act on refunds (the Worker
+   project's README, "Refunds and chargebacks"), so a refund is done in Paddle together with cancelling that subscription there.
 
 ## Testing without the real services
 

@@ -420,7 +420,7 @@ export class CvdPane {
       this.#pinPicker(c.pinned),
       switchRow(t('Flag quiet exchanges'), t('Mark an exchange that has not traded in the last five completed minutes with !5m.'), c.quietFlag, v => this.#set({ quietFlag: v })),
       switchRow(t('Start each line at zero'), t('Draw every line from zero at the left edge, so rows can be compared. Off draws the running total since the history began.'), c.rebase, v => this.#set({ rebase: v })),
-      note(t('Blue is spot and amber is perpetual, whichever way the money moved. Numbers carry the sign.')),
+      note(t('Spot and perpetual keep colours of their own (the dots by S and P), whichever way the money moved. Numbers carry the sign.')),
       ...(isPhone() ? [] : this.#stripSettings(c)),
       // The size rows' history candle by candle: a pane under the chart (panes/size-history-pane.ts), on a phone too.
       ...flowHistoryRows(this.store),

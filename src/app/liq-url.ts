@@ -37,8 +37,8 @@ export function splitFor(split: LiqSplit, kinds: { liq: boolean; stops: boolean 
 }
 
 /**
- * A saved setting, checked, whichever form it was saved in (settings, a layout or a layouts file, a backup, the old address's hand-over: all
- * go through here). What a save from before the feature lacks reads as on (new features start on). The three switches as saved, where at
+ * A saved setting, checked, whichever form it was saved in (settings, a layout or a layouts file, a backup: all go through here). What a
+ * save from before the feature lacks reads as on (new features start on). The three switches as saved, where at
  * least one is on; a save of one kind and a take-profit switch (before 2026-11-19) as that kind: `liq` liquidations, `stops` stops, `both`
  * the two, its take profits kept. A switch present in either form that is not a boolean, and anything else, a save from before the Plus
  * choices included, reads as the free view: liquidations of everyone, no take profits. Any other group value reads as everyone's (`all`).
@@ -68,10 +68,11 @@ export function readLiqLevels(saved: unknown): LiqLevelSettings {
 }
 
 /**
- * The levels service's public address: hlm-levels on hiverust behind a Cloudflare tunnel (2026-11-01). Empty would mean no service, and then the
- * Chart deck has no Liquidation levels button.
+ * The levels service's public address: hlm-levels behind a Cloudflare tunnel (2026-11-01; on this site's own domain since 2026-11-22, the
+ * hiverust.dev name serving the same files until older pages are gone). Empty would mean no service, and then the Chart deck has no
+ * Liquidation levels button.
  */
-export const LIQ_LEVELS_URL = 'https://levels.hiverust.dev/v1/btc/liquidations.json';
+export const LIQ_LEVELS_URL = 'https://levels.liquiditymapper.com/v1/btc/liquidations.json';
 
 let read: { search: string; url: string } | null = null;
 
