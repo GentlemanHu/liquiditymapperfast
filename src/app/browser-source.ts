@@ -365,8 +365,8 @@ export class BrowserSource implements DataSource, VenueControl {
     return answer;
   }
   async recover(request: RecoveryRequest): Promise<RecoveryReport> { return this.#call({ method: 'recover', ids: [...request.ids], windows: request.windows.map(w => ({ from: w.from, to: w.to })) }); }
-  async footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false): Promise<FootprintResponse> {
-    return this.#call({ method: 'footprint', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, rowStep, cuts: [...cuts], ...(budget ? { budget } : {}), ...(venues ? { venues } : {}) });
+  async footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false, sums = false): Promise<FootprintResponse> {
+    return this.#call({ method: 'footprint', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, rowStep, cuts: [...cuts], ...(budget ? { budget } : {}), ...(venues ? { venues } : {}), ...(sums ? { sums } : {}) });
   }
 
   // ---- VenueControl ---------------------------------------------------------------------------------------------------------------

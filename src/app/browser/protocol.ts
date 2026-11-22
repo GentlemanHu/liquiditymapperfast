@@ -19,7 +19,7 @@ export type RpcCall =
   | { method: 'bootstrap' }
   /** `early`: the map's own load, which may be answered from the newest recordings before the day is read (browser/waits.ts `waitOf`). */
   | { method: 'columns'; ids: string[]; from: number; to: number; stepMs: number; close?: boolean; early?: boolean }
-  | { method: 'footprint'; inst: string; tfMs: number; from: number; to: number; rowStep: number; cuts?: number[]; budget?: number; venues?: boolean }
+  | { method: 'footprint'; inst: string; tfMs: number; from: number; to: number; rowStep: number; cuts?: number[]; budget?: number; venues?: boolean; sums?: boolean }
   | { method: 'prints'; from: number; to: number; minUsd?: number }
   | { method: 'liquidations'; from: number; to: number; minUsd?: number }
   | { method: 'printSums'; ids: string[]; from: number; to: number; minUsd: number; stepMs: number }

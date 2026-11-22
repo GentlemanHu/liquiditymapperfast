@@ -26,8 +26,8 @@ async function request(path: string, signal?: AbortSignal, priority?: 'high' | '
 /** The size lines as asked, to the last digit: a line rounded on the way would count orders the page puts under it (a coin's scaled sizes have cents). */
 const cutsParam = (cuts: readonly number[]): string => cuts.length ? `&cuts=${cuts.map(String).join(',')}` : '';
 /** Recorded history for one instrument and window, as the footprint draws it, with the orders from each size line in `cuts` where the server has them. */
-export async function getFootprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false): Promise<FootprintResponse> {
-  return (await request(`/api/v2/footprint?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rowStep}${cutsParam(cuts)}${budget ? `&budget=${Math.round(budget)}` : ''}${venues ? '&venues=1' : ''}`)).json() as Promise<FootprintResponse>;
+export async function getFootprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false, sums = false): Promise<FootprintResponse> {
+  return (await request(`/api/v2/footprint?inst=${encodeURIComponent(inst)}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rowStep}${cutsParam(cuts)}${budget ? `&budget=${Math.round(budget)}` : ''}${venues ? '&venues=1' : ''}${sums ? '&sums=1' : ''}`)).json() as Promise<FootprintResponse>;
 }
 export const getBootstrap = async (): Promise<BootstrapState> => (await request('/api/v2/state')).json();
 /** A read of candles that has had no answer in this long is given up (a busy server answers in seconds; one that never does would hold a connection). */

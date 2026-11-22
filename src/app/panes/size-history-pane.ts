@@ -52,8 +52,8 @@ export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'tota
 /**
  * The Flow history pane (Karl, 2026-11-20): per candle of the chart's timeframe, the liquidations, the change of open interest and the
  * market orders in six size bands, one row each on the map's time axis, with the most unusual amounts standing out (size-history/model.ts).
- * Its size rows count the markets the footprint and the Bar stats count, and read the footprint's bars (one load for the three, from the Highlights'
- * length before the view, at least 36 candles and six hours, while this pane shows); its liquidations are the Bar stats' (one loader, liq-days.ts:
+ * Its size rows count the markets the footprint and the Bar stats count, and read their bars without rows (HeatPane `sizesData`, a load of its own
+ * that a source answers from memory, from the Highlights' length before the view, at least 36 candles and six hours, while this pane shows); its liquidations are the Bar stats' (one loader, liq-days.ts:
  * the perpetuals whatever the Spot / Perp filter) and its open interest the OI pane's. Switched on from its button in the top bar's Panels deck (toolbar.ts
  * `PANE_TOGGLES`, which a phone's or tablet's Settings lists too), the flow column's settings and the Bar stats' settings.
  */
@@ -145,7 +145,7 @@ export class SizeHistoryPane extends TimePane {
 
   #paint(): void {
     const { ctx, palette: p, view: v } = this, state = this.store.state, pw = this.plotW, ph = this.h;
-    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, data = this.heat.footprintData, markets = this.heat.footprintMarkets(state);
+    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, data = this.heat.sizesData, markets = this.heat.footprintMarkets(state);
     const readout = this.head.querySelector('.readout');
     setText(readout, `${markets.length > 1 ? `${t('{n} markets', { n: markets.length })} · ` : ''}${t('square-root heights, each row its own scale')}`);
     this.#layout = [];

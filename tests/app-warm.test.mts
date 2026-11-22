@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { quietMs, resetQuiet, track, trackedFetch } from '../src/app/quiet.ts';
 import { WARM_IDLE, WARM_LOOK_MS, WARM_MAX_FAILURES, WARM_MAX_TRIES, WARM_QUIET_MS, WARM_SETTLE_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmLook, type WarmState } from '../src/app/size-history/warm.ts';
 import { historyLoading } from '../src/app/size-history/model.ts';
-import { askRowStep, rowsBlind, zoomLevel } from '../src/app/panes/footprint.ts';
 import { liquidationCover } from '../src/app/liq-days.ts';
 import { LIQUIDATION_RETENTION_MS } from '../src/shared/liquidations.ts';
 import { BROWSER_RETENTION_MS } from '../src/shared/recorder.ts';
@@ -101,26 +100,6 @@ test('the warm-up gives up after its questions run out, in the bars or the days,
   // A list first seen more than three minutes into the page gives up no sooner for that.
   const late = warmNext(warmNext(WARM_IDLE, look(10 * 60_000)).state, look(10 * 60_000 + WARM_SETTLE_MS));
   assert.deepEqual([late.act, late.state.tries], ['bars', 1]);
-});
-
-test('row-blind readers keep the rows held unless more than eight times finer than the zoom\x27s; the footprint and the Bar stats read rows', () => {
-  assert.equal(rowsBlind({ footprint: false, stats: false }), true, 'the Flow history alone, or its warm-up');
-  assert.equal(rowsBlind({ footprint: true, stats: false }), false, 'the footprint draws rows');
-  assert.equal(rowsBlind({ footprint: false, stats: true }), false, 'the Bar stats read them');
-  assert.equal(askRowStep(true, 4, 8), 4, 'one level finer held: kept (the map grew shorter as the pane opened)');
-  assert.equal(askRowStep(true, 16, 8), 16, 'coarser held: kept');
-  assert.equal(askRowStep(true, 1, 8), 1, 'eight times finer (the map at 30 % of its height, a level off): kept');
-  assert.equal(askRowStep(true, 0.5, 8), 8, 'more than eight times finer (a deep zoom\x27s): the zoom\x27s');
-  assert.equal(askRowStep(true, 0, 8), 8, 'nothing held');
-  assert.equal(askRowStep(false, 4, 8), 8, 'a reader of rows: always the zoom\x27s');
-});
-
-test('readers of rows move the level of detail; readers blind to rows only peek at it', () => {
-  const calls: string[] = [];
-  const lod = { level: (px: number) => { calls.push(`level ${px}`); return 3; }, peek: (px: number) => { calls.push(`peek ${px}`); return 2; } };
-  assert.equal(zoomLevel(lod, false, 5), 3);
-  assert.equal(zoomLevel(lod, true, 7), 2);
-  assert.deepEqual(calls, ['level 5', 'peek 7'], 'the footprint or the Bar stats move the hysteresis; the Flow history alone and its warm-up do not');
 });
 
 test('a look that waits for any of its five reasons counts no question, however many there are', () => {
