@@ -25,6 +25,7 @@ import { recorderLockName, recordingsName } from './coin.ts';
 import { historyUrl } from './history-url.ts';
 import { DAY_HOURS } from './history-window.ts';
 import { ArchiveColumns, depthSinceOf, type ArchiveChange } from './archive/archive-source.ts';
+import { track } from './quiet.ts';
 
 /** Where a person's venue choice is kept between visits, and the venues there were when it was made (so ones added since can start). */
 const SELECTION_KEY = 'lmf.venues', KNOWN_KEY = 'lmf.venues.known';
@@ -213,12 +214,13 @@ export class BrowserSource implements DataSource, VenueControl {
   #post(message: FeedsIn): void { this.#worker.postMessage(message); }
   #call<M extends RpcCall['method']>(call: Extract<RpcCall, { method: M }>): Promise<RpcResult[M]> {
     if (this.#failure) return Promise.reject(this.#failure);
-    return this.#ready.then(() => new Promise<RpcResult[M]>((resolve, reject) => {
+    // Counted until it settles (quiet.ts): the Flow history's warm-up waits for the page's own calls to drain.
+    return track(this.#ready.then(() => new Promise<RpcResult[M]>((resolve, reject) => {
       if (this.#failure) { reject(this.#failure); return; }
       const id = ++this.#next;
       this.#calls.set(id, { resolve: resolve as (value: unknown) => void, reject });
       this.#post({ type: 'rpc', id, ...call });
-    }));
+    })));
   }
 
   async bootstrap(options?: { prefer?: string }): Promise<BootstrapState> {

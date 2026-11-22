@@ -29,7 +29,7 @@ export interface MirrorStats {
   clipped: boolean;
 }
 
-/** Under this, the larger side over the smaller, two sides are called even (the order book's Balanced, the column boxes' about even). */
+/** Under this, the larger side over the smaller, two sides are called even (every Mirror box's "about even", the phone's Liq tab's Balanced). */
 export const BALANCED_RATIO = 1.02;
 
 export function mirrorStats(mid: number, price: number, aboveUsd: number, belowUsd: number, clipped = false): MirrorStats | null {
@@ -48,25 +48,51 @@ export function ratioText(ratio: number): string {
   return `${ratio >= 10 ? ratio.toFixed(1) : ratio.toFixed(2)}x`;
 }
 
-export interface SideNames { above: string; below: string }
-export type MirrorLine = InfoLine;
-/** What the box says where a side holds nothing (the liquidity's words unless given). */
-export interface EmptyWords { none: string; onlyThis: string; onlyOpposite: string }
+/**
+ * A ratio as the boxes print it, two decimals below ten and one up to a thousand ("1.04×", "13.0×"), and no more digits past that ("≥1000×":
+ * a side all but empty against a full one printed sixteen of them and widened the box); a dash where the side divided by holds nothing.
+ */
+export function ratioWords(top: number, bottom: number): string {
+  if (!(bottom > 0)) return '–';
+  const r = top / bottom;
+  return r >= 1000 ? '≥1000×' : `${r >= 10 ? r.toFixed(1) : r.toFixed(2)}×`;
+}
 
-/** The text printed beside the pointer. */
-export function mirrorLines(stats: MirrorStats, names: SideNames, title?: string, empty?: EmptyWords): MirrorLine[] {
-  const thisName = stats.hoveredSide === 'above' ? names.above : names.below, oppName = stats.hoveredSide === 'above' ? names.below : names.above;
-  const thisColor = stats.hoveredSide, oppColor = stats.hoveredSide === 'above' ? 'below' : 'above';
+export type MirrorLine = InfoLine;
+
+/** A side's amount as the verdicts weigh it: a finite amount above zero, else nothing. */
+const known = (x: number): number => Number.isFinite(x) && x > 0 ? x : 0;
+
+/**
+ * Which band holds more, as a line of its own: the heavier side named by its price side, in its colour, with how many times the other it is
+ * ("Bids 1.13× the asks"); about even under the Mirror's balance; only one side where the other holds nothing. The test and the words of the
+ * profile box's `depthBandVerdict` (hover-rows.ts), without its "Within ≈±…:" lead-in, which the order book's box says on its first line, and
+ * the words of the guide's picture of it. Every case wraps, as there, so no language runs past a narrow box (the book's is 250 px at least,
+ * where today's longest, about 170 px, still fits on one line).
+ */
+export function bandVerdict(bid: number, ask: number): MirrorLine {
+  const b = known(bid), a = known(ask);
+  if (!b && !a) return { text: t('No bids or asks'), color: 'muted', wrap: true };
+  if (!a) return { text: t('Only bids'), color: 'below', bold: true, wrap: true };
+  if (!b) return { text: t('Only asks'), color: 'above', bold: true, wrap: true };
+  if (Math.max(b, a) / Math.min(b, a) < BALANCED_RATIO) return { text: t('Bids and asks about even'), bold: true, wrap: true };
+  return b > a ? { text: t('Bids {ratio} the asks', { ratio: ratioWords(b, a) }), color: 'below', bold: true, wrap: true }
+    : { text: t('Asks {ratio} the bids', { ratio: ratioWords(a, b) }), color: 'above', bold: true, wrap: true };
+}
+
+/**
+ * The order book's Mirror box: how far from the mid, what each band holds by its price side (asks above, bids below: nothing turns over as
+ * the pointer crosses the price), then which holds more (`bandVerdict`), as the profile's box and the guide's picture say it. It said
+ * "Asks (this side)" and "Opposite side has 1.13x more" until 2026-11-22 (Karl: the order book's hover needed the same words).
+ */
+export function mirrorLines(stats: MirrorStats, title?: string): MirrorLine[] {
   const lines: MirrorLine[] = [];
   if (title) lines.push({ text: title, bold: true });
   lines.push({ text: t('±{distance} ({bp} bp) from {mid}', { distance: fmtPrice(stats.distance), bp: stats.distanceBp < 10 ? stats.distanceBp.toFixed(1) : Math.round(stats.distanceBp), mid: fmtPrice(stats.mid) }), color: 'muted' });
-  lines.push({ text: t('{side} (this side)  ${value}', { side: thisName, value: usd(stats.hovered) }), color: thisColor });
-  lines.push({ text: t('{side} (opposite)  ${value}', { side: oppName, value: usd(stats.opposite) }), color: oppColor });
-  if (stats.dominant === 'none') lines.push({ text: empty?.none ?? t('No liquidity in this range'), color: 'muted' });
-  else if (stats.dominant === 'balanced') lines.push({ text: t('Balanced'), color: 'text', bold: true });
-  else if (stats.dominant === 'this') lines.push({ text: Number.isFinite(stats.ratio) ? t('This side has {ratio} more', { ratio: ratioText(stats.ratio) }) : empty?.onlyThis ?? t('Only this side has liquidity'), color: thisColor, bold: true });
-  else lines.push({ text: Number.isFinite(stats.ratio) ? t('Opposite side has {ratio} more', { ratio: ratioText(stats.ratio) }) : empty?.onlyOpposite ?? t('Only the opposite side has liquidity'), color: oppColor, bold: true });
-  if (stats.clipped) lines.push({ text: t('part of the range is outside the data'), color: 'muted' });
+  lines.push({ text: `${t('Asks')}  $${usd(stats.aboveUsd)}`, color: 'above' }, { text: `${t('Bids')}  $${usd(stats.belowUsd)}`, color: 'below' });
+  lines.push(bandVerdict(stats.belowUsd, stats.aboveUsd));
+  // Wrapped too: in German it is the box's widest line, near the edge of the narrowest book (review, 2026-11-22).
+  if (stats.clipped) lines.push({ text: t('part of the range is outside the data'), color: 'muted', wrap: true });
   return lines;
 }
 

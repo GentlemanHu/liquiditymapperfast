@@ -25,7 +25,7 @@ const ctx = new Proxy({}, { get: (_t, k) => k === 'measureText' ? (s: string) =>
 const p = PALETTES.terminal!;
 const pick = (): string => p.text;
 /** Karl's box: the bids side hovered 12,100 below 58,979.9. */
-const lines = mirrorLines(mirrorStats(58_979.9, 46_879.9, 152.8e6, 412e6)!, { above: 'Asks', below: 'Bids' });
+const lines = mirrorLines(mirrorStats(58_979.9, 46_879.9, 152.8e6, 412e6)!);
 const stateWith = (liq: Partial<{ column: boolean; split: 'kinds' }>): AppState => {
   const base = initialState();
   return { ...base, show: { ...base.show, profile: true, mirror: true, traded: false },
@@ -72,7 +72,7 @@ test('over the liquidation column the box keeps below that column\'s heading, wh
     }
     // Too short for that: the box keeps inside the plot, from its top as before, and never runs under the time axis (a 140 px map pane
     // leaves a 118 px plot; the box with its "outside the data" line is 88 px tall).
-    const clipped = mirrorLines(mirrorStats(58_979.9, 46_879.9, 152.8e6, 412e6, true)!, { above: 'Asks', below: 'Bids' });
+    const clipped = mirrorLines(mirrorStats(58_979.9, 46_879.9, 152.8e6, 412e6, true)!);
     for (const y of [4, 60, 110]) {
       const { rect, frame } = boxAt(state, y, 'down', PW, 118, 97, clipped);
       assert.equal(frame.bounds.y0, 0);

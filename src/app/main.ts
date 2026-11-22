@@ -165,13 +165,15 @@ async function main(): Promise<void> {
   setTourDemo({ plotRect: () => heat.plotRect(), zoom: (press, at) => heat.demoZoom(press, at), end: () => heat.endDemo() });
   // Liquidations by UTC day of the perpetuals the Bar stats and the Flow history count (`liquidationMarkets`): one loader for both (liq-days.ts).
   const liqDays = new LiquidationDays(hub);
+  // The Flow history's warm-up holds its liquidation days before it opens (HeatPane `#warmStep`, size-history/warm.ts).
+  heat.liquidationDays = liqDays;
   const bars = new BarStatsPane(chart, store, heat.view, heat, hub, liqDays);
   // Flow history: liquidations, open interest's change and market orders by size per candle, the unusual ones standing out (Karl, 2026-11-20).
   const sizes = new SizeHistoryPane(chart, store, heat.view, heat, hub, liqDays);
   const depth = new DepthPane(chart, store, heat.view, hub);
   // NL/NS, worked out once and read by the OI pane (its bars by who opened), the Delta pane and the Funding pane.
   const nlns = new NlnsSource(hub);
-  const oi = new OiPane(chart, store, heat.view, hub.flow, nlns);
+  const oi = new OiPane(chart, store, heat.view, hub.flow, nlns, t0 => hub.oiReach(t0));
   const delta = new DeltaPane(chart, store, heat.view, hub, nlns);
   heat.divergences = () => delta.divergences; delta.onDivergences = () => heat.invalidate();
   const ls = new LsPane(chart, store, heat.view, hub);
@@ -305,7 +307,8 @@ async function main(): Promise<void> {
   // A drag in the OI pane sums up its own bars (range/oi-lines.ts): what it drew, and the liquidations the map holds on its markets.
   const oiSummary = new OiRangeSummary();
   range.useProvider({
-    pane: 'oi', title: () => t('Open interest'), shown: () => store.state.show.oi, barMs: () => TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
+    // Its bars: the map's longer candles where the pane draws them zoomed out (oi-group.ts), so a drag holds whole drawn candles.
+    pane: 'oi', title: () => t('Open interest'), shown: () => store.state.show.oi, barMs: () => oi.rangeHeld?.tfMs ?? TIMEFRAMES[store.state.timeframe] ?? 3_600_000,
     lines: (sel, shown) => oiSummary.lines(sel, oi.rangeHeld, shown, store.state.liquidations.on ? { items: hub.liquidations.items, version: hub.liquidations.version, min: scaledUsd(store.state.liquidations.minUsd), held: hub.liquidationsHeld } : null, oiHeldKey(store.state), pageNow(), store.state.timeZone),
   });
   // A drag in the Bar stats pane sums up its chosen statistics over the candles (range/bars-lines.ts), each by its own rule.

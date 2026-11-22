@@ -24,6 +24,36 @@ export function placeTip(rect: { left: number; right: number; top: number; botto
   return { left: Math.max(MARGIN, Math.min(centre, viewport.w - MARGIN - size.w)), top: Math.max(MARGIN, top), above };
 }
 
+/**
+ * The element a mouse or pen just pressed keeps its tip shut until the pointer moves on to another element (Karl, 2026-11-22: the Depth
+ * pane's Source dropdown sometimes left its tip over the open list). A press hides the tip, but the press also focuses the control, which
+ * Chrome counts as visible focus on a dropdown, and a native list takes the pointer away without a leave and gives it back over the same
+ * control, where the tip would follow at once: either brought the tip back over the open list. While the pressed element's own list or
+ * panel is open (`open`: a native dropdown's list as `:open` says, Chrome 157 does; a list or panel the page draws, whose anchor menu.ts
+ * and ui.ts mark `.open`), the guard holds wherever the pointer goes and whatever key is pressed, since Chrome still sends the page pointer
+ * events while a native list is open (seen in headless) and the rows of a list the page draws carry no tip; other elements' tips may show.
+ */
+export class PressGuard<T> {
+  #pressed: T | null = null;
+  constructor(private readonly open: (node: T) => boolean = () => false) {}
+  /** A mouse or pen went down on `node` (the element under it that carries a tip, or null). */
+  press(node: T | null): void { this.#pressed = node; }
+  /**
+   * The pointer is over `node` (null: an element without a tip): whether its tip may show. Over the pressed element, never; elsewhere the
+   * guard ends, unless the pressed element's list is still open.
+   */
+  over(node: T | null): boolean {
+    const pressed = this.#pressed;
+    if (pressed !== null && node === pressed) return false;
+    if (pressed !== null && this.open(pressed)) return node !== null;
+    this.#pressed = null; return node !== null;
+  }
+  /** `node` took focus: whether its tip may show (not when the press gave it the focus). */
+  focus(node: T | null): boolean { return node !== null && node !== this.#pressed; }
+  /** A key went down: focus from the keyboard shows tips again, the pressed control's too, once its list is closed. */
+  key(): void { const pressed = this.#pressed; if (pressed !== null && this.open(pressed)) return; this.#pressed = null; }
+}
+
 /** Start listening on `doc`; returns how to stop (for tests and hot reload). */
 export function installTips(doc: Document = document): () => void {
   const box = doc.createElement('div');
@@ -36,6 +66,18 @@ export function installTips(doc: Document = document): () => void {
   /** A long press in progress, the element a finger is holding a tip for, the touch tip's own hide timer, and the click after a long press that is to be swallowed. */
   let press: { node: HTMLElement; x: number; y: number; id: number } | null = null, held: HTMLElement | null = null, touchTip = false, touchHide = 0;
   let swallowed: { node: HTMLElement; until: number } | null = null;
+  // A press hides the tip, and a mouse's or pen's keeps its element's shut until the pointer moves on (PressGuard), and while the element's
+  // own list or panel is open, wherever the pointer goes: a native dropdown's (the element, or one inside it), or one the page draws (its
+  // anchor marked `.open` by menu.ts or ui.ts, on the element or inside it).
+  const listShown = (select: HTMLSelectElement): boolean => {
+    // Where the browser cannot say (no `:open`), a dropdown that has the focus may have its list open: its tip waits for a press or a key.
+    try { return select.matches(':open'); } catch { return select === doc.activeElement; }
+  };
+  const guard = new PressGuard<HTMLElement>(node => {
+    if (node.classList.contains('open') || node.querySelector('.open') !== null) return true;
+    const select = node instanceof HTMLSelectElement ? node : node.querySelector('select');
+    return select !== null && listShown(select);
+  });
 
   const place = (): void => {
     if (!current) return;
@@ -91,25 +133,40 @@ export function installTips(doc: Document = document): () => void {
 
   const over = (event: PointerEvent): void => {
     if (event.pointerType === 'touch') return;
-    const node = target(event);
+    // Every element the pointer enters is told to the guard, those without a tip too (moving on to the map ends it).
+    const node = target(event), allowed = guard.over(node);
     if (node === current) return;
     hide();
-    if (!node) return;
+    if (!node || !allowed) return;
     // Once a tooltip has been seen, the next one follows at once, as when a toolbar is being scanned.
     if (Date.now() - lastShown < FOLLOW_MS) show(node); else timer = window.setTimeout(() => show(node), SHOW_DELAY_MS);
   };
   const focus = (event: FocusEvent): void => {
     const node = target(event);
-    if (node && event.target instanceof Element && event.target.matches(':focus-visible')) { hide(); show(node); }
+    if (node && guard.focus(node) && event.target instanceof Element && event.target.matches(':focus-visible')) { hide(); show(node); }
   };
   // A finger always "leaves" when it lifts, which would close a tip it had just opened.
   const leave = (event: PointerEvent): void => { if (event.pointerType !== 'touch' && !event.relatedTarget) hide(); };
   const stop = (): void => hide();
-  const key = (event: KeyboardEvent): void => { if (event.key === 'Escape') hide(); };
+  const down = (event: PointerEvent): void => {
+    hide();
+    // A press on a row of a list the page draws (menu.ts) leaves the guard on the control the list belongs to: closing the list gives that
+    // control the focus again.
+    if (event.target instanceof Element && event.target.closest('.menu')) return;
+    guard.press(event.pointerType !== 'touch' ? target(event) : null);
+  };
+  // Escape puts the tip away; so does a key on a dropdown (Space, Alt+Down or F4 open its list, the arrows change it).
+  const key = (event: KeyboardEvent): void => {
+    guard.key();
+    if (event.key === 'Escape' || (event.target instanceof Element && event.target.tagName === 'SELECT')) hide();
+  };
+  // A value changed (a choice in a dropdown, a box ticked): whatever tip is up goes.
+  const changed = (): void => hide();
 
   doc.addEventListener('pointerover', over, true);
   doc.addEventListener('pointerleave', leave, true);
-  doc.addEventListener('pointerdown', stop, true);
+  doc.addEventListener('pointerdown', down, true);
+  doc.addEventListener('change', changed, true);
   doc.addEventListener('pointerdown', pressDown, true); doc.addEventListener('pointermove', pressMove, true);
   doc.addEventListener('pointerup', lifted, true); doc.addEventListener('pointercancel', lifted, true); doc.addEventListener('click', swallow, true);
   doc.addEventListener('wheel', stop, { capture: true, passive: true });
@@ -119,7 +176,8 @@ export function installTips(doc: Document = document): () => void {
   window.addEventListener('blur', stop);
   return () => {
     hide();
-    doc.removeEventListener('pointerover', over, true); doc.removeEventListener('pointerleave', leave, true); doc.removeEventListener('pointerdown', stop, true);
+    doc.removeEventListener('pointerover', over, true); doc.removeEventListener('pointerleave', leave, true); doc.removeEventListener('pointerdown', down, true);
+    doc.removeEventListener('change', changed, true);
     doc.removeEventListener('pointerdown', pressDown, true); doc.removeEventListener('pointermove', pressMove, true); doc.removeEventListener('pointerup', lifted, true);
     doc.removeEventListener('pointercancel', lifted, true); doc.removeEventListener('click', swallow, true); cancelPress();
     doc.removeEventListener('wheel', stop, true); doc.removeEventListener('focusin', focus, true); doc.removeEventListener('focusout', blurred, true); doc.removeEventListener('keydown', key, true);

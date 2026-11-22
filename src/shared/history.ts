@@ -29,15 +29,47 @@ function socketRequest(url: string, body: string, timeoutMs: number): Promise<un
     socket.onclose = () => settle(() => reject(new Error('the socket closed before it answered')));
   });
 }
-/** The fetcher a page or a worker uses: HTTP with a 15 s limit, and a `wss://` URL as one request over a socket. */
-export const webGet: Fetcher = async (url, init) => {
-  if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', 15_000);
-  const timeout = AbortSignal.timeout(15_000);
-  const response = await fetch(url, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
-  // The status and the start of the answer go with the error: a venue may say why in it (Gate answers a contract it does not list with a
-  // 400 that says `CONTRACT_NOT_FOUND`).
-  if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body: (await response.text().catch(() => '')).slice(0, 500) });
-  return url.endsWith('.zip') ? new Uint8Array(await response.arrayBuffer()) : response.json();
+/** How long `webGet` waits for an answer, its body included. */
+export const WEB_GET_TIMEOUT_MS = 15_000;
+
+/** How long a refused answer's body is read for the error (the status is what matters; a body that stalls must not lose it). */
+const ERROR_BODY_MS = 2_000;
+
+/**
+ * The fetcher a page, a worker and the server use: HTTP given up after `WEB_GET_TIMEOUT_MS` (a `TimeoutError`), and a `wss://` URL as one
+ * request over a socket. The limit is a race against a timer, not only the signal handed to `fetch`: on the 8787 server a Bitget open-interest
+ * read under `AbortSignal.timeout(15_000)` alone neither answered nor failed for three days (2026-11-19 20:22Z on), and the open-interest
+ * sampler's round, which waits for each read, stopped with it; a Long/Short request had never settled the same way on 2026-10-15, and
+ * Binance's REST poll (rest-retry.mts) froze once before it had a deadline of its own. The timer also aborts the request, so whatever fetch
+ * does with that, the caller has its answer or its error in time. A caller's own signal settles it at once with the signal's reason, through a
+ * listener (not `AbortSignal.any`, which older Safari and Firefox lack).
+ */
+export const webGet: Fetcher = (url, init) => webGetWithin(WEB_GET_TIMEOUT_MS)(url, init);
+
+/** `webGet` with another limit (tests). */
+export const webGetWithin = (ms: number): Fetcher => async (url, init) => {
+  if (url.startsWith('wss://')) return socketRequest(url, init?.body ?? '', ms);
+  const controller = new AbortController(), given = init?.signal;
+  let timer: ReturnType<typeof setTimeout> | undefined, onAbort: (() => void) | undefined;
+  const ended = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { const error = new DOMException('The operation was aborted due to timeout', 'TimeoutError'); controller.abort(error); reject(error); }, ms);
+    if (!given) return;
+    onAbort = () => { const reason: unknown = given.reason ?? new DOMException('The operation was aborted', 'AbortError'); controller.abort(reason); reject(reason); };
+    if (given.aborted) onAbort(); else given.addEventListener('abort', onAbort, { once: true });
+  });
+  const read = async (): Promise<unknown> => {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    // The status and the start of the answer go with the error: a venue may say why in it (Gate answers a contract it does not list with a
+    // 400 that says `CONTRACT_NOT_FOUND`). The status is kept whatever the body does (the paced reader strikes a venue on a 429).
+    if (!response.ok) {
+      let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+      const body = await Promise.race([response.text().catch(() => ''), new Promise<string>(resolve => { bodyTimer = setTimeout(() => resolve(''), ERROR_BODY_MS); })]).finally(() => clearTimeout(bodyTimer));
+      throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status, body: body.slice(0, 500) });
+    }
+    return url.endsWith('.zip') ? new Uint8Array(await response.arrayBuffer()) : response.json();
+  };
+  try { return await Promise.race([read(), ended]); }
+  finally { clearTimeout(timer); if (onAbort) given?.removeEventListener('abort', onAbort); }
 };
 
 const num = (value: unknown): number => Number(value);
@@ -274,7 +306,7 @@ const OI_PAGES = 12;
  * hourly row stamped T was within 6 BTC of the bar ending at T and 252 BTC from the bar starting there; Bybit's five-minute rows equalled the
  * bar ending at their stamp).
  */
-const oiReading = (venue: string, at: number, coins: number): OiRow => ({ observationTimestamp: at - 1, sourceTimestamp: at, base: coins, historySource: venue });
+export const oiReading = (venue: string, at: number, coins: number): OiRow => ({ observationTimestamp: at - 1, sourceTimestamp: at, base: coins, historySource: venue });
 
 /**
  * A venue's perpetual open interest in coins over [from, to], from its public history: readings, oldest first, each the close of the bar that

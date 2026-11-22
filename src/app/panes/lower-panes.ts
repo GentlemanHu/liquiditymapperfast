@@ -17,13 +17,11 @@ import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pan
 import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
-import { LIQUIDATION_RETENTION_MS } from '../../shared/liquidations.ts';
-import type { LiquidationDays } from '../liq-days.ts';
+import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
 import { flowHistoryRows } from '../size-history/switch.ts';
-import { BROWSER_RETENTION_MS } from '../../shared/recorder.ts';
 import { CARD_GAP, HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
-import { barAt, columnAt, depthCardLines, depthColumns, depthKey, liqCardLines, liqColumnRows, liqReading, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
+import { barAt, columnAt, depthCardLines, depthColumns, depthKey, depthRankBrief, liqCardLines, liqColumnRows, liqReading, liqTakesLine, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
 import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
 import { TAKE_DASH, type LevelsKind } from '../liq-levels.ts';
 import { bidAskKey, depthOrderSides, levelsOrderSide, type DepthSides } from '../order-side.ts';
@@ -39,6 +37,8 @@ import { el } from '../dom.ts';
 import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
+import { BandLayer, LitPainter, bandUnder, depthLook, type LitBand } from './depth-look.ts';
+import { DepthHistory, RANK_FINE_MS, cannotRank, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
@@ -51,7 +51,10 @@ import { currentCoin, scaledUsd, unscaledUsd } from '../coin.ts';
 import { fetchOiHistory, webGet } from '../../shared/history.ts';
 import { aggregateOi } from '../../shared/series.ts';
 import { BAR_CUT_H, BAR_CUT_PX, barScale, cutGap } from '../bar-scale.ts';
-import { OiLongHistory, oiLongBars, oiLongPeriod, oiLongSeam, type OiLongHeld, type OiLongSeam } from './oi-long.ts';
+import { OiLongHistory, oiLongChain, oiLongPeriod, oiLongSeamOf, type OiLongAnchor, type OiLongHeld } from './oi-long.ts';
+import { binanceOiArchive } from '../../shared/oi-archive.ts';
+import { drawnStart, groupChanges, groupCandles, groupParts, groupUsd, groupVenues, groupWho, takerSidedShare, type OiGrouped } from './oi-group.ts';
+import { stripTimeframe } from '../measures/volume-strip.ts';
 import { DRAG_MIN_PX, selects } from '../range/selection.ts';
 import type { RangeTool } from '../range/tool.ts';
 import type { FlowBook } from '../flow-book.ts';
@@ -457,6 +460,16 @@ export class DepthPane extends TimePane {
   #lines: InfoLine[] | null = null;
   /** The bands' figures on the pane (pane-table.ts): a click on a row brings that band forward, or puts it back. */
   readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() }, row => this.#clickRow(row));
+  /** The bands drawn as terraces (depth-look.ts), cached: a pointer move only copies them. */
+  readonly #bandLayer = new BandLayer();
+  /** The band under the pointer, lit with its neighbours (depth-look.ts), and the one lit last (kept while the pointer stays near its edges). */
+  readonly #litPainter = new LitPainter();
+  #lit: LitBand | null = null;
+  /** Each band's history at a fixed step (depth-history.ts), read once the order book's table or card wants a rank, for where a reading stands in it. */
+  readonly #bandHistory = new DepthHistory((ids, from, to, step) => this.hub.source.columns(ids, from, to, step, true), () => this.invalidate(), () => this.hub.sourceNow());
+  get bandHistory(): DepthHistory { return this.#bandHistory; }
+  /** The ranks last worked out, and of what (`rankKey`). */
+  #ranks: { key: string; ranks: { bid: BandRank | null; ask: BandRank | null }[] } = { key: '', ranks: [] };
   /** The Sound box in the header (the depth sound's switch). */
   #bell = document.createElement('input');
   readonly #preset = document.createElement('select');
@@ -822,30 +835,40 @@ export class DepthPane extends TimePane {
     // shorts above are bought back and their longs below sold, so they draw the other way round (as the map's liquidation column does); take
     // profits alone as the book. Up and down stay the price's.
     const levelsKind = liq ? curveOf(liqHeld!.view) : null, sides = depthOrderSides(levelsKind), upInk = p[bidAskKey(sides.above)], downInk = p[bidAskKey(sides.below)];
-    // The rings, the widest first: its colour the lightest, the band at the centre the side's own colour; each is opaque, so no layer shows through another.
-    const shade = (side: string, j: number): string => mixHex(p.bg, side, top === 0 ? 1 : 0.3 + 0.7 * (1 - j / top));
-    for (let j = top; j >= 0; j--) {
-      ctx.fillStyle = shade(upInk, j);
-      for (let x = 0; x < s.w; x++) { const h = yOf(ask[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid - h, xs[x + 1]! - xs[x]! + 0.6, h); }
-      ctx.fillStyle = shade(downInk, j);
-      for (let x = 0; x < s.w; x++) { const h = yOf(bid[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid, xs[x + 1]! - xs[x]! + 0.6, h); }
-    }
-    // The widest band's edge, in a stronger ink than its fill: darker on a light theme, lighter on a dark one.
+    // The widest band's edge in a stronger ink than its fill (darker on a light theme, lighter on a dark one): Highlights mark it.
     const edge = (side: string): string => mixHex(side, p.text, 0.35);
-    ctx.lineWidth = 1.25; ctx.lineJoin = 'round';
-    for (const [values, sign, colour] of [[ask, -1, edge(upInk)], [bid, 1, edge(downInk)]] as const) {
-      ctx.strokeStyle = colour; ctx.beginPath();
-      let open = false;
-      for (let x = 0; x < s.w; x++) {
-        const h = yOf(values[at(x, top)]!);
-        if (!(h > 0)) { open = false; continue; }
-        const y = mid + sign * h;
-        if (!open) { ctx.moveTo(xs[x]!, y); open = true; } else ctx.lineTo(xs[x]!, y);
-        ctx.lineTo(xs[x + 1]!, y);
+    // The bands as terraces (depth-look.ts): each band a sheet on the next wider one, every band's true edge inked, a contact seam and a thin
+    // bevel; drawn once into a cached layer per answer, view, size and palette. `?depthLook=today` draws the plain rings, for comparing.
+    if (depthLook() !== 'today') this.#bandLayer.paint(ctx, { look: depthLook() === 'edges' ? 'edges' : 'terraces', palette: p, up: upInk, down: downInk, w: s.w, k, top, bid, ask, xs, mid, yOf, pw, ph }, this.dpr);
+    else {
+      // The rings, the widest first: its colour the lightest, the band at the centre the side's own colour; each is opaque, so no layer shows through another.
+      const shade = (side: string, j: number): string => mixHex(p.bg, side, top === 0 ? 1 : 0.3 + 0.7 * (1 - j / top));
+      for (let j = top; j >= 0; j--) {
+        ctx.fillStyle = shade(upInk, j);
+        for (let x = 0; x < s.w; x++) { const h = yOf(ask[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid - h, xs[x + 1]! - xs[x]! + 0.6, h); }
+        ctx.fillStyle = shade(downInk, j);
+        for (let x = 0; x < s.w; x++) { const h = yOf(bid[at(x, j)]!); if (h > 0) ctx.fillRect(xs[x]!, mid, xs[x + 1]! - xs[x]! + 0.6, h); }
       }
-      ctx.stroke();
+      ctx.lineWidth = 1.25; ctx.lineJoin = 'round';
+      for (const [values, sign, colour] of [[ask, -1, edge(upInk)], [bid, 1, edge(downInk)]] as const) {
+        ctx.strokeStyle = colour; ctx.beginPath();
+        let open = false;
+        for (let x = 0; x < s.w; x++) {
+          const h = yOf(values[at(x, top)]!);
+          if (!(h > 0)) { open = false; continue; }
+          const y = mid + sign * h;
+          if (!open) { ctx.moveTo(xs[x]!, y); open = true; } else ctx.lineTo(xs[x]!, y);
+          ctx.lineTo(xs[x + 1]!, y);
+        }
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
     }
-    ctx.lineWidth = 1;
+    // The band under the pointer, in this pane, lit with its neighbours and the same band across the price; the table lights its row and its
+    // lines speak of it (Karl, 2026-11-22). Over bare ground, past the newest column or in another pane, nothing is lit.
+    const overPlot = pointed && hv!.source === 'depth' && under >= 0 && hv!.y >= 0 && hv!.y <= ph;
+    const lit = this.#lit = overPlot ? bandUnder({ k, top, bid, ask, mid, yOf }, under, hv!.y, this.#lit, ph > 320 ? 3 : 1.5) : null;
+    if (lit) this.#litPainter.paint(ctx, { look: 'terraces', palette: p, up: upInk, down: downInk, w: s.w, k, top, bid, ask, xs, mid, yOf, pw, ph }, lit, this.dpr);
     // The take profits of the watched band: a dashed line in the text's ink each side (`TAKE_DASH`, their look everywhere), so they read apart
     // from the levels' rings; each dash cased in the page's ground, so it stands out on the bands' fills as well as on the empty plot.
     if (takes && takeBid && takeAsk) {
@@ -919,35 +942,78 @@ export class DepthPane extends TimePane {
       foot = Number.isFinite(readTime) ? (pointed && !live ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';
     }
     // The card of the moment read, whose lines the rows do not say are the table's too: the watched band's balance and rank, the take profits.
-    let card: InfoLine[] | null = null;
+    let card: InfoLine[] | null = null, brief: InfoLine[] = [];
     if (!pointed && !settings.table) { /* neither the card nor the table's lines are wanted */ }
     else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
       if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
-    } else if (live || readX >= 0) {
-      const here = rows[top]!.bid + rows[top]!.ask;
-      let rank = 1, of = 0;
-      for (let x = 0; x < cutW; x++) { const total = bid[at(x, top)]! + ask[at(x, top)]!; if (total > 0) { of++; if (total > here) rank++; } }
-      card = depthCardLines({ time: readTime, bands: rows, watched: top, units: settings.units, coin, rank, of });
+      if (readRow && tk) brief = [liqTakesLine(tk, settings.units, coin)];
     }
-    // Under a heading naming the watched band. A table that holds them and every column takes the card's place; beside one that cannot, the card stays.
-    const lines = headed(`±${bandText(s.radii[top]!)}%`, tableLines(card));
-    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`) : null;
-    if (pointed && card && !placed?.complete) this.#lines = card;
+    // Where each band's reading stands in its own history (depth-history.ts): the order book's, once the table or a card wants it, at the moment
+    // the table reads, in the units shown.
+    // A figure read finely (the books now, or a column of at most RANK_FINE_MS of minutes) is ranked as the table shows it, against the closing
+    // minutes before its moment; a coarser view's column (a mean book, its inner bands spread thin by every move) is not, and there the newest
+    // closing minute at or before the moment is ranked and said with its time.
+    // A source whose own minutes began too recently to rank (the browser engine) is never asked for the history: an empty week and a window
+    // every 16 minutes, for nothing.
+    const counted = liq ? [] : bookIds(state), ruledOut = !liq && cannotRank(null, false, this.hub.source.depthSince?.(counted) ?? null, this.hub.sourceNow());
+    const history = !liq && !ruledOut && (pointed || settings.table) ? this.#bandHistory.get(counted, s.radii) : null;
+    const inCoins = settings.units === 'coin', fine = live || (s.answer.stepMs ?? Infinity) <= RANK_FINE_MS;
+    const rankSide = (b: 'bid' | 'ask'): RankSide => inCoins ? (b === 'bid' ? 'bidCoin' : 'askCoin') : b;
+    // The moment ranked: the books now, or the column read (only where its books agreed on a price); in a coarser view the pointer's own moment
+    // (not its column's start, which the zoom moves), or the newest with no pointer.
+    const fineMoment = live && liveNow ? liveNow.at : readX >= 0 && (s.answer.centred?.[readX] ?? 1) > 0 ? colT(readX) : NaN;
+    const presentNow = live && liveNow ? liveNow.present : readX >= 0 ? s.answer.present?.[readX] ?? null : null;
+    const rankMoment = fine ? fineMoment : pointed ? Math.min(hv!.t, newestT) : newestT;
+    // Worked out again only when the reading or the history changes, not on every frame the pointer moves within a column.
+    const rankKey = history ? `${history.version}|${history.key}|${counted.join(',')}|${inCoins}|${fine}|${rankMoment}|${presentNow}|${rows.map(r => `${r.bid},${r.ask}`).join(';')}` : '';
+    if (this.#ranks.key !== rankKey) this.#ranks = { key: rankKey, ranks: history && Number.isFinite(rankMoment) ? s.radii.map((_, j) => fine
+      ? { bid: rankValue(history, rankSide('bid'), j, rankMoment, rows[j]!.bid, counted, null, presentNow), ask: rankValue(history, rankSide('ask'), j, rankMoment, rows[j]!.ask, counted, null, presentNow) }
+      : { bid: rankAt(history, rankSide('bid'), j, rankMoment, counted), ask: rankAt(history, rankSide('ask'), j, rankMoment, counted) }) : [] };
+    const ranks = this.#ranks.ranks;
+    const whole = !!history && this.#bandHistory.wholeFor(counted);
+    // A source that keeps less than the minimum can never rank (the public site's browser engine holds about a day of closing minutes, and the
+    // long history's tiles are means): known from where its own minutes began, or once its history is whole and still that short, the card says
+    // the band's rank in view as it did before the history, and the table keeps no rank row.
+    const unranked = !liq && (ruledOut || cannotRank(history, whole, null, this.hub.sourceNow()));
+    // The lines speak of the band under the pointer, else of the watched one (brought forward, else the widest).
+    const said = lit ? lit.j : top;
+    if (!liq && (pointed || settings.table) && (live || readX >= 0)) {
+      if (unranked) {
+        const here = rows[said]!.bid + rows[said]!.ask;
+        let rank = 1, of = 0;
+        for (let x = 0; x < cutW; x++) { const total = bid[at(x, said)]! + ask[at(x, said)]!; if (total > 0) { of++; if (total > here) rank++; } }
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank, of });
+      } else {
+        // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
+        const placeOf = { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole };
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: placeOf });
+        brief = depthRankBrief(s.radii[said]!, placeOf);
+      }
+    }
+    // Under a heading naming the band they speak of; where they do not fit under the rows (a short pane), the one row in brief: the band's place in its
+    // history, or the take profits beside the liquidation levels. The table keeps that row's room in every frame where it has one to say at all (the
+    // book's history always, take profits where the view holds them), so a moment without one does not move its rows.
+    const lines = headed(`±${bandText(s.radii[liq ? top : said]!)}%`, tableLines(card)), keepBrief = liq ? !!liqHeld?.takeRows?.length : !unranked;
+    const placed = settings.table ? this.#drawTable(rows, this.pointer !== null, !hv, focused ? top : -1, foot, unit, depthHeads(levelsKind), sides, lines, brief, keepBrief, `${liq ? `liq ${liqHeld ? viewKey(liqHeld.view) : ''}` : 'book'}\u0001${s.radii[top]}\u0001${state.marketId}`, fine ? ranks : [], lit ? lit.j : -1) : null;
+    // With Table on the pane shows no card (Karl, 2026-11-22: a table selected, no pop-up; the pop-up only with Table off): the card only where no table
+    // is drawn, Table off or no room for one, even beside a table too short for every line (other panes keep theirs there, pane-table.ts).
+    if (pointed && card && !placed) this.#lines = card;
   }
 
   /**
    * The bands' figures (pane-table.ts): a row a band (bids, asks, bids less asks), the band brought forward lit, the column titles over them, the card's
-   * `lines` the rows do not say under them and the time read under those. The header reads the watched band; where even a row a band does not fit, the
-   * table is not drawn and the card says it instead. Where it went, or null (complete: every column and every line, so the card is not needed).
+   * `lines` the rows do not say under them (where those do not fit, the one row of `brief`, whose room the rows keep with `keepBrief`) and the time read
+   * under those. The header reads the watched band; where even a row a band does not fit, the table is not drawn and the card says it instead. Where it
+   * went, or null (no table: the card's place).
    * `rest`: no pointer anywhere reads a moment (its lines are then the ones the rows stand in the middle with); `restKey`: the source, the band and the
    * market the table is of (`TableSpec.restKey`).
    */
-  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], restKey: string): TablePlace | null {
+  #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], brief: readonly InfoLine[], keepBrief: boolean, restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', titles[0], titles[1], 'Δ', '×'];
     return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
-      heads, minCols: 3, focus, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides), lines, restKey,
+      heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, brief, briefRoom: keepBrief, restKey,
     });
   }
 
@@ -1035,10 +1101,13 @@ export function depthHeads(kind: LevelsKind | null): [string, string] {
  * (`sides`, order-side.ts): the bids' buy colour, the longs' sell colour (a long is closed by a sell), so × points at the column of its colour. A
  * band not read has dashes.
  */
-export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null)): TableCell[][] {
+export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null),
+  ranks: readonly ({ bid: BandRank | null; ask: BandRank | null } | undefined)[] = []): TableCell[][] {
   // The palette `ratioCell` reads, its first side (`bid`) in the colour of the side below the price.
   const ink = { bid: p[bidAskKey(sides.below)], ask: p[bidAskKey(sides.above)], text: p.text, muted: p.muted };
-  return rows.map(row => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p) }, { text: tableText(row.ask), color: tableInk(ink.ask, p) },
+  // Where a figure stands in its own history (depth-history.ts): a bar under it that far across, and the figure bold past the 95th percentile or under the 5th.
+  const ranked = (r: BandRank | null | undefined): Pick<TableCell, 'bar' | 'bold'> => r ? { bar: r.p, bold: rankKind(r).extreme } : {};
+  return rows.map((row, j) => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p), ...ranked(ranks[j]?.bid) }, { text: tableText(row.ask), color: tableInk(ink.ask, p), ...ranked(ranks[j]?.ask) },
     { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, ink)]);
 }
 
@@ -1084,7 +1153,7 @@ export class OiPane extends TimePane {
   readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
   #panel: Panel | null = null;
   /** `nlns`: the NL/NS model the Delta and Funding panes read too (delta/nlns-source.ts). */
-  constructor(host: HTMLElement, store: Store, view: View, flow: FlowBook, private readonly nlns: NlnsSource) {
+  constructor(host: HTMLElement, store: Store, view: View, flow: FlowBook, private readonly nlns: NlnsSource, private readonly reach: (t0: number) => void = () => {}) {
     super(host, store, view, 'oi');
     this.head.innerHTML = `<strong>${t('Open Interest')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('oiPane'));
@@ -1138,11 +1207,38 @@ export class OiPane extends TimePane {
     this.#lean = { who, delta, from, to, median };
     return median;
   }
+  /**
+   * The chart candles' level, venues, changes and candles as the drawn candles (oi-group.ts), kept while the same bars are drawn at the same
+   * length: a pointer move draws the pane again with them.
+   */
+  #group: { oi: readonly OiBar[]; parts: readonly OiPart[]; candles: readonly CandleRow[]; drawnMs: number; out: OiGrouped } | null = null;
+  #grouped(oi: readonly OiBar[], parts: readonly OiPart[], tfMs: number, drawnMs: number, candles: readonly CandleRow[]): OiGrouped {
+    const held = this.#group;
+    if (held && held.oi === oi && held.parts === parts && held.candles === candles && held.drawnMs === drawnMs) return held.out;
+    // Each chart candle's change as the bars count it: venues added together by their own changes, one market from its bar before.
+    const fine = parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : new Map(oi.slice(1).map((b, i) => [b[0], b[4] - oi[i]![4]] as const));
+    const { oi: level, change } = groupChanges(oi, fine, drawnMs);
+    const venues = groupVenues(oi, parts.length > 1 ? parts : [], tfMs, drawnMs);
+    const out: OiGrouped = { oi: level, parts: parts.length > 1 ? groupParts(parts, drawnMs) : [...parts], change, candles: groupCandles(candles, drawnMs),
+      venues, read: level.map(b => venues.read.get(b[0]) ?? 0), fine: { oi, parts, tfMs, candles }, drawnMs };
+    this.#group = { oi, parts, candles, drawnMs, out };
+    return out;
+  }
+  #groupedWhoHeld: { fine: ReadonlyMap<number, NlnsCandle>; drawnMs: number; first: number; out: Map<number, NlnsCandle> } | null = null;
+  /** NL/NS in the drawn candles, but for the first (`first`): its change is unknown (`groupChanges`), so it has no parts either. */
+  #groupedWho(fine: ReadonlyMap<number, NlnsCandle>, drawnMs: number, first: number): Map<number, NlnsCandle> {
+    const held = this.#groupedWhoHeld;
+    if (held?.fine !== fine || held.drawnMs !== drawnMs || held.first !== first) {
+      const out = groupWho(fine.values(), drawnMs); out.delete(first);
+      this.#groupedWhoHeld = { fine, drawnMs, first, out };
+    }
+    return this.#groupedWhoHeld!.out;
+  }
   /** Each bar's change (oi-change.ts: venues added together count their own changes) and the ones that stand out. */
-  #analysis(oi: readonly OiBar[], highlight: HighlightOptions, parts: readonly OiPart[], tfMs: number) {
+  #analysis(oi: readonly OiBar[], highlight: HighlightOptions, parts: readonly OiPart[], tfMs: number, given: ReadonlyMap<number, number> | null = null) {
     const key = `${highlight.mult}|${highlight.length}|${tfMs}`;
     if (this.#cache && this.#cache.oi === oi && this.#cache.parts === parts && this.#cache.key === key) return this.#cache;
-    const change = parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : null;
+    const change = given ?? (parts.length > 1 ? oiChangeByTime(oi, parts, tfMs) : null);
     const delta = change ? Float64Array.from(oi, bar => change.get(bar[0]) ?? 0) : oiDeltas(oi), size = delta.map(Math.abs);
     const found = anomalies(size, highlight);
     this.#cache = { oi, parts, key, delta, flag: found.flag, sigma: found.sigma };
@@ -1167,17 +1263,23 @@ export class OiPane extends TimePane {
    * Keep what this drawing is made of: the same series, venues, cut and model the bars are drawn from. The same object while none of it
    * changed (a pointer move draws the pane again), so the summary is worked out again only for new data.
    */
-  #keep(state: AppState, oi: readonly OiBar[], parts: readonly OiPart[], tf: number, flag: Uint8Array | null, seam: number | null, who: ReadonlyMap<number, NlnsCandle> | null): void {
+  #keep(state: AppState, oi: readonly OiBar[], parts: readonly OiPart[], tf: number, flag: Uint8Array | null, seam: number | null, who: ReadonlyMap<number, NlnsCandle> | null,
+    drawn: (OiGrouped & { name: string }) | null = null): void {
     const key = oiHeldKey(state), replayAt = replaying() ? Math.floor(pageNow() / tf) * tf : null, held = this.#held;
-    const whoOn = state.oiChange === 'who';
-    if (held && held.key === key && held.oi === oi && held.parts === (parts.length > 1 ? parts : held.parts) && held.who === who && held.whoOn === whoOn && held.flag === flag && held.candles === state.candles && held.seam === seam && held.replayAt === replayAt && held.tfMs === tf && held.usdAt === (parts.length > 1 ? 0 : state.oiPrice)) return;
+    const whoOn = state.oiChange === 'who', candles = drawn ? drawn.candles : state.candles;
+    if (held && held.key === key && held.oi === oi && held.parts === (parts.length > 1 ? parts : held.parts) && held.who === who && held.whoOn === whoOn && held.flag === flag && held.candles === candles && held.seam === seam && held.replayAt === replayAt && held.tfMs === tf && held.usdAt === (parts.length > 1 ? 0 : state.oiPrice)) return;
     const aggregated = parts.length > 1, inst = state.oiInstrument, chart = state.seriesInstrument || state.marketId;
     const own = aggregated ? state.seriesInstrument === state.marketId : inst === chart;
     const name = (id: string): string => `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`;
     const sum = aggregated ? oiSumOf(parts, tf) : null;
+    // Grouped: the venues counted, their cohorts, their own changes and the USD from the chart candles' own (oi-group.ts), so the summary adds
+    // up to the bars drawn; a change in USD at the one price of one inverse market, else at each chart candle's close.
+    const usdAt = aggregated ? 0 : state.oiPrice, fineCloses = drawn && own ? new Map(drawn.fine.candles.map(c => [c[0], c[4]] as const)) : null;
+    const usd = drawn && (own || usdAt > 0) ? groupUsd(oiUsdChangeByTime(drawn.fine.oi, drawn.fine.parts, drawn.fine.tfMs, at => fineCloses?.get(at), usdAt), drawn.fine.oi, drawn.drawnMs) : null;
     this.#held = {
-      key, oi, tfMs: tf, tf: state.timeframe, venues: sum ? sum.venues : null, counted: sum ? oi.map(bar => sum.counted.get(bar[0]) ?? 0) : null, cohorts: aggregated ? oiCohorts(oi, parts, tf) : null, parts: aggregated ? parts : [], who, whoOn, flag,
-      candles: state.candles, ownPrice: own, priceMarket: chart ? name(chart) : '', coin: coinOf(state),
+      key, oi, tfMs: tf, tf: drawn ? drawn.name : state.timeframe, ...(drawn ? { change: drawn.change, venueChange: drawn.venues.change, ...(usd ? { usd } : {}) } : {}), venues: sum ? drawn ? drawn.read : sum.venues : null,
+      counted: sum ? oi.map(bar => (drawn ? drawn.venues.counted : sum.counted).get(bar[0]) ?? 0) : null, cohorts: aggregated ? drawn ? oi.map(bar => drawn.venues.cohorts.get(bar[0]) ?? '') : oiCohorts(oi, parts, tf) : null, parts: aggregated ? parts : [], who, whoOn, flag,
+      candles, ownPrice: own, priceMarket: chart ? name(chart) : '', coin: coinOf(state),
       market: aggregated ? null : inst ? name(inst) : null, ids: aggregated ? parts.map(part => part.id) : inst ? [inst] : [], usdAt: aggregated ? 0 : state.oiPrice, seam, replayAt,
     };
   }
@@ -1191,33 +1293,56 @@ export class OiPane extends TimePane {
     this.#oiCut = { src: bars, slot, out };
     return out;
   }
-  /** Bybit's history further back than the readings held (oi-long.ts), read by the pane straight from Bybit: the server's store holds days of it. */
+  /**
+   * The venues' own history further back than the readings held (oi-long.ts), read by the pane straight from the venues in a page and on a
+   * server alike (the server's store holds a month): Bybit's from its API (years), Binance's from its daily archive (oi-archive.ts; years, about
+   * half of the open interest added up). Each its own reader, window and retries.
+   */
   readonly #long = new OiLongHistory((id, period, from, to) => {
     const listing = currentCoin().markets.bybit;
     if (!listing || `bybit:${listing.symbol}` !== id) return Promise.resolve([]);
     // Readings, each the close of the period that ends at it (`fetchOiHistory`): bars of the period they were read at.
     return fetchOiHistory(id, period, from, to, webGet, listing).then(rows => aggregateOi(rows, period));
   }, () => this.invalidate());
-  #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongSeam | null } | null = null;
-  #scaled: { held: OiLongHeld; t: number; k: number; bars: OiBar[] } | null = null;
+  readonly #longBinance = new OiLongHistory((id, period, from, to) => {
+    const listing = currentCoin().markets.binance;
+    if (!listing || listing.inverse || `binance:${listing.symbol}` !== id) return Promise.resolve([]);
+    // The archive's readings are in the market's own units (1000PEPEUSDT's thousands): in coins as every other reading.
+    return binanceOiArchive(listing.symbol, from, to, webGet).then(rows => aggregateOi(rows.map(r => ({ ...r, base: Number(r.base) * listing.unit })), period));
+  }, () => this.invalidate());
+  #seam: { parts: readonly OiPart[]; oi: readonly OiBar[]; id: string; seam: OiLongAnchor | null } | null = null;
+  #chained: { seam: OiLongAnchor; period: number; rows: readonly (readonly OiBar[])[]; out: { bars: OiBar[]; venues: string[][]; sums: number[] } } | null = null;
   /**
-   * The long view, for venues added together that count Bybit's perpetual and a view that starts before the readings held: the seam, Bybit's
-   * readings before it put at its scale, and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows
-   * what was known at its moment. Not for a view inside the readings held: where only Bybit's go back (a coin with no Binance perpetual, or
-   * Binance's history not read), the seam is near the newest bar, and the estimate took the place of the readings in every view (review,
-   * 2026-10-30).
+   * The long view, for venues added together that count Binance's or Bybit's perpetual and a view that starts before the readings held: the
+   * seam (`oiLongSeamOf`), the venues' readings before it chained back from the line's level there (`oiLongChain`: each step moves by the
+   * venues read at both its ends), and their period (the chart's while none are held yet). Null otherwise, and in a replay, which shows what
+   * was known at its moment. Not for a view inside the readings held (review, 2026-10-30: the estimate took the place of the readings).
    */
-  #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongSeam; period: number; bars: readonly OiBar[] } | null {
-    const listing = currentCoin().markets.bybit;
-    if (replaying() || parts.length < 2 || !listing || listing.inverse) return null;
-    const id = `bybit:${listing.symbol}`;
-    if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== id) this.#seam = { parts, oi, id, seam: oiLongSeam(parts, id, oi) };
+  #extension(parts: readonly OiPart[], oi: readonly OiBar[], tf: number): { seam: OiLongAnchor; period: number; bars: readonly OiBar[]; venues: readonly (readonly string[])[]; sums: readonly number[] } | null {
+    if (replaying() || parts.length < 2) return null;
+    const markets = currentCoin().markets;
+    const bybit = markets.bybit && !markets.bybit.inverse ? `bybit:${markets.bybit.symbol}` : null, binance = markets.binance && !markets.binance.inverse ? `binance:${markets.binance.symbol}` : null;
+    const longIds = [binance, bybit].filter((id): id is string => id !== null && parts.some(part => part.id === id));
+    if (!longIds.length) return null;
+    const key = longIds.join(',');
+    if (this.#seam?.parts !== parts || this.#seam.oi !== oi || this.#seam.id !== key) this.#seam = { parts, oi, id: key, seam: oiLongSeamOf(parts, longIds, oi) };
     const seam = this.#seam.seam, v = this.view;
     if (!seam || v.t0 >= oi[0]![0]) return null;
-    const held = this.#long.rows(id, oiLongPeriod(tf, v.t1 - v.t0, this.plotW), v, seam.t);
-    if (!held) return { seam, period: tf, bars: [] };
-    if (this.#scaled?.held !== held || this.#scaled.t !== seam.t || this.#scaled.k !== seam.k) this.#scaled = { held, t: seam.t, k: seam.k, bars: oiLongBars(held.bars, held.period, seam) };
-    return { seam, period: held.period, bars: this.#scaled.bars };
+    const period = oiLongPeriod(tf, v.t1 - v.t0, this.plotW), held = new Map<string, OiLongHeld>();
+    for (const [id, reader] of [[bybit, this.#long], [binance, this.#longBinance]] as const) {
+      if (!id || !seam.at.has(id)) continue;
+      const rows = reader.rows(id, period, v, seam.t);
+      if (rows) held.set(id, rows);
+    }
+    if (!held.size) return { seam, period: tf, bars: [], venues: [], sums: [] };
+    // One period for the chain: the one asked where a venue holds it, else the nearest held; a venue still being read at it waits.
+    const use = [...held.values()].some(h => h.period === period) ? period : [...held.values()][0]!.period;
+    const rows = new Map([...held].filter(([, h]) => h.period === use).map(([id, h]) => [id, h.bars] as const)), list = [...rows.values()];
+    const was = this.#chained;
+    const sameSeam = (a: OiLongAnchor): boolean => a.t === seam.t && a.level === seam.level && a.at.size === seam.at.size && [...a.at].every(([id, x]) => seam.at.get(id) === x);
+    if (!was || !sameSeam(was.seam) || was.period !== use || was.rows.length !== list.length || list.some((r, i) => r !== was.rows[i])) this.#chained = { seam, period: use, rows: list, out: oiLongChain(rows, use, seam) };
+    const out = this.#chained!.out;
+    return { seam, period: use, bars: out.bars, venues: out.venues, sums: out.sums };
   }
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state: AppState = this.store.state;
@@ -1225,17 +1350,24 @@ export class OiPane extends TimePane {
     if (this.#venues.value !== state.oiMarkets) this.#venues.value = state.oiMarkets;
     this.#choose.hidden = state.oiMarkets !== 'custom';
     // Venues added together: the sum is made of the bars that ended by the replay's moment (oiPartsUntil), as NL/NS makes its own.
-    const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, parts = oiPartsUntil(state.oiParts, tf, replaying() ? Math.floor(pageNow() / tf) * tf : Infinity);
+    const chartTf = TIMEFRAMES[state.timeframe] ?? 3_600_000, chartParts = oiPartsUntil(state.oiParts, chartTf, replaying() ? Math.floor(pageNow() / chartTf) * chartTf : Infinity);
     // Venues added together: the level chained from the bars' changes (it ends at the total now), so a venue whose readings start or stop
     // makes no step the bars do not show.
-    const oi = parts.length > 1 ? chainedOi(oiSumOf(parts, tf)) : this.#oiAt(state.oi, tf), highlight = state.highlight;
+    const chartOi = chartParts.length > 1 ? chainedOi(oiSumOf(chartParts, chartTf)) : this.#oiAt(state.oi, chartTf), highlight = state.highlight;
+    // The view's start, for older bars than the recent ones (Hub.oiReach: read once, kept).
+    if (chartOi.length && !replaying()) this.reach(v.t0);
+    // Zoomed out, the map's longer candles (`stripTimeframe`, as the Volume strip): the bars are those candles, their changes and NL/NS parts
+    // the chart candles' added up (oi-group.ts), and everything below (hover, table, Highlights, the Range summary) reads them.
+    const drawnTf = stripTimeframe(chartTf, v.t1 - v.t0, pw), grouped = drawnTf.ms > chartTf && chartOi.length && !replaying() ? this.#grouped(chartOi, chartParts, chartTf, drawnTf.ms, state.candles) : null;
+    const tf = grouped ? drawnTf.ms : chartTf, parts = grouped ? grouped.parts : chartParts, oi = grouped ? grouped.oi : chartOi;
     const readout = this.head.querySelector('.readout');
     const say = (html: string): void => setHtml(readout, html);
     if (!oi.length) { this.#held = null; ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(state.oiReading ? t('Reading open interest…') : t('No open-interest history for this market yet.'), 12, ph / 2); say(''); return; }
-    const analysis = this.#analysis(oi, highlight, parts, tf);
-    // Further back than the readings held, Bybit's history goes on from the seam (oi-long.ts): the bars before it, Bybit's readings alone, give
-    // way to it. It is drawn as the level only, dashed: an estimate, and its readings a day or four hours apart beside the candles' changes.
-    // (While its readings are read, the bars before the seam stay drawn.)
+    const analysis = this.#analysis(oi, highlight, parts, tf, grouped ? grouped.change : null);
+    const drawn = grouped ? { ...grouped, name: drawnTf.name } : null;
+    // Further back than the readings held, the venues' history goes on from the seam (oi-long.ts): the bars before it, one venue's readings
+    // alone, give way to it. It is drawn dashed with faint rise-or-fall bars: an estimate, chained over the venues read at both ends of each
+    // step. (While its readings are read, the bars before the seam stay drawn.)
     const ext = this.#extension(parts, oi, tf), early = ext?.bars ?? [], seamI = early.length ? ext!.seam.index : 0, ep = ext?.period ?? tf;
     const visible: number[] = [], shownEarly: number[] = [];
     for (let i = seamI; i < oi.length; i++) if (oi[i]![0] + tf >= v.t0 && oi[i]![0] <= v.t1) visible.push(i);
@@ -1243,7 +1375,7 @@ export class OiPane extends TimePane {
     // A view starting between the last reading's period and the seam: the last reading's level is what the line holds there.
     if (!shownEarly.length && early.length && early[early.length - 1]![0] < v.t0 && v.t0 < oi[seamI]![0]) shownEarly.push(early.length - 1);
     const seam = early.length ? oi[seamI]![0] : null;
-    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && this.#long.loading ? t('Reading Bybit\'s open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
+    if (!visible.length && !shownEarly.length) { this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, null, drawn); ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(ext && (this.#long.loading || this.#longBinance.loading) ? t('Reading the venues\' open-interest history…') : t('No open-interest samples in view.'), 12, ph / 2); say(''); return; }
     // Geometry: the level on top, the change below (when the pane is tall enough to hold both).
     const split = ph >= 84, lineBottom = split ? Math.round(ph * 0.6) : ph - 6, bandTop = lineBottom + 12, bandBottom = ph - 5, mid = (bandTop + bandBottom) / 2, half = (bandBottom - bandTop) / 2;
     let lo = Infinity, hi = -Infinity;
@@ -1251,7 +1383,9 @@ export class OiPane extends TimePane {
     for (const j of shownEarly) { const b = early[j]!; lo = Math.min(lo, b[3], b[4]); hi = Math.max(hi, b[2], b[4]); }
     // The change bars against `barScale` (bar-scale.ts): the few changes far larger than the rest are cut at the band's edge and marked,
     // rather than drawing every other bar as a sliver.
-    const scaleDelta = barScale(visible.map(i => Math.abs(analysis.delta[i]!)));
+    // The estimate's bars before the seam share the scale: one length, one scale on both sides of it.
+    const earlyChange = (j: number): number => j > 0 ? early[j]![4] - early[j - 1]![4] : 0;
+    const scaleDelta = barScale([...visible.map(i => Math.abs(analysis.delta[i]!)), ...shownEarly.map(j => Math.abs(earlyChange(j)))]);
     const pad = Math.max((hi - lo) * 0.18, hi * 0.0004), min = lo - pad, max = hi + pad;
     const y = (value: number) => 6 + (1 - (value - min) / (max - min)) * (lineBottom - 6);
     this.scaleAt = at => at <= lineBottom ? amount(min + (1 - (at - 6) / (lineBottom - 6)) * (max - min))
@@ -1259,7 +1393,7 @@ export class OiPane extends TimePane {
     const xc = (i: number) => v.xOf(oi[i]![0] + tf / 2, pw), xe = (j: number) => v.xOf(early[j]![0] + ep / 2, pw);
     const first = visible.length ? Math.max(seamI, visible[0]! - 1) : -1, last = visible.length ? visible[visible.length - 1]! : -1;
     const lastBar = oi[oi.length - 1]!, newestCandle = state.candles[state.candles.length - 1];
-    const reachT = Math.min(v.t1, Math.max(lastBar[0] + tf, newestCandle ? newestCandle[0] + tf : 0));
+    const newestRead = chartOi[chartOi.length - 1]!, reachT = Math.min(v.t1, Math.max(newestRead[0] + chartTf, newestCandle ? newestCandle[0] + chartTf : 0));
     const xEnd = Math.min(pw, v.xOf(reachT, pw)), xSampled = Math.min(pw, xc(oi.length - 1));
     const line = (from: number, to: number): void => { // step line over bars first..to, ending at the newest sample's centre
       ctx.beginPath(); ctx.moveTo(xc(from), y(oi[from]![4]));
@@ -1267,8 +1401,10 @@ export class OiPane extends TimePane {
     };
     // Who made each change (NL/NS), by candle start, while the bars are split by who: the view's candles from its left edge (the pane shows no
     // running sums, so the Delta pane's restart is not needed here).
-    const who = state.oiChange === 'who' ? this.#whoByStart(this.nlns.forView(state, v.t0, v.t1, pageNow(), 'none')) : null;
-    this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, who);
+    // From the first drawn candle's start: its parts are of every chart candle in it, not only of those right of the view's edge.
+    const fineWho = state.oiChange === 'who' ? this.#whoByStart(this.nlns.forView(state, grouped ? drawnStart(v.t0, tf) : v.t0, v.t1, pageNow(), 'none')) : null;
+    const who = fineWho && grouped ? this.#groupedWho(fineWho, tf, oi[0]![0]) : fineWho;
+    this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, who, drawn);
     // Change histogram.
     if (split) {
       const emphasise = highlight.on;
@@ -1286,10 +1422,13 @@ export class OiPane extends TimePane {
         const x0 = v.xOf(oi[i - 1]![0] + tf, pw), x1 = v.xOf(oi[i]![0] + tf, pw), h = Math.max(1, Math.min(1, Math.abs(d) / (scaleDelta || 1)) * half), w = Math.max(1, x1 - x0 - 1);
         const alpha = !emphasise ? OI_BAR_ALPHA : analysis.flag[i] ? 1 : 0.38;
         let cap = d > 0 ? p.bid : p.ask;
-        if (who) {
+        // A bar whose side mostly did not come from its takers (sided by the way the price went, or no side known: no flow recorded) is drawn as
+        // rising or falling, as Bars: Net draws every bar: the who colours are the takers' (review, 2026-11-22).
+        const whoC = who?.get(oi[i]![0]);
+        if (who && !(whoC && takerSidedShare(whoC) < 0.5)) {
           // Outward from the zero line: the buyers' part, the sellers', then what went to no side, each its share of what opened (a rise) or
           // closed (a fall). A fall's parts are lighter, outlined where the bar is wide enough: closed, as the Delta pane's Four parts draws them.
-          const c = who.get(oi[i]![0]), parts = c ? whoParts(c, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
+          const c = whoC, parts = c ? whoParts(c, d > 0) : null, total = parts ? parts.buy + parts.sell + parts.none : 0;
           // Each side's alpha as the volume strip sets it: worked out on the plain bar's weight (a fall's lighter: 0.55 of it, its stronger side at
           // most 0.8), then scaled by the bar's Highlights weight, so a bar that does not stand out stays fainter than one that does, its stronger
           // side too; the weaker side never fainter than OI_WEAK_ALPHA (or the bar).
@@ -1320,14 +1459,22 @@ export class OiPane extends TimePane {
           ctx.fillRect(x0 + 0.5, d > 0 ? mid - h - 2.5 : mid + h + 0.5, w, 2);
         }
       }
+      // Before the seam: the estimate's changes, rising or falling only (no takers there), at the dashed line's weight.
+      for (const j of shownEarly) {
+        const d = earlyChange(j); if (d === 0) continue;
+        const x0 = v.xOf(early[j - 1]![0] + ep, pw), x1 = v.xOf(early[j]![0] + ep, pw), h = Math.max(1, Math.min(1, Math.abs(d) / (scaleDelta || 1)) * half), w = Math.max(1, x1 - x0 - 1);
+        ctx.globalAlpha = OI_BAR_ALPHA * 0.45; ctx.fillStyle = d > 0 ? p.bid : p.ask;
+        ctx.fillRect(x0 + 0.5, d > 0 ? mid - h : mid, w, h);
+        if (Math.abs(d) > scaleDelta) cutGap(ctx, x0 + 0.5, d > 0 ? mid - h + BAR_CUT_PX : mid + h - BAR_CUT_PX - BAR_CUT_H, w);
+      }
       ctx.globalAlpha = 1;
     }
     // Level: soft area, step line, dashed continuation, sample dots.
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     ctx.lineWidth = 1.6; ctx.strokeStyle = p.accent; ctx.fillStyle = p.accent;
     if (shownEarly.length) {
-      // Bybit's history: a step line through its readings, the last stepping to the line's level where the line starts (Bybit's reading
-      // there times k is that level), faint and dashed as the stretches with fewer venues are. Readings under 6 px apart (a day apart over
+      // The venues' history: a step line through the estimate's readings, the last stepping to the line's level where the line starts (the
+      // chain is anchored there), faint and dashed as the stretches with fewer venues are. Readings under 6 px apart (a day apart over
       // a year) are joined straight: steps that narrow broke the dashes into specks.
       const j0 = Math.max(0, shownEarly[0]! - 1), j1 = Math.min(early.length - 1, shownEarly[shownEarly.length - 1]! + 1), joins = j1 === early.length - 1;
       const endX = joins ? xc(seamI) : xe(j1), stepped = pw * ep / Math.max(1, v.t1 - v.t0) >= 6;
@@ -1342,7 +1489,8 @@ export class OiPane extends TimePane {
     }
     // Venues added together: where fewer of them have a reading than elsewhere in view (a recording gap), the sum is drawn dashed and faint,
     // so a gap does not read as positions opened or closed.
-    const venues = parts.length > 1 ? oiSumOf(parts, tf).venues : null, most = venues ? Math.max(...visible.map(i => venues[i] ?? 0)) : 0;
+    // Grouped: the venues read at each drawn candle's last chart candle, held as the chart candles hold them (`groupVenues`).
+    const venues = parts.length > 1 ? grouped ? grouped.read : oiSumOf(parts, tf).venues : null, most = venues ? Math.max(...visible.map(i => venues[i] ?? 0)) : 0;
     if (visible.length) {
       // The line holds the last sample on screen. It ends at the newest sample's centre only when that sample is the one on screen; looking at
       // the past it carries its level to the edge of the view, and the newest value (which is somewhere to the right) is not joined to it.
@@ -1372,13 +1520,16 @@ export class OiPane extends TimePane {
     if (split && visible.length) { ctx.fillText(`±${amount(scaleDelta)}`, this.w - AXIS_W + 6, mid); }
     // Readout: the hovered sample, else the newest, with where the data comes from and how old it is.
     const hover = state.hover;
-    // Over Bybit's history: its reading there, marked as the estimate it is.
+    // Over the venues' history: the estimate there, marked as one, with the venues it was chained over.
     if (hover && early.length && hover.t < oi[seamI]![0]) {
       let j = 0;
       while (j + 1 < early.length && early[j + 1]![0] <= hover.t) j++;
       const there = early[j]!, change = j > 0 ? there[4] - early[j - 1]![4] : null, sign = change === null ? '' : change > 0 ? '+' : change < 0 ? '−' : '';
       const name = Object.entries(TIMEFRAMES).find(([, ms]) => ms === ep)?.[0] ?? '';
-      const from = t('from Bybit\'s {period} history ×{k}, scaled to meet the line', { period: name, k: ext!.seam.k.toFixed(2) });
+      const venues = ext!.venues[j] ?? [], sum = ext!.sums[j] ?? 0, k = sum > 0 ? (there[4] / sum).toFixed(2) : '';
+      const from = venues.length > 1 ? t('from Binance\'s and Bybit\'s {period} history, scaled to meet the line', { period: name })
+        : venues[0]?.startsWith('binance:') ? t('from Binance\'s {period} history ×{k}, scaled to meet the line', { period: name, k })
+        : t('from Bybit\'s {period} history ×{k}, scaled to meet the line', { period: name, k });
       if (this.pointer) this.#lines = oiCardLines({ time: there[0], level: there[4], change, before: null, rank: null, of: 0, sigma: null, source: from, staleMin: null, estimate: true });
       say(`${t('base')} <b>≈ ${fmtPrice(there[4], 1)}</b>${change === null ? '' : ` Δ <b class="${change > 0 ? 'bid' : change < 0 ? 'ask' : ''}">≈ ${sign}${fmtPrice(Math.abs(change), 1)}</b>`} <span class="muted">${from}</span>`);
       return;
@@ -1386,7 +1537,7 @@ export class OiPane extends TimePane {
     let shown = oi.length - 1;
     if (hover) { shown = -1; for (let i = 0; i < oi.length; i++) if (oi[i]![0] <= hover.t) shown = i; else break; if (shown < 0) shown = 0; }
     const bar = oi[shown]!, d = shown > 0 ? analysis.delta[shown]! : 0, flagged = highlight.on && analysis.flag[shown] === 1;
-    const age = pageNow() - lastBar[0], stale = age > Math.max(3 * tf, 3 * 60_000);
+    const age = pageNow() - newestRead[0], stale = age > Math.max(3 * chartTf, 3 * 60_000);
     const sign = d > 0 ? '+' : d < 0 ? '−' : '';
     const from = oiSourceText(state, venues?.[shown]), source = from ? ` <span class="muted">${from}</span>` : '';
     const sigma = flagged && Number.isFinite(analysis.sigma[shown]) ? ` <span class="muted">${analysis.sigma[shown]!.toFixed(1)}σ</span>` : '';
@@ -1411,7 +1562,11 @@ export class OiPane extends TimePane {
     if (over >= 0) this.#lines = cardAt(over);
     // Who holds it and who moved it, at the bar read, and under them what the card says of that bar (its level, change, rank, who opened and closed).
     // A table that holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
-    const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]) : [];
+    // Grouped: the venues as read at the drawn candle's last chart candle (its level's), each with its own change over the drawn candle as the
+    // chart candles count it (`groupVenues`), as the Range rows say.
+    const venuesThen = state.oiTable && parts.length > 1 ? grouped
+      ? oiVenuesAt(grouped.fine.parts, grouped.fine.tfMs, grouped.venues.closeAt.get(bar[0]) ?? bar[0]).map(v => ({ ...v, change: grouped.venues.change.get(v.id)?.get(bar[0]) ?? null }))
+      : oiVenuesAt(parts, tf, bar[0]) : [];
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));
@@ -1956,8 +2111,7 @@ export class BarStatsPane extends TimePane {
     // the loader), a UTC day per answer, over the days of the table's candles (none after now). A candle before the record reaches is not known:
     // the source keeps a week (a page's own engine a day), and only since the recording started. The edge is taken to the next whole minute (a
     // candle half expired is not known either), which also keeps it from changing on every frame.
-    const retention = this.hub.source.kind === 'browser' ? BROWSER_RETENTION_MS : LIQUIDATION_RETENTION_MS;
-    const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = Math.max(Math.ceil((Date.now() - retention) / 60_000) * 60_000, this.hub.recordedSince > 0 ? this.hub.recordedSince : 0);
+    const liqTo = Math.min(times[times.length - 1]! + tfMs, Date.now()), liqCover = liquidationCover(this.hub.source.kind, this.hub.recordedSince, Date.now());
     // A list without a perpetual (the chart market or chosen markets all spot, or every perpetual venue switched off) has none to count: its
     // cells stay empty rather than read 0.
     const liqMarkets = this.heat.liquidationMarkets(state), liqPerps = liqMarkets.some(id => kindOf(state.markets, id) !== 'spot');

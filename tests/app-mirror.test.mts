@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mirrorLines, mirrorStats, percentText, ratioText } from '../src/app/mirror.ts';
+import { bandVerdict, mirrorLines, mirrorStats, percentText, ratioText } from '../src/app/mirror.ts';
+import { depthBandVerdict } from '../src/app/hover-rows.ts';
 
 test('the mirror price is the hovered price reflected about the mid', () => {
   const s = mirrorStats(100, 103, 50, 40)!;
@@ -36,19 +37,31 @@ test('no mirror at the mid itself or without a valid mid', () => {
   assert.equal(mirrorStats(100, Number.NaN, 1, 1), null);
 });
 
-test('the printed lines name the sides and the dominance in plain words', () => {
-  const names = { above: 'Asks', below: 'Bids' };
-  const opposite = mirrorLines(mirrorStats(85_000, 85_300, 100e6, 113e6)!, names, 'Binance');
-  assert.equal(opposite[0]!.text, 'Binance');
-  assert.match(opposite.map(l => l.text).join('\n'), /Asks \(this side\)\s+\$100M/);
-  assert.match(opposite.map(l => l.text).join('\n'), /Bids \(opposite\)\s+\$113M/);
-  assert.equal(opposite.at(-1)!.text, 'Opposite side has 1.13x more');
-  assert.equal(opposite.at(-1)!.color, 'below', 'coloured by the side that dominates');
-  const mine = mirrorLines(mirrorStats(85_000, 84_700, 100e6, 200e6)!, names);
-  assert.equal(mine.at(-1)!.text, 'This side has 2.00x more');
-  assert.equal(mine.at(-1)!.color, 'below');
-  assert.equal(mirrorLines(mirrorStats(100, 101, 5, 5)!, names).at(-1)!.text, 'Balanced');
-  assert.equal(mirrorLines(mirrorStats(100, 101, 5, 0)!, names).at(-1)!.text, 'Only this side has liquidity');
+test('the order book\'s box says each band by its price side, then the heavier side in its colour, as the profile\'s box does', () => {
+  const above = mirrorLines(mirrorStats(85_000, 85_300, 100e6, 113e6)!, 'Binance');
+  assert.deepEqual(above.map(l => [l.text, l.color]), [['Binance', undefined], ['±300.00 (35 bp) from 85,000.0', 'muted'], ['Asks  $100M', 'above'], ['Bids  $113M', 'below'], ['Bids 1.13× the asks', 'below']]);
+  assert.equal(above.at(-1)!.bold, true);
+  // Named by price side, never this side or the opposite: the pointer below the price with the same bands says the same.
+  const below = mirrorLines(mirrorStats(85_000, 84_700, 100e6, 113e6)!);
+  const said = (l: { text: string; color?: string; bold?: boolean }): unknown[] => [l.text, l.color, l.bold];
+  assert.deepEqual(below.slice(1).map(said), above.slice(2).map(said), 'the same words in the same colours on either side of the price');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 113, 100)!).at(-1), { text: 'Asks 1.13× the bids', color: 'above', bold: true, wrap: true }, 'the asks heavier');
+  assert.equal(above.at(-1)!.wrap, true, 'wraps in a narrow book, as the profile box\'s verdict does');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 5)!).at(-1), { text: 'Bids and asks about even', bold: true, wrap: true }, 'within 2 %, in no side\'s colour');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 5, 0)!).at(-1), { text: 'Only asks', color: 'above', bold: true, wrap: true }, 'not a ratio over nothing');
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 5)!).at(-1), { text: 'Only bids', color: 'below', bold: true, wrap: true });
+  assert.deepEqual(mirrorLines(mirrorStats(100, 101, 0, 0)!).at(-1), { text: 'No bids or asks', color: 'muted', wrap: true });
+  assert.equal(mirrorLines(mirrorStats(100, 101, 5, 4, true)!).at(-1)!.text, 'part of the range is outside the data');
+});
+
+test('the order book\'s box and the profile\'s agree on every pair of bands, with the colour each draws it in', () => {
+  const amounts = [0, -1, NaN, Infinity, 1, 4.9e6, 10e6, 10.1e6, 10.2e6, 14e6, 25e6, 1e13];
+  for (const bid of amounts) for (const ask of amounts) {
+    const book = bandVerdict(bid, ask), profile = depthBandVerdict(bid, ask, '1%'), where = `bids ${bid}, asks ${ask}`;
+    assert.equal(book.text.toLowerCase(), profile.text.replace('Within ≈±1%: ', '').toLowerCase(), where);
+    assert.equal(book.color, profile.color, `${where}: colour`);
+    assert.deepEqual([book.bold, book.wrap, book.rule], [profile.bold, profile.wrap, profile.rule], `${where}: bold, wrap and rule`);
+  }
 });
 
 test('ratios print with two decimals below ten and one above', () => {

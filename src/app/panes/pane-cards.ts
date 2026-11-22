@@ -6,7 +6,27 @@ import { t } from '../i18n.ts';
 import { bandText } from '../depth-settings.ts';
 import { curveOf, viewParts, type LiqView } from '../liq-view.ts';
 import { depthOrderSides, type OrderSide } from '../order-side.ts';
+import { rankKind, type BandRank } from '../depth-history.ts';
 import { ratioFigure, sideRatio } from './pane-table.ts';
+
+/** The history's span a rank stands on, in words: whole days from two on, else hours. */
+const spanWords = (ms: number): string => ms >= 2 * 86_400_000 ? t('{n} days', { n: Math.floor(ms / 86_400_000) }) : t('{n} h', { n: Math.floor(ms / 3_600_000) });
+/**
+ * Where a band's reading stands in its own history (depth-history.ts), in words: past every window held ("highest in 6 days"), under every one,
+ * or the share on its side of the middle ("above 87 % of 6 days", "below 98 % of 6 days"). A dash where there is no rank (too little history,
+ * or the moment's window missed a book the history usually has).
+ */
+export function rankWords(r: BandRank | null): string {
+  if (!r) return '–';
+  const k = rankKind(r), span = spanWords(r.coverMs);
+  return k.kind === 'highest' ? t('highest in {span}', { span }) : k.kind === 'lowest' ? t('lowest in {span}', { span }) : k.kind === 'middle' ? t('in the middle of {span}', { span })
+    : k.kind === 'above' ? t('above {pct} % of {span}', { pct: k.pct, span }) : t('below {pct} % of {span}', { pct: k.pct, span });
+}
+/**
+ * A band's place in its history on each side, for the Depth card's and table's lines: `loading` until the newest hours are read, `whole` once the
+ * older days are too (a moment with no rank before then may still get one: "…", not "–").
+ */
+export interface DepthHistoryLines { bid: BandRank | null; ask: BandRank | null; loading: boolean; whole: boolean }
 
 /** The card colour of the book's pair for what a side's orders do (order-side.ts): the bid colour ('below') for buys, the ask colour ('above') for sells. */
 const pairColor = (side: OrderSide): InfoColor => side === 'buy' ? 'below' : 'above';
@@ -174,7 +194,7 @@ const coinFigures = new Intl.NumberFormat('en-US', { notation: 'compact', maximu
  * One moment of the Depth pane where its table is not drawn (no room beside the plot, or the table switched off): each band's bids and asks, the
  * watched band (the one brought forward, else the widest) in bold with its difference and balance, and where that band's total stands in the view.
  */
-export function depthCardLines(h: { time: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; rank: number | null; of: number }): InfoLine[] {
+export function depthCardLines(h: { time: number; bands: readonly { r: number; bid: number; ask: number }[]; watched: number; units: 'usd' | 'coin'; coin: string; rank: number | null; of: number; history?: DepthHistoryLines | null }): InfoLine[] {
   const fmt = (value: number): string => h.units === 'coin' ? `${coinFigures.format(value)} ${h.coin}` : money(value);
   // The table says the time, every band and the watched band's difference and ratio in its rows: it keeps the balance and the rank.
   const lines: InfoLine[] = [{ text: t('Depth'), bold: true, table: false }, { label: t('Time'), text: clock(h.time, true), table: false }];
@@ -186,9 +206,49 @@ export function depthCardLines(h: { time: number; bands: readonly { r: number; b
     const imbalance = imbalanceLine(w.bid, w.ask); if (imbalance) lines.push(imbalance);
     const ratio = ratioLine(w.bid, w.ask, [t('bids'), t('asks')]); if (ratio) lines.push({ ...ratio, table: false });
   }
-  if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });
+  // Where the watched band's bids and asks stand in their own history (the 16 minutes around the moment against those of the days before), in
+  // place of its rank among the columns in view, which changed with the zoom. Said from the first frame ("…" while the history is read), so the
+  // lines under the table do not move when it arrives.
+  const hist = h.history;
+  if (hist) {
+    for (const [side, label, color] of [['bid', t('Bids'), 'below'], ['ask', t('Asks'), 'above']] as const) {
+      const r = hist[side];
+      lines.push({ label, text: r ? rankWords(r) : hist.loading || !hist.whole ? '…' : '–', color, bold: !!r && rankKind(r).extreme });
+    }
+    // What the ranks stand on, in the table too: how many earlier readings, and, where a coarser view's column could not be ranked as shown,
+    // which closing minute was. Said from the first frame, so the lines do not move when the history arrives.
+    // Once the history is read and this moment still has no rank, there is nothing to say it stands on ("…" would read as still loading).
+    const r = hist.bid ?? hist.ask;
+    if (r || hist.loading || !hist.whole) lines.push({ text: r?.at != null ? t('The book at {time}, against {n} earlier readings, one every 16 minutes', { time: clock(r.at), n: r.n })
+      : t('Against {n} earlier readings, one every 16 minutes', { n: r ? r.n : '…' }), color: 'muted', wrap: true });
+  }
+  else if (h.rank !== null && h.of > 1) lines.push({ label: t('Rank in view'), text: t('{rank} of {total}', { rank: h.rank, total: h.of }) });
   lines.push({ text: t('Bids · asks resting within each distance of the price, added up over the books counted (Venues); each band holds the ones inside it.'), color: 'muted', wrap: true, rule: true, table: false });
   return lines;
+}
+
+/**
+ * Where the band stands in its history in one row, for a table too short for the Depth card's lines (Karl, 2026-11-22: with Table on the pane shows no
+ * card): at the left the band, or the time of the book ranked where a coarser view could not rank the figure shown (the band is the lit row then), and
+ * each side's place without the span, which the lines and the help say. Bold where a side is past its 5th or 95th percentile; none without a history.
+ */
+export function depthRankBrief(band: number, history: DepthHistoryLines | null | undefined): InfoLine[] {
+  if (!history) return [];
+  const place = (r: BandRank | null): string => {
+    if (!r) return history.loading || !history.whole ? '…' : '–';
+    const k = rankKind(r);
+    return k.kind === 'highest' ? t('highest') : k.kind === 'lowest' ? t('lowest') : k.kind === 'middle' ? t('in the middle')
+      : k.kind === 'above' ? t('above {pct} %', { pct: k.pct }) : t('below {pct} %', { pct: k.pct });
+  };
+  const { bid, ask } = history, at = (bid ?? ask)?.at;
+  return [{ label: at != null ? clock(at) : `±${bandText(band)}%`, text: t('bids {bids} · asks {asks}', { bids: place(bid), asks: place(ask) }),
+    bold: [bid, ask].some(r => !!r && rankKind(r).extreme) }];
+}
+
+/** The watched band's take profits beside the liquidation levels (those above the price · those below), as the card says them and a short table's row. */
+export function liqTakesLine(takes: { bid: number; ask: number }, units: 'usd' | 'coin', coin: string): InfoLine {
+  const fmt = (value: number): string => units === 'coin' ? `${coinFigures.format(value)} ${coin}` : money(value);
+  return { label: t('Take profits above / below'), text: `${fmt(takes.ask)} · ${fmt(takes.bid)}` };
 }
 
 /**
@@ -214,7 +274,7 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
     const ratio = ratioLine(w.bid, w.ask, kind === 'takes' ? [t('bids'), t('asks')] : [t('longs'), t('shorts')], colors); if (ratio) lines.push({ ...ratio, table: false });
   }
   // The take profits of the watched band: the sells that close longs above the price, the buys that close shorts below; never added to the rest.
-  if (h.takes) lines.push({ label: t('Take profits above / below'), text: `${fmt(h.takes.ask)} · ${fmt(h.takes.bid)}`, rule: true });
+  if (h.takes) lines.push({ ...liqTakesLine(h.takes, h.units, h.coin), rule: true });
   lines.push({ table: false, text: kind === 'takes' ? t('Take profits of shorts · longs within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will fill.')
     : kind === 'stops' ? t('Stops of longs · shorts within each distance of the price, from HyperTracker\'s snapshot of the orders on Hyperliquid\'s BTC: where the orders rest, not what will trigger.')
     : kind === 'both' ? t('Longs · shorts that would be liquidated or stopped out within each distance of the price, from HyperTracker\'s snapshot of Hyperliquid\'s BTC positions and orders: where the money sits, not what will happen.')
@@ -239,7 +299,7 @@ export function ltCardLines(h: { time: number; bid: number; ask: number; halfLif
 }
 
 /** One bar of the Open Interest pane: the level, the step from the bar before, and how unusual that step is. */
-/** `estimate`: a reading of the long view (oi-long.ts), Bybit's scaled to meet the line: its time is the reading's, its figures marked ≈. */
+/** `estimate`: a reading of the long view (oi-long.ts), chained back over the venues' history: its time is the reading's, its figures marked ≈. */
 export function oiCardLines(h: { time: number; level: number; change: number | null; before: number | null; rank: number | null; of: number; sigma: number | null; source: string | null; staleMin: number | null; estimate?: boolean }): InfoLine[] {
   const about = h.estimate ? '≈ ' : '';
   const signed = (value: number): string => `${about}${value > 0 ? '+' : value < 0 ? '−' : ''}${fmtPrice(Math.abs(value), 1)}`;
@@ -254,6 +314,6 @@ export function oiCardLines(h: { time: number; level: number; change: number | n
   if (h.sigma !== null && Number.isFinite(h.sigma)) lines.push({ label: t('Unusual'), text: t('{z}σ above its baseline', { z: h.sigma.toFixed(1) }), bold: true });
   if (h.source) lines.push({ text: h.source, color: 'muted' });
   if (h.staleMin !== null) lines.push({ text: t('last sample {n} min ago', { n: h.staleMin }), color: 'above' });
-  lines.push({ table: false, text: h.estimate ? t('Further back than the readings held: Bybit\'s own open interest, scaled to meet the line where it starts. An estimate of the total, and how far it moved since the reading before.') : t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
+  lines.push({ table: false, text: h.estimate ? t('Further back than the readings held: the history Binance and Bybit keep, chained back from where the line starts. An estimate of the total, and how far it moved since the reading before.') : t('Open interest at the end of the candle, and how far it moved since the end of the one before.'), color: 'muted', wrap: true, rule: true });
   return lines;
 }

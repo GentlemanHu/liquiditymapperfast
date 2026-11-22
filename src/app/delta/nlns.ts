@@ -45,6 +45,11 @@ export interface NlnsCandle {
   /** +1 the net went to longs, −1 to shorts, 0 neither; `byPrice`: some market was classified by the chart's price; `coarse`: some change
    *  covered more than this candle (readings further apart than a candle). */
   side: 1 | -1 | 0; byPrice: boolean; coarse: boolean;
+  /**
+   * Of the four parts, the coins given a side by the way the price went (no flow recorded over the stretch), not by the takers: the OI pane
+   * draws a bar whose side mostly did not come from its takers as rising or falling, not split by who (oi-group.ts `takerSidedShare`).
+   */
+  byPriceOi?: number;
   /** Markets whose open interest is known at this candle, and those with a change attributed in it; `fine`: those worked out on minute pieces. */
   covered: number; counted: number; fine: number;
   /** Running sums from the last restart (of `v`, `longs`, `shorts`) and which run it is in. */
@@ -67,8 +72,8 @@ export interface NlnsMarket { bars: readonly OiBar[]; flows: readonly (CandleFlo
  * One market's share of one candle (`up`/`down`: the unassigned and unknown that came while its open interest rose / fell; `gap`: a reading in
  * it whose reading before was further back than the hold, its change counted nowhere).
  */
-interface Parts { dOi: number; oiStart: number; lo: number; lc: number; so: number; sc: number; un: number; unknown: number; up: number; down: number; byPrice: boolean; coarse: boolean; gap: boolean; counted: number }
-const noParts = (): Parts => ({ dOi: 0, oiStart: 0, lo: 0, lc: 0, so: 0, sc: 0, un: 0, unknown: 0, up: 0, down: 0, byPrice: false, coarse: false, gap: false, counted: 0 });
+interface Parts { dOi: number; oiStart: number; lo: number; lc: number; so: number; sc: number; un: number; unknown: number; up: number; down: number; byPrice: boolean; px: number; coarse: boolean; gap: boolean; counted: number }
+const noParts = (): Parts => ({ dOi: 0, oiStart: 0, lo: 0, lc: 0, so: 0, sc: 0, un: 0, unknown: 0, up: 0, down: 0, byPrice: false, px: 0, coarse: false, gap: false, counted: 0 });
 
 /**
  * One market's parts in each candle of `starts` (`tfMs` apart, `index` by start; `bars` sorted): each change between two of its readings at
@@ -94,6 +99,7 @@ function marketParts(starts: readonly number[], index: ReadonlyMap<number, numbe
     let side = whole ? Math.sign(delta) : 0, known = whole;
     if (!whole && closeAt) { const a = closeAt(before[0]), b = closeAt(now[0]); if (a !== undefined && b !== undefined) { side = Math.sign(b - a); known = true; if (side) p.byPrice = true; } }
     const size = Math.abs(d);
+    if (!whole && known && side !== 0) p.px += size;
     if (!known || side === 0) { if (known) p.un += size; else p.unknown += size; if (d > 0) p.up += size; else p.down += size; }
     else if (d > 0) { if (side > 0) p.lo += size; else p.so += size; }
     else if (side < 0) p.lc += size; else p.sc += size;
@@ -165,7 +171,7 @@ export function nlnsModel(starts: readonly number[], markets: readonly NlnsMarke
       const q = pieces?.[i] ?? null, p = parts[i]!, use = q ?? c;
       if (q) fine[i]!++;
       p.counted += use.counted; p.dOi += use.dOi; p.oiStart += use.oiStart; p.lo += use.lo; p.lc += use.lc; p.so += use.so; p.sc += use.sc;
-      p.un += use.un; p.unknown += use.unknown; p.up += use.up; p.down += use.down; p.byPrice ||= use.byPrice; p.coarse ||= use.coarse;
+      p.un += use.un; p.unknown += use.unknown; p.up += use.up; p.down += use.down; p.byPrice ||= use.byPrice; p.px += use.px; p.coarse ||= use.coarse;
     });
   }
   const out: NlnsCandle[] = [];
@@ -182,7 +188,7 @@ export function nlnsModel(starts: readonly number[], markets: readonly NlnsMarke
     cum += v; cumLongs += longs; cumShorts += shorts;
     out.push({ t: s, dOi: p.dOi, oiStart: p.oiStart, longOpened: p.lo, longClosed: p.lc, shortOpened: p.so, shortClosed: p.sc, unassigned: p.un, unknown: p.unknown,
       unsidedUp: p.up, unsidedDown: p.down, longs, shorts, v, kind,
-      side: Math.sign(v) as 1 | -1 | 0, byPrice: p.byPrice, coarse: p.coarse, covered: covered[i]!, counted: p.counted, fine: fine[i]!, cum, cumLongs, cumShorts, run });
+      side: Math.sign(v) as 1 | -1 | 0, byPrice: p.byPrice, byPriceOi: p.px, coarse: p.coarse, covered: covered[i]!, counted: p.counted, fine: fine[i]!, cum, cumLongs, cumShorts, run });
   });
   return out;
 }

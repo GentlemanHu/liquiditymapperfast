@@ -390,3 +390,12 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
   if (partial && row.kind === 'size' && model.cover[i]! > 0) out.push({ label: t('Recorded'), text: t('{share} % of the candle: the figure counts only that part', { share: Math.round(model.cover[i]! * 100) }), color: 'sell', wrap: true });
   return out;
 }
+
+/**
+ * Whether the pane says Loading… rather than that nothing was recorded, when none of its candles (`times`, starts) has a bar: a question is
+ * out (`busy`) and the bars held were not answered for those candles (the first look, or a pan into the past). Once they are, an empty
+ * stretch is said to be empty, and a refresh of the newest bars never flashes Loading over it.
+ */
+export function historyLoading(busy: boolean, times: readonly number[], tfMs: number, covers: (from: number, to: number) => boolean): boolean {
+  return busy && !(times.length > 0 && covers(times[0]!, times[times.length - 1]! + tfMs));
+}

@@ -90,7 +90,7 @@ const BINANCE_SPAN_MS = 30 * DAY;
 /** Each series' column in Binance's daily archive. */
 const ARCHIVE_COLUMNS: Readonly<Record<LsMetric, string>> = { accounts: 'count_long_short_ratio', topAccounts: 'count_toptrader_long_short_ratio', topPositions: 'sum_toptrader_long_short_ratio' };
 /** An archive row's time to the API's time for the same reading. */
-const ARCHIVE_SHIFT_MS = 5 * MINUTE;
+export const ARCHIVE_SHIFT_MS = 5 * MINUTE;
 /** The most archive days one read takes, newest first: a longer window is read on by the cache's next read, its line growing as each lands. */
 export const ARCHIVE_DAYS = 96;
 /**
@@ -105,8 +105,9 @@ const PAGE_ROWS: Readonly<Record<string, number>> = { binance: 500, bybit: 500, 
 /** The most readings one window takes from a venue: well inside what one question's pages reach, and far below what a series keeps. */
 const windowReadings = (venue: string): number => Math.min(2_000, Math.floor(PAGES * (PAGE_ROWS[venue] ?? 30) * 0.8));
 /**
- * The longest the cache waits for one page. `webGet` gives up at 15 s, but a request on the live server once never settled at all: the series'
- * one request never ended, and every later question for it (Bybit's and OKX's hourly BTC readings) waited for good (2026-10-15).
+ * The longest the cache waits for one page. A request on the live server once never settled at all: the series' one request never ended, and
+ * every later question for it (Bybit's and OKX's hourly BTC readings) waited for good (2026-10-15). `webGet`'s 15 s limit was then only the
+ * signal handed to fetch; since 2026-11-22 it is a timer race too, and this deadline stays as a second guard for any fetcher.
  */
 export const LS_PAGE_DEADLINE_MS = 20_000;
 

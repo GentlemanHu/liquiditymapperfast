@@ -3,7 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { Held, ROW_HOLD_MS, booksReaching, depthBand, depthBandLines, depthBandVerdict, depthHereLine, depthRow, depthRowLines, liqBandVerdict, liqCardLines, liqCardRow, ratioWords, seamCardLines, seamSpan, wholeShares } from '../src/app/hover-rows.ts';
+import { Held, ROW_HOLD_MS, booksReaching, depthBand, depthBandLines, depthBandVerdict, depthHereLine, depthRow, depthRowLines, liqBandVerdict, liqCardLines, liqCardRow, seamCardLines, seamSpan, wholeShares } from '../src/app/hover-rows.ts';
+import { ratioWords } from '../src/app/mirror.ts';
 import { binsBetween, liqStanding, standingBins, type LiqLevels } from '../src/app/liq-levels.ts';
 import type { Grouped } from '../src/app/panes/levels-data.ts';
 import type { LevelsFrame, LiveBook } from '../src/app/wire.ts';

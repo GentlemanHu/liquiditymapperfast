@@ -105,3 +105,13 @@ test('review r3: venues added together, a bar without its dollars makes the doll
   assert.equal(oiStretch({ ...base(oi, 1, 2), usd, counted: [0, 2, 2] })!.usd, null, 'the first bar (+10 and -10 coins) has no dollars');
   assert.equal(oiStretch({ ...base(oi, 1, 2), usd })!.usd, 500, 'one market: a bar of no change is no dollars either way');
 });
+
+test('drawn candles: each venue\'s part is the sum of its grouped changes, so the parts add up to the grouped change though a venue starts mid-candle', () => {
+  // Two drawn candles of four hours; venue b starts in the second (oi-group.ts groupVenues gives its own changes after its first reading).
+  const D4 = 4 * H, oi = bars([300, 312], T);
+  const change = new Map([[T + D4, 12]]), venueChange = new Map([['binance:BTCUSDT', new Map([[T + D4, 9]])], ['bybit:BTCUSDT', new Map([[T + D4, 3]])]]);
+  const parts: OiPart[] = [{ id: 'binance:BTCUSDT', bars: [[T, 200, 200, 200, 200], [T + D4, 209, 209, 209, 209]] }, { id: 'bybit:BTCUSDT', bars: [[T + D4, 103, 103, 103, 103]] }];
+  const s = oiStretch({ ...base(oi.map((b, i) => [T + i * D4, b[1], b[2], b[3], b[4]]), 1, 1), change, tfMs: D4, parts, venueChange })!;
+  assert.deepEqual(s.venues.map(v => [v.id, v.change, v.bars]), [['binance:BTCUSDT', 9, 1], ['bybit:BTCUSDT', 3, 1]], 'b\'s part is counted though it has no grouped bar before');
+  assert.equal(s.venues.reduce((x, v) => x + v.change, 0), s.change);
+});

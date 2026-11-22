@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FOOTPRINT_REFRESH_MS, FootprintData, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
+import { FOOTPRINT_REFRESH_MS, FootprintData, FootprintLod, footprintWant, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
 import type { FootprintResponse } from '../src/app/source.ts';
 
 const H = 3_600_000;
@@ -262,4 +262,153 @@ test('on bars longer than the hour, the late-trade recheck starts on a bar\x27s 
     // The bar under way starts at 8 h; an hour before it is inside the bar from 4 h, which is asked whole.
     assert.equal(asked.at(-1)!.from, 4 * H);
   } finally { time.restore(); }
+});
+
+// The Flow history's warm-up (2026-11-22, size-history/warm.ts): before any pane shows the bars, the view is asked for once, in its slices,
+// and nothing on the clock; the first pane to show them draws what is held and asks only for what changed since.
+test('warmed before any pane shows: the view once, in its slices, nothing on the clock; the first pane then asks for the bars still changing', async () => {
+  const time = clock(1_000_000);
+  try {
+    const { asked, load } = source(5), data = new FootprintData(), view = { t0: 10 * H, t1: 20 * H, p0: 0, p1: 1 };
+    const sourceNow = 20 * H + 30 * 60_000;
+    const warm = async () => { data.ensure('a,b', '1h', view, 5, load, () => {}, [], sourceNow, true); await turn(); };
+    await warm(); await warm(); await warm();
+    assert.deepEqual(asked.map(a => [a.from / H, a.to / H]), [[9, 21], [9, 16], [9, 11]], 'the view with its margin, then older slices, newest first');
+    assert.ok(data.covers(9 * H, 21 * H), 'the whole window is held');
+    assert.equal(data.busy, false);
+    time.advance(FOOTPRINT_REFRESH_MS * 3);
+    await warm(); await warm();
+    assert.equal(asked.length, 3, 'no refresh of the bars still changing while only the warm-up looks');
+    // The first pane to show the bars: the open bar alone, as a refresh asks it (the ones before it are settled).
+    data.ensure('a,b', '1h', view, 5, load, () => {}, [], sourceNow); await turn();
+    assert.deepEqual(asked.slice(3).map(a => [a.from / H, a.to / H]), [[20, 21]]);
+    assert.equal(data.bars.size, 12);
+  } finally { time.restore(); }
+});
+
+test('the warm-up never rechecks settled bars for late trades nor retries missing size sums: those wait for a pane', async () => {
+  const time = clock(1_000_000);
+  try {
+    const asked: number[][] = [];
+    // Every bar answered without the sums of the size line asked (no `over`): a pane asks those again once a minute (the test above).
+    const load = async (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
+      asked.push([from / H, to / H]);
+      const bars = [];
+      for (let t = Math.floor(from / H) * H; t < to; t += H) bars.push({ t, rows: [[100, 1, 1]] as [number, number, number][], buyUsd: 1, sellUsd: 1, minutes: 60, stats: { buyN: 1, sellN: 1, buy: [0, 0, 0, 0, 0, 0, 0, 0], sell: [0, 0, 0, 0, 0, 0, 0, 0] } });
+      return { step: 5, fine: 5, bars: bars as never, from };
+    };
+    const data = new FootprintData(), view = { t0: 10 * H, t1: 14 * H, p0: 0, p1: 1 }, sourceNow = 14 * H + 30 * 60_000;
+    data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow, true); await turn();
+    assert.equal(asked.length, 1);
+    assert.ok([...data.bars.values()].every(b => !b.over), 'the bars came without their sums');
+    time.advance(10 * 60_000);
+    for (let i = 0; i < 3; i++) { data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow, true); await turn(); }
+    assert.equal(asked.length, 1, 'ten minutes on (past the recheck and the retries\x27 minute), the warm-up has asked nothing more');
+    // A pane asks: the bars still changing, the hour back for late trades and the settled bars without their sums, as before.
+    data.ensure('a', '1h', view, 5, load as never, () => {}, [50_000], sourceNow); await turn();
+    assert.ok(asked.length > 1, 'the pane asks again where the warm-up did not');
+  } finally { time.restore(); }
+});
+
+test('a pane that opens while a warm question is out waits for its answer rather than asking again, and holds its bars', async () => {
+  const asked: number[][] = [];
+  let release: (() => void) | null = null;
+  const load = (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
+    asked.push([from / H, to / H]);
+    return new Promise(resolve => {
+      release = () => { const bars = []; for (let t = Math.ceil(from / H) * H; t < to; t += H) bars.push({ t, rows: [[100, 1, 1]] as [number, number, number][], buyUsd: 1, sellUsd: 1, minutes: 60 }); resolve({ step: 5, fine: 5, bars }); };
+    });
+  };
+  const data = new FootprintData(), view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, sourceNow = 12 * H + 30 * 60_000;
+  assert.equal(data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow, true), true, 'a question went out');
+  assert.equal(data.busy, true, 'the warm question is out');
+  assert.equal(data.answered, null, 'and nothing is answered yet (the pane says it is loading)');
+  assert.equal(data.ensure('a', '1h', view, 5, load, () => {}, [], sourceNow), false, 'none goes out while one is');
+  assert.equal(asked.length, 1, 'the pane does not ask again');
+  release!(); await turn();
+  assert.equal(data.busy, false);
+  assert.deepEqual([...data.bars.keys()].map(t => t / H), [9, 10, 11, 12], 'the warm answer is the pane\x27s');
+  assert.ok(data.holds(['a'], '1h'));
+});
+
+test('a view that moved past the bars the warm-up holds is asked from their end, so the warm-up finishes rather than waiting on a refresh', async () => {
+  const time = clock(1_000_000);
+  try {
+    // The source's clock half an hour into the 15h bar: the bars from 15h on can still change.
+    const { asked, load } = source(50), data = new FootprintData(), sourceNow = 15.5 * H;
+    data.ensure('a', '1h', { t0: 10 * H, t1: 14 * H, p0: 0, p1: 1 }, 5, load, () => {}, [], sourceNow, true); await turn();
+    assert.deepEqual(asked.map(a => [a.from / H, a.to / H]), [[9, 15]]);
+    // Past the late-trade recheck's five minutes, the view moved on past the end of what is held, still overlapping it (panned, or the
+    // page hidden while the live edge moved on).
+    time.advance(5 * 60_000 + 1);
+    const moved = { t0: 13 * H, t1: 18 * H, p0: 0, p1: 1 };
+    data.ensure('a', '1h', moved, 5, load, () => {}, [], sourceNow, true); await turn();
+    assert.deepEqual(asked.slice(1).map(a => [a.from / H, a.to / H]), [[15, 19]], 'the warm-up asks from the end of what is held, not an hour back for late trades');
+    const w = footprintWant(moved, H);
+    assert.ok(data.covers(w.from, w.to), 'and the moved view is covered');
+  } finally { time.restore(); }
+});
+
+test('a failed question is asked again after its pause and not before, ensure says whether one went out, and the answers and failures of the markets asked are counted', async () => {
+  const time = clock(1_000_000);
+  try {
+    const { load: good } = source(50);
+    let fail = true;
+    const load = (...args: Parameters<typeof good>): Promise<FootprintResponse> => fail ? Promise.reject(new Error('down')) : good(...args);
+    const data = new FootprintData(), view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, sourceNow = 12 * H + 30 * 60_000;
+    const ask = (rowStep: number, inst = 'a', with_ = load): boolean => data.ensure(inst, '1h', view, rowStep, with_, () => {}, [], sourceNow, true);
+    // No row size yet: the markets\x27 step is asked first, alone.
+    assert.equal(ask(0), true, 'the step went out');
+    await turn();
+    assert.deepEqual(data.tally, { answers: 0, failures: 1 });
+    assert.equal(ask(0), false, 'in its pause: none goes out');
+    time.advance(FOOTPRINT_REFRESH_MS - 1);
+    assert.equal(ask(0), false, 'still in its pause');
+    time.advance(1); fail = false;
+    assert.equal(ask(0), true, 'after it, asked again');
+    await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 1 });
+    // The view, on rows: failed, paused, then answered.
+    fail = true;
+    assert.equal(ask(5), true); await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 2 });
+    assert.equal(ask(5), false, 'its pause');
+    time.advance(FOOTPRINT_REFRESH_MS); fail = false;
+    // Another list while a question is out: the old answer is dropped, and not counted.
+    let release = (): void => {};
+    const held = (...args: Parameters<typeof good>): Promise<FootprintResponse> => new Promise(resolve => { release = () => resolve(good(...args)); });
+    assert.equal(ask(5, 'a', held), true);
+    const old = release;
+    assert.equal(ask(5, 'b', held), true, 'another list asks at once');
+    old(); await turn();
+    assert.deepEqual(data.tally, { answers: 1, failures: 2 }, 'the old list\x27s answer goes uncounted');
+    release(); await turn();
+    assert.deepEqual(data.tally, { answers: 2, failures: 2 });
+    // Nor is a failure for the old list.
+    let reject = (): void => {};
+    const failing = (): Promise<FootprintResponse> => new Promise((_, no) => { reject = () => no(new Error('down')); });
+    assert.equal(ask(5, 'c', failing), true);
+    const oldReject = reject;
+    assert.equal(ask(5, 'd', held), true);
+    oldReject(); await turn();
+    assert.deepEqual(data.tally, { answers: 2, failures: 2 }, 'nor its failure');
+  } finally { time.restore(); }
+});
+
+test('the bars a view asks for: its candles with one each side, on whole candles; the rows held are said', async () => {
+  assert.deepEqual(footprintWant({ t0: 10.5 * H, t1: 12.2 * H, p0: 0, p1: 1 }, H), { from: 9 * H, to: 14 * H });
+  const { load } = source(50), data = new FootprintData();
+  assert.equal(data.heldStep, 0, 'nothing held');
+  data.ensure('a', '1h', { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, 40, load, () => {}, [25_000, 100_000], 20 * H); await turn();
+  assert.equal(data.heldStep, 40, 'the row size asked, not the size lines');
+});
+
+test('a peek at the level leaves the hysteresis of the footprint as it is; the level itself moves it', () => {
+  const fresh = new FootprintLod();
+  assert.equal(fresh.peek(7), 1, 'rows of 7 px grouped by two');
+  assert.equal(fresh.level(14), 0, 'the peek left the level at 0: rows of 14 px need no grouping (from level 1 they would stay grouped)');
+  const lod = new FootprintLod();
+  assert.equal(lod.level(1), 4, 'rows of 1 px grouped by 16 to reach 12 px');
+  assert.equal(lod.peek(7), 2, 'from level 4, rows of 7 px refine to 2 (from level 0 they would coarsen to 1)');
+  assert.equal(lod.peek(1.6), 4, 'and that peek left level 4 in place: rows of 1.6 px stay at 4 from there (from level 2 they would come to 3)');
 });

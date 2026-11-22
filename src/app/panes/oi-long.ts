@@ -3,17 +3,17 @@ import type { OiPart } from '../oi-change.ts';
 import { stripTimeframe } from '../measures/volume-strip.ts';
 
 /**
- * The OI pane's long view (pure, tested in tests/app-oi-long.test.mts). The readings the page holds are the chart's last 500 candles (21 days
- * at 1h), and of the venues a page can read history from Binance keeps 30 days of it; Bybit's reaches back years (its daily readings from 2023
- * and before, checked 2026-10-30). Zoomed out two years, the pane drew three weeks at the right edge while the Long/Short pane drew the whole
- * view (Karl, 2026-10-30). Further back than the readings held, the line now goes on from Bybit's own history, each reading times the total
- * over Bybit's at the seam (`oiLongSeam`), so it meets the line where that starts and moves as Bybit does: an estimate of the total, drawn as
- * one. Read by the pane straight from Bybit (the server's store holds days of it) and kept by the pane alone: the bar statistics, NL/NS and the
- * scripts count the readings held, never these.
+ * The OI pane's long view (pure, tested in tests/app-oi-long.test.mts). The readings held are the chart's last 500 candles and the older ones
+ * read once as the view reaches back (Hub.oiReach): a server's month, a page's Binance 30 days and Bybit 2,400 readings. Zoomed out further
+ * (Karl, 2026-10-30: two years drew three weeks at the right edge), the line goes on from the venues' own history: until 2026-11-22 Bybit's
+ * alone, each reading times the total over Bybit's at the seam, which drifted as Bybit's share grew (14 % to 19 % in three months: mean error
+ * 9.0 %); now chained back over Binance (its daily archive, src/shared/oi-archive.ts) and Bybit (`oiLongChain`), about 70 % of the open interest
+ * added up (mean error 2.4 % on the same 83 days). Read by the pane straight from the venues on a server too, and kept by the pane alone:
+ * the bar statistics, NL/NS and the scripts count the readings held, never these.
  */
 
 const MINUTE = 60_000, DAY = 86_400_000;
-/** Bybit's shortest open-interest period: a one-minute chart's long view is read in five-minute readings. */
+/** The venues' shortest open-interest period (Bybit's API, Binance's archive): a one-minute chart's long view is read in five-minute readings. */
 const BYBIT_MIN_PERIOD_MS = 300_000;
 /** How long a read that failed (or never answered) waits before the window is asked again. */
 export const OI_LONG_RETRY_MS = MINUTE;
@@ -27,38 +27,63 @@ export const OI_LONG_DEADLINE_MS = 60_000;
  */
 export const oiLongPeriod = (tfMs: number, span: number, pw: number): number => Math.max(BYBIT_MIN_PERIOD_MS, stripTimeframe(tfMs, span, pw).ms);
 
-/** Where the readings held give way to Bybit's history: the bar (`index` in the line, `t` its time) and the scale it is put at. */
-export interface OiLongSeam { index: number; t: number; k: number }
-
 /**
- * The seam for venues added together (`parts`, the line `chained` drawn from them, oi-change.ts `chainedOi`): Bybit's first bar from where
- * another venue's readings begin, and the line's level there over Bybit's (`k`). Before it the line is Bybit's readings alone (Binance's 30
- * days end before Bybit's 500 bars of a 4h chart do), which the history replaces, scaled as the rest of it is. Null where Bybit's perpetual
- * (`bybitId`) is not among the parts or no other venue has readings: one market's line is that market's, and Bybit's history is not put in
- * its place.
+ * Where the readings held give way to the venues' own history (2026-11-22): the first bar of the line from where a second venue's readings
+ * begin (before it the held line is one venue's readings alone), its level, and each long-history venue's reading there (`at`, by market id),
+ * the anchor the history is chained from. Null where no venue in `longIds` is among the parts, fewer than two venues have readings, or a
+ * long-history venue has no reading at the seam.
  */
-export function oiLongSeam(parts: readonly OiPart[], bybitId: string, chained: readonly OiBar[]): OiLongSeam | null {
-  const bybit = parts.find(part => part.id === bybitId);
-  if (parts.length < 2 || !bybit?.bars.length) return null;
-  let start = Infinity;
-  for (const part of parts) if (part !== bybit && part.bars.length) start = Math.min(start, part.bars[0]![0]);
-  const at = bybit.bars.find(bar => bar[0] >= start);
-  if (!at || !(at[4] > 0)) return null;
-  const index = chained.findIndex(bar => bar[0] === at[0]), level = chained[index]?.[4] ?? NaN, k = level / at[4];
-  return index >= 0 && Number.isFinite(k) && k > 0 ? { index, t: at[0], k } : null;
+export interface OiLongAnchor { index: number; t: number; level: number; at: ReadonlyMap<string, number> }
+export function oiLongSeamOf(parts: readonly OiPart[], longIds: readonly string[], chained: readonly OiBar[]): OiLongAnchor | null {
+  const starts = parts.filter(part => part.bars.length).map(part => part.bars[0]![0]).sort((a, b) => a - b);
+  if (starts.length < 2) return null;
+  const index = chained.findIndex(bar => bar[0] >= starts[1]!);
+  if (index < 0) return null;
+  const t = chained[index]![0], level = chained[index]![4], at = new Map<string, number>();
+  for (const id of longIds) {
+    const part = parts.find(p => p.id === id), bar = part?.bars.find(b => b[0] === t);
+    if (bar && bar[4] > 0) at.set(id, bar[4]);
+  }
+  return at.size && level > 0 ? { index, t, level, at } : null;
 }
 
 /**
- * Bybit's readings drawn before the seam: those whose period ends by it (a daily reading drawn at its day's middle would otherwise stand
- * right of the line's first point), each times `k`.
+ * The long view chained back from the seam over the venues with history (Karl, 2026-11-22: "load multiple venues, the history that they have
+ * when zooming out"). Each step back moves the line by the venues read at both its ends: level(t) = level(t + P) x the sum of their readings at
+ * t over the sum at t + P. With one venue that is its readings times the line over its own at the seam (the Bybit-only line shipped on 2026-10-30); with
+ * Binance and Bybit, about 70 % of the open interest added up, the rest taken to move with them. Measured on 83 days of four venues (Binance,
+ * Bybit, OKX, Hyperliquid at 16:00 UTC, every day as the seam): mean error 2.4 % against 9.0 % for Bybit alone (16 % against 4 % 41-88 days
+ * back; Bybit's share went from 14 % to 19 %). `rows`: each venue's bars of `periodMs` (oldest first); only those whose period ends by the seam.
+ * Each bar's open, high and low are the sum's at the same scale as its close. `venues` names the venues each bar was chained over and `sums`
+ * their summed reading there (the bar's level over it is the scale the venues' readings were put at).
  */
-export function oiLongBars(rows: readonly OiBar[], periodMs: number, seam: Pick<OiLongSeam, 't' | 'k'>): OiBar[] {
-  const out: OiBar[] = [];
-  for (const r of rows) if (r[0] + periodMs <= seam.t) out.push([r[0], r[1] * seam.k, r[2] * seam.k, r[3] * seam.k, r[4] * seam.k]);
-  return out;
+export function oiLongChain(rows: ReadonlyMap<string, readonly OiBar[]>, periodMs: number, anchor: Pick<OiLongAnchor, 't' | 'level' | 'at'>): { bars: OiBar[]; venues: string[][]; sums: number[] } {
+  const byTime = new Map<number, Map<string, OiBar>>();
+  for (const [id, bars] of rows) for (const b of bars) if (b[0] + periodMs <= anchor.t && b[4] > 0) {
+    let m = byTime.get(b[0]); if (!m) byTime.set(b[0], m = new Map()); m.set(id, b);
+  }
+  const bars: OiBar[] = [], venues: string[][] = [], sums: number[] = [];
+  let level = anchor.level, then: ReadonlyMap<string, number> = anchor.at;
+  for (const t of [...byTime.keys()].sort((a, b) => b - a)) {
+    // A venue missing at one end (a day its archive has no file for) is left out of that step; with none at both ends the step waits for
+    // the next reading back, measured from the last one chained.
+    const here = byTime.get(t)!, both = [...here.keys()].filter(id => then.has(id)).sort();
+    if (!both.length) continue;
+    let now = 0, before = 0;
+    for (const id of both) { now += here.get(id)![4]; before += then.get(id)!; }
+    level = level * now / before;
+    // The bar's shape: the venues' summed open, high and low at the scale that puts their summed close at the level.
+    let o = 0, h = 0, l = 0;
+    for (const id of both) { const b = here.get(id)!; o += b[1]; h += b[2]; l += b[3]; }
+    const k = level / now;
+    bars.push([t, o * k, h * k, l * k, level]); venues.push(both); sums.push(now);
+    then = new Map([...here].map(([id, b]) => [id, b[4]] as const));
+  }
+  bars.reverse(); venues.reverse(); sums.reverse();
+  return { bars, venues, sums };
 }
 
-/** A window of Bybit's readings held: its period, the window asked for (not the readings' reach: a history that starts later is not asked again) and the readings. */
+/** A window of one venue's readings held: its period, the window asked for (not the readings' reach: a history that starts later is not asked again) and the readings. */
 export interface OiLongHeld { ident: string; period: number; from: number; to: number; bars: readonly OiBar[] }
 
 /**
@@ -85,9 +110,9 @@ export function oiLongWindow(held: OiLongHeld | null, view: { t0: number; t1: nu
 }
 
 /**
- * Bybit's readings for the long view, per period (at most one window each, of one market: another market drops them). One read at a time;
- * a read that fails, or does not answer within `OI_LONG_DEADLINE_MS`, is asked again after `OI_LONG_RETRY_MS`. `read` asks Bybit, `landed`
- * says a read has answered (the pane draws again).
+ * One venue's readings for the long view (the pane keeps one for Bybit and one for Binance), per period (at most one window each, of one
+ * market: another market drops them). One read at a time; a read that fails, or does not answer within `OI_LONG_DEADLINE_MS`, is asked again
+ * after `OI_LONG_RETRY_MS`. `read` asks the venue, `landed` says a read has answered (the pane draws again).
  */
 export class OiLongHistory {
   readonly #held = new Map<number, OiLongHeld>();

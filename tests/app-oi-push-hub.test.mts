@@ -167,7 +167,9 @@ test('when the recordings and the recorded history land (the browser reads them 
   await turn();
   const asked = r.source.asked.shift();
   assert.ok(asked, 'open interest is asked for again');
-  assert.equal(asked.to - asked.from, 501 * MIN, 'whole, not only its last bars');
+  // Whole, not only its last bars: the recent 500 candles from a candle's start (the older stretch takes the bars that leave them, hub.ts).
+  assert.equal(asked.from % MIN, 0, 'from the start of a candle');
+  assert.ok(asked.to - asked.from >= 501 * MIN && asked.to - asked.from < 502 * MIN, 'whole, not only its last bars');
   asked.resolve(history(200)); await turn();
   assert.deepEqual(r.store.state.oi.at(0), [now0 - 39 * MIN, 200, 200, 200, 200]);
   assert.ok(r.hub.flow.loads > loads, 'the flow held (the live seconds alone) is asked for again');

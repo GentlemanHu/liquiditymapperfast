@@ -44,7 +44,7 @@ import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
 import { paintWatermark } from '../watermark.ts';
-import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, footprintLayout, paintFootprint, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
+import { FOOTPRINT_SETTLE_MS, FootprintData, FootprintLod, VENUE_LINES, candleBody, askRowStep, footprintLayout, footprintWant, paintFootprint, rowsBlind, zoomLevel, readBar, rowCellAt, rowCellLines, visibilityFactor, type Bar as FootprintBar, type LodFrame, type RowCell } from './footprint.ts';
 import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect } from '../infobox.ts';
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
@@ -68,6 +68,9 @@ import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
 import { dayStartOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
+import { WARM_IDLE, WARM_LOOK_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
+import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
+import { quietMs } from '../quiet.ts';
 import { answerMedian, emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
 import { BROWSER_RETENTION_MS, RETENTION_MS } from '../../shared/recorder.ts';
 import { MAX_BACK_MS, barMsFor, keyLines, neededFrom, type KeyLine } from '../keylevels/levels.ts';
@@ -1328,28 +1331,78 @@ export class HeatPane {
     return this.#liquidationIds.ids;
   }
 
+  /** The source's question for the footprint's bars. */
+  readonly #footprintLoad = (inst: string, tf: string, from: number, to: number, rows: number, lines: readonly number[], budget: number, venues: boolean) => this.hub.footprint(inst, tf, from, to, rows, lines, budget, venues);
+
+  /**
+   * What the footprint's bars are asked for: the markets, the rows the footprint would draw at this zoom whether it shows or not (so the
+   * table's rows, point of control and imbalances, are the footprint's own when both are on), the Bar stats' retail and whale sizes as size
+   * lines (those between box edges, so their rows are exact at any size from the floor), and the window: the view, from the start of the day
+   * its left edge falls in for the table's running sums from each day's start (`stats`), and with the Highlights' length of candles before
+   * it for the Flow history's baselines (`sizes`; at least 36 candles and six hours: size-history/model.ts). Readers blind to the rows (no
+   * footprint and no Bar stats shown: the Flow history alone, or its warm-up, `rowsBlind`) keep the rows held (`askRowStep`), and only peek
+   * at the level of detail (`zoomLevel`): its hysteresis is the footprint's drawing's.
+   */
+  #footprintAsk(state: AppState, need: { stats: boolean; sizes: boolean }): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
+    const v = this.view, ph = this.plotH, tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint, fine = fp.fine;
+    const markets = this.footprintMarkets(state), blind = rowsBlind({ footprint: state.show.footprint, stats: state.show.stats });
+    const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
+    const zoom = fine > 0 ? fine * 2 ** zoomLevel(this.#lod, blind, fineRowPx) : 0;
+    const rowStep = askRowStep(blind, blind && fp.holds(markets, state.timeframe) ? fp.heldStep : 0, zoom);
+    const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
+    let from = v.t0;
+    if (need.stats && state.barStatOptions.cvdFrom === 'day') from = Math.min(from, dayStartOf(v.t0, resolveZone('page', state.timeZone)));
+    if (need.sizes && state.highlight.on) from = Math.min(from, v.t0 - preRollMs(state.highlight.length, tfMs));
+    return { markets, window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, rowStep, cuts };
+  }
+
+  /** The Flow history's warm-up (size-history/warm.ts `warmNext`). */
+  #warm: WarmState = WARM_IDLE;
+  /** The liquidation days the warm-up holds (main.ts sets it to the panes' shared loader, liq-days.ts): its `warm`, and its `tally`. */
+  liquidationDays: Pick<LiquidationDays, 'warm' | 'tally'> | null = null;
+
+  /**
+   * One look of the Flow history's warm-up, while nothing shows the footprint's bars (size-history/warm.ts): once the page's own requests
+   * have drained and the map's own first load is in, ask for the bars the Flow history and the Bar stats would ask for first, one question
+   * at a time and nothing on the clock, then the liquidation days its row reads. Four looks a second, not every frame.
+   */
+  #warmStep(state: AppState, now: number): void {
+    if (now - this.#warm.at < WARM_LOOK_MS) return;
+    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fp = this.#footprint;
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: true, sizes: true });
+    const want = footprintWant(window, tfMs), liq = this.liquidationMarkets(state), days = this.liquidationDays;
+    const { state: next, act } = warmNext(this.#warm, {
+      now, key: markets.length ? `${markets.join(',')}|${state.timeframe}` : '', hidden: document.visibilityState === 'hidden',
+      mapFirst: this.hub.mapFirst(), quietMs: quietMs(now), barsBusy: fp.busy,
+      barsCovered: fp.holds(markets, state.timeframe) && fp.covers(want.from, want.to),
+      // The perpetuals' liquidations whatever the Spot / Perp filter, as the pane counts them (`liquidationMarkets`).
+      days: !!days && !!this.hub.source.liquidations && liq.some(id => kindOf(state.markets, id) !== 'spot'),
+      answers: fp.tally.answers + (days?.tally.answers ?? 0), failures: fp.tally.failures + (days?.tally.failures ?? 0),
+    });
+    this.#warm = next;
+    if (act === 'bars') this.#warm = warmAfter(this.#warm, fp.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow(), true));
+    else if (act === 'days') {
+      const wall = Date.now(), span = warmLiquidationSpan(window.t0, this.view.t1, tfMs, wall, liquidationCover(this.hub.source.kind, this.hub.recordedSince, wall));
+      this.#warm = warmAfter(this.#warm, span ? days!.warm(liq.join(','), span.from, span.to) : 'done');
+    }
+  }
+
   /**
    * Advance the footprint level of detail for this frame (also drives the heatmap dimming), and load the bars the footprint, the Bar stats
-   * table and the Flow history read: one load for all three, made while any of them shows. The rows are the size the footprint would draw at this zoom whether it shows or
-   * not, so the table's rows (point of control, imbalances) are the footprint's own when both are on.
+   * table and the Flow history read: one load for all three, made while any of them shows (`#footprintAsk`), or warmed while none does.
    */
   #stepFootprint(state: AppState): void {
     const v = this.view, pw = this.plotW, ph = this.plotH, now = performance.now(), drawn = state.show.footprint;
-    if (!(drawn || state.show.stats || state.show.sizes) || !(v.t1 > v.t0)) { this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 }); return; }
-    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, fine = this.#footprint.fine;
-    const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
-    const rowStep = fine > 0 ? fine * 2 ** this.#lod.level(fineRowPx) : 0;
-    // The Bar stats' retail and whale sizes are asked as size lines (those between box edges), so their rows are exact at any size from the floor.
-    const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
-    const markets = this.footprintMarkets(state);
+    const shown = drawn || state.show.stats || state.show.sizes;
+    if (!shown || !(v.t1 > v.t0)) {
+      // Nothing shows the bars: the Flow history's warm-up may ask for them now, so that switching it on draws at once (size-history/warm.ts).
+      if (!shown && v.t1 > v.t0) this.#warmStep(state, now);
+      this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 }); return;
+    }
+    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state, { stats: state.show.stats, sizes: state.show.sizes });
     if (!markets.length) this.#footprint.clear();
-    // The table's running sums from each day's start need the bars from the start of the day the left edge falls in, and the Flow history's
-    // baselines the Highlights' length of candles before the view (at least 36 candles and six hours: size-history/model.ts).
-    let from = v.t0;
-    if (state.show.stats && state.barStatOptions.cvdFrom === 'day') from = Math.min(from, dayStartOf(v.t0, resolveZone('page', state.timeZone)));
-    if (state.show.sizes && state.highlight.on) from = Math.min(from, v.t0 - preRollMs(state.highlight.length, tfMs));
-    const window = from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v;
-    if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, (inst, tf, from, to, rows, lines, budget, venues) => this.hub.footprint(inst, tf, from, to, rows, lines, budget, venues), () => this.invalidate(), cuts, this.hub.sourceNow());
+    if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow());
     const rowH = rowStep > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(rowStep, ph)) : 0;
     const factor = visibilityFactor(state.candles, tfMs, v, pw, ph, rowH || 1, rowStep || 1);
     // The table alone draws nothing on the map: the footprint's level of detail stays off, and with it the heatmap's dimming and the traps.
@@ -1357,7 +1410,7 @@ export class HeatPane {
     // A trap needs the candles and the footprint to be the same market's; a chart showing a reference series instead says nothing about this market's flow.
     // Only while the footprint shows: switched off with the table still on, its fade must not start another scan.
     if (drawn && this.#lodFrame.barAlpha > 0.05 && state.seriesInstrument === state.marketId && !replaying()) {
-      this.#traps.ensure({ inst: state.marketId, tf: state.timeframe, tfMs, candles: state.candles, fine, view: v, load: (inst, tf, from, to, rows) => this.hub.footprint(inst, tf, from, to, rows), onLoad: () => this.invalidate() });
+      this.#traps.ensure({ inst: state.marketId, tf: state.timeframe, tfMs, candles: state.candles, fine: this.#footprint.fine, view: v, load: (inst, tf, from, to, rows) => this.hub.footprint(inst, tf, from, to, rows), onLoad: () => this.invalidate() });
     } else this.#traps.clear();
     if (this.#lodFrame.needsFrame) this.invalidate();
   }

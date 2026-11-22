@@ -19,8 +19,18 @@ export interface OiPaneHeld {
   key: string;
   oi: readonly OiBar[];
   tfMs: number;
-  /** The timeframe's name ("1h"). */
+  /** The timeframe's name ("1h"): the drawn candles' ("4h") where the pane draws longer candles zoomed out (oi-group.ts). */
   tf: string;
+  /**
+   * Each bar's change by its start where the pane drew longer candles than the chart's: the sum of the chart candles' changes in it, so the
+   * summary adds up to the bars drawn (worked out again from the venues' grouped bars it could differ where a venue has a gap). Absent: the
+   * changes are worked out from `oi` and `parts` (`oiChangeByTime`).
+   */
+  change?: ReadonlyMap<number, number>;
+  /** The same per venue (the drawn candles' sums of each venue's own changes, oi-group.ts `groupVenues`), where the pane drew longer candles. */
+  venueChange?: ReadonlyMap<string, ReadonlyMap<number, number>>;
+  /** Each drawn candle's change in USD (the chart candles' added up, oi-group.ts `groupUsd`), where the pane drew longer candles and USD is known. */
+  usd?: ReadonlyMap<number, number>;
   /** Venues added together: how many hold a level at each bar, and how many its change is made of (`OiSum`); null for one market. */
   venues: readonly number[] | null;
   counted: readonly number[] | null;
@@ -42,7 +52,7 @@ export interface OiPaneHeld {
   ids: readonly string[];
   /** One inverse market's coins are its USD over this price (`AppState.oiPrice`); else 0. */
   usdAt: number;
-  /** Where Bybit's scaled history takes over the line (oi-long.ts): the bars before it are not drawn, and not counted; null without it. */
+  /** Where the venues' chained history takes over the line (oi-long.ts): the bars before it are an estimate, not counted; null without it. */
   seam: number | null;
   /** In a replay, the start of the bar under way at its moment (the bars held closed by then), or null live. */
   replayAt: number | null;
@@ -54,7 +64,7 @@ export interface OiPaneHeld {
  */
 export interface OiLiquidations { items: readonly Liquidation[]; version: number; min: number; held: { t0: number; t1: number; min: number; cut: boolean; live: boolean } | null }
 
-/** The bars of `held` the selection holds: those that start inside it (and after Bybit's scaled history, which is not counted). */
+/** The bars of `held` the selection holds: those that start inside it (and after the venues' chained history, which is not counted). */
 export function stretchBars(held: Pick<OiPaneHeld, 'oi' | 'seam'>, sel: Pick<RangeSelection, 't0' | 't1'>): { i0: number; i1: number } {
   const from = Math.max(sel.t0, held.seam ?? -Infinity);
   let i0 = 0; while (i0 < held.oi.length && held.oi[i0]![0] < from) i0++;
@@ -123,9 +133,9 @@ export class OiRangeSummary {
     if (held.key !== current) return [title(spanText(sel.t0, sel.t1)), { key: 'oi-stale', kind: 'note', tone: 'muted', cells: [t('The OI pane last drew another market or timeframe: show it to sum up this selection.')] }];
     const { i0, i1 } = stretchBars(held, sel), usdAt = held.market && held.usdAt > 0 ? held.usdAt : 0;
     const closes = new Map(held.candles.map(c => [c[0], c[4]] as const));
-    const usdMap = held.ownPrice || usdAt > 0 ? oiUsdChangeByTime(held.oi, held.parts, held.tfMs, at => held.ownPrice ? closes.get(at) : undefined, usdAt) : null;
+    const usdMap = held.usd ?? (held.ownPrice || usdAt > 0 ? oiUsdChangeByTime(held.oi, held.parts, held.tfMs, at => held.ownPrice ? closes.get(at) : undefined, usdAt) : null);
     const formingFrom = held.replayAt === null ? Math.floor(now / held.tfMs) * held.tfMs : Infinity;
-    const s = oiStretch({ oi: held.oi, change: oiChangeByTime(held.oi, held.parts, held.tfMs), i0, i1, tfMs: held.tfMs, venues: held.venues, counted: held.counted, cohorts: held.cohorts, formingFrom, parts: held.parts, who: held.who, candles: held.candles, ownPrice: held.ownPrice, usd: usdMap, flag: held.flag });
+    const s = oiStretch({ oi: held.oi, change: held.change ?? oiChangeByTime(held.oi, held.parts, held.tfMs), venueChange: held.venueChange ?? null, i0, i1, tfMs: held.tfMs, venues: held.venues, counted: held.counted, cohorts: held.cohorts, formingFrom, parts: held.parts, who: held.who, candles: held.candles, ownPrice: held.ownPrice, usd: usdMap, flag: held.flag });
     if (!s) return [title(spanText(sel.t0, sel.t1)), { key: 'oi-none', kind: 'note', tone: 'muted', cells: [t('No {tf} candle of the OI pane starts in this range.', { tf: held.tf })] }];
     const n = s.bars, forming = s.t1 > formingFrom;
     // The NL/NS result kept for this selection: the newest that covered every candle, unless the pane holds one as complete now.
@@ -201,7 +211,7 @@ function statusText(s: OiStretch, held: OiPaneHeld, sel: RangeSelection): string
   if (s.known < s.bars) out.push(tn(s.bars - s.known, "{n} candle's change unknown", "{n} candles' changes unknown"));
   if (s.spans > 0) out.push(t('some changes span more than one candle'));
   if (sel.t0 % held.tfMs !== 0 || sel.t1 % held.tfMs !== 0) out.push(t('the {tf} candles that start in the selection', { tf: held.tf }));
-  if (held.seam !== null && held.seam > sel.t0) out.push(t("before {time} the line is Bybit's scaled estimate, not counted", { time: clock(held.seam, true) }));
+  if (held.seam !== null && held.seam > sel.t0) out.push(t("before {time} the line is an estimate from the venues' history, not counted", { time: clock(held.seam, true) }));
   else if (held.oi[0]![0] > sel.t0) out.push(t('held from {time}', { time: clock(held.oi[0]![0], true) }));
   if (held.replayAt !== null) out.push(t('replay: candles closed by {time}', { time: clock(held.replayAt, true) }));
   return out.join(' · ');
