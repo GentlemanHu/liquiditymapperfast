@@ -156,13 +156,18 @@ test('a reading taken as shown is not ranked against windows unlike it: a large 
   // Both books always there: both usual, every window counts, the reading ranks among all 630.
   const healthy = history(() => true);
   assert.equal(rankValue(healthy, 'ask', 0, end, 25, ['big', 'small'])?.n, 630);
-  // Half of the last eight held windows counting is enough: big out for the last four ranks as before (its usual windows do count).
-  const late = history(x => x < 626);
+  // A usual book merely missing from the last windows (a feed back after a few hours, review round 3) says nothing against the reading: it ranks.
+  const late = history(x => x < 625);
   assert.equal(late.usualIn(['big', 'small'], T0 / STEP, end / STEP).length, 2);
-  assert.equal(rankValue(late, 'ask', 0, end, 25, ['big', 'small'])?.n, 626, '4 of the last 8 count');
-  const later = history(x => x < 625);
-  assert.equal(rankValue(later, 'ask', 0, end, 25, ['big', 'small']), null, '3 of the last 8 count');
+  assert.equal(rankValue(late, 'ask', 0, end, 25, ['big', 'small'])?.n, 625, 'big out for the last 5 windows');
   assert.equal(rankValue(late, 'ask', 0, end, 10, ['big', 'small'], null, 1), null, 'a reading short of books is still not ranked');
+  // The large book not usual and back for one window only (or new): the reading with it is refused at once, not after an hour of "highest".
+  const justBack = history(x => x < 200 || x >= 629);
+  assert.equal(rankValue(justBack, 'ask', 0, end, 25, ['big', 'small']), null);
+  // A small book that is not usual never trips it (the usual books still hold 80 % of the band with it there).
+  const smallNew = new BandHistory('k', [], RADII); smallNew.addBooks(['a', 'b', 'tiny']);
+  smallNew.put(frame(['a', 'b', 'tiny'], T0, 630, (id, x) => id === 'tiny' ? (x >= 600 ? 1 : null) : 10), T0, end);
+  assert.equal(rankValue(smallNew, 'ask', 0, end, 21, ['a', 'b', 'tiny'])?.n, 630);
 });
 
 test('whether a history can rank at all: a source whose own minutes began under 48 hours ago, known at once; a history read whole that holds fewer', () => {
