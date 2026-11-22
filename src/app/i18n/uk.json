@@ -20,7 +20,7 @@
  "Market orders of one side met resting orders at one price within {ms} ms. It marks what traded, not what price did next.": "Ринкові ордери однієї сторони зустріли ордери, що стояли в стакані на одній ціні, протягом {ms} мс. Позначка показує, що було виконано, а не те, що зробила ціна далі.",
  "I love building things.": "Я люблю щось створювати.",
  "About": "Про проєкт",
- "GitHub": "GitHub",
+ "Star on GitHub": "Поставити зірку на GitHub",
  "source code and issues": "вихідний код і обговорення",
  "unavailable from your location — a VPN may help": "недоступно у вашому регіоні — може допомогти VPN",
  "live — {detail}": "наживо — {detail}",

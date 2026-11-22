@@ -28,7 +28,7 @@ export function toggleAuthor(anchor: HTMLElement): Panel | null {
       el('p', { class: 'lead', textContent: t('LiquidityMapperFast is free to use: no account, nothing to sign up for, and the code is open source.') }),
       el('p', { class: 'fine', textContent: t('It reads public exchange data straight from your browser, and nothing you do here is sent anywhere. Plus, an optional paid part, pays for the servers behind the page and opens the history they store; its checkout is on a page of its own.') }),
       el('p', { class: 'fine', textContent: t('It is built in free time, so things can occasionally break; tell me when they do.') }),
-      el('div', { class: 'author-links' }, link(AUTHOR.x, 'X', AUTHOR.xHandle), link(AUTHOR.github, t('GitHub'), t('source code and issues'))),
+      el('div', { class: 'author-links' }, link(AUTHOR.x, 'X', AUTHOR.xHandle), link(AUTHOR.github, `★ ${t('Star on GitHub')}`, t('source code and issues'))),
     );
   });
 }
