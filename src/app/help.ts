@@ -27,7 +27,7 @@ export interface HelpTopic {
 export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   profile: {
     title: t('Profile'), guide: 'profile',
-    tip: t('The column at the right edge of the chart: how much liquidity is resting at each price right now, added up over the enabled venues. Pink are asks (sellers waiting above), green are bids (buyers waiting below).'),
+    tip: t('The column at the right edge of the chart: how much liquidity is resting at each price right now, added up over the enabled venues. Asks (sellers waiting above) are in the sell colour, bids (buyers waiting below) in the buy colour.'),
     body: [t('The profile is the heatmap collapsed into one moment: for every price, the total size of the orders waiting there right now, summed over the enabled venues. Long bars are walls.'),
       t('Hover it for the row under the pointer: how much rests there, the two books holding most of it and how many books send data that far. With Mirror on (in the order book\'s Cues panel) it also compares the stretch from the price to the pointer with the same stretch on the other side.')],
   },
@@ -151,7 +151,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     tip: t('Zoom in on the candles to see the trades behind them: at each price, how much was sold (left number) and bought (right number). Bars mark prices where one side clearly dominated.'),
     body: [t('Every row has a bar as long as its volume, in the colour of the side that traded at least 1.15 times the other there, grey where neither did; the panel\'s Bar width sets how length follows volume. A diagonal imbalance compares across rows, as footprint traders read it: a row\'s sells against the buys one row up (while the bid is at one price, the offer is a row above it), and its buys against the sells one row down. Where one is at least the ratio times the other (3 by default), that half of the row is outlined in its side\'s colour; hover a row for the ratio.'),
       t('Imbalances are read on the rows shown, and the rows grow as you zoom out, so zooming changes which rows stand out. The ratio, the minimum size and the number of stacked rows are the bar statistics\' too, so the strip under the map counts what the cells show.'),
-      t('In its panel, a closed candle\'s stacked imbalances can run on as a zone (green from buys, below as support; red from sells, above as resistance) until a later candle trades into it, and its busiest row as a dotted line while no later candle has traded through it (an untouched, or naked, point of control).'),
+      t('In its panel, a closed candle\'s stacked imbalances can run on as a zone (in the rising colour from buys, below as support; in the falling colour from sells, above as resistance) until a later candle trades into it, and its busiest row as a dotted line while no later candle has traded through it (an untouched, or naked, point of control).'),
       t('Count (in its panel) chooses whose market orders are added together: every market switched on (Aggregated), the chart market, or Chosen markets, ticked in a list whatever the venue chips and the Spot / Perp filter say. A choice is an exchange and a kind (Binance perpetual, Coinbase spot), so a layout made on one coin picks the same exchanges\' markets on another; one the coin is not listed on counts nothing, and with none ticked nothing is counted.')],
   },
   lt: {
@@ -171,7 +171,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   bubbles: {
     title: t('Trades'), guide: 'trades',
-    tip: t('Large market orders as bubbles (the fills of one order added together): green for buys, red for sells, the area in proportion to the size, the largest in view the biggest. Hover one for its venue, size and price.'),
+    tip: t('Large market orders as bubbles (the fills of one order added together): buys in the buy colour, sells in the sell colour, the area in proportion to the size, the largest in view the biggest. Hover one for its venue, size and price.'),
     body: [t('Live trades draws every market order as it arrives, as a small dot at its own exchange\'s price: the exchanges trade a little apart, so their dots run in parallel bands. Where dots crowd together their volume adds up, coloured by the side that traded more there. A line runs through the chart market\'s orders (dashed before this page opened, from its prices a second), and the candles turn hollow so nothing hides behind them. New orders flash briefly as they come in.'),
       t('Live trades are kept in this page\'s memory only, from when it opened (a dotted line marks where they begin, and any gap): a reload starts empty, and the oldest go after about an hour and a half of busy trading. The bubbles are recorded as before.')],
   },
@@ -230,7 +230,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   depthPane: {
     title: t('Depth pane'), guide: 'depth',
-    tip: t('Total liquidity within nested distances of the price, over time: the narrowest band strongest at the centre, the widest lightest. Asks point up (pink), bids point down (green).'),
+    tip: t('Total liquidity within nested distances of the price, over time: the narrowest band strongest at the centre, the widest lightest. Asks point up in the sell colour, bids point down in the buy colour.'),
     body: [t('For every moment it adds up the bids and the asks within each band of the price (Bands: Balanced doubles from ±0.31 % to ±5 %; Near, Wide or your own) and draws them as rings, asks up and bids down: each band holds the ones inside it, and the widest band\'s edge is outlined. Scale Detail draws the square root of the money, so a thin inner band shows; Units counts the coin instead of dollars.'),
       t('Venues chooses whose order books the pane adds up: every venue switched on inside the Spot / Perp filter (the default), the chart market\'s own book, or Chosen markets, ticked in its panel (Choose…) whatever the venue chips and the filter say. The Depth pane and the Liquidity Tracker share the choice, and their sounds count the same books.'),
       t('The table reads every band at the pointer\'s time, else the newest: beside the chart where there is room, else over its left end while you point at the pane. Click a row to bring that band forward: it is drawn with the bands inside it at its own scale, and the header and Highlights read it.'),
@@ -287,7 +287,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   },
   cvd: {
     title: t('Flow'), guide: 'flow',
-    tip: t('The taker-flow column left of the map: for every exchange, how much was bought and sold at market over time (cumulative volume delta), spot in blue and perpetual in amber, biggest exchanges first. The top row adds them all.'),
+    tip: t('The taker-flow column left of the map: for every exchange, how much was bought and sold at market over time (cumulative volume delta), spot and perpetual each in a colour of its own (the dots by S and P on each row), biggest exchanges first. The top row adds them all.'),
     body: [t('Passive liquidity (the heatmap and the book) is what traders have placed and may pull; flow is what they have actually done. A line rising means buyers are lifting offers faster than sellers are hitting bids.'),
       t('Rows are ranked by volume over the window you choose and re-ranked now and then. Every line has its own scale, so compare shapes, not heights. The labels are on the left so that the ends of the lines stay clear. Hover a row for its numbers; the gear sets how many exchanges, how tall each row is and when the order changes.'),
       t('A small triangle on a line marks a burst: in ten seconds that exchange bought (up) or sold (down) far more at market than it usually does, judged against its last half hour, and at least the smallest burst. Only bursts seen while the page is open are marked, so a reload clears them. The marks are off until switched on in the gear, which also sets how big and how unusual a burst must be.')],
@@ -329,7 +329,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   orderBook: {
     title: t('Order book'), guide: 'order-book',
     tip: t('The ladder: every price with the liquidity resting there, one column per venue and a bar for the combined size. Scroll over it to zoom the price step.'),
-    body: [t('Each row is a price step. Pink rows above the price are asks, green rows below are bids. The coloured cells are the venues (their size at that price) and the bar on the right is the combined size, with the running total behind it.'),
+    body: [t('Each row is a price step. The rows above the price are asks, in the sell colour, and the rows below are bids, in the buy colour. The coloured cells are the venues (their size at that price) and the bar on the right is the combined size, with the running total behind it.'),
       t('Mode chooses between all venues added together, one venue alone, or a compact view. Group is the price step per row: scroll over the book, or drag its price column, to change it. Hover for the Mirror comparison.'),
       t('In Compact, Venue lines draws the running total of each of the largest venues on its own, over the whole book\'s. The lines share a scale of their own, its full width the largest of them on the rows in view, so they compare with each other; the popup gives a line\'s share of the depth the books show. The venues are ranked by traded volume over the flow column\'s ranking window (a book with no trades held, by its liquidity in view) and kept for a minute; the mark beside each colour in the header names it. Most exchanges publish only part of their book (Bybit about 0.25 % either side of the price): where a venue\'s book ends, a short bar across its line marks the end and the line goes on dashed at the total it reached, since what rests beyond is not published. A book that reaches fewer than three rows from the mark gets no line and the next venue takes its place; the header\'s popup names it. Hover near a line, or its entry in the header, to see it alone with its numbers.'),
       t('Pull/stack (off by default) adds a column after LEVEL USD: how much resting liquidity each row gained (+, stacked) or lost (−, pulled) over the window chosen, from snapshots of every venue\'s book. A venue counts at a row only where its book reached the whole row at both ends, so the edge of its depth moving with the price is not taken for a pull. Rows the price reached in the window are grey: a fill takes liquidity away just as a pull does, and the two cannot be told apart. A venue that reconnects rebuilds its book, which reads as a burst of both. At the finest Group steps the column stays empty: zoom out.'),

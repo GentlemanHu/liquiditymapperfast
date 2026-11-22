@@ -14,7 +14,7 @@ Hyperliquid's liquidation levels and the book's profile on the right.</sub>
 
 - **The heatmap**: the resting orders of every market you switch on, added up behind the candles, with the order book and its profile
   beside them.
-- **Flow**: each exchange's cumulative volume delta (blue for spot, amber for perpetuals), the **Tape** of market orders, the
+- **Flow**: each exchange's cumulative volume delta (spot and perpetuals in colours of their own), the **Tape** of market orders, the
   **Footprint**, **Bar stats**, **Delta** and CVD candles, and **Flow history**.
 - **Derivatives**: open interest, funding, long/short ratios and liquidations across exchanges; for BTC, Hyperliquid's **Liquidation
   levels**.
