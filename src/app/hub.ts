@@ -1160,7 +1160,7 @@ export class Hub {
       const read: OiPart[] = await Promise.all(venues.map(async id => ({ id, ...await this.oiSeries(id, timeframe, from, to).catch(() => ({ bars: [] as OiBar[] })) })));
       if (this.#oiKey !== key || generation !== this.#oiGen) return;
       const answered = read.filter(part => part.bars.length);
-      this.#foldOlder(key, from, tf);
+      this.#foldOlder(key, from, tf, answered);
       const pushed = late(), parts = this.#withOlder(key, answered.map(part => withPushed(part, pushed, tf)));
       this.#oiTf = tf;
       if (parts.length > 1) this.store.set({ oi: oiSumOf(parts, tf).bars, oiInstrument: '', oiParts: parts, oiPrice: 0, oiReading: false });
@@ -1180,7 +1180,7 @@ export class Hub {
     if (!chosen) return;
     const usdAt = prices.get(chosen.inst);
     this.#oiTf = tf;
-    this.#foldOlder(key, from, tf);
+    this.#foldOlder(key, from, tf, chosen.bars.length ? [{ id: chosen.inst, bars: chosen.bars }] : []);
     const part = this.#withOlder(key, [withPushed({ id: chosen.inst, bars: chosen.bars, ...(usdAt ? { usdAt } : {}) }, late(), tf)])[0]!;
     this.store.set({ oi: [...part.bars], oiInstrument: chosen.inst, oiParts: [], oiPrice: usdAt ?? 0, oiReading: false });
     this.#oiHeld = { key, at: now }; this.#oiShown = key; if (part.bars.length) this.#oiRemember([part], tf, now);
@@ -1193,8 +1193,10 @@ export class Hub {
    * to `OI_OLDER_MAX_BARS` candles, and kept for the markets and timeframe they were read for (`#oiOlder`); the whole read and the 20-second
    * refresh keep to the recent candles, so no tab pages a venue's history again every ten minutes. A source answers from what it holds (the
    * server its store, a month; a page the venues' own history, Binance's 30 days and Bybit's 2,400 readings, and its own readings), and
-   * every pane that reads the bars (bar statistics, the sound, the Range tool, Flow history) gets the older ones too. Asked once the view has
-   * stayed `OI_REACH_SETTLE_MS`, and never again for what was asked (a venue whose history does not reach that far is not asked again).
+   * every pane that reads the bars (bar statistics, the sound, the Range tool, Flow history) gets the older ones too. The bars that leave the
+   * recent candles as the clock moves on go to the older ones before each whole read (`#foldOlder`). Asked once the view has stayed
+   * `OI_REACH_SETTLE_MS`, and not again for what was asked (a venue whose history does not reach that far is not asked again), but for an
+   * empty answer where history was expected (`#olderEmpty`) and older bars let go for want of continuity (`#foldOlder`).
    */
   oiReach(t0: number): void {
     if (!Number.isFinite(t0)) return;
@@ -1236,11 +1238,13 @@ export class Hub {
       // Nothing came back for any market, though one had readings where the window ends (its history should go on before it): a failure as a
       // page's sources report one (an empty answer), asked again a minute later, three times, before the window is taken as having none.
       const got = read.some(r => r.bars.some(b => b[0] >= from && b[0] < to)), expected = parts.some(part => (part.bars[0]?.[0] ?? Infinity) <= to + this.#oiTf);
+      // Counted per key, not per window (a view panned a candle between tries would otherwise be asked every minute for ever); after the
+      // third, later empty answers are taken at once, until an answer brings bars.
       if (!got && expected) {
-        const tries = this.#olderEmpty?.key === key && this.#olderEmpty.from === from ? this.#olderEmpty.tries + 1 : 1;
+        const tries = this.#olderEmpty?.key === key ? this.#olderEmpty.tries + 1 : 1;
         if (tries < OI_OLDER_TRIES) { this.#olderEmpty = { key, from, retryAt: Date.now() + OI_OLDER_RETRY_MS, tries }; return; }
-      }
-      this.#olderEmpty = null;
+        this.#olderEmpty = { key, from, retryAt: 0, tries };
+      } else if (got) this.#olderEmpty = null;
       const was = this.#olderFor(key), bars = new Map(was?.bars ?? []);
       for (const r of read) {
         const old = bars.get(r.id), mine = r.bars.filter(b => b[0] >= from && b[0] < to);
@@ -1260,10 +1264,13 @@ export class Hub {
    * Before a whole read replaces the parts: the bars on screen older than its window (`from`) and not yet in the older stretch go there, so
    * the stretch ends where the recent candles begin; what is older than `OI_OLDER_MAX_BARS` past the recent candles is let go.
    */
-  #foldOlder(key: string, from: number, tf: number): void {
+  #foldOlder(key: string, from: number, tf: number, answered: readonly OiPart[]): void {
     const older = this.#olderFor(key); if (!older || from < older.to) return;
-    const held = this.#oiHeldParts(tf);
-    if (!held) return;
+    const held = this.#oiHeldParts(tf), live = new Set(answered.map(part => part.id));
+    // Nothing on screen to fold (another choice was shown meanwhile and cleared), or a market answering now whose bars on screen end before the
+    // new window (a tab asleep longer than its window): the stretch between would be in neither read and never asked for again (review,
+    // 2026-11-22). The older bars are let go; the view's next draw reads them again (`oiReach`).
+    if (!held || held.some(part => live.has(part.id) && (part.bars[part.bars.length - 1]?.[0] ?? -Infinity) < from - tf)) { this.#oiOlder = null; return; }
     const floor = (Math.floor(Date.now() / tf) - OI_RECENT_BARS - OI_OLDER_MAX_BARS) * tf, bars = new Map<string, { usdAt?: number; bars: OiBar[] }>();
     for (const [id, was] of older.bars) bars.set(id, was);
     for (const part of held) {

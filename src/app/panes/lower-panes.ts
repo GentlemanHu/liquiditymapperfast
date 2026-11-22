@@ -1223,10 +1223,15 @@ export class OiPane extends TimePane {
     this.#group = { oi, parts, candles, drawnMs, out };
     return out;
   }
-  #groupedWhoHeld: { fine: ReadonlyMap<number, NlnsCandle>; drawnMs: number; out: Map<number, NlnsCandle> } | null = null;
-  #groupedWho(fine: ReadonlyMap<number, NlnsCandle>, drawnMs: number): Map<number, NlnsCandle> {
-    if (this.#groupedWhoHeld?.fine !== fine || this.#groupedWhoHeld.drawnMs !== drawnMs) this.#groupedWhoHeld = { fine, drawnMs, out: groupWho(fine.values(), drawnMs) };
-    return this.#groupedWhoHeld.out;
+  #groupedWhoHeld: { fine: ReadonlyMap<number, NlnsCandle>; drawnMs: number; first: number; out: Map<number, NlnsCandle> } | null = null;
+  /** NL/NS in the drawn candles, but for the first (`first`): its change is unknown (`groupChanges`), so it has no parts either. */
+  #groupedWho(fine: ReadonlyMap<number, NlnsCandle>, drawnMs: number, first: number): Map<number, NlnsCandle> {
+    const held = this.#groupedWhoHeld;
+    if (held?.fine !== fine || held.drawnMs !== drawnMs || held.first !== first) {
+      const out = groupWho(fine.values(), drawnMs); out.delete(first);
+      this.#groupedWhoHeld = { fine, drawnMs, first, out };
+    }
+    return this.#groupedWhoHeld!.out;
   }
   /** Each bar's change (oi-change.ts: venues added together count their own changes) and the ones that stand out. */
   #analysis(oi: readonly OiBar[], highlight: HighlightOptions, parts: readonly OiPart[], tfMs: number, given: ReadonlyMap<number, number> | null = null) {
@@ -1397,7 +1402,7 @@ export class OiPane extends TimePane {
     // running sums, so the Delta pane's restart is not needed here).
     // From the first drawn candle's start: its parts are of every chart candle in it, not only of those right of the view's edge.
     const fineWho = state.oiChange === 'who' ? this.#whoByStart(this.nlns.forView(state, grouped ? drawnStart(v.t0, tf) : v.t0, v.t1, pageNow(), 'none')) : null;
-    const who = fineWho && grouped ? this.#groupedWho(fineWho, tf) : fineWho;
+    const who = fineWho && grouped ? this.#groupedWho(fineWho, tf, oi[0]![0]) : fineWho;
     this.#keep(state, oi, parts, tf, highlight.on ? analysis.flag : null, seam, who, drawn);
     // Change histogram.
     if (split) {
@@ -1555,7 +1560,8 @@ export class OiPane extends TimePane {
     if (over >= 0) this.#lines = cardAt(over);
     // Who holds it and who moved it, at the bar read, and under them what the card says of that bar (its level, change, rank, who opened and closed).
     // A table that holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
-    const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]) : [];
+    // Grouped: each venue's change is its own over the drawn candle as the chart candles count it (`groupVenues`), as the Range rows say.
+    const venuesThen = state.oiTable && parts.length > 1 ? oiVenuesAt(parts, tf, bar[0]).map(v => grouped ? { ...v, change: grouped.venues.change.get(v.id)?.get(bar[0]) ?? null } : v) : [];
     if (venuesThen.length) {
       const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, foot = `${hover ? clock(bar[0], true) : `${t('newest')} ${clock(bar[0])}`} ${coinOf(state)}`;
       const lines = tableLines(over === shown && this.#lines ? this.#lines : cardAt(shown));

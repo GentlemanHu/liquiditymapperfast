@@ -50,7 +50,7 @@ export function oiLongSeamOf(parts: readonly OiPart[], longIds: readonly string[
 /**
  * The long view chained back from the seam over the venues with history (Karl, 2026-11-22: "load multiple venues, the history that they have
  * when zooming out"). Each step back moves the line by the venues read at both its ends: level(t) = level(t + P) x the sum of their readings at
- * t over the sum at t + P. With one venue that is its readings times the line over its own at the seam (the shipped Bybit-only line); with
+ * t over the sum at t + P. With one venue that is its readings times the line over its own at the seam (the Bybit-only line shipped on 2026-10-30); with
  * Binance and Bybit, about 70 % of the open interest added up, the rest taken to move with them. Measured on 83 days of four venues (Binance,
  * Bybit, OKX, Hyperliquid at 16:00 UTC, every day as the seam): mean error 2.4 % against 9.0 % for Bybit alone (16 % against 4 % 41-88 days
  * back; Bybit's share went from 14 % to 19 %). `rows`: each venue's bars of `periodMs` (oldest first); only those whose period ends by the seam.
@@ -110,9 +110,9 @@ export function oiLongWindow(held: OiLongHeld | null, view: { t0: number; t1: nu
 }
 
 /**
- * Bybit's readings for the long view, per period (at most one window each, of one market: another market drops them). One read at a time;
- * a read that fails, or does not answer within `OI_LONG_DEADLINE_MS`, is asked again after `OI_LONG_RETRY_MS`. `read` asks Bybit, `landed`
- * says a read has answered (the pane draws again).
+ * One venue's readings for the long view (the pane keeps one for Bybit and one for Binance), per period (at most one window each, of one
+ * market: another market drops them). One read at a time; a read that fails, or does not answer within `OI_LONG_DEADLINE_MS`, is asked again
+ * after `OI_LONG_RETRY_MS`. `read` asks the venue, `landed` says a read has answered (the pane draws again).
  */
 export class OiLongHistory {
   readonly #held = new Map<number, OiLongHeld>();

@@ -47,7 +47,7 @@ export interface NlnsCandle {
   side: 1 | -1 | 0; byPrice: boolean; coarse: boolean;
   /**
    * Of the four parts, the coins given a side by the way the price went (no flow recorded over the stretch), not by the takers: the OI pane
-   * draws a bar mostly sided so as rising or falling, not split by who (oi-group.ts `priceSidedShare`).
+   * draws a bar whose side mostly did not come from its takers as rising or falling, not split by who (oi-group.ts `takerSidedShare`).
    */
   byPriceOi?: number;
   /** Markets whose open interest is known at this candle, and those with a change attributed in it; `fine`: those worked out on minute pieces. */

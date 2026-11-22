@@ -157,3 +157,57 @@ test('runs of bars put together by time, and an inverse market\'s at the one pri
   assert.deepEqual(atPrice(held, undefined), held.bars, 'a price unknown leaves them');
   assert.deepEqual(atPrice({ bars: held.bars }, 40_000), held.bars, 'a market in coins as it is');
 });
+
+test('older bars belong to their markets and timeframe: another choice does not show them', async () => {
+  const r = await rig(), now = Date.now(), recent = (Math.floor(now / MIN) - OI_RECENT_BARS) * MIN;
+  const whole = r.hub.loadOi(); await turn(); r.answer(); await whole;
+  r.hub.oiReach(now - 800 * MIN); await settle(); r.answer(); await turn();
+  assert.ok(r.first().every(t => t < recent - 200 * MIN), 'the older bars are on screen');
+  r.store.set({ oiMarkets: 'chart' });
+  const other = r.hub.loadOi(); await turn(); r.answer(); await other;
+  assert.equal(r.store.state.oiInstrument, MARKETS[0]);
+  assert.ok(r.store.state.oi[0]![0] >= recent - MIN, 'its bars start with the recent candles');
+});
+
+test('back to a choice after its bars left the screen, or after a tab slept past its window: the older bars are read again, no hole', async () => {
+  for (const how of ['switch', 'sleep'] as const) {
+    const r = await rig(), now = Date.now();
+    const whole = r.hub.loadOi(); await turn(); r.answer(); await whole;
+    r.hub.oiReach(now - 900 * MIN); await settle(); r.answer(); await turn();
+    if (how === 'switch') {
+      // Another choice for a while (its bars replace these on screen), then back once the bars read lately are too old to show at once.
+      r.store.set({ oiMarkets: 'chart' }); const b = r.hub.loadOi(); await turn(); r.answer(); await b;
+    }
+    const undo = clockAhead((how === 'switch' ? 30 : 12 * 60) * MIN);
+    try {
+      if (how === 'switch') r.store.set({ oiMarkets: 'custom' });
+      const back = r.hub.loadOi(); await turn(); r.answer(); await back;
+      r.store.state.oiParts.forEach(p => assert.equal(widestStep(p.bars), MIN, `${how}: no hole in ${p.id} ${where(p.bars)}`));
+      r.hub.oiReach(Date.now() - 900 * MIN); await settle();
+      assert.ok(r.answer().length > 0, `${how}: the older stretch is asked again`); await turn();
+      r.store.state.oiParts.forEach(p => assert.equal(widestStep(p.bars), MIN, `${how}: after it, no hole in ${p.id} ${where(p.bars)}`));
+      assert.ok(r.first().every(t => t < Date.now() - 800 * MIN), `${how}: and the bars reach back again`);
+    } finally { undo(); }
+  }
+});
+
+test('an empty older read is asked again three times a key, however the view moves meanwhile', async () => {
+  const r = await rig(), now = Date.now();
+  const whole = r.hub.loadOi(); await turn(); r.answer(); await whole;
+  let asked = 0;
+  // The view's left edge a candle further back each minute: each step asks the window it adds, empty every time.
+  for (let k = 0; k < 6; k++) {
+    const undo = clockAhead(k * 61_000);
+    try { r.hub.oiReach(now - (800 + k) * MIN); await settle(); } finally { undo(); }
+    if (r.answer(true).length) asked++; await turn();
+  }
+  assert.equal(asked, 6, 'each new window asked once');
+  // The view stops: its window was taken as having none after the third empty answer of the key, so it is not asked again every minute.
+  let again = 0;
+  for (const k of [7, 8]) {
+    const undo = clockAhead(k * 61_000);
+    try { r.hub.oiReach(now - 805 * MIN); await settle(); } finally { undo(); }
+    if (r.answer(true).length) again++; await turn();
+  }
+  assert.equal(again, 0, 'a view that stays asks nothing more');
+});
