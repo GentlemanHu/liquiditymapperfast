@@ -20,7 +20,7 @@ export function populationText(population: LsPopulation): string {
  *
  * Each venue's line is read in the period its view asks (`lsViewPeriod`: the zoom, the candle and the venue, never the window), named in every
  * question. The view needs itself and half a view before it. Nothing is asked while what is held (the same markets, series and timeframe)
- * covers that, is in periods as fine as this view's, and was answered less than a minute ago, nor while a round is under way (a round ends
+ * covers that, was asked in the periods this view asks, and was answered less than a minute ago, nor while a round is under way (a round ends
  * when every venue has answered or after `LS_ROUND_MS`, whichever comes first). Otherwise the window asked is three quarters of a view before
  * the view and a quarter after, so zooming and panning a little ask nothing. A live view's end moving on is the minute refresh's to follow,
  * not a new question. Asking anew on every view change had a zoom send three requests a step, each up to a second and a half on the server,
