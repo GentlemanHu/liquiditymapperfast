@@ -838,8 +838,8 @@ export class Engine {
 
   /**
    * Open interest read from REST: Binance every 5 s (its minute's last reading is near the minute's end); the others, and Bybit and OKX
-   * while their socket has brought nothing for a minute, once a minute at the minute's close (`closeRead`, oi-close.ts), each reading
-   * filed in the minute it was asked for (`filedAt`).
+   * while their socket has brought nothing for a minute, once a minute at the minute's close (`closeRead`, oi-close.ts), a reading with no
+   * clock of its own filed in the minute it was asked for (`filedAt`).
    */
   #pollOi(now: number): void {
     for (const venue of OI_SAMPLE_VENUES) {
@@ -849,23 +849,22 @@ export class Engine {
       // One request of a venue at a time: a slow answer (up to the fetcher's deadline) must not be overtaken by the next one's. A close not
       // asked for because of it is asked on a later step (the window lasts to `OI_LATE_MS` into the next minute).
       if (this.#oiPolling.has(venue)) continue;
-      let files: number | null = null;
+      let due: ReturnType<typeof closeRead> = null;
       if (venue === 'binance') {
         if (now - (this.#oiAsked.get(venue) ?? 0) < OI_BINANCE_POLL_MS) continue;
         this.#oiAsked.set(venue, now);
       } else {
-        const due = closeRead(now, this.#oiClosed.get(venue)); if (!due) continue;
+        due = closeRead(now, this.#oiClosed.get(venue)); if (!due) continue;
         this.#oiClosed.set(venue, due.closed);
-        files = due.files;
       }
       const listing = this.#coin.markets[venue as MarketVenue]; if (!listing) continue;
       this.#oiPolling.add(venue);
       void fetchOiReading(venue, this.#get, listing).then(reading => {
         if (reading === null) return;
-        // The venue's own clock where the answer carries one, so the reading lands in the minute the exchange stamped; a close answered after
-        // its minute ended still closes that minute.
-        const at = reading.sourceTimestamp ?? this.#now();
-        this.#applyLiveOi(venue, { t: files === null ? at : filedAt(at, files), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }, false, `${venue}:${listing.symbol}`);
+        // The venue's own clock where the answer carries one, so the reading lands in the minute the exchange stamped (it says when the
+        // figure was set); without one, a reading asked for in a minute is filed in it, even when it answered after that minute ended.
+        const t = reading.sourceTimestamp ?? (due ? filedAt(this.#now(), due.files, due.close) : this.#now());
+        this.#applyLiveOi(venue, { t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }, false, `${venue}:${listing.symbol}`);
       }, () => { /* the next tick asks again */ }).finally(() => { this.#oiPolling.delete(venue); });
     }
   }

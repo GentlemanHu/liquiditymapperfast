@@ -72,10 +72,13 @@ test('a REST-only venue\'s read of a minute\'s close is filed in that minute whe
     sample(m + 2 * MIN + 57_200, 1_250, m + 2 * MIN); // m+1's close was missed: nothing in m+1
     sample(m + 3 * MIN + 30_000, 1_300); // no closeOf: at its arrival
     sample(m + 5 * MIN + 1_000, 1_400, m + 3 * MIN); // a closeOf two minutes stale is not taken: at its arrival
+    // A reading its venue stamps is filed at the stamp, closeOf or not (it says when the figure was set), and so is any reading not sampled.
+    app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: m + 7 * MIN + 2_000, receivedAt: m + 7 * MIN + 2_500, base: 1_500, quality: 'sampled', closeOf: m + 6 * MIN }, 'bitget');
+    app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: null, receivedAt: m + 9 * MIN + 1_000, base: 1_600, quality: 'native', closeOf: m + 8 * MIN }, 'bitget');
     history.flushOiBars();
     const bars = serverBars(app, history, id, MIN).filter(b => b[0] >= m - MIN);
-    assert.deepEqual(bars.map(b => [(b[0] - m) / MIN, b[4]]), [[-1, 1_000], [0, 1_200], [2, 1_250], [3, 1_300], [5, 1_400]]);
+    assert.deepEqual(bars.map(b => [(b[0] - m) / MIN, b[4]]), [[-1, 1_000], [0, 1_200], [2, 1_250], [3, 1_300], [5, 1_400], [7, 1_500], [9, 1_600]]);
     const observed = (app.state.oi ?? []).filter(s => s.instrumentId === id).map(s => Number(s.observationTimestamp) - m);
-    assert.deepEqual(observed, [-MIN + 57_300, MIN - 1, 2 * MIN + 57_200, 3 * MIN + 30_000, 5 * MIN + 1_000]);
+    assert.deepEqual(observed, [-MIN + 57_300, MIN - 1, 2 * MIN + 57_200, 3 * MIN + 30_000, 5 * MIN + 1_000, 7 * MIN + 2_000, 9 * MIN + 1_000]);
   } finally { await app.close(); }
 });

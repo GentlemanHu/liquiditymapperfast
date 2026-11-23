@@ -16,8 +16,10 @@ function run(from: number, to: number, closed?: number): { asked: [number, numbe
 
 test('a venue read once a minute is read at once, then at each minute\'s close, filed in the minute it closes', () => {
   assert.deepEqual(run(20_000, 3 * MIN).asked, [[20_000, 0], [OI_CLOSE_AT_MS, 0], [MIN + OI_CLOSE_AT_MS, MIN], [2 * MIN + OI_CLOSE_AT_MS, 2 * MIN]]);
-  // Started in a minute's first seconds: the minute before's close, late.
-  assert.deepEqual(run(4_000, MIN).asked, [[4_000, -MIN], [OI_CLOSE_AT_MS, 0]]);
+  // Started in a minute's first seconds: a reading of its own minute (nothing says the minute before's close was missed: a restart may have
+  // written it; Sol 6.2, 2026-11-23), then its close.
+  assert.deepEqual(run(4_000, MIN).asked, [[4_000, 0], [OI_CLOSE_AT_MS, 0]]);
+  assert.deepEqual(closeRead(m + 4_000, undefined), { files: m, close: false, closed: m - MIN });
   // Started in the close's seconds: that is the close.
   assert.deepEqual(run(58_000, MIN + 30_000).asked, [[58_000, 0]]);
 });
@@ -34,6 +36,8 @@ test('a close missed by the minute\'s end is asked early in the next minute, and
 test('a reading is filed at its own time, never after the end of the minute it was asked for', () => {
   assert.equal(filedAt(m + 57_400, m), m + 57_400);
   assert.equal(filedAt(m + 60_800, m), m + MIN - 1);
-  assert.equal(filedAt(m + 50_100, m), m + 50_100, "Binance's time: when its figure last changed, seconds before");
   assert.equal(filedAt(m + 3_000, m - MIN), m - 1, 'a late close');
+  // Any other read (one at start) a millisecond before the close's, so the close is the minute's row whichever answers first (Sol 6.2).
+  assert.equal(filedAt(m + 60_800, m, false), m + MIN - 2);
+  assert.equal(filedAt(m + 30_000, m, false), m + 30_000);
 });

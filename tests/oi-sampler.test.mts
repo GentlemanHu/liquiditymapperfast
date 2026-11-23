@@ -491,3 +491,55 @@ test('the minute round runs at second 57 of each minute, timed again from the cl
   assert.deepEqual(asked, [20_000, 57_050, 117_050, 177_050]);
   sampler.close();
 });
+
+test('a round under way (Bybit\'s history at start) never holds back Bitget\'s and Deribit\'s closes, nor does a slow Bitget hold back Deribit (Sol 6.2)', { timeout: 5_000 }, async () => {
+  let clock = NOW + 20_000, releaseHistory = (): void => {}, releaseBitget = (): void => {};
+  const history = new Promise<void>(resolve => { releaseHistory = resolve; });
+  let bitgetSlow = false;
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('api.bybit.com/v5/market/open-interest')) { await history; return { result: { list: [] } }; }
+    if (url.includes('api.bybit.com/v5/market/tickers')) return { result: { list: [{ singleOpenInterest: '123' }] } };
+    if (url.includes('bitget.com')) { if (bitgetSlow) await new Promise<void>(resolve => { releaseBitget = resolve; }); return { data: { openInterestList: [{ size: '10' }] } }; }
+    if (url.includes('deribit.com')) return { result: [{ open_interest: 85_000_000, mark_price: 85_000 }] };
+    throw new Error(url);
+  };
+  const applied: OiSampleMessage[] = [];
+  const sampler = new OiSampler(message => applied.push(message), () => {}, get, () => clock, 3_600_000, () => {});
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  const closes = () => applied.splice(0).map(m => [m.instrumentId.split(':')[0], m.closeOf === undefined ? null : (m.closeOf - NOW) / 60_000]);
+  sampler.sync(['bybit:BTCUSDT', 'deribit:BTC-PERPETUAL', 'bitget:BTCUSDT']);
+  await settle();
+  assert.deepEqual(closes(), [['bitget', 0], ['deribit', 0]], 'read at start while Bybit\'s history is still out');
+  clock = NOW + 57_050; void sampler.round(); await settle();
+  assert.deepEqual(closes(), [['bitget', 0], ['deribit', 0]], 'the close, though the round that began at start is under way');
+  // Bitget answers slowly: Deribit's close is not held behind it.
+  bitgetSlow = true;
+  clock = NOW + 60_000 + 57_050; const next = sampler.round(); await settle();
+  assert.deepEqual(closes(), [['deribit', 1]]);
+  clock = NOW + 60_000 + 70_000; releaseBitget(); await settle();
+  assert.deepEqual(closes(), [['bitget', 1]], 'filed in the minute it was asked for');
+  releaseHistory(); await next;
+  assert.deepEqual(closes(), [['bybit', null]]);
+  sampler.close();
+});
+
+test('a timer that fires before the close\'s second (the wall clock stepped back) is timed again and reads nothing (Sol 6.2)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let clock = NOW + 20_000;
+  const asked: number[] = [];
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('bitget.com')) { asked.push(clock - NOW); return { data: { openInterestList: [{ size: '10' }] } }; }
+    throw new Error(url);
+  };
+  const sampler = new OiSampler(() => {}, () => {}, get, () => clock, 60_000, () => {});
+  const settleAll = async () => { for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  sampler.sync(['bitget:BTCUSDT']);
+  await sampler.round();
+  assert.deepEqual(asked, [20_000]);
+  // The timer comes due, but the clock reads 150 ms earlier than when it was set.
+  clock += 37_050 - 150; t.mock.timers.tick(37_050); await settleAll();
+  assert.deepEqual(asked, [20_000], 'nothing read before the close');
+  clock += 150; t.mock.timers.tick(150); await settleAll();
+  assert.deepEqual(asked, [20_000, 57_050], 'then the close');
+  sampler.close();
+});

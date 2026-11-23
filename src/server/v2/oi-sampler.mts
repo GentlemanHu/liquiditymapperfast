@@ -1,6 +1,6 @@
 import { fetchOiHistory, fetchOiReading, venueOf, webGet, type Fetcher, type HistoryListing } from '../../shared/history.ts';
 import { unitOf, type CoinVenue } from '../../shared/coins.ts';
-import { OI_CLOSE_AT_MS, closeRead } from '../../shared/oi-close.ts';
+import { OI_CLOSE_AT_MS, OI_LATE_MS, closeRead } from '../../shared/oi-close.ts';
 
 /**
  * Open interest of the perpetuals the feed manager does not read (it reads Binance's and Hyperliquid's): Bybit, OKX, Bitget and Deribit,
@@ -21,12 +21,13 @@ import { OI_CLOSE_AT_MS, closeRead } from '../../shared/oi-close.ts';
 export const SAMPLED_OI_VENUES: readonly string[] = ['bybit', 'okx', 'bitget', 'deribit'];
 export const OI_SAMPLE_MS = 60_000;
 /**
- * The venues a server reads from REST alone (no socket feed): each one's reading in the minute's round is that minute's close (2026-11-23,
- * `shared/oi-close.ts`). The round runs at second `OI_CLOSE_AT_MS` of each minute, these venues first, and their reading carries the minute
- * it closes (`closeOf`) so the reducer files it there even when the answer comes after the minute ended. Until then the round ran every 60 s
- * from when sampling started and each reading was filed in the minute it arrived in, so a minute's row was mostly the minute before's
- * close and its change showed a candle late. Bybit's and OKX's readings come from their sockets; the round's REST reading of them stays a
- * plain sample.
+ * The venues a server reads from REST alone (no socket feed, no history): each one's reading is that minute's close (2026-11-23,
+ * `shared/oi-close.ts`). The rounds run at second `OI_CLOSE_AT_MS` of each minute; these venues are read each on its own and all at once,
+ * never behind the round's history reads or each other (`#closes`: a round under way at start, or a Bitget read that took 13 s, held the
+ * others' close past the minute, Sol 6.2), and their reading carries the minute it was asked for (`closeOf`) so the reducer files it there
+ * even when the answer comes after the minute ended. Until then the round ran every 60 s from when sampling started and each reading was filed
+ * in the minute it arrived in, so a minute's row was mostly the minute before's close and its change showed a candle late. Bybit's and OKX's
+ * readings come from their sockets; the round's REST reading of them stays a plain sample.
  */
 const CLOSE_VENUES: ReadonlySet<string> = new Set(['bitget', 'deribit']);
 /** The round is timed this long after the close's second, so a timer that fires a moment early still reads the close. */
@@ -103,8 +104,9 @@ export function oiHistoryWriter(history: { persistenceSuspended: boolean; record
 export class OiSampler {
   #ids: string[] = [];
   #timer: ReturnType<typeof setTimeout> | null = null;
-  /** The newest minute whose close each instrument of `CLOSE_VENUES` was asked for (`closeRead`). */
+  /** The newest minute whose close each instrument of `CLOSE_VENUES` was asked for (`closeRead`), and its read under way (`#closeRead`). */
   readonly #closeAsked = new Map<string, number>();
+  readonly #closing = new Map<string, Promise<void>>();
   #fastTimer: ReturnType<typeof setInterval> | null = null;
   #running: Promise<void> | null = null; #fastRunning: Promise<void> | null = null; #closed = false;
   /** When the round under way started (`OI_STALL_MS`). */
@@ -170,13 +172,24 @@ export class OiSampler {
   #schedule(): void {
     const target = OI_CLOSE_AT_MS + ROUND_MARGIN_MS, into = ((this.now() % this.everyMs) + this.everyMs) % this.everyMs;
     const delay = (target - into + this.everyMs) % this.everyMs || this.everyMs;
-    this.#timer = setTimeout(() => { if (this.#closed || !this.#timer) return; this.#schedule(); void this.round(); }, delay);
+    this.#timer = setTimeout(() => {
+      if (this.#closed || !this.#timer) return;
+      const now = ((this.now() % this.everyMs) + this.everyMs) % this.everyMs;
+      this.#schedule();
+      // Fired before the close's second (the wall clock stepped back): timed again, nothing read (Sol 6.2).
+      if (now >= OI_LATE_MS && now < OI_CLOSE_AT_MS) return;
+      void this.round();
+    }, delay);
     this.#timer.unref?.();
   }
 
-  /** One reading of every instrument (after its history, when due); a round under way is the one returned. The timer calls it. */
+  /**
+   * One reading of every instrument (after its history, when due); a round under way is the one returned. The timer calls it. The REST-only
+   * venues' closes are read beside it, each on its own (`#closes`), whether or not a round is under way; the answer settles once both have.
+   */
   round(): Promise<void> {
     if (this.#closed) return Promise.resolve();
+    const closes = this.#closes();
     // A round still under way past the stall limit is no longer waited for (logged): the next one starts beside it, and the reads it waits
     // on are let go by the same limit (`#held`), so one stuck answer cannot stop the sampling of every venue again.
     if (this.#running && this.now() - this.#roundSince > this.stallMs) {
@@ -188,7 +201,35 @@ export class OiSampler {
       const run: Promise<void> = this.#round().finally(() => { if (this.#running === run) this.#running = null; });
       this.#running = run;
     }
-    return this.#running;
+    return closes ? Promise.all([closes, this.#running]).then(() => undefined) : this.#running;
+  }
+
+  /** Each REST-only instrument's reading, all at once (null when there is none). */
+  #closes(): Promise<void> | null {
+    const ids = this.#ids.filter(id => CLOSE_VENUES.has(venueOf(id)));
+    return ids.length ? Promise.all(ids.map(id => this.#closeRead(id))).then(() => undefined) : null;
+  }
+
+  /**
+   * One REST-only instrument's reading, decided when asked (`closeRead`): the minute's close, a close missed by the minute's end asked late,
+   * or the first read of its own minute; it is read after a read of the instrument still under way (waited for to its stall limit, then let
+   * go), never beside it, and filed in the minute it was asked for (`closeOf`) unless that wait ran past the late window. Asked again while
+   * nothing is due (a second round in the minute), the read under way is the one returned (while within its stall limit), else a plain
+   * reading is taken at its own time.
+   */
+  #closeRead(id: string): Promise<void> {
+    const due = closeRead(this.now(), this.#closeAsked.get(id)), under = this.#closing.get(id);
+    // Joined only while its read is within the stall limit (`#held` lets a stuck one go): a stuck read is read past, as `#once` does.
+    if (!due && under && this.#held(id)) return under;
+    if (due) this.#closeAsked.set(id, due.closed);
+    const run: Promise<void> = (async () => {
+      for (let held = this.#held(id); held; held = this.#held(id)) await this.#waitHeld(held);
+      if (this.#closed) return;
+      const closeOf = due && this.now() < due.files + OI_SAMPLE_MS + OI_LATE_MS ? due.files : undefined;
+      return this.#start(id, () => this.#read(id, false, closeOf));
+    })().finally(() => { if (this.#closing.get(id) === run) this.#closing.delete(id); });
+    this.#closing.set(id, run);
+    return run;
   }
 
   /** One reading of each fast (WebSocket-down) venue; a round under way is the one returned. The fast timer calls it. */
@@ -198,10 +239,9 @@ export class OiSampler {
     return this.#fastRunning;
   }
 
-  /** Every instrument in turn, the REST-only venues first: their reading is the minute's close, and a history read must not hold it back. */
+  /** Every instrument with a socket feed in turn, after its history when due (the REST-only venues are read on their own: `#closes`). */
   async #round(): Promise<void> {
-    const ids = [...this.#ids].sort((a, b) => Number(!CLOSE_VENUES.has(venueOf(a))) - Number(!CLOSE_VENUES.has(venueOf(b))));
-    for (const id of ids) await this.#once(id, true);
+    for (const id of this.#ids) if (!CLOSE_VENUES.has(venueOf(id))) await this.#once(id, true);
   }
 
   async #roundFast(): Promise<void> {
@@ -287,7 +327,7 @@ export class OiSampler {
   }
 
   /** One instrument's history (when due and asked for) and its live reading. */
-  async #read(id: string, withHistory: boolean): Promise<void> {
+  async #read(id: string, withHistory: boolean, closeOf?: number): Promise<void> {
     if (this.#closed) return;
     if (withHistory) await this.#historyStep(id);
     if (this.#closed) return;
@@ -296,14 +336,8 @@ export class OiSampler {
     // answer carries one, is kept as the sample's source time, so the reading lands in the minute the exchange stamped, not the one it
     // arrived in.
     this.#lastAsked.set(id, this.now());
-    // A REST-only venue's reading is filed no later than the end of the minute it was asked for (`closeRead`): asked at the round's second it
-    // is that minute's close, a round held up past the minute's end asks for it late, the first round's reading is of its own minute. A
-    // further round in a minute whose close was asked for already (none on the clock) is filed at its own time.
-    let closeOf: number | undefined;
-    if (CLOSE_VENUES.has(venue)) {
-      const due = closeRead(this.now(), this.#closeAsked.get(id));
-      if (due) { this.#closeAsked.set(id, due.closed); closeOf = due.files; }
-    }
+    // A REST-only venue's reading carries the minute it was asked for (`closeOf`, from `#closeRead`), and the reducer files it no later than
+    // that minute's end; neither venue's answer carries a clock (the reducer files by `closeOf` only then).
     try {
       const reading = await within(fetchOiReading(venue, this.get, listing), this.readDeadlineMs, `no answer in ${Math.round(this.readDeadlineMs / 1000)} s`);
       if (this.#closed) return;
