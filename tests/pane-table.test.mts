@@ -884,7 +884,14 @@ test('a table that says no lines at rest keeps room for the largest a pointer wo
   const hover = draw(kept, OI_LINES)!;
   assert.deepEqual([hover.y0, hover.complete, hover.y0 + (hover.height + hover.summaryH) / 2], [63, true, 150]);
   assert.equal(draw(kept, two)!.y0, 63, 'a shorter card moves nothing');
-  // Lines that would not fit under the rows keep no room (a card too wide for the strip beside the plot).
-  const wide = new PaneTable(host, null, () => 0);
-  assert.equal(draw(wide, [], { rest: true }, { restLines: [[{ label: 'x', text: 'y'.repeat(200) }]] })!.y0, 98);
+  // Lines too wide for the strip go on the card whatever the room: they keep none, and leave the others theirs.
+  const wide = new PaneTable(host, null, () => 0), tooWide = [{ label: 'x', text: 'y'.repeat(200) }];
+  assert.equal(draw(wide, [], { rest: true }, { restLines: [tooWide] })!.y0, 98);
+  assert.equal(draw(new PaneTable(host, null, () => 0), [], { rest: true }, { restLines: [tooWide, OI_LINES] })!.y0, 63);
+  // Where the longest card would not fit under the rows (a short pane), none is kept, though a shorter one would fit: the rows stand in the middle
+  // rather than high over an empty gap, and the long card goes on the pop-up (a 254 px Flow history pane, 2026-11-22).
+  const short = new PaneTable(host, null, () => 0), long = [...OI_LINES, ...OI_LINES, ...OI_LINES];
+  const alone180 = draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 })!.y0;
+  assert.ok(draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 }, { restLines: [two] })!.y0 < alone180, 'a short card that fits keeps its room');
+  assert.equal(draw(short, [], { rest: true, h: 180 }, { restLines: [two, long] })!.y0, alone180, 'with a longer one that does not, none');
 });
