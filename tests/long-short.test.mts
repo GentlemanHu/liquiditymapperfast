@@ -1065,3 +1065,15 @@ test('the lines follow the OI pane\'s markets under Spot too, Gate\'s perpetual 
   assert.deepEqual(lsIds({ ...base, scope: 'spot' } as never, hub), both, 'Spot: the same lines, Gate\'s included');
   assert.deepEqual(lsIds({ ...base, scope: 'spot', disabledVenues: ['gateio'] } as never, hub), ['binance:BTCUSDT', 'okx:BTC-USDT-SWAP'], 'Gate switched off stays out');
 });
+
+test('a window trimmed to LS_WINDOW_READINGS still gets the reading before it from Gate\'s twelve pages of 500', async () => {
+  // Review 2026-11-23: trimmed to 6,000 five-minute periods, Gate's pages held the window and not the reading before it, whose step covers
+  // the window's first minutes.
+  const row = (t: number) => ({ time: t / 1000, lsr_account: 1.5, long_users: 600, short_users: 400 });
+  const get = fake({ 'https://api.gateio.ws/': url => { const from = Math.ceil(Number(url.searchParams.get('from')) * 1000 / (5 * M)) * 5 * M;
+    return Array.from({ length: 500 }, (_, i) => row(from + i * 5 * M)).filter(r => r.time * 1000 < NOW); } });
+  const from = NOW - 6_500 * 5 * M + 2 * M, s = await new LongShortCache(get, false, () => NOW).series('gateio:BTC_USDT', 'accounts', 5 * M, from, NOW, undefined, 5 * M);
+  const trimmed = NOW - LS_WINDOW_READINGS * 5 * M;
+  assert.equal(s.status, 'ok');
+  assert.ok(s.points[0]!.t < trimmed && s.points[0]!.t >= trimmed - 5 * M, `the reading before the newest ${LS_WINDOW_READINGS} periods (${(trimmed - s.points[0]!.t) / M} min before)`);
+});
