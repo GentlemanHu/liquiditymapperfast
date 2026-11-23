@@ -966,7 +966,7 @@ test('Bitget, which publishes only its newest readings, never loses what it gath
   const D = 24 * H;
   let now = NOW;
   const get = fake({ 'https://api.bitget.com/': () => ({ code: '00000', data: Array.from({ length: 30 }, (_, i) => ({ ts: String(Math.floor(now / H) * H - (30 - i) * H), longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5' })) }) });
-  const saved: LsChange[] = [], backing: LsBacking = { load: async () => null, save: change => { saved.push(change); } };
+  const saved: LsChange[] = [], backing: LsBacking = { load: async () => null, save: (_key, change) => { saved.push(change); } };
   const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 }, backing);
   for (let day = 0; day < 7; day++) { now = NOW + day * D; await cache.series('bitget:BTCUSDT', 'accounts', H, now - 2 * D, now, undefined, H); }
   const gathered = (await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length;
