@@ -1700,7 +1700,7 @@ export function createLocalServer({
       // A venue's history reading (`historySource`, Binance's statistics) is observed a millisecond before its moment, so it closes the bar
       // that ends there (`normalizeBinanceOpenInterestHistory`); taken at its source time it opened the next one, a period late in any
       // stretch no live sample covers. A live sample is observed at its source time.
-      const { historySource, observationTimestamp: given, closeOf } = message as { historySource?: unknown; observationTimestamp?: unknown; closeOf?: unknown };
+      const { historySource, observationTimestamp: given, closeOf, close } = message as { historySource?: unknown; observationTimestamp?: unknown; closeOf?: unknown; close?: unknown };
       const reading = historySource != null && sourceKnown && typeof given === 'number' && Number.isFinite(given) && given > 0 && given < sourceTimestamp;
       // A REST-only venue's read of a minute's close (`closeOf`, the OI sampler; shared/oi-close.ts) is filed no later than that minute's end:
       // its answer can come a moment after the minute ended, and filed at its arrival it would close the next minute instead. Only a sampled
@@ -1710,7 +1710,7 @@ export function createLocalServer({
       const sample = {
         ...(message as RuntimeMessage & OpenInterestSample),
         sourceTimestamp: sourceKnown ? sourceTimestamp : null,
-        observationTimestamp: reading ? given : closes ? filedAt(own, closeOf) : own,
+        observationTimestamp: reading ? given : closes ? filedAt(own, closeOf, close !== false) : own,
         timeBasis: sourceKnown ? 'exchange' : 'receipt',
         quality: message.quality ?? (sourceKnown ? 'native' : 'sampled'),
       };

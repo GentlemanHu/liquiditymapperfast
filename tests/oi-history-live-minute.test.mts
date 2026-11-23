@@ -75,10 +75,16 @@ test('a REST-only venue\'s read of a minute\'s close is filed in that minute whe
     // A reading its venue stamps is filed at the stamp, closeOf or not (it says when the figure was set), and so is any reading not sampled.
     app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: m + 7 * MIN + 2_000, receivedAt: m + 7 * MIN + 2_500, base: 1_500, quality: 'sampled', closeOf: m + 6 * MIN }, 'bitget');
     app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: null, receivedAt: m + 9 * MIN + 1_000, base: 1_600, quality: 'native', closeOf: m + 8 * MIN }, 'bitget');
+    // A first read asked at :55 answers after the minute ended, then the close queued behind it: both are filed in their minute, the close a
+    // millisecond after the first read, so it is the minute's close (`close: false` on the first; they tied, Sol 6.2 round 2).
+    app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: null, receivedAt: m + 11 * MIN + 1_000, base: 1_700, quality: 'sampled', closeOf: m + 10 * MIN, close: false }, 'bitget');
+    app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: null, receivedAt: m + 11 * MIN + 2_000, base: 1_750, quality: 'sampled', closeOf: m + 10 * MIN, close: true }, 'bitget');
     history.flushOiBars();
     const bars = serverBars(app, history, id, MIN).filter(b => b[0] >= m - MIN);
-    assert.deepEqual(bars.map(b => [(b[0] - m) / MIN, b[4]]), [[-1, 1_000], [0, 1_200], [2, 1_250], [3, 1_300], [5, 1_400], [7, 1_500], [9, 1_600]]);
+    assert.deepEqual(bars.map(b => [(b[0] - m) / MIN, b[4]]), [[-1, 1_000], [0, 1_200], [2, 1_250], [3, 1_300], [5, 1_400], [7, 1_500], [9, 1_600], [10, 1_750]]);
+    const stored = (history.listOi(id, { from: m + 10 * MIN, to: m + 11 * MIN, limit: 10 }) as OiRow[]).map(r => Number(r.close));
+    assert.deepEqual(stored, [1_750], 'the store keeps the close too');
     const observed = (app.state.oi ?? []).filter(s => s.instrumentId === id).map(s => Number(s.observationTimestamp) - m);
-    assert.deepEqual(observed, [-MIN + 57_300, MIN - 1, 2 * MIN + 57_200, 3 * MIN + 30_000, 5 * MIN + 1_000, 7 * MIN + 2_000, 9 * MIN + 1_000]);
+    assert.deepEqual(observed, [-MIN + 57_300, MIN - 1, 2 * MIN + 57_200, 3 * MIN + 30_000, 5 * MIN + 1_000, 7 * MIN + 2_000, 9 * MIN + 1_000, 11 * MIN - 2, 11 * MIN - 1]);
   } finally { await app.close(); }
 });

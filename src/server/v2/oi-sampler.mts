@@ -61,9 +61,10 @@ export interface OiSampleMessage { kind: 'openInterest'; instrumentId: string; s
   historySource?: string;
   /**
    * Set on a REST-only venue's reading: the minute it was asked for, nearly always that minute's close. The reducer files it no later than
-   * that minute's end, even when it came after it ended (oi-close.ts).
+   * that minute's end, even when it came after it ended (oi-close.ts); `close` false marks a first read of its minute, filed a millisecond
+   * before a close so the close outranks it (`filedAt`; two late answers tied, Sol 6.2 round 2).
    */
-  closeOf?: number }
+  closeOf?: number; close?: boolean }
 
 /** One sampled venue's outcome, for the diagnostics route. */
 export interface OiVenueStatus { lastSuccess: number | null; failures: number; lastError: string | null; nextHistoryAt: number | null; fast: boolean;
@@ -170,15 +171,15 @@ export class OiSampler {
    * stay on the minute's close however long a round takes.
    */
   #schedule(): void {
-    const target = OI_CLOSE_AT_MS + ROUND_MARGIN_MS, into = ((this.now() % this.everyMs) + this.everyMs) % this.everyMs;
-    const delay = (target - into + this.everyMs) % this.everyMs || this.everyMs;
+    const target = OI_CLOSE_AT_MS + ROUND_MARGIN_MS, now = this.now(), into = ((now % this.everyMs) + this.everyMs) % this.everyMs;
+    const delay = (target - into + this.everyMs) % this.everyMs || this.everyMs, due = now + delay;
     this.#timer = setTimeout(() => {
       if (this.#closed || !this.#timer) return;
-      const now = ((this.now() % this.everyMs) + this.everyMs) % this.everyMs;
+      // Fired before the moment it was set for (the wall clock stepped back): timed again, nothing read (Sol 6.2). One that fires late (a
+      // held event loop) reads at once: `closeRead` asks for the close missed, or a reading of the minute it is in.
+      const early = this.now() < due - ROUND_MARGIN_MS;
       this.#schedule();
-      // Fired before the close's second (the wall clock stepped back): timed again, nothing read (Sol 6.2).
-      if (now >= OI_LATE_MS && now < OI_CLOSE_AT_MS) return;
-      void this.round();
+      if (!early) void this.round();
     }, delay);
     this.#timer.unref?.();
   }
@@ -225,8 +226,8 @@ export class OiSampler {
     const run: Promise<void> = (async () => {
       for (let held = this.#held(id); held; held = this.#held(id)) await this.#waitHeld(held);
       if (this.#closed) return;
-      const closeOf = due && this.now() < due.files + OI_SAMPLE_MS + OI_LATE_MS ? due.files : undefined;
-      return this.#start(id, () => this.#read(id, false, closeOf));
+      const filed = due && this.now() < due.files + OI_SAMPLE_MS + OI_LATE_MS ? due : null;
+      return this.#start(id, () => this.#read(id, false, filed ? { closeOf: filed.files, close: filed.close } : undefined));
     })().finally(() => { if (this.#closing.get(id) === run) this.#closing.delete(id); });
     this.#closing.set(id, run);
     return run;
@@ -327,7 +328,7 @@ export class OiSampler {
   }
 
   /** One instrument's history (when due and asked for) and its live reading. */
-  async #read(id: string, withHistory: boolean, closeOf?: number): Promise<void> {
+  async #read(id: string, withHistory: boolean, filed?: { closeOf: number; close: boolean }): Promise<void> {
     if (this.#closed) return;
     if (withHistory) await this.#historyStep(id);
     if (this.#closed) return;
@@ -343,7 +344,7 @@ export class OiSampler {
       if (this.#closed) return;
       // An answer with no reading in it (an error body sent with 200, a field gone) is a failure as much as one that did not come.
       if (reading === null) { this.#failure(venue, `${venue} open interest sample had no reading`); return; }
-      this.apply({ kind: 'openInterest', instrumentId: id, sourceTimestamp: reading.sourceTimestamp ?? null, receivedAt: this.now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}), quality: 'sampled', source: `${venue}-openInterest`, ...(closeOf !== undefined ? { closeOf } : {}) }, venue);
+      this.apply({ kind: 'openInterest', instrumentId: id, sourceTimestamp: reading.sourceTimestamp ?? null, receivedAt: this.now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}), quality: 'sampled', source: `${venue}-openInterest`, ...(filed ?? {}) }, venue);
       status.lastSuccess = this.now(); status.failures = 0; status.lastError = null;
     } catch (error) { this.#failure(venue, `${venue} open interest sample failed: ${error instanceof Error ? error.message : String(error)}`); }
   }

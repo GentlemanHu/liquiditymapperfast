@@ -543,3 +543,40 @@ test('a timer that fires before the close\'s second (the wall clock stepped back
   assert.deepEqual(asked, [20_000, 57_050], 'then the close');
   sampler.close();
 });
+
+test('a first read that answers after its minute and the close queued behind it say which is the close (Sol 6.2 round 2)', { timeout: 5_000 }, async () => {
+  let clock = NOW + 55_000, release = (): void => {};
+  let slow = true;
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('bitget.com')) { if (slow) { slow = false; await new Promise<void>(resolve => { release = resolve; }); } return { data: { openInterestList: [{ size: '10' }] } }; }
+    throw new Error(url);
+  };
+  const applied: OiSampleMessage[] = [];
+  const sampler = new OiSampler(message => applied.push(message), () => {}, get, () => clock, 3_600_000, () => {});
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  sampler.sync(['bitget:BTCUSDT']);
+  await settle();
+  clock = NOW + 57_050; const closing = sampler.round(); await settle();
+  clock = NOW + 61_000; release(); await closing;
+  assert.deepEqual(applied.map(m => [m.closeOf! - NOW, m.close]), [[0, false], [0, true]]);
+  sampler.close();
+});
+
+test('a timer that fires late (a held event loop) reads at once (Sol 6.2 round 2)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  let clock = NOW + 20_000;
+  const applied: OiSampleMessage[] = [];
+  const get = async (url: string): Promise<unknown> => {
+    if (url.includes('bitget.com')) return { data: { openInterestList: [{ size: '10' }] } };
+    throw new Error(url);
+  };
+  const sampler = new OiSampler(message => applied.push(message), () => {}, get, () => clock, 60_000, () => {});
+  const settleAll = async () => { for (let i = 0; i < 10; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
+  sampler.sync(['bitget:BTCUSDT']);
+  await sampler.round();
+  applied.splice(0);
+  // The :57 timer runs only at the next minute's 15th second: past the late window, a reading of that minute at once.
+  clock = NOW + 75_000; t.mock.timers.tick(37_050); await settleAll();
+  assert.deepEqual(applied.map(m => [m.closeOf! - NOW, m.close]), [[60_000, false]]);
+  sampler.close();
+});
