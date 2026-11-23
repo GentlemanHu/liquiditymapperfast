@@ -2,10 +2,10 @@
  * When a venue read once a minute is read: at its minute's close (2026-11-23). A bar's change is its close against the bar before, so a
  * minute's row must hold a reading taken at the minute's end. Until 2026-11-23 a venue was read 60 s after its last read, at whatever
  * second the reader had started on, and the reading was filed in the minute it was taken: a reading 12 s into a minute was really the
- * minute before's close, and about 50 s of every minute's change showed in the next candle. An X user found Hyperliquid's +468 BTC of
- * 09:19Z (8787's dense series; the recorded rows put 422 of it) on the 09:20Z candle, in the recorded history (hlm-history read every venue 5-13 s into the minute that day; its minute changes
- * matched 8787's of the minute before with correlation 0.89-0.91, the same minute's 0.21-0.26), and on the 1m Range panel the rise in
- * a rising candle was called new shorts on the next, falling one.
+ * minute before's close, and about 50 s of every minute's change showed in the next candle. An X user found Hyperliquid's rise of 09:19Z
+ * (468 BTC by 8787's dense series) on the 09:20Z candle (422 of it, in the recorded history: hlm-history read every venue 5-13 s into
+ * the minute that day; its minute changes matched 8787's of the minute before with correlation 0.89-0.91, the same minute's 0.21-0.26),
+ * and on the 1m Range panel the rise in a rising candle was called new shorts on the next, falling one.
  *
  * Now each such read is asked at second `OI_CLOSE_AT_MS`. A reading with no clock of its own (Hyperliquid, Bitget, Deribit) is filed in
  * the minute it was asked for, even when its answer comes after that minute ended (`filedAt`); one its venue stamps (Binance, Bybit, OKX)
