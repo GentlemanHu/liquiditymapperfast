@@ -58,3 +58,24 @@ test('a history reading fills only a minute no live sample is in, so another sou
     assert.ok(minutes.every(b => b[4] === 1_000), 'the one-minute series is flat wherever it was recorded live: no rise and fall at each reading');
   } finally { await app.close(); }
 });
+
+test('a REST-only venue\'s read of a minute\'s close is filed in that minute when its answer comes after the minute ended (oi-close.ts)', async () => {
+  // 2026-11-23: a reading filed at its arrival closed the minute it arrived in, so a close asked at second 57 and answered after the minute's end
+  // would close the next minute; the sampler says which minute it closes (`closeOf`) and the reducer files it there.
+  const history = new HistoryStore({ filePath: ':memory:' });
+  const app = createLocalServer({ liveMode: true, persistFixture: false, quota: new QuotaLedger({ filePath: ':memory:' }), history });
+  try {
+    const id = 'bitget:BTCUSDT', m = t0 + 30 * MIN;
+    const sample = (receivedAt: number, base: number, closeOf?: number) => app.applyMessage({ kind: 'openInterest', instrumentId: id, sourceTimestamp: null, receivedAt, base, quality: 'sampled', ...(closeOf !== undefined ? { closeOf } : {}) }, 'bitget');
+    sample(m - MIN + 57_300, 1_000, m - MIN);
+    sample(m + 60_700, 1_200, m); // the close of m, answered 0.7 s after m ended
+    sample(m + 2 * MIN + 57_200, 1_250, m + 2 * MIN); // m+1's close was missed: nothing in m+1
+    sample(m + 3 * MIN + 30_000, 1_300); // no closeOf: at its arrival
+    sample(m + 5 * MIN + 1_000, 1_400, m + 3 * MIN); // a closeOf two minutes stale is not taken: at its arrival
+    history.flushOiBars();
+    const bars = serverBars(app, history, id, MIN).filter(b => b[0] >= m - MIN);
+    assert.deepEqual(bars.map(b => [(b[0] - m) / MIN, b[4]]), [[-1, 1_000], [0, 1_200], [2, 1_250], [3, 1_300], [5, 1_400]]);
+    const observed = (app.state.oi ?? []).filter(s => s.instrumentId === id).map(s => Number(s.observationTimestamp) - m);
+    assert.deepEqual(observed, [-MIN + 57_300, MIN - 1, 2 * MIN + 57_200, 3 * MIN + 30_000, 5 * MIN + 1_000]);
+  } finally { await app.close(); }
+});

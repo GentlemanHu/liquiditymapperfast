@@ -1,9 +1,10 @@
 import { fetchOiHistory, fetchOiReading, venueOf, webGet, type Fetcher, type HistoryListing } from '../../shared/history.ts';
 import { unitOf, type CoinVenue } from '../../shared/coins.ts';
+import { OI_CLOSE_AT_MS, closeRead } from '../../shared/oi-close.ts';
 
 /**
  * Open interest of the perpetuals the feed manager does not read (it reads Binance's and Hyperliquid's): Bybit, OKX, Bitget and Deribit,
- * in coins, for the aggregated open interest. Each is read once a minute while its book is live; Bybit's and OKX's history is read first
+ * in coins, for the aggregated open interest. Each is read once a minute, at the minute's close (`CLOSE_VENUES`), while its book is live; Bybit's and OKX's history is read first
  * and written straight to the history store (two days at 5 minutes, hourly before that to eight days), so their bars reach back at once;
  * a history read that fails is tried again later (backing off to an hour). Bitget's and Deribit's build up from when sampling starts. A
  * live reading goes through the server's own reducer as Binance's does, so the OI route answers it with the stored bars.
@@ -19,6 +20,17 @@ import { unitOf, type CoinVenue } from '../../shared/coins.ts';
  */
 export const SAMPLED_OI_VENUES: readonly string[] = ['bybit', 'okx', 'bitget', 'deribit'];
 export const OI_SAMPLE_MS = 60_000;
+/**
+ * The venues a server reads from REST alone (no socket feed): each one's reading in the minute's round is that minute's close (2026-11-23,
+ * `shared/oi-close.ts`). The round runs at second `OI_CLOSE_AT_MS` of each minute, these venues first, and their reading carries the minute
+ * it closes (`closeOf`) so the reducer files it there even when the answer comes after the minute ended. Until then the round ran every 60 s
+ * from when sampling started and each reading was filed in the minute it arrived in, so a minute's row was mostly the minute before's
+ * close and its change showed a candle late. Bybit's and OKX's readings come from their sockets; the round's REST reading of them stays a
+ * plain sample.
+ */
+const CLOSE_VENUES: ReadonlySet<string> = new Set(['bitget', 'deribit']);
+/** The round is timed this long after the close's second, so a timer that fires a moment early still reads the close. */
+const ROUND_MARGIN_MS = 50;
 /** A sampled venue whose WebSocket OI feed is down is read this often until the feed returns. */
 export const OI_FALLBACK_MS = 5_000;
 /** History read at start: five-minute bars this far back, hourly ones before them to `HISTORY_HOURLY_MS`. */
@@ -45,7 +57,12 @@ export const OI_STALL_MS = 10 * 60_000;
 
 export interface OiSampleMessage { kind: 'openInterest'; instrumentId: string; sourceTimestamp: number | null; observationTimestamp?: number; receivedAt: number; base: number; quality: 'native' | 'sampled'; source?: string;
   /** Set on a venue's history reading: the store puts it only in a minute no live sample is in (`HistoryStore.recordOi`). */
-  historySource?: string }
+  historySource?: string;
+  /**
+   * Set on a REST-only venue's reading: the minute it was asked for, nearly always that minute's close. The reducer files it no later than
+   * that minute's end, even when it came after it ended (oi-close.ts).
+   */
+  closeOf?: number }
 
 /** One sampled venue's outcome, for the diagnostics route. */
 export interface OiVenueStatus { lastSuccess: number | null; failures: number; lastError: string | null; nextHistoryAt: number | null; fast: boolean;
@@ -85,7 +102,9 @@ export function oiHistoryWriter(history: { persistenceSuspended: boolean; record
 
 export class OiSampler {
   #ids: string[] = [];
-  #timer: ReturnType<typeof setInterval> | null = null;
+  #timer: ReturnType<typeof setTimeout> | null = null;
+  /** The newest minute whose close each instrument of `CLOSE_VENUES` was asked for (`closeRead`). */
+  readonly #closeAsked = new Map<string, number>();
   #fastTimer: ReturnType<typeof setInterval> | null = null;
   #running: Promise<void> | null = null; #fastRunning: Promise<void> | null = null; #closed = false;
   /** When the round under way started (`OI_STALL_MS`). */
@@ -137,12 +156,22 @@ export class OiSampler {
     if (this.#closed) return;
     this.#ids = [...new Set(ids.filter(id => SAMPLED_OI_VENUES.includes(venueOf(id)) && oiListingOf(id) !== null))].sort();
     if (this.#ids.length && !this.#timer) {
-      this.#timer = setInterval(() => { void this.round(); }, this.everyMs);
-      this.#timer.unref?.();
+      this.#schedule();
       this.#fastTimer = setInterval(() => { void this.roundFast(); }, OI_FALLBACK_MS);
       this.#fastTimer.unref?.();
       void this.round();
-    } else if (!this.#ids.length && this.#timer) { clearInterval(this.#timer); this.#timer = null; clearInterval(this.#fastTimer!); this.#fastTimer = null; }
+    } else if (!this.#ids.length && this.#timer) { clearTimeout(this.#timer); this.#timer = null; clearInterval(this.#fastTimer!); this.#fastTimer = null; }
+  }
+
+  /**
+   * The next round at second `OI_CLOSE_AT_MS` of the `everyMs` period (each minute), timed again from the clock after each one, so the rounds
+   * stay on the minute's close however long a round takes.
+   */
+  #schedule(): void {
+    const target = OI_CLOSE_AT_MS + ROUND_MARGIN_MS, into = ((this.now() % this.everyMs) + this.everyMs) % this.everyMs;
+    const delay = (target - into + this.everyMs) % this.everyMs || this.everyMs;
+    this.#timer = setTimeout(() => { if (this.#closed || !this.#timer) return; this.#schedule(); void this.round(); }, delay);
+    this.#timer.unref?.();
   }
 
   /** One reading of every instrument (after its history, when due); a round under way is the one returned. The timer calls it. */
@@ -169,8 +198,10 @@ export class OiSampler {
     return this.#fastRunning;
   }
 
+  /** Every instrument in turn, the REST-only venues first: their reading is the minute's close, and a history read must not hold it back. */
   async #round(): Promise<void> {
-    for (const id of this.#ids) await this.#once(id, true);
+    const ids = [...this.#ids].sort((a, b) => Number(!CLOSE_VENUES.has(venueOf(a))) - Number(!CLOSE_VENUES.has(venueOf(b))));
+    for (const id of ids) await this.#once(id, true);
   }
 
   async #roundFast(): Promise<void> {
@@ -265,12 +296,20 @@ export class OiSampler {
     // answer carries one, is kept as the sample's source time, so the reading lands in the minute the exchange stamped, not the one it
     // arrived in.
     this.#lastAsked.set(id, this.now());
+    // A REST-only venue's reading is filed no later than the end of the minute it was asked for (`closeRead`): asked at the round's second it
+    // is that minute's close, a round held up past the minute's end asks for it late, the first round's reading is of its own minute. A
+    // further round in a minute whose close was asked for already (none on the clock) is filed at its own time.
+    let closeOf: number | undefined;
+    if (CLOSE_VENUES.has(venue)) {
+      const due = closeRead(this.now(), this.#closeAsked.get(id));
+      if (due) { this.#closeAsked.set(id, due.closed); closeOf = due.files; }
+    }
     try {
       const reading = await within(fetchOiReading(venue, this.get, listing), this.readDeadlineMs, `no answer in ${Math.round(this.readDeadlineMs / 1000)} s`);
       if (this.#closed) return;
       // An answer with no reading in it (an error body sent with 200, a field gone) is a failure as much as one that did not come.
       if (reading === null) { this.#failure(venue, `${venue} open interest sample had no reading`); return; }
-      this.apply({ kind: 'openInterest', instrumentId: id, sourceTimestamp: reading.sourceTimestamp ?? null, receivedAt: this.now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}), quality: 'sampled', source: `${venue}-openInterest` }, venue);
+      this.apply({ kind: 'openInterest', instrumentId: id, sourceTimestamp: reading.sourceTimestamp ?? null, receivedAt: this.now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}), quality: 'sampled', source: `${venue}-openInterest`, ...(closeOf !== undefined ? { closeOf } : {}) }, venue);
       status.lastSuccess = this.now(); status.failures = 0; status.lastError = null;
     } catch (error) { this.#failure(venue, `${venue} open interest sample failed: ${error instanceof Error ? error.message : String(error)}`); }
   }
@@ -309,7 +348,7 @@ export class OiSampler {
   }
 
   close(): void {
-    this.#closed = true; if (this.#timer) clearInterval(this.#timer); this.#timer = null; if (this.#fastTimer) clearInterval(this.#fastTimer); this.#fastTimer = null;
+    this.#closed = true; if (this.#timer) clearTimeout(this.#timer); this.#timer = null; if (this.#fastTimer) clearInterval(this.#fastTimer); this.#fastTimer = null;
     for (const timer of this.#waits) clearTimeout(timer);
     this.#waits.clear();
   }
