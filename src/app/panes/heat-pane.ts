@@ -1411,7 +1411,12 @@ export class HeatPane {
       }
     }
     if (!(drawn || state.show.stats) || !(v.t1 > v.t0)) {
-      this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 }); return;
+      // The footprint's fade-out still runs its frames, and a trap scan under way stops (review 2026-11-22: with the Flow history on, this return
+      // used to come after them).
+      this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 });
+      this.#traps.clear();
+      if (this.#lodFrame.needsFrame) this.invalidate();
+      return;
     }
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
     const { markets, window, rowStep, cuts } = this.#footprintAsk(state);

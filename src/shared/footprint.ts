@@ -939,9 +939,9 @@ export class FootprintRecorder {
    * retention, so a minute costs a budget SUMS_PER_MINUTE of one whose rows are merged, wherever its rows are.
    */
   #reachSums(ids: readonly string[], from: number, to: number, tfMs: number, budget: number): number {
-    const lo = Math.max(from, this.#cutoff), hi = Math.min(to, this.now() + 2 * MINUTE);
-    if (!(hi > lo)) return from;
     const series = ids.map(id => this.#sums.get(id)).filter((s): s is Map<number, MinuteSum> => s !== undefined);
+    const lo = Math.max(from, this.#cutoff), hi = Math.min(to, heldEnd(series));
+    if (!(hi > lo)) return from;
     let spent = 0;
     for (let bar = Math.floor((hi - 1) / tfMs) * tfMs; bar + tfMs > lo; bar -= tfMs) {
       const start = Math.max(bar, lo), end = Math.min(bar + tfMs, hi);
@@ -1021,7 +1021,9 @@ export class FootprintRecorder {
       };
       // Without rows (`sumsOnly`): each recorded minute's statistics and size-line sums, all in memory, and no row read anywhere.
       if (sumsOnly) {
-        const sums = this.#sums.get(id), lo = Math.max(from, this.#cutoff), hi = Math.min(to, this.now() + 2 * MINUTE);
+        // Up to the newest minute held, as the rows are read: a trade a venue stamped ahead of this clock (a page's engine on a PC clock that
+        // runs slow) counts here as it does in the footprint (review 2026-11-22: clamped at now + 2 min, the newest candle lost its last minutes).
+        const sums = this.#sums.get(id), lo = Math.max(from, this.#cutoff), hi = sums ? Math.min(to, heldEnd([sums])) : lo;
         if (sums) for (let t = Math.ceil(lo / MINUTE) * MINUTE; t < hi; t += MINUTE) if (sums.has(t)) take(t);
         continue;
       }
@@ -1060,6 +1062,13 @@ export class FootprintRecorder {
       return { t, rows: list, buyUsd: list.reduce((s, r) => s + r[1], 0), sellUsd: list.reduce((s, r) => s + r[2], 0), minutes: acc?.minutes.size ?? 0, ...(acc && complete ? { stats: acc.stats } : {}), ...(acc && complete && cuts.length && acc.known ? { over: acc.over } : {}), ...(venueRows ? { venueRows } : {}) };
     }) };
   }
+}
+
+/** The end of the newest minute any of `series` holds, or -Infinity: how far a walk over their minutes need go, whatever window was asked. */
+function heldEnd(series: readonly ReadonlyMap<number, unknown>[]): number {
+  let last = -Infinity;
+  for (const s of series) for (const t of s.keys()) if (t > last) last = t;
+  return last + MINUTE;
 }
 
 /**

@@ -1,12 +1,13 @@
 /**
- * The Flow history's warm-up (Karl, 2026-11-22: "make it instantly pop up the data"). While no pane shows the footprint's bars, the map
- * (`HeatPane.#warmStep`) asks for what the Flow history reads first, once per market list and timeframe, so that switching it on draws at
+ * The Flow history's warm-up (Karl, 2026-11-22: "make it instantly pop up the data"). While the Flow history does not show, the map
+ * (`HeatPane.#warmStep`) asks for what it reads first (its bars without rows, `HeatPane.#sizes`, then its liquidation days), once per market list and timeframe, so that switching it on draws at
  * once from what is held. Measured before it, on the page's own server at 1h: opened cold, the pane waited 0.5 to 0.7 s for its bars and
  * 2.8 s for its liquidation row (eight UTC days, two at a time), and 28 s while the page's own start was still loading; reopened, it drew
  * in 32 ms. The page's own engine took 0.4 s. So the warm-up asks only once the page's own requests have drained (quiet.ts) and the map's
  * own first load is in (`Hub.mapFirst`), one question at a time, and nothing on the clock (footprint.ts `ensure(..., warm)`, liq-days.ts
- * `warm`): the first pane to show the bars asks for what changed since, while drawing what is held. Each piece waits for a second of quiet
- * after the one before. Measured on that server (2026-11-22): at 1h, 11 questions (the markets' step, two slices of bars, as hourly candles
+ * `warm`): the pane switched on asks for what changed since, while drawing what is held. Each piece waits for a second of quiet
+ * after the one before. Measured on that server (2026-11-22, before the bars came without rows, which makes a week one question at every
+ * timeframe): at 1h, 11 questions (the markets' step, two slices of bars, as hourly candles
  * read the hours added together, and eight liquidation days) in about 30 s; at 30 minutes, whose candles are read minute by minute in slices
  * of a few candles, 47 slices and then four days, about two and a half minutes. Fifteen-minute candles take about 30 slices, one- and
  * five-minute ones some 5 to 12 (from the slicing rules).
@@ -51,7 +52,7 @@ export interface WarmLook {
   mapFirst: boolean;
   /** Since the page's own last request settled (quiet.ts `quietMs`). */
   quietMs: number;
-  /** A footprint question is out (the warm-up's own or not). */
+  /** A question for the Flow history's bars is out (the warm-up's own or not). */
   barsBusy: boolean;
   /** The bars held cover what the Flow history asks for first. */
   barsCovered: boolean;
