@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { ARCHIVE_DAYS, ArchiveMemo, LongShortCache, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsReading, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
+import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsIds, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
 import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
@@ -608,16 +608,16 @@ test('a refresh that fails after a good answer says so, with the readings held f
   assert.equal(parseLsSeries(after).status, 'stale', 'and the wire carries it');
 });
 
-test('a long window on a fine chart takes a coarser period: one question reaches across it and the series keeps all of it', async () => {
+test('a long window on a fine chart naming no period takes a coarser one: one question reaches across it and the series keeps all of it', async () => {
   const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1d' ? 24 * H : url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '30min' ? 30 * M : 5 * M;
     return { retCode: 0, result: { list: Array.from({ length: 500 }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / p) * p - (i + 1) * p) })) } }; };
   const get = fake({ 'https://api.bybit.com/': full });
   const cache = new LongShortCache(get, false, () => NOW);
   const month = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
-  assert.deepEqual([month.status, month.periodMs], ['ok', 24 * H], 'forty days use daily readings instead of 1,920 half-hourly readings');
-  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 24 * H && month.points.length >= 40 && month.points.length <= 42, 'the whole daily window, oldest included');
-  assert.equal(get.asked.length, 1, 'the history arrives in one page');
-  assert.ok(Number(new URL(get.asked[0]!).searchParams.get('limit')) <= 42, 'only the daily readings needed are requested');
+  assert.deepEqual([month.status, month.periodMs], ['ok', 30 * M], 'forty days of five-minute candles are read every half hour (2,000 readings a window at most)');
+  // The fake's pages each leave out the reading at their end: three of 1,920 are missing.
+  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 30 * M && month.points.length >= 1_910 && month.points.length <= 1_922, `the whole window, oldest included (${month.points.length})`);
+  assert.equal(get.asked.length, 4, 'four pages of 500');
   const asked = get.asked.length;
   await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
   assert.equal(get.asked.length, asked, 'asked again at once: nothing more to read');
@@ -902,13 +902,44 @@ test('Gate through the real fetcher: its 400 saying CONTRACT_NOT_FOUND is a mark
   } finally { globalThis.fetch = real; }
 });
 
-test('the period of a window is what the cache reads it in: the chart\'s own, coarser for a long window, daily from 30 days', () => {
+test('a question that names no period is read in the chart\'s own where the window fits, coarser for a long one, never daily for being a month', () => {
   const D = 24 * H;
   assert.equal(lsWindowPeriod('binance', H, NOW - 20 * D, NOW), H);
-  assert.equal(lsWindowPeriod('binance', H, NOW - 30 * D, NOW), D);
+  // Daily from 30 days (2026-10-18) turned every line daily on a zoom or a pan of a few pixels (2026-11-23).
+  assert.equal(lsWindowPeriod('binance', H, NOW - 30 * D, NOW), H);
+  assert.equal(lsWindowPeriod('binance', H, NOW - 84 * D, NOW), 2 * H, 'past 2,000 readings a window, the next period');
   assert.equal(lsWindowPeriod('gateio', 15 * M, NOW - 20 * D, NOW), 15 * M, 'Gate keeps 2,000 readings a window like Binance: 20 days fit fifteen-minutely');
   assert.equal(lsWindowPeriod('bitget', 15 * M, NOW - 20 * D, NOW), 2 * H, 'Bitget, with 288 a window, takes two-hourly readings');
   assert.equal(lsWindowPeriod('hyperliquid', H, NOW - D, NOW), 0);
+});
+
+test('the period of a view follows its length, the candle and the venue alone; a question is read in the period it names where the venue has it', () => {
+  const D = 24 * H;
+  assert.deepEqual(['binance', 'bybit', 'okx', 'bitget', 'gateio'].map(v => lsViewPeriod(v, H, 104 * D)), [H, H, H, H, H], 'an hourly chart is hourly to 104 days in view');
+  assert.deepEqual(['binance', 'bybit', 'okx', 'bitget', 'gateio'].map(v => lsViewPeriod(v, H, 105 * D)), [2 * H, 4 * H, D, 2 * H, 4 * H]);
+  assert.equal(lsViewPeriod('okx', 5 * M, 4 * D), 5 * M, 'OKX five-minutely while 2,500 of them fit the view');
+  assert.equal(lsViewPeriod('okx', 15 * M, D), 5 * M, 'and on 15-minute candles (OKX has none between five minutes and an hour)');
+  assert.equal(lsViewPeriod('binance', D, 400 * D), D);
+  assert.equal(lsViewPeriod('hyperliquid', H, D), 0);
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 60 * D, NOW, H), H, 'named: read in it, whatever the window');
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 20 * D, NOW, 2 * H), H, 'Bybit has no two-hourly readings: the window\'s own');
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 20 * D, NOW), H, 'none named (a page from before): the window\'s own');
+});
+
+test('a question naming its period is read in it over a window past 30 days, and one longer than LS_WINDOW_READINGS keeps its newest stretch, never a coarser period', async () => {
+  const D = 24 * H;
+  const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '5min' ? 5 * M : D;
+    const limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / p) * p - i * p) })).filter(r => Number(r.timestamp) < NOW) } }; };
+  const get = fake({ 'https://api.bybit.com/': full });
+  const cache = new LongShortCache(get, false, () => NOW);
+  const hourly = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 46 * D, NOW, undefined, H);
+  assert.deepEqual([hourly.status, hourly.periodMs], ['ok', H], 'a 46-day window on an hourly chart, hourly');
+  assert.ok(hourly.points.length >= 46 * 24 && hourly.points[0]!.t <= NOW - 46 * D, `the whole window (${hourly.points.length})`);
+  assert.ok(get.asked.every(u => new URL(u).searchParams.get('period') === '1h'));
+  const long = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 60 * D, NOW, undefined, 5 * M);
+  assert.equal(long.periodMs, 5 * M);
+  assert.ok(long.points.length <= LS_WINDOW_READINGS + 1 && long.points[0]!.t >= NOW - LS_WINDOW_READINGS * 5 * M - 5 * M, `the newest ${LS_WINDOW_READINGS} readings (${long.points.length})`);
 });
 
 /** A venue whose answers wait until the test lets them go: `release()` answers every request asked so far. */

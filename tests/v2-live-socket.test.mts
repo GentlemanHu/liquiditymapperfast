@@ -117,11 +117,18 @@ test('the live socket says it answers long/short questions, and answers each by 
     socket.send(JSON.stringify({ t: 'ls', id: 8, inst: 'bybit:BTCUSDT', metric: 'everyone', tf: '1h', from: now - 1, to: now }));
     socket.send(JSON.stringify({ t: 'ls', id: 9, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now, to: now - 1 }));
     socket.send(JSON.stringify({ t: 'ls', id: 'x', inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: 1, to: 2 }));
-    await until(() => texts.filter(m => m.t === 'ls').length >= 3);
+    // The period the pane names: a number of milliseconds or none.
+    socket.send(JSON.stringify({ t: 'ls', id: 10, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now - 1, to: now, period: '1h' }));
+    socket.send(JSON.stringify({ t: 'ls', id: 11, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now - 1, to: now, period: -3_600_000 }));
+    socket.send(JSON.stringify({ t: 'ls', id: 12, inst: 'hyperliquid:BTC-PERP', metric: 'accounts', tf: '1h', from: now - 86_400_000, to: now, budget: 1500, period: 3_600_000 }));
+    await until(() => texts.filter(m => m.t === 'ls').length >= 6);
     const answers = new Map(texts.filter(m => m.t === 'ls').map(m => [m.id, m]));
     assert.deepEqual((answers.get(7)!.series as { status: string; points: unknown[] }).status, 'unsupported');
     assert.match(String(answers.get(8)!.error), /metric must be one of/);
     assert.match(String(answers.get(9)!.error), /from and to/);
+    assert.match(String(answers.get(10)!.error), /period must be milliseconds/);
+    assert.match(String(answers.get(11)!.error), /period must be milliseconds/);
+    assert.equal((answers.get(12)!.series as { status: string }).status, 'unsupported', 'a good period goes to the cache with the question');
     await new Promise<void>(resolve => setTimeout(resolve, 100));
     assert.equal(answers.has('x'), false, 'a question with no id of its own is not answered');
   } finally {

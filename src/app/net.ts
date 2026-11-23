@@ -68,10 +68,11 @@ export async function getOi(inst: string, tf: string, from: number, to: number, 
  * `budgetMs`: the server answers within it with what it holds, `pending` while it reads on (a server from before ignores it and waits).
  * Asked at high priority: while a page loads, its history requests hold every connection to the server for seconds each, and a pane's few
  * small answers waited behind them for twenty seconds (2026-10-23); a background question (budget 0, the pane's warming) is asked at low.
+ * `periodMs`: the period to read it in (the pane's, for its view); a server from before reads the window's own and says which.
  */
-export async function getLongShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number): Promise<LsSeries> {
-  const budget = budgetMs === undefined ? '' : `&budget=${Math.max(0, Math.round(budgetMs))}`;
-  return parseLsSeries(await (await request(`/api/v2/long-short?inst=${encodeURIComponent(inst)}&metric=${metric}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}${budget}`, signal, budgetMs === 0 ? 'low' : 'high')).json());
+export async function getLongShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number, periodMs?: number): Promise<LsSeries> {
+  const budget = budgetMs === undefined ? '' : `&budget=${Math.max(0, Math.round(budgetMs))}`, period = periodMs === undefined ? '' : `&period=${Math.round(periodMs)}`;
+  return parseLsSeries(await (await request(`/api/v2/long-short?inst=${encodeURIComponent(inst)}&metric=${metric}&tf=${tf}&from=${Math.floor(from)}&to=${Math.ceil(to)}${budget}${period}`, signal, budgetMs === 0 ? 'low' : 'high')).json());
 }
 /** Taker flow per second for the instruments, as the server records it. */
 export async function getFlow(ids: string[], from: number, to: number): Promise<FlowFrame> {
@@ -301,7 +302,7 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
         live.send(JSON.stringify({ t: 'lt', id, inst: ids, from: Math.floor(from), to: Math.ceil(to), stepMs, half }));
       });
     },
-    longShort(inst, metric, tf, from, to, budgetMs, signal) {
+    longShort(inst, metric, tf, from, to, budgetMs, signal, periodMs) {
       const live = socket;
       if (!lsReady || !live || live.readyState !== WebSocket.OPEN || lsWaiting.size >= LS_SOCKET_WAITING) return null;
       if (signal?.aborted) return Promise.reject(new Error('cancelled'));
@@ -312,7 +313,7 @@ export function connectLive(handlers: LiveHandlers, { silenceMs = 20_000, pollMs
         const timer = window.setTimeout(() => { lsWaiting.delete(id); off(); reject(new Error('live-timeout')); }, LS_SOCKET_TIMEOUT_MS);
         lsWaiting.set(id, { resolve, reject, timer, off });
         signal?.addEventListener('abort', onAbort, { once: true });
-        live.send(JSON.stringify({ t: 'ls', id, inst, metric, tf, from: Math.floor(from), to: Math.ceil(to), ...(budgetMs === undefined ? {} : { budget: Math.max(0, Math.round(budgetMs)) }) }));
+        live.send(JSON.stringify({ t: 'ls', id, inst, metric, tf, from: Math.floor(from), to: Math.ceil(to), ...(budgetMs === undefined ? {} : { budget: Math.max(0, Math.round(budgetMs)) }), ...(periodMs === undefined ? {} : { period: Math.round(periodMs) }) }));
       });
     },
   };
@@ -336,7 +337,7 @@ export interface LiveConnection {
   tape(on: boolean): void;
   /** Whether its server answers long/short questions on it, waiting up to `ms` while that is not known yet (the socket connecting). */
   lsReadyWithin(ms: number): Promise<boolean>;
-  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, budgetMs?: number, signal?: AbortSignal): Promise<LsSeries> | null;
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, budgetMs?: number, signal?: AbortSignal, periodMs?: number): Promise<LsSeries> | null;
   /**
    * The Liquidity Tracker of these markets over [from, to) at `stepMs` for one half-life (an index into LT_HALF_LIVES), in frames handed to `onFrame`
    * newest stretch first, settled when the last has come; null where the socket cannot ask it (a server from before, not open, too many waiting).

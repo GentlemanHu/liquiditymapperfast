@@ -1,51 +1,85 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lsFollowDelay, lsLanded, lsMessage, lsReach, lsWindow, type LsHeld } from '../src/app/panes/ls-window.ts';
-import type { LsSeries } from '../src/shared/long-short.ts';
+import { lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, type LsHeld } from '../src/app/panes/ls-window.ts';
+import { LS_VIEW_READINGS, LS_WINDOW_READINGS, lsPeriodOf, type LsSeries } from '../src/shared/long-short.ts';
 
-const HOUR = 3_600_000, MIN = 60_000, NOW = 1_800_000_000_000, TF = HOUR;
+const HOUR = 3_600_000, MIN = 60_000, DAY = 24 * HOUR, NOW = 1_800_000_000_000, TF = HOUR;
 // A day in view, ending a little after now (a live view).
 const view = { t0: NOW - 24 * HOUR, t1: NOW + HOUR };
+const IDS = ['binance:BTCUSDT', 'bybit:BTCUSDT', 'okx:BTC-USDT-SWAP', 'bitget:BTCUSDT', 'gateio:BTC_USDT'];
+/** What the pane holds after asking `v`: the window and each market's period for that view. */
+const heldOf = (v: { t0: number; t1: number }, tf: number, ids: readonly string[] = IDS, now = NOW): LsHeld => {
+  const periods = lsPeriods(ids, tf, v);
+  return { ident: 'k', ...lsWindow(null, false, 'k', v, tf, now, periods)!, at: now, periods };
+};
+const name = (ms: number): string => ms >= DAY ? `${ms / DAY}d` : ms >= HOUR ? `${ms / HOUR}h` : `${ms / MIN}m`;
 
-test('the first look asks for a view more on each side than the view needs', () => {
-  const ask = lsWindow(null, false, 'k', view, TF, NOW)!;
-  assert.ok(ask.from <= view.t0 - 1.5 * 25 * HOUR && ask.from % HOUR === 0);
+test('the first look asks for more on each side than the view needs', () => {
+  const ask = lsWindow(null, false, 'k', view, TF, NOW, lsPeriods(IDS, TF, view))!;
+  assert.ok(ask.from <= view.t0 - 0.75 * 25 * HOUR && ask.from % HOUR === 0);
   assert.equal(ask.to, NOW + TF, 'a live view is read up to now, not into the future');
 });
 
-const VENUES = ['binance', 'bybit', 'okx', 'bitget', 'gateio'];
-
 test('zooming and panning inside what is held ask nothing, until the minute refresh', () => {
-  const ask = lsWindow(null, false, 'k', view, TF, NOW, VENUES)!, held: LsHeld = { ident: 'k', ...ask, at: NOW };
-  const zoomedIn = { t0: NOW - 12 * HOUR, t1: NOW + HOUR }, zoomedOut = { t0: NOW - 30 * HOUR, t1: NOW + HOUR };
-  assert.equal(lsWindow(held, false, 'k', zoomedIn, TF, NOW + 1_000, VENUES), null, 'every venue is read in hourly readings either way');
-  assert.equal(lsWindow(held, false, 'k', zoomedOut, TF, NOW + 1_000, VENUES), null, 'a step out stays inside the margin');
-  assert.equal(lsWindow(held, false, 'k', view, TF, NOW + 30_000, VENUES), null, 'a live end moving on is not a new question');
-  assert.notEqual(lsWindow(held, false, 'k', view, TF, NOW + MIN + 1, VENUES), null, 'a minute on, the refresh');
+  const held = heldOf(view, TF);
+  const zoomedIn = { t0: NOW - 12 * HOUR, t1: NOW + HOUR }, zoomedOut = { t0: NOW - 27 * HOUR, t1: NOW + HOUR };
+  for (const v of [zoomedIn, zoomedOut]) assert.equal(lsWindow(held, false, 'k', v, TF, NOW + 1_000, lsPeriods(IDS, TF, v)), null, 'inside the margin, every venue hourly either way');
+  assert.equal(lsWindow(held, false, 'k', view, TF, NOW + 30_000, lsPeriods(IDS, TF, view)), null, 'a live end moving on is not a new question');
+  assert.notEqual(lsWindow(held, false, 'k', view, TF, NOW + MIN + 1, lsPeriods(IDS, TF, view)), null, 'a minute on, the refresh');
 });
 
-test('a zoom back in from a wider view asks at once where the venues would be read in finer readings', () => {
-  const DAY = 24 * HOUR;
-  // A month-long view is read in daily readings (from a 30-day window); back to 22 days, the window asked is under 30 days again, and every
-  // venue's readings finer: the held daily steps once stayed drawn until the minute refresh (2026-10-23).
-  const month = lsWindow(null, false, 'k', { t0: NOW - 40 * DAY, t1: NOW + 2 * DAY }, TF, NOW, VENUES)!, monthHeld: LsHeld = { ident: 'k', ...month, at: NOW };
-  const back = { t0: NOW - 20 * DAY, t1: NOW + 2 * DAY }, ask = lsWindow(monthHeld, false, 'k', back, TF, NOW + 1_000, VENUES);
-  assert.ok(monthHeld.from <= back.t0 - 11 * DAY && monthHeld.to >= NOW, 'the month-long window covers the narrower view');
-  assert.ok(ask && ask.to - ask.from < 30 * DAY, 'asked at once, under 30 days');
-  assert.equal(lsWindow(monthHeld, false, 'k', back, TF, NOW + 1_000), null, 'without the venues, coverage alone (as before)');
-  assert.equal(lsWindow(monthHeld, true, 'k', back, TF, NOW + 1_000, VENUES), null, 'a round under way is waited for: the view is looked at again when it lands');
-  // On five-minute candles a two-day view reads Bitget every 30 minutes (its 30 readings a page keep its windows short) and Gate every five;
-  // ten hours read Bitget every 15 minutes and Gate every five still.
-  const days = lsWindow(null, false, 'k', { t0: NOW - 2 * DAY, t1: NOW + HOUR }, 5 * MIN, NOW, ['bitget'])!, daysHeld: LsHeld = { ident: 'k', ...days, at: NOW };
-  const hours = { t0: NOW - 10 * HOUR, t1: NOW + HOUR };
-  assert.notEqual(lsWindow(daysHeld, false, 'k', hours, 5 * MIN, NOW + 1_000, ['bitget']), null, 'Bitget alone finer is enough');
-  assert.equal(lsWindow(daysHeld, false, 'k', hours, 5 * MIN, NOW + 1_000, ['gateio']), null, 'a venue read in the same period either way asks nothing');
+test('a line\'s period follows the zoom alone: an hourly chart reads every venue hourly up to 104 days in view, wherever the view stands', () => {
+  // Karl, 2026-11-23: the pane opened fine and turned coarse a little zoom or move later. The window asked around the view chose the period
+  // (daily from a 30-day window): a 718-hour view asked 719 hours (hourly), a 0.14 % zoom out or a 2-hour pan asked 720 (daily), every venue at once.
+  for (const hours of [718, 719, 720, 744, 1_104, 2_500]) {
+    const end = NOW + 2 * HOUR, v = { t0: end - hours * HOUR, t1: end };
+    for (const shift of [0, -2 * HOUR, -10 * MIN, -3 * DAY, -40 * DAY, -400 * DAY]) {
+      const moved = { t0: v.t0 + shift, t1: v.t1 + shift }, periods = lsPeriods(IDS, TF, moved);
+      assert.deepEqual([...periods.values()].map(name), ['1h', '1h', '1h', '1h', '1h'], `${hours} hours in view, moved ${shift / HOUR} h`);
+      const ask = lsWindow(null, false, 'k', moved, TF, NOW, periods)!;
+      assert.ok(ask.from <= moved.t0 - hours * HOUR / 2 && ask.to >= Math.min(moved.t1, NOW), 'the view and half a view before it are asked');
+      assert.ok(ask.to - ask.from <= LS_WINDOW_READINGS * HOUR, 'within what one window is read in');
+    }
+  }
+  // Past 2,500 hourly readings in view each venue takes its next period that keeps to them (OKX has none between an hour and a day).
+  const wide = lsPeriods(IDS, TF, { t0: NOW - 2_501 * HOUR, t1: NOW });
+  assert.deepEqual([...wide.values()].map(name), ['2h', '4h', '1d', '2h', '4h']);
+});
+
+test('at every timeframe and zoom the readings in view keep to LS_VIEW_READINGS where the venue has a period for it, and the window to LS_WINDOW_READINGS', () => {
+  for (const tf of [MIN, 5 * MIN, 15 * MIN, 30 * MIN, HOUR, 4 * HOUR, DAY]) for (const days of [0.1, 1, 4.6, 14.6, 29, 30, 31, 46, 90, 104, 105, 200, 400, 2_000, 8_000]) {
+    const v = { t0: NOW - days * DAY, t1: NOW + tf }, periods = lsPeriods(IDS, tf, v), ask = lsWindow(null, false, 'k', v, tf, NOW, periods)!;
+    for (const [id, p] of periods) {
+      const venue = id.slice(0, id.indexOf(':'));
+      assert.ok(p >= lsPeriodOf(venue, tf)!, `${venue} never finer than its period for the candle`);
+      assert.ok((v.t1 - v.t0) / p <= LS_VIEW_READINGS || p === DAY, `${venue}: ${days} days on ${name(tf)} in ${name(p)}`);
+      assert.ok((ask.to - ask.from) / p <= LS_WINDOW_READINGS, `${venue}: the window of ${days} days on ${name(tf)} in ${name(p)}`);
+    }
+    if (days < 8_000) assert.ok(ask.from <= v.t0, `${days} days on ${name(tf)}: the view itself is always asked`);
+  }
+});
+
+test('a zoom back in asks at once where a venue\'s period is finer than what is held; a coarser one asks nothing', () => {
+  // A 120-day view is read every two to 24 hours; back to 90 days every venue is hourly again: the held coarse steps once stayed drawn until
+  // the minute refresh (2026-10-23).
+  const wideHeld = heldOf({ t0: NOW - 120 * DAY, t1: NOW + 2 * DAY }, TF), back = { t0: NOW - 90 * DAY, t1: NOW + 2 * DAY };
+  assert.ok(wideHeld.from <= back.t0 - 45 * DAY && wideHeld.to >= NOW, 'the wide window covers the narrower view');
+  assert.ok(lsWindow(wideHeld, false, 'k', back, TF, NOW + 1_000, lsPeriods(IDS, TF, back)), 'asked at once');
+  assert.equal(lsWindow(wideHeld, false, 'k', back, TF, NOW + 1_000), null, 'without the periods, coverage alone');
+  assert.equal(lsWindow(wideHeld, true, 'k', back, TF, NOW + 1_000, lsPeriods(IDS, TF, back)), null, 'a round under way is waited for: the view is looked at again when it lands');
+  // On five-minute candles a ten-day view reads every venue every 15 minutes (OKX hourly); five days are read every five minutes.
+  const daysHeld = heldOf({ t0: NOW - 10 * DAY, t1: NOW + HOUR }, 5 * MIN), five = { t0: NOW - 5 * DAY, t1: NOW + HOUR };
+  assert.deepEqual([...daysHeld.periods!.values()].map(name), ['15m', '15m', '1h', '15m', '15m']);
+  assert.notEqual(lsWindow(daysHeld, false, 'k', five, 5 * MIN, NOW + 1_000, lsPeriods(['bitget:BTCUSDT'], 5 * MIN, five)), null, 'Bitget alone finer is enough');
+  // Eight days are five-minutely (2,304 readings), nine every 15 minutes: zoomed out that far, what is held still covers the view, finer.
+  const fineHeld = heldOf({ t0: NOW - 8 * DAY, t1: NOW + HOUR }, 5 * MIN), out = { t0: NOW - 9 * DAY, t1: NOW + HOUR }, outPeriods = lsPeriods(IDS, 5 * MIN, out);
+  assert.deepEqual([[...fineHeld.periods!.values()].map(name), [...outPeriods.values()].map(name)], [['5m', '5m', '5m', '5m', '5m'], ['15m', '15m', '1h', '15m', '15m']]);
+  assert.equal(lsWindow(fineHeld, false, 'k', out, 5 * MIN, NOW + 1_000, outPeriods), null, 'held finer than the view needs: nothing asked while it covers the view');
 });
 
 test('right after a round, the same view asks nothing, nor does a live view a minute short of the refresh', () => {
-  const DAY = 24 * HOUR;
-  for (const [v, tf] of [[{ t0: NOW - 20 * DAY, t1: NOW + 2 * DAY }, TF], [{ t0: NOW - 10 * HOUR, t1: NOW + HOUR }, 5 * MIN], [view, TF]] as const) {
-    const ask = lsWindow(null, false, 'k', v, tf, NOW, VENUES)!, held: LsHeld = { ident: 'k', ...ask, at: NOW };
+  for (const [v, tf] of [[{ t0: NOW - 20 * DAY, t1: NOW + 2 * DAY }, TF], [{ t0: NOW - 10 * HOUR, t1: NOW + HOUR }, 5 * MIN], [view, TF], [{ t0: NOW - 200 * DAY, t1: NOW + 2 * DAY }, 5 * MIN]] as const) {
+    const held = heldOf(v, tf), VENUES = lsPeriods(IDS, tf, v);
     assert.equal(lsWindow(held, false, 'k', v, tf, NOW + 1_000, VENUES), null, 'the window just asked is the one this view asks');
     // The live window's end moves on with now: its readings can only stay as they are or turn coarser, never a reason to ask.
     const crept = { t0: v.t0 + 30_000, t1: v.t1 + 30_000 };
@@ -95,30 +129,6 @@ test('with no line to draw the pane says why: still reading, a venue that could 
   assert.equal(lsMessage([S('binance:BTCUSDT', 'ok', 3)], false), 'none', 'readings for another time, none for this one');
 });
 
-test('a view shorter than a month asks a window under 30 days, so the venues are read as finely as the candles', () => {
-  const DAY = 24 * HOUR;
-  for (const days of [12, 25]) {
-    const wide = { t0: NOW - days * DAY, t1: NOW + HOUR }, ask = lsWindow(null, false, 'k', wide, TF, NOW)!;
-    assert.ok(ask.to - ask.from < 30 * DAY, `${days} days in view: a window of ${(ask.to - ask.from) / DAY} days (from 30 the cache reads daily)`);
-    assert.ok(ask.from <= wide.t0, 'the view itself is always asked');
-    const held: LsHeld = { ident: 'k', ...ask, at: NOW };
-    assert.equal(lsWindow(held, false, 'k', wide, TF, NOW + 1_000), null, 'what is held is enough for it: asked again only with the minute refresh');
-  }
-  const month = { t0: NOW - 40 * DAY, t1: NOW + HOUR }, ask = lsWindow(null, false, 'k', month, TF, NOW)!;
-  assert.ok(ask.from <= month.t0 && ask.to >= NOW, 'a month-long view is read whole (in daily readings)');
-});
-
-test('up to 29 days in view, at any timeframe finer than daily, the window and its rounding stay under 30 days', () => {
-  const DAY = 24 * HOUR;
-  for (const tf of [MIN, 5 * MIN, 15 * MIN, 30 * MIN, HOUR, 4 * HOUR]) for (const days of [1, 7, 19, 20, 21, 28, 29]) {
-    const live = { t0: NOW - days * DAY, t1: NOW + tf }, back = { t0: NOW - 40 * DAY - days * DAY, t1: NOW - 40 * DAY };
-    for (const v of [live, back]) {
-      const ask = lsWindow(null, false, 'k', v, tf, NOW)!;
-      assert.ok(ask.to - ask.from < 30 * DAY && ask.from <= v.t0, `${days} days on ${tf / MIN}-minute candles: ${(ask.to - ask.from) / HOUR} hours`);
-    }
-  }
-});
-
 test('a venue still being read says "reading", never "none", and keeps the lines drawn while it is read', () => {
   const pendingEmpty: LsSeries = { ...S('bybit:BTCUSDT', 'empty', 0), pending: true };
   assert.equal(lsMessage([pendingEmpty], false), 'reading', 'the round is over, the venue is still being read');
@@ -126,7 +136,7 @@ test('a venue still being read says "reading", never "none", and keeps the lines
   const before = [S('bybit:BTCUSDT', 'ok', 3)];
   const kept = lsLanded(['bybit:BTCUSDT'], before, new Map([['bybit:BTCUSDT', pendingEmpty]]), false)[0]!;
   assert.deepEqual([kept.points.length, kept.status, kept.pending], [3, 'ok', true], 'nothing held for this window yet: the lines drawn stay');
-  // S(…, n) has readings at NOW, NOW - 1 h, …: one reading reaches as far as three.
+  // S(â€¦, n) has readings at NOW, NOW - 1 h, â€¦: one reading reaches as far as three.
   const partial: LsSeries = { ...S('bybit:BTCUSDT', 'ok', 1), pending: true };
   assert.equal(lsLanded(['bybit:BTCUSDT'], before, new Map([['bybit:BTCUSDT', partial]]), true)[0]!.points.length, 3, 'as far as the line with fewer readings (its older ones still being read): the fuller line stays');
   const further: LsSeries = { ...partial, points: [{ t: NOW + HOUR, long: 0.6 }] };
@@ -137,7 +147,7 @@ test('a venue still being read says "reading", never "none", and keeps the lines
 });
 
 test('a round that ended with a venue pending is asked again when it is due, not a minute later', () => {
-  const ask = lsWindow(null, false, 'k', view, TF, NOW, VENUES)!, held: LsHeld = { ident: 'k', ...ask, at: NOW, soon: NOW + 5_000 };
+  const VENUES = lsPeriods(IDS, TF, view), held: LsHeld = { ...heldOf(view, TF), soon: NOW + 5_000 };
   assert.equal(lsWindow(held, false, 'k', view, TF, NOW + 4_000, VENUES), null, 'not yet');
   assert.notEqual(lsWindow(held, false, 'k', view, TF, NOW + 5_000, VENUES), null, 'due');
   assert.equal(lsWindow(held, true, 'k', view, TF, NOW + 5_000, VENUES), null, 'never over a round under way');
@@ -164,5 +174,20 @@ test('lines of different periods compare by how far they are drawn: a daily read
   assert.equal(lsReach(daily), today + DAY);
   assert.equal(lsLanded(['binance:BTCUSDT'], [hourly], new Map([['binance:BTCUSDT', daily]]), false)[0], daily, 'zoomed out to days: the daily line, though its newest reading is stamped at midnight');
   const oldHourly: LsSeries = { ...hourly, pending: true, points: [{ t: NOW - 30 * HOUR, long: 0.6 }] };
-  assert.equal(lsLanded(['binance:BTCUSDT'], [{ ...daily, pending: undefined }], new Map([['binance:BTCUSDT', oldHourly]]), false)[0]!.periodMs, DAY, 'zoomed in, the finer series holds an old stretch: the daily line stays while it is read');
+  assert.equal(lsLanded(['binance:BTCUSDT'], [{ ...daily, pending: undefined }], new Map([['binance:BTCUSDT', oldHourly]]), false, view)[0]!.periodMs, DAY, 'zoomed in, the finer series holds only an old stretch out of view: the daily line stays while it is read');
+});
+
+test('zoomed back in, a finer line takes the coarser one\'s place as soon as it has a step in view, though the coarser one reaches further', () => {
+  // The daily step of today reaches midnight tonight, past the newest hourly reading: compared by how far they reach, the daily line stayed
+  // drawn over a pending hourly answer of a whole day, and stale over it when the round then failed (2026-11-23).
+  const today = Math.floor(NOW / DAY) * DAY;
+  const daily: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: DAY, status: 'ok', points: [{ t: today - DAY, long: 0.6 }, { t: today, long: 0.62 }] };
+  const hours: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: HOUR, status: 'ok', pending: true, points: Array.from({ length: 24 }, (_, i) => ({ t: NOW - (23 - i) * HOUR, long: 0.6 })) };
+  assert.ok(lsReach(daily) > lsReach(hours));
+  assert.equal(lsLanded(['binance:BTCUSDT'], [daily], new Map([['binance:BTCUSDT', hours]]), false, view)[0], hours, 'pending, in view: drawn');
+  const failed = lsLanded(['binance:BTCUSDT'], [hours], new Map([['binance:BTCUSDT', { ...daily, status: 'failed' as const, points: [] }]]), true, view)[0]!;
+  assert.deepEqual([failed.periodMs, failed.status], [HOUR, 'stale'], 'a failure after it keeps the hourly line, stale');
+  // A coarser answer still reaches as far before it replaces a finer line (a zoom out past the switch, read in its older stretch first).
+  const oldDaily: LsSeries = { ...daily, pending: true, points: [{ t: today - 3 * DAY, long: 0.6 }] };
+  assert.deepEqual(lsLanded(['binance:BTCUSDT'], [{ ...hours, pending: undefined }], new Map([['binance:BTCUSDT', oldDaily]]), false, view).map(s => [s.periodMs, s.pending]), [[HOUR, true]]);
 });

@@ -143,13 +143,48 @@ export function lsPeriodAtLeast(venue: string, ms: number): number | null {
 }
 
 /**
- * The period a venue's readings of a window [from, to) are taken in: the chart's own where that fits the window, else the shortest that does
- * (a window keeps to `windowReadings`; from 30 days on, daily readings for month-scale context). 0 for a venue that publishes none. The pane
- * reads it to know which of the cache's series a window lands on.
+ * The period a window [from, to) is read in when the question names none (a page from before `lsViewPeriod`): the chart's own where that fits
+ * the window, else the shortest that does (a window keeps to `windowReadings`). 0 for a venue that publishes none. Daily readings from a
+ * 30-day window on (2026-10-18, to read less history) made every venue's line turn 24 times coarser at once wherever a zoom or a pan of a
+ * few pixels took the window past 30 days, on any timeframe (Karl, 2026-11-23: the pane looks fine when opened and turns coarse a little
+ * zoom or move later); they are gone.
  */
 export function lsWindowPeriod(venue: string, tfMs: number, from: number, to: number): number {
-  const span = to - from, need = Math.max(span / windowReadings(venue), span >= 30 * DAY ? DAY : 0), fine = LS_VENUES.includes(venue) ? lsPeriodOf(venue, tfMs) : null;
+  const need = (to - from) / windowReadings(venue), fine = LS_VENUES.includes(venue) ? lsPeriodOf(venue, tfMs) : null;
   return fine === null ? 0 : fine >= need ? fine : lsPeriodAtLeast(venue, need) ?? 0;
+}
+
+/**
+ * The most readings a venue's line takes across the view: a coarser period comes only where the chart's own would put more than this in
+ * view, about one and a quarter a pixel on a 2,000-pixel plot, so the finer line's steps are under a pixel there and the coarser's a few
+ * pixels at most (an hourly chart keeps hourly readings up to a 104-day view).
+ */
+export const LS_VIEW_READINGS = 2_500;
+/**
+ * The most readings one window is read in at its period: two views of `LS_VIEW_READINGS` and a candle fit, and so do one question's pages at
+ * Binance, Bybit and Gate (`PAGES` of 500).
+ */
+export const LS_WINDOW_READINGS = 6_000;
+
+/**
+ * The period a venue's line is read in for a view `spanMs` long on candles of `tfMs`: the venue's own for the candle (`lsPeriodOf`), or,
+ * where that would put more than `LS_VIEW_READINGS` readings in view, the venue's shortest period that does not. It follows the zoom alone,
+ * never where the view stands nor how much the pane asks around it, so a pan never changes a line's period and a zoom only where its
+ * readings outnumber the pixels. Bitget's and OKX's lines reach back only as far as they publish at that period (their newest 30 and 1,440
+ * readings). 0 for a venue that publishes none.
+ */
+export function lsViewPeriod(venue: string, tfMs: number, spanMs: number): number {
+  const fine = LS_VENUES.includes(venue) ? lsPeriodOf(venue, tfMs) : null;
+  if (fine === null) return 0;
+  return !(spanMs / fine > LS_VIEW_READINGS) ? fine : Math.max(fine, lsPeriodAtLeast(venue, spanMs / LS_VIEW_READINGS) ?? fine);
+}
+
+/**
+ * The period a question is read in: the one it names (the pane's, `lsViewPeriod`) where the venue publishes it, else `lsWindowPeriod` (a
+ * page from before names none, and a period the venue does not publish is not one to read).
+ */
+export function lsQuestionPeriod(venue: string, tfMs: number, from: number, to: number, asked?: number): number {
+  return asked !== undefined && LS_VENUES.includes(venue) && PERIODS[venue]?.[asked] !== undefined ? asked : lsWindowPeriod(venue, tfMs, from, to);
 }
 
 /** The population a venue's series counts, given the series chosen; null for a venue that publishes none. */
@@ -547,19 +582,22 @@ export class LongShortCache {
   }
 
   /**
-   * The readings of [from, to). With `budgetMs` the answer waits at most that long (wall-clock ms) for a read of the venue: past it, what is held
-   * is answered with `pending`, and the read goes on, so the next question gets what it read. Without one it waits for the read, as a question
-   * always did (an older page asks so).
+   * The readings of [from, to), in the period the question names (`periodMs`, the pane's `lsViewPeriod`; `lsQuestionPeriod`). With
+   * `budgetMs` the answer waits at most that long (wall-clock ms) for a read of the venue: past it, what is held is answered with `pending`,
+   * and the read goes on, so the next question gets what it read. Without one it waits for the read, as a question always did (an older page
+   * asks so).
    */
-  async series(id: string, metric: LsMetric, tfMs: number, from: number, to: number, budgetMs?: number): Promise<LsSeries> {
+  async series(id: string, metric: LsMetric, tfMs: number, from: number, to: number, budgetMs?: number, askedPeriodMs?: number): Promise<LsSeries> {
     const colon = id.indexOf(':'), venue = id.slice(0, colon), symbol = id.slice(colon + 1);
-    // A window needs at most `windowReadings` readings: a long one on a fine chart takes a coarser period, so one question always reaches
-    // across it and the series never holds more than it keeps. Month-scale context uses daily readings, independent of the candle setting.
     const population = colon > 0 && LS_VENUES.includes(venue) ? lsPopulationOf(venue, metric) : null;
-    // The chart's own period where that fits the window, else the shortest that does (OKX steps from five minutes straight to an hour).
-    const periodMs = population ? lsWindowPeriod(venue, tfMs, from, to) : 0;
+    // The period asked where the venue publishes it: the window never chooses it (the pane's padding once did, and a zoom or a pan of a few
+    // pixels turned every line daily). A page from before names none: the chart's own where that fits the window, else the shortest that does.
+    const periodMs = population ? lsQuestionPeriod(venue, tfMs, from, to, askedPeriodMs) : 0;
     const answer = (points: LsPoint[], status: LsStatus): LsSeries => ({ id, population, periodMs, points, status });
     if (!population || !periodMs) return answer([], 'unsupported');
+    // A window longer than `LS_WINDOW_READINGS` readings at that period keeps its newest stretch (the pane never asks one), never a coarser
+    // period: the series stays within what it keeps, and what is read within what one question's pages reach.
+    from = Math.max(from, Math.min(to, this.now() + periodMs) - LS_WINDOW_READINGS * periodMs);
     if (this.browser && venue === 'okx') return answer([], 'serverOnly');
     const key = `${id}|${population}|${periodMs}`;
     let held = this.#series.get(key);

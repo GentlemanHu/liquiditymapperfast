@@ -123,6 +123,7 @@ function windowOf(url: URL, defaultTo: number, defaultSpan: number): { from: num
 const BAD_WINDOW = 'from and to must be milliseconds, from before to and neither negative';
 const BAD_CUTS = (floor: number): string => `cuts must be up to ${MAX_CUTS} sizes in USD, each from ${floor} to ${MAX_CUT_USD}`;
 const BAD_SERIES = 'inst and a supported tf are required';
+const BAD_LS_PERIOD = 'period must be milliseconds, more than 0';
 
 /** Attach the v2 data plane (depth recorder, live WebSocket, series endpoints) to a running local server. */
 export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, heartbeatMs = HEARTBEAT_MS, oiSampling = false, priceHistoryGet = webGet, fullDepthMake }: V2Options): V2Handle {
@@ -567,7 +568,10 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     // `budget` (ms): answer within it with what is held, `pending` while the venue is read on; a page from before sends none and waits for the read.
     const rawBudget = url.searchParams.get('budget'), budget = rawBudget === null ? undefined : Number(rawBudget);
     if (budget !== undefined && !(Number.isFinite(budget) && budget >= 0)) return sendJson(res, { error: 'budget must be milliseconds, not negative' }, 400);
-    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to, budget === undefined ? undefined : Math.min(budget, 30_000))
+    // `period` (ms): the period the pane reads the venue in for its view (`lsViewPeriod`); a page from before sends none.
+    const rawPeriod = url.searchParams.get('period'), period = rawPeriod === null ? undefined : Number(rawPeriod);
+    if (period !== undefined && !(Number.isSafeInteger(period) && period > 0)) return sendJson(res, { error: BAD_LS_PERIOD }, 400);
+    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to, budget === undefined ? undefined : Math.min(budget, 30_000), period)
       .then(series => sendJson(res, series), () => sendJson(res, { error: 'long/short ratios could not be read' }, 502));
   };
   /**
@@ -581,16 +585,17 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const id = m.id;
     if (typeof id !== 'number' || !Number.isSafeInteger(id)) return;
     const reply = (body: object): void => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ t: 'ls', id, ...body })); };
-    const { inst, metric, from, to, budget } = m, tfMs = timeframeMs(m.tf);
+    const { inst, metric, from, to, budget, period } = m, tfMs = timeframeMs(m.tf);
     if (typeof inst !== 'string' || !inst || inst.length > 120 || !tfMs) return reply({ error: BAD_SERIES });
     if (typeof metric !== 'string' || !(LS_METRICS as readonly string[]).includes(metric)) return reply({ error: `metric must be one of ${LS_METRICS.join(', ')}` });
     if (typeof from !== 'number' || typeof to !== 'number' || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from) return reply({ error: BAD_WINDOW });
     if (budget !== undefined && !(typeof budget === 'number' && Number.isFinite(budget) && budget >= 0)) return reply({ error: 'budget must be milliseconds, not negative' });
+    if (period !== undefined && !(typeof period === 'number' && Number.isSafeInteger(period) && period > 0)) return reply({ error: BAD_LS_PERIOD });
     const busy = lsBusy.get(client) ?? 0;
     if (busy >= LS_SOCKET_BUSY) return reply({ error: 'too many long/short questions at once' });
     lsBusy.set(client, busy + 1);
     // Never a whole read held on the socket's count: a question with no budget waits at most as long as one with the largest.
-    longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000))
+    longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000), period as number | undefined)
       .then(series => reply({ series }), () => reply({ error: 'long/short ratios could not be read' }))
       .finally(() => lsBusy.set(client, Math.max(0, (lsBusy.get(client) ?? 1) - 1)));
   };
