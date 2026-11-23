@@ -76,6 +76,13 @@ export interface TableSpec {
    * afresh (`PaneTable`), so that a table switched to another coin, timeframe or venue does not stand for minutes where the last one's lines left it.
    */
   restKey?: string;
+  /**
+   * The lines a pointer would bring, for a table that says none at rest (the Flow history's card is a row's, and no row is pointed at then): the rows keep
+   * the room of the longest under them at rest (`PaneTable#takeRest`), so that pointing at a row lays its lines under the rows with the whole in the middle,
+   * rather than hanging below rows centred alone (Karl, 2026-11-22); none where the longest would not fit (it goes on the card then, and rows held high for a
+   * shorter one would stand over an empty gap). Lines too wide for the strip go on the card whatever the room, so they set none.
+   */
+  restLines?: readonly (readonly InfoLine[])[];
 }
 
 /**
@@ -215,6 +222,13 @@ function liftUnder(at: NonNullable<ReturnType<typeof rowsIn>>, room: TableRoom, 
     if (laid && leaves(room, at.height, laid.summaryH)) return laid.summaryH;
   }
   return 0;
+}
+
+/** The room the longest of `alternatives` takes under rows already placed where it stands inside the pane with them, else 0 (`TableSpec.restLines`). */
+function longestUnder(at: NonNullable<ReturnType<typeof rowsIn>>, room: TableRoom, alternatives: readonly (readonly InfoLine[])[]): number {
+  let most = 0;
+  for (const shown of alternatives) { const laid = at.framed && shown.length ? at.under(shown) : null; if (laid) most = Math.max(most, laid.summaryH); }
+  return most > 0 && leaves(room, at.height, most) ? most : 0;
 }
 
 /** Whether rows `height` px high, centred with `lift` px under them, stand inside the pane. */
@@ -434,7 +448,7 @@ export class PaneTable {
     const lines = spec.lines ?? [], now = this.now(), rows = rowsIn(measure, { ...room, pointing: true }, spec);
     const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${spec.restKey ?? ''}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; this.#misfit = null; }
-    const lift = rows ? liftUnder(rows, room, lines, spec.brief ?? []) : 0, said = this.#saying;
+    const lift = rows ? Math.max(liftUnder(rows, room, lines, spec.brief ?? []), longestUnder(rows, room, spec.restLines ?? [])) : 0, said = this.#saying;
     if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
     this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
     const stood = this.#stood;

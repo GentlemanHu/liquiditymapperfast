@@ -163,7 +163,7 @@ export class FootprintLod {
 
   /** Dyadic row grouping that keeps rows 12-16 px tall (with hysteresis), as multiples of the recorded fine step. */
   level(fineRowPx: number): number { this.#level = this.peek(fineRowPx); return this.#level; }
-  /** The level `level` would give, leaving the hysteresis as it is (readers blind to rows ask while nothing draws them: `zoomLevel`). */
+  /** The level `level` would give, leaving the hysteresis as it is. */
   peek(fineRowPx: number): number {
     const p = FOOTPRINT_POLICY; let level = this.#level;
     if (fineRowPx * 2 ** level < p.coarsenHeight) while (level < p.maxLevel && fineRowPx * 2 ** level < p.coarsenHeight) level++;
@@ -198,29 +198,13 @@ const RECHECK_MS = 5 * 60_000, RECHECK_SPAN_MS = 3_600_000;
 /** More bars than this held (scrolled back over days of small candles) and the next look starts again from the view. */
 const FOOTPRINT_MAX_BARS = 3_000;
 
-type FootprintLoad = (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[], budget: number, venues: boolean) => Promise<FootprintResponse>;
+export type FootprintLoad = (inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[], budget: number, venues: boolean, sums: boolean) => Promise<FootprintResponse>;
 
 /**
- * Whether the readers of the footprint's bars are blind to its rows: neither the footprint (it draws them) nor the Bar stats (point of
- * control, imbalances) shows, so only the Flow history, which reads each bar's sums and minutes, or its warm-up, before any reader shows.
+ * The row size bars without rows are asked on (FootprintData `sumsOnly`). A source that knows `sums` sends no rows whatever it is; one from
+ * before it merges every row of a bar into one on rows this coarse, rather than on the finest recorded (0), so its answer stays small.
  */
-export function rowsBlind(readers: { footprint: boolean; stats: boolean }): boolean { return !readers.footprint && !readers.stats; }
-
-/**
- * The level of detail the bars are asked at: the drawing's own (`level`, which moves its hysteresis) for readers of rows, a peek at it
- * (`peek`, which does not) for readers blind to them, so the hysteresis follows only what draws rows.
- */
-export function zoomLevel(lod: { level(fineRowPx: number): number; peek(fineRowPx: number): number }, blind: boolean, fineRowPx: number): number {
-  return blind ? lod.peek(fineRowPx) : lod.level(fineRowPx);
-}
-
-/**
- * The row size the bars are asked on: the zoom's (`zoom`, the level of detail at this height), or for row-blind readers the rows held
- * (`held`), so the map growing shorter as the Flow history opens under it (to 30 % of its height at most, two levels), or a zoom, does not
- * ask the whole window again; unless the held rows are more than eight times finer than the zoom's (a deep zoom's answer would make every
- * later slice that much larger), when the window is asked once on the zoom's rows. Coarser rows held are kept.
- */
-export function askRowStep(blind: boolean, held: number, zoom: number): number { return blind && held > 0 && held * 8 >= zoom ? held : zoom; }
+export const SUMS_ROW_STEP = 1_000_000;
 
 /** The bars a view asks for: its candles with one each side, [from, to) on whole candles. */
 export function footprintWant(view: Bounds, tfMs: number): { from: number; to: number } {
@@ -234,6 +218,12 @@ export function footprintWant(view: Bounds, tfMs: number): { from: number; to: n
  * the whole window every 5 s cost a server 0.4 s each time for one market's week, 8 s for fourteen (2026-10-13).
  */
 export class FootprintData {
+  /**
+   * `sumsOnly`: bars without rows, for the Flow history, which reads only each bar's statistics and minutes: a source holds those in memory
+   * for its whole retention, so a week of thirteen markets is one answer, where rows read back from a cold store took some twenty (2026-11-22).
+   * No row size is asked first, and none is held.
+   */
+  constructor(readonly sumsOnly = false) {}
   /** Row step of the loaded data and the recorded finest step. */
   step = 0; fine = 0;
   bars = new Map<number, Bar>();
@@ -270,12 +260,6 @@ export class FootprintData {
   /** Whether the bars held were answered for all of [from, to) (on the last grid asked). */
   covers(from: number, to: number): boolean { const h = this.#held; return !!h && h.from <= from && h.to >= to; }
   /**
-   * The row size of the bars held, 0 before an answer. Readers blind to rows (the Flow history alone, or its warm-up) ask on it while it is
-   * no more than eight times finer than the zoom's (`askRowStep`), so a zoom, or the map growing shorter as the pane opens under it, does not
-   * ask the whole window again on another grid (HeatPane `#footprintAsk`).
-   */
-  get heldStep(): number { const h = this.#held; return h ? Number(h.grid.slice(0, h.grid.indexOf('|'))) : 0; }
-  /**
    * Whether the bars held are those of `markets` (as the map asks for them, sorted) at `tf`: the context the last `ensure` set, or, with no
    * markets to count, the cleared one. The map switches it in its own frame, so a pane drawn first after a click still holds the old bars.
    */
@@ -294,7 +278,7 @@ export class FootprintData {
   /**
    * Ask for what the view needs next, if anything: everything (another row size or size lines, or a view the bars held do not touch), the
    * bars that can still change (every FOOTPRINT_REFRESH_MS, or the view reaching past the newest), or the next older slice. `now` is the
-   * source's clock (a bar is settled by its time). `warm`: no pane shows the bars yet (the Flow history's warm-up, HeatPane `#warmStep`):
+   * source's clock (a bar is settled by its time). `warm`: the Flow history does not show yet (its warm-up, HeatPane `#warmStep`):
    * the view is asked for until it is covered, in its slices (a view that moved past the bars held asks from their end), and nothing on the
    * clock (no refresh of the bars still changing, no late-trade recheck, no size-sum retry; a question that failed is asked again after the
    * pause below, as for a pane); the first pane to show them asks for what changed since. True when a question went out.
@@ -311,9 +295,9 @@ export class FootprintData {
     // on the finest rows recorded (BTC's $0.50, where the footprint draws some $64 at an hour's zoom: 45 MB for a week of hourly bars of 13
     // markets, 2026-11-07), only for the next look to ask again on the drawn rows. The step is asked first, alone; markets with nothing
     // recorded (no step) are then asked as before.
-    if (!(rowStep > 0) && !this.#held && this.#stepAsked !== context) { this.#askStep(context, inst, tf, load, onLoad); return true; }
+    if (!this.sumsOnly && !(rowStep > 0) && !this.#held && this.#stepAsked !== context) { this.#askStep(context, inst, tf, load, onLoad); return true; }
     // Other size lines are another question: the bars' sums are for the lines asked.
-    const grid = `${rowStep}|${cuts.join(',')}`, want = footprintWant(view, tfMs);
+    const grid = `${this.sumsOnly ? 'sums' : rowStep}|${cuts.join(',')}`, want = footprintWant(view, tfMs);
     const h = this.#held;
     // Scrolled over more bars than are worth holding: those off the view go (the view's own are kept, however many it shows).
     if (h && this.bars.size > FOOTPRINT_MAX_BARS && (h.from < want.from || h.to > want.to)) {
@@ -345,7 +329,7 @@ export class FootprintData {
     this.#busy = true;
     const request = ++this.#request, asked = [...cuts];
     // Several markets (a comma list): each row's markets too, for the bar's pieces.
-    load(inst, tf, ask.from, ask.to, rowStep, asked, FOOTPRINT_BUDGET, inst.includes(',')).then(body => {
+    load(inst, tf, ask.from, ask.to, this.sumsOnly ? SUMS_ROW_STEP : rowStep, asked, FOOTPRINT_BUDGET, !this.sumsOnly && inst.includes(','), this.sumsOnly).then(body => {
       if (request !== this.#request) return;
       this.tally.answers++;
       // A source that answered only the newest part says where it starts; an older one answers the whole window.
@@ -384,7 +368,7 @@ export class FootprintData {
   #askStep(context: string, inst: string, tf: string, load: FootprintLoad, onLoad: () => void): void {
     this.#busy = true;
     const request = ++this.#request;
-    load(inst, tf, 0, 1, 0, [], 0, false).then(body => {
+    load(inst, tf, 0, 1, 0, [], 0, false, false).then(body => {
       if (request !== this.#request) return;
       this.tally.answers++; this.#stepAsked = context; this.fine = body.fine > 0 ? body.fine : 0; onLoad();
     }).catch(error => {
@@ -586,7 +570,7 @@ export function rowCellLines(cell: RowCell, bar: Bar, step: number, tf: string, 
     shown.forEach(([id, buy, sell], i) => lines.push({ mark: id, label: venueLabel(venueOfInstrument(id)), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'text', ...(i === 0 ? { rule: true } : {}) }));
     if (rest.length) {
       const buy = rest.reduce((s, r) => s + r[1], 0), sell = rest.reduce((s, r) => s + r[2], 0);
-      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: 'muted', ...(shown.length ? {} : { rule: true }) });
+      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'muted', ...(shown.length ? {} : { rule: true }) });
     }
   }
   lines.push({ label: t('Candle volume'), text: `$${volText(cell.barBuy + cell.barSell)}`, rule: true });

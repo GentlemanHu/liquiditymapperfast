@@ -865,3 +865,33 @@ test('every table stands in the middle of its pane, Flow history\'s too: a short
   assert.ok(tall.y0 + tall.height + tall.summaryH <= 458);
   assert.deepEqual(rowsBlock(placeTable(measure, room({ w: 400 + 60 + 200, h: 460 }), { ...eight, lines: [] })), rowsBlock(tall), 'the lines never move the rows');
 });
+
+test('a table that says no lines at rest keeps room for the largest a pointer would bring (Flow history, Karl 2026-11-22): its rows and those lines stand in the middle on a hover', () => {
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => undefined, fillRect: () => undefined, strokeRect: () => undefined, beginPath: () => undefined, moveTo: () => undefined, lineTo: () => undefined, stroke: () => undefined } as unknown as CanvasRenderingContext2D;
+  const palette = { panel: 'P', line: 'L', text: 'T', muted: 'M' };
+  const draw = (table: PaneTable, lines: InfoLine[], over: Partial<TableRoom> = {}, s: Partial<TableSpec> = {}) => table.draw(ctx, palette, room({ w: 400 + 60 + 130, h: 300, ...over }), { ...spec(), foot: 'then', focus: -1, lines, ...s });
+  // Without them, as before: centred alone at rest (from 98), and a row's lines then hang below.
+  const alone = new PaneTable(host, null, () => 0);
+  assert.equal(draw(alone, [], { rest: true })!.y0, 98);
+  const hung = draw(alone, OI_LINES)!;
+  assert.equal(hung.y0, 98, 'the rows stay, their lines under them');
+  assert.ok(hung.y0 + (hung.height + hung.summaryH) / 2 > 150 + 30, 'the whole stands low');
+  // With the lines a pointer would bring (a short card and a long one): at rest the rows keep the long one's room, and on a hover with it the whole is in the middle.
+  const kept = new PaneTable(host, null, () => 0), two = OI_LINES.slice(0, 2);
+  assert.equal(draw(kept, [], { rest: true }, { restLines: [two, OI_LINES] })!.y0, 63, 'the room of the longest, as if said at rest');
+  const hover = draw(kept, OI_LINES)!;
+  assert.deepEqual([hover.y0, hover.complete, hover.y0 + (hover.height + hover.summaryH) / 2], [63, true, 150]);
+  assert.equal(draw(kept, two)!.y0, 63, 'a shorter card moves nothing');
+  // Lines too wide for the strip go on the card whatever the room: they keep none, and leave the others theirs.
+  const wide = new PaneTable(host, null, () => 0), tooWide = [{ label: 'x', text: 'y'.repeat(200) }];
+  assert.equal(draw(wide, [], { rest: true }, { restLines: [tooWide] })!.y0, 98);
+  assert.equal(draw(new PaneTable(host, null, () => 0), [], { rest: true }, { restLines: [tooWide, OI_LINES] })!.y0, 63);
+  // Where the longest card would not fit under the rows (a short pane), none is kept, though a shorter one would fit: the rows stand in the middle
+  // rather than high over an empty gap, and the long card goes on the pop-up (a 254 px Flow history pane, 2026-11-22).
+  const short = new PaneTable(host, null, () => 0), long = [...OI_LINES, ...OI_LINES, ...OI_LINES];
+  const alone180 = draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 })!.y0;
+  assert.ok(draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 }, { restLines: [two] })!.y0 < alone180, 'a short card that fits keeps its room');
+  assert.equal(draw(short, [], { rest: true, h: 180 }, { restLines: [two, long] })!.y0, alone180, 'with a longer one that does not, none');
+});

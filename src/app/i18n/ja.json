@@ -3150,6 +3150,7 @@
  "longs": "ロング",
  "shorts": "ショート",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "表の×は、大きい側が小さい側の何倍かを、その側の色で示します。2.50×はその側が2.5倍あること、∞は反対側がゼロであることを表します。",
+ "Δ in the table is what would be bought less what would be sold, in the colour of the larger side: the bids less the asks; with the liquidation levels the shorts less the longs, as a short is closed by a buy and a long by a sale.": "表のΔは、買われる額から売られる額を引いたもので、大きい側の色で表示します。買い板から売り板を引いた値、清算レベルではショートからロングを引いた値です（ショートは買いで、ロングは売りで決済されるため）。",
  "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "表は取引所の行の下に、表示中の取引所についてポップアップが示す内容（いつ精算されるか、Hyperliquidでは誰が建てたか）も表示します。すべて収まるときは表がポップアップの代わりになり、収まらないときはポップアップも表示されます。",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "1 種類はオンのままです。レベルを非表示にするには、上部バーの「清算レベル」を使ってください。",
  "How levels work": "レベルの仕組み",

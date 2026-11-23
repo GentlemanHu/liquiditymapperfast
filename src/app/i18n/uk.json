@@ -3433,6 +3433,7 @@
  "longs": "лонги",
  "shorts": "шорти",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "× у таблиці показує, у скільки разів більша сторона більша за меншу, її кольором: 2.50× — у два з половиною рази більше на цій стороні; ∞ — на іншій стороні нічого немає.",
+ "Δ in the table is what would be bought less what would be sold, in the colour of the larger side: the bids less the asks; with the liquidation levels the shorts less the longs, as a short is closed by a buy and a long by a sale.": "Δ у таблиці — це те, що було б куплено, мінус те, що було б продано, кольором більшої сторони: біди мінус аски; на рівнях ліквідацій — шорти мінус лонги, адже шорт закривається купівлею, а лонг продажем.",
  "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "Під рядками бірж таблиця також показує те, що спливне вікно сказало б про показану біржу: коли виплата і, на Hyperliquid, хто відкривав. Де все це вміщується, таблиця заміняє спливне вікно; де ні, вікно лишається.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "Один вид лишається увімкненим. Щоб приховати рівні, скористайтеся кнопкою «Рівні лікв.» у верхній панелі.",
  "How levels work": "Як працюють рівні",

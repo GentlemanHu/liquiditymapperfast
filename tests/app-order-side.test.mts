@@ -43,20 +43,25 @@ test('the phone\'s finger box, which says the rule in its own words, agrees with
   }
 });
 
-test('the Depth table: longs lead in the sell colour, so × points at the longs\' column (Karl\'s screenshot: 33.7M, 24.9M, +8.76M, 1.35×)', () => {
+test('the Depth table: longs lead in the sell colour, so × points at the longs\' column (Karl\'s screenshot: 33.7M, 24.9M, 1.35×)', () => {
   const rows = [{ r: 0.0125, bid: 33.66e6, ask: 24.9e6 }, { r: 0.05, bid: 86e6, ask: 99.6e6 }];
   const liq = depthTableRows(rows, P, depthOrderSides('liq'));
-  assert.deepEqual(liq[0]!.map(c => c.text), ['±1.25%', '33.7M', '24.9M', '+8.76M', '1.35×']);
+  assert.deepEqual(liq[0]!.map(c => c.text), ['±1.25%', '33.7M', '24.9M', '−8.76M', '1.35×'], 'Δ: the shorts\' buys less the longs\' sells');
   assert.deepEqual([liq[0]![1]!.color, liq[0]![2]!.color], [SELL, BUY], 'longs in the sell colour, shorts in the buy colour');
   assert.equal(liq[0]![4]!.color, SELL, 'more long liquidations: × in the sell colour');
   assert.equal(liq[1]![4]!.color, BUY, 'more short liquidations: × in the buy colour');
-  assert.equal(liq[0]![3]!.color, undefined, 'longs less shorts is not buying less selling: never coloured');
+  // Karl, 2026-11-22: longs less shorts (selling less buying) was left in the plain text colour, the buy colour in Terminal, whatever its sign.
+  assert.deepEqual([liq[0]![3]!.text, liq[0]![3]!.color], ['−8.76M', SELL], 'more selling: a negative Δ in the sell colour');
+  assert.deepEqual([liq[1]![3]!.text, liq[1]![3]!.color], ['+13.6M', BUY], 'more buying: a positive Δ in the buy colour');
   for (const kind of ['stops', 'both'] as const) assert.deepEqual(depthTableRows(rows, P, depthOrderSides(kind)), liq, `${kind} as liquidations`);
-  // The book and take profits alone: bids (the shorts' take-profit buys) below in the buy colour.
+  // The book and take profits alone: bids (the shorts' take-profit buys) below in the buy colour; Δ the bids less the asks.
   for (const sides of [undefined, depthOrderSides('takes')]) {
     const r = depthTableRows(rows, P, sides);
     assert.deepEqual([r[0]![1]!.color, r[0]![2]!.color, r[0]![4]!.color, r[1]![4]!.color], [BUY, SELL, BUY, SELL]);
+    assert.deepEqual([r[0]![3]!.text, r[0]![3]!.color, r[1]![3]!.text, r[1]![3]!.color], ['+8.76M', BUY, '−13.6M', SELL]);
   }
+  assert.deepEqual(depthTableRows([{ r: 0.01, bid: 5, ask: 5 }], P, depthOrderSides('liq'))[0]![3], { text: '0', color: P.muted }, 'no difference: a muted 0, no side\'s colour');
+  assert.deepEqual(depthTableRows([{ r: 0.01, bid: NaN, ask: 5 }], P, depthOrderSides('liq'))[0]![3], { text: '–' }, 'a band not read');
   assert.deepEqual(depthTableRows([{ r: 0.01, bid: 5, ask: 5 }], P, depthOrderSides('liq'))[0]![4], { text: '1.00×', color: P.muted }, 'a tie names no side');
   assert.equal(depthTableRows([{ r: 0.01, bid: 0, ask: 5 }], P, depthOrderSides('liq'))[0]![4]!.color, BUY, 'only shorts: their buy colour');
 });
@@ -70,7 +75,10 @@ test('the Depth table\'s titles: take profits alone are bids and asks, never "Lo
 test('the Depth header over the liquidation levels: each figure and the named larger side in the colour of what its orders would do', () => {
   const base = { whose: '', band: '1.25', coins: false, unit: '', take: null, asOf: '20:13' } as const;
   const liq = depthLiqReadout({ ...base, long: 33.7e6, short: 24.9e6, kind: 'liq' });
-  assert.match(liq, /L <b class="ask">33\.7M<\/b> S <b class="bid">24\.9M<\/b> Δ <b>\+8\.8M<\/b>/);
+  assert.match(liq, /L <b class="ask">33\.7M<\/b> S <b class="bid">24\.9M<\/b> Δ <b class="ask">−8\.8M<\/b>/, 'Δ: shorts less longs, more selling in the sell colour');
+  assert.match(depthLiqReadout({ ...base, long: 10e6, short: 30e6, kind: 'liq' }), /Δ <b class="bid">\+20M<\/b>/, 'more buying: positive, the buy colour');
+  assert.match(depthLiqReadout({ ...base, long: 30e6, short: 10e6, kind: 'takes' }), /Δ <b class="bid">\+20M<\/b>/, 'take profits alone: bids less asks');
+  assert.match(depthLiqReadout({ ...base, long: 5, short: 5, kind: 'liq' }), /Δ <b>/, 'no difference: no side\'s colour');
   assert.match(liq, /<b class="ask">longs 1\.35×<\/b>/);
   assert.match(liq, / · positions as of 20:13$/);
   assert.match(depthLiqReadout({ ...base, long: 10e6, short: 30e6, kind: 'stops' }), /<b class="bid">shorts 3\.00×<\/b>/);
@@ -83,13 +91,17 @@ test('the Depth header over the liquidation levels: each figure and the named la
   assert.match(beside, /take profits <b class="ask">▲4M<\/b> <b class="bid">▼3M<\/b>/, 'the longs\' take profits above sell, the shorts\' below buy');
 });
 
-test('the Depth card: the larger side in the colour of what its orders would do; the difference coloured only as buying less selling; the book, tracker and OI cards as before', () => {
+test('the Depth card: the larger side in the colour of what its orders would do; the difference is buying less selling, coloured by its sign; the book, tracker and OI cards as before', () => {
   const by = (lines: InfoLine[], label: string): InfoLine | undefined => lines.find(l => l.label === label);
   const card = (kind: LevelsKind, bid: number, ask: number): InfoLine[] => liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid, ask }], watched: 0, units: 'usd', coin: 'BTC', view: VIEWS[kind] });
   assert.deepEqual([by(card('liq', 25e6, 10e6), 'Ratio')!.text, by(card('liq', 25e6, 10e6), 'Ratio')!.color], ['longs 2.50×', 'above'], 'longs lead: the sell (ask) colour');
   assert.deepEqual([by(card('both', 10e6, 25e6), 'Ratio')!.text, by(card('both', 10e6, 25e6), 'Ratio')!.color], ['shorts 2.50×', 'below']);
   assert.deepEqual([by(card('takes', 25e6, 10e6), 'Ratio')!.text, by(card('takes', 25e6, 10e6), 'Ratio')!.color], ['bids 2.50×', 'below']);
-  for (const kind of ['liq', 'stops', 'both'] as const) assert.equal(by(card(kind, 25e6, 10e6), 'Δ')!.color, undefined, `${kind}: no colour on longs less shorts`);
+  // Liquidations and stops: the shorts' buys less the longs' sells (Karl, 2026-11-22), so more longs is a negative Δ in the sell colour.
+  for (const kind of ['liq', 'stops', 'both'] as const) {
+    assert.deepEqual([by(card(kind, 25e6, 10e6), 'Δ')!.text, by(card(kind, 25e6, 10e6), 'Δ')!.color], ['−$15M', 'above'], `${kind}: more selling`);
+    assert.equal(by(card(kind, 10e6, 25e6), 'Δ')!.color, 'below', `${kind}: more buying`);
+  }
   // Take profits alone are bids less asks, buying less selling: coloured by the sign, as the book's card.
   assert.deepEqual([by(card('takes', 25e6, 10e6), 'Δ')!.color, by(card('takes', 10e6, 25e6), 'Δ')!.color], ['below', 'above']);
   assert.equal(by(liqCardLines({ asOf: 0, bands: [{ r: 0.05, bid: 25e6, ask: 10e6 }], watched: 0, units: 'usd', coin: 'BTC' }), 'Ratio')!.color, 'above', 'no view: liquidations');

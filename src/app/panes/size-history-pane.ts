@@ -52,8 +52,8 @@ export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'tota
 /**
  * The Flow history pane (Karl, 2026-11-20): per candle of the chart's timeframe, the liquidations, the change of open interest and the
  * market orders in six size bands, one row each on the map's time axis, with the most unusual amounts standing out (size-history/model.ts).
- * Its size rows count the markets the footprint and the Bar stats count, and read the footprint's bars (one load for the three, from the Highlights'
- * length before the view, at least 36 candles and six hours, while this pane shows); its liquidations are the Bar stats' (one loader, liq-days.ts:
+ * Its size rows count the markets the footprint and the Bar stats count, and read their bars without rows (HeatPane `sizesData`, a load of its own
+ * that a source answers from memory, from the Highlights' length before the view, at least 36 candles and six hours, while this pane shows); its liquidations are the Bar stats' (one loader, liq-days.ts:
  * the perpetuals whatever the Spot / Perp filter) and its open interest the OI pane's. Switched on from its button in the top bar's Panels deck (toolbar.ts
  * `PANE_TOGGLES`, which a phone's or tablet's Settings lists too), the flow column's settings and the Bar stats' settings.
  */
@@ -145,7 +145,7 @@ export class SizeHistoryPane extends TimePane {
 
   #paint(): void {
     const { ctx, palette: p, view: v } = this, state = this.store.state, pw = this.plotW, ph = this.h;
-    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, data = this.heat.footprintData, markets = this.heat.footprintMarkets(state);
+    const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, data = this.heat.sizesData, markets = this.heat.footprintMarkets(state);
     const readout = this.head.querySelector('.readout');
     setText(readout, `${markets.length > 1 ? `${t('{n} markets', { n: markets.length })} · ` : ''}${t('square-root heights, each row its own scale')}`);
     this.#layout = [];
@@ -256,7 +256,11 @@ export class SizeHistoryPane extends TimePane {
     if (state.sizesTable) {
       const read = hoverIdx >= 0 ? hoverIdx : last, room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hv };
       const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} USD`;
-      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}` });
+      // At rest no row is pointed at, so the table says no lines: the room under its rows is kept for the longest card a row of the newest candles
+      // would bring (the one under way says it is, the one before is settled), so that pointing at one does not leave its lines hanging below.
+      const restLines = !hv && !this.pointer ? [last, visible[visible.length - 2]].filter((i): i is number => i !== undefined)
+        .flatMap(i => rows.map((_, r) => tableLines(this.#cardFor(model, r, i, times, tfMs, now, live, perps, state, oiHeld?.coins)))) : undefined;
+      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}`, ...(restLines ? { restLines } : {}) });
       if (placed?.complete) this.#lines = null;
     }
   }

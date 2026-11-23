@@ -555,3 +555,40 @@ test('an hour held added together lets go when a late trade lands in it, and an 
   fresh.queryMany(ids, T0, T0 + DAY, DAY, 10);
   assert.ok(store.reads > reads, 'and the day before it was not');
 });
+
+test('bars without rows (sumsOnly): the same minutes, statistics and size-line sums as with rows, nothing read back, a cold week in one answer', () => {
+  const NOW = T0 + 2 * DAY + 7 * MIN, store = new MemoryFootprintStore();
+  recordTrades(store, NOW);
+  const ids = ['a:BTC', 'b:BTC'], back = new FootprintRecorder(store, () => NOW, 7 * DAY, 1, 6 * HOUR), all = new FootprintRecorder(holdingRows(store), () => NOW, 7 * DAY);
+  for (const tf of [30 * MIN, HOUR, 4 * HOUR]) {
+    const reads = store.reads, sums = back.queryMany(ids, T0, NOW + MIN, tf, 10, [50_000], Infinity, true, true), full = all.queryMany(ids, T0, NOW + MIN, tf, 10, [50_000]);
+    assert.equal(store.reads, reads, `${tf / MIN} min: nothing read back from the store`);
+    assert.equal(sums.venues, undefined, 'no venues: there are no rows to split');
+    assert.deepEqual(sums.bars.map(b => b.t), full.bars.map(b => b.t), `${tf / MIN} min: the same bars`);
+    for (const [i, bar] of sums.bars.entries()) {
+      const twin = full.bars[i]!;
+      assert.deepEqual([bar.rows, bar.buyUsd, bar.sellUsd], [[], 0, 0], 'no rows');
+      assert.deepEqual([bar.minutes, bar.stats, bar.over], [twin.minutes, twin.stats, twin.over], 'the same minutes, statistics and size-line sums');
+    }
+  }
+  // Two days of two markets cold cost four a minute with rows (about fifteen hours for 5,000); without rows a minute costs a fortieth of one
+  // held, so the budget reaches across both days in one answer, and a smaller one slices on whole bars.
+  assert.equal(back.queryMany(ids, T0, NOW, HOUR, 10, [], 5_000, false, true).from, T0, 'both days in one answer');
+  const sliced = back.queryMany(ids, T0, NOW, HOUR, 10, [], 60, false, true);
+  assert.ok(sliced.from > T0 && sliced.from % HOUR === 0, `a small budget slices on whole bars: ${(sliced.from - T0) / HOUR} h`);
+  assert.equal(sliced.bars[0]!.t, sliced.from);
+});
+
+test('bars without rows count a minute stamped ahead of the recorder\'s clock as the rows do (a page\'s engine on a slow PC clock)', () => {
+  const NOW = T0 + 2 * DAY + 7 * MIN, store = new MemoryFootprintStore();
+  recordTrades(store, NOW);
+  const rec = new FootprintRecorder(holdingRows(store), () => NOW, 7 * DAY);
+  for (const [i, ahead] of [90_000, 5 * MIN, 70 * MIN].entries()) rec.ingest([{ instrumentId: 'a:BTC', tradeId: `ahead-${i}`, side: 'buy', price: 85_555, notionalUsd: 50_000, sourceTimestamp: NOW + ahead }]);
+  for (const tf of [5 * MIN, HOUR]) {
+    const sums = rec.queryMany(['a:BTC', 'b:BTC'], NOW - 3 * HOUR, NOW + 3 * HOUR, tf, 10, [], Infinity, false, true), rows = rec.queryMany(['a:BTC', 'b:BTC'], NOW - 3 * HOUR, NOW + 3 * HOUR, tf, 10);
+    assert.deepEqual(sums.bars.map(b => [b.t, b.minutes]), rows.bars.map(b => [b.t, b.minutes]), `${tf / MIN} min: the same bars and minutes`);
+    assert.ok(sums.bars.some(b => b.t + tf > NOW + 70 * MIN && b.t <= NOW + 70 * MIN), 'the minute 70 min ahead is in a bar');
+    // Budgeted, the walk starts from the newest minute held, so the slice holds it too.
+    assert.equal(rec.queryMany(['a:BTC', 'b:BTC'], NOW - 3 * HOUR, NOW + 3 * HOUR, tf, 10, [], 5_000, false, true).bars.at(-1)!.t, rows.bars.at(-1)!.t);
+  }
+});

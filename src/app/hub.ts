@@ -1870,7 +1870,7 @@ export class Hub {
 
   /** Executions per candle for a window (the footprint). */
   /** `cuts`: size lines (the coin's USD) whose orders each bar carries in `over`, where the source knows them. */
-  footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false): Promise<FootprintResponse> { return this.source.footprint(inst, tf, from, to, rowStep, cuts, budget, venues); }
+  footprint(inst: string, tf: string, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, venues = false, sums = false): Promise<FootprintResponse> { return this.source.footprint(inst, tf, from, to, rowStep, cuts, budget, venues, sums); }
 
   /** Depth within each of the nested bands `radii` (ascending fractions) of the books' own price, per pixel column over [t0, t1], in USD and in coins (`DepthAnswer`). */
   depth(enabled: string[], t0: number, t1: number, w: number, radii: readonly number[]): Promise<DepthAnswer> {

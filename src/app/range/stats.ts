@@ -282,7 +282,7 @@ export function rangeLines(input: RangeInput): RangeLine[] {
     else {
       lines.push({ key: 'split', kind: 'split', share: s.buy / total, cells: [t('Bought {value}', { value: money(s.buy) }), t('Sold {value}', { value: money(s.sell) })] });
       const d = s.buy - s.sell, dShare = `${d > 0 ? '+' : d < 0 ? '−' : ''}${pct(Math.abs(d) / total)}`;
-      lines.push({ key: 'delta', kind: 'stat', cells: [t('Delta'), t('{value} · {share} of the volume', { value: signed(d), share: dShare })], tone: s.buy >= s.sell ? 'buy' : 'sell' });
+      lines.push({ key: 'delta', kind: 'stat', cells: [t('Delta'), t('{value} · {share} of the volume', { value: signed(d), share: dShare })], ...(d > 0 ? { tone: 'buy' as const } : d < 0 ? { tone: 'sell' as const } : {}) });
       const orders = orderLine(s, windowMinutes);
       if (orders) lines.push(...orders);
       const paid = averagePrices(answer);
@@ -337,10 +337,11 @@ function liquidationLine(input: RangeInput, all: number): RangeLine | null {
     if (!fills.has(fill)) { fills.add(fill); forced += l.usd; }
   }
   if (!(longs + shorts > 0)) return { key: 'liquidations', kind: 'stat', tone: 'muted', cells: [t('Liquidations'), t('none reported from {min}', { min: from })] };
-  const share = forced / all, tone = longs >= shorts ? 'sell' : 'buy';
+  // The larger side's colour (the longs' sell colour, a long being closed by a sale); an even split takes neither.
+  const share = forced / all, tone = longs > shorts ? 'sell' as const : shorts > longs ? 'buy' as const : null;
   const text = share > 0 && share <= 1 ? t('{longs} longs · {shorts} shorts · {share} of all market volume in these minutes (from {min})', { longs: money(longs), shorts: money(shorts), share: pct(share), min: from })
     : t('{longs} longs · {shorts} shorts (from {min})', { longs: money(longs), shorts: money(shorts), min: from });
-  return { key: 'liquidations', kind: 'stat', tone, cells: [t('Liquidations'), text] };
+  return { key: 'liquidations', kind: 'stat', ...(tone ? { tone } : {}), cells: [t('Liquidations'), text] };
 }
 
 /** The largest market order the map holds inside the selection. */

@@ -3316,6 +3316,7 @@
  "longs": "long'lar",
  "shorts": "short'lar",
  "× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.": "Tablodaki ×, büyük tarafın küçük tarafın kaç katı olduğunu o tarafın renginde gösterir: 2.50× o tarafta iki buçuk kat fazlası demektir; ∞, diğer tarafta hiç yok demektir.",
+ "Δ in the table is what would be bought less what would be sold, in the colour of the larger side: the bids less the asks; with the liquidation levels the shorts less the longs, as a short is closed by a buy and a long by a sale.": "Tablodaki Δ, alınacak olanın satılacak olandan farkıdır ve büyük tarafın renginde gösterilir: bid'ler eksi ask'ler; tasfiye seviyelerinde short'lar eksi long'lar, çünkü bir short alışla, bir long satışla kapanır.",
  "Under the venues the table also says what the popup would of the venue shown: when it settles and, on Hyperliquid, who opened. Where it holds all of that it takes the popup's place; where it cannot, the popup stays.": "Tablo, borsaların altında, gösterilen borsa için açılır pencerenin söyleyeceklerini de söyler: ne zaman ödendiğini ve Hyperliquid'de kimin açtığını. Hepsi sığdığında açılır pencerenin yerini alır; sığmadığında açılır pencere de kalır.",
  "One kind stays on. To hide the levels, use Liq levels in the top bar.": "Türlerden biri açık kalır. Seviyeleri gizlemek için üst çubuktaki Tasfiye sev. düğmesini kullanın.",
  "How levels work": "Seviyeler nasıl çalışır",

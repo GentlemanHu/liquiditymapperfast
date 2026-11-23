@@ -907,8 +907,9 @@ export class FootprintRecorder {
    * the more the older: those are read back from the store), and a request merges on the server's only thread, so a long window of many
    * markets is answered in slices (measured 2026-10-13: a week of 1 h bars of 14 markets took 8 s in one go).
    */
-  #reach(ids: readonly string[], from: number, to: number, tfMs: number, budget: number): number {
+  #reach(ids: readonly string[], from: number, to: number, tfMs: number, budget: number, sumsOnly = false): number {
     if (!Number.isFinite(budget)) return from;
+    if (sumsOnly) return this.#reachSums(ids, from, to, tfMs, budget);
     const series = ids.map(id => [id, this.#sums.get(id)] as const).filter((s): s is readonly [string, Map<number, MinuteSum>] => s[1] !== undefined);
     // A minute read back from the store costs about four held in memory (the SQL and the parsing of its rows, measured 2026-10-13).
     // Only minutes the recorder can hold are scanned: a window reaching years back or ahead costs what its retained part does.
@@ -927,6 +928,26 @@ export class FootprintRecorder {
           else minutes(s, Math.max(h, start), Math.min(h + HOUR, end));
         }
       }
+      if (spent > 0 && spent + cost > budget) return bar + tfMs;
+      spent += cost;
+    }
+    return from;
+  }
+
+  /**
+   * `#reach` for an answer without rows (`queryMany`'s `sumsOnly`): it adds up only the minutes' statistics, held in memory for the whole
+   * retention, so a minute costs a budget SUMS_PER_MINUTE of one whose rows are merged, wherever its rows are.
+   */
+  #reachSums(ids: readonly string[], from: number, to: number, tfMs: number, budget: number): number {
+    const series = ids.map(id => this.#sums.get(id)).filter((s): s is Map<number, MinuteSum> => s !== undefined);
+    const lo = Math.max(from, this.#cutoff), hi = Math.min(to, heldEnd(series));
+    if (!(hi > lo)) return from;
+    let spent = 0;
+    for (let bar = Math.floor((hi - 1) / tfMs) * tfMs; bar + tfMs > lo; bar -= tfMs) {
+      const start = Math.max(bar, lo), end = Math.min(bar + tfMs, hi);
+      let minutes = 0;
+      for (const s of series) for (let t = Math.ceil(start / MINUTE) * MINUTE; t < end; t += MINUTE) if (s.has(t)) minutes++;
+      const cost = minutes * SUMS_PER_MINUTE;
       if (spent > 0 && spent + cost > budget) return bar + tfMs;
       spent += cost;
     }
@@ -959,16 +980,18 @@ export class FootprintRecorder {
    * The bars of several instruments added together (the aggregated footprint), on one grid: rows of `rowStep` rounded to a multiple of the
    * coarsest of their recorded steps (`fine`), each instrument's rows put in the row of their low price. A bar's `minutes` are the minutes
    * any of them recorded; its `stats` and `over` are given only when every instrument-minute in it had them (as `sizesOf` counts).
+   * `sumsOnly`: bars without rows (`rows` empty, `buyUsd` and `sellUsd` 0), for a reader of the statistics, minutes and size-line sums alone
+   * (the Flow history): those are held in memory for the whole retention, so no row is read back from the store or added up by the hour.
    */
-  queryMany(ids: readonly string[], from: number, to: number, tfMs: number, rowStep: number, cuts: readonly number[] = [], budget = Infinity, byVenue = false): { step: number; fine: number; bars: FootprintBar[]; from: number; venues?: string[] } {
+  queryMany(ids: readonly string[], from: number, to: number, tfMs: number, rowStep: number, cuts: readonly number[] = [], budget = Infinity, byVenue = false, sumsOnly = false): { step: number; fine: number; bars: FootprintBar[]; from: number; venues?: string[] } {
     // A market named twice counts once.
     const known = [...new Set(ids)].filter(id => this.#steps.has(id));
     const fine = known.reduce((most, id) => Math.max(most, this.#steps.get(id)!), 0);
     if (!fine) return { step: 0, fine: 0, bars: [], from };
-    from = this.#reach(known, from, to, tfMs, budget);
-    const step = fine * Math.max(1, Math.round(rowStep / fine));
+    from = this.#reach(known, from, to, tfMs, budget, sumsOnly);
+    const step = sumsOnly ? fine : fine * Math.max(1, Math.round(rowStep / fine));
     // With `byVenue` (several markets), each row also keeps every market's part: [buy, sell] per market of `known`, in one array.
-    const split = byVenue && known.length > 1, width = 2 * known.length;
+    const split = byVenue && !sumsOnly && known.length > 1, width = 2 * known.length;
     const bars = new Map<number, Map<number, [number, number, Float64Array | null]>>();
     const barStats = new Map<number, { stats: TradeStats; withStats: number; counted: number; minutes: Set<number>; over: number[]; known: boolean }>();
     for (const [k, id] of known.entries()) {
@@ -996,6 +1019,14 @@ export class FootprintRecorder {
         cell[0] += buy; cell[1] += sell;
         if (cell[2]) { cell[2][2 * k] += buy; cell[2][2 * k + 1] += sell; }
       };
+      // Without rows (`sumsOnly`): each recorded minute's statistics and size-line sums, all in memory, and no row read anywhere.
+      if (sumsOnly) {
+        // Up to the newest minute held, as the rows are read: a trade a venue stamped ahead of this clock (a page's engine on a PC clock that
+        // runs slow) counts here as it does in the footprint (review 2026-11-22: clamped at now + 2 min, the newest candle lost its last minutes).
+        const sums = this.#sums.get(id), lo = Math.max(from, this.#cutoff), hi = sums ? Math.min(to, heldEnd([sums])) : lo;
+        if (sums) for (let t = Math.ceil(lo / MINUTE) * MINUTE; t < hi; t += MINUTE) if (sums.has(t)) take(t);
+        continue;
+      }
       // Bars of whole hours read each ended hour inside the window added together (`#hourRows`), and the minutes of the rest.
       const rest: [number, number][] = [];
       if (tfMs % HOUR === 0) {
@@ -1033,12 +1064,24 @@ export class FootprintRecorder {
   }
 }
 
+/** The end of the newest minute any of `series` holds, or -Infinity: how far a walk over their minutes need go, whatever window was asked. */
+function heldEnd(series: readonly ReadonlyMap<number, unknown>[]): number {
+  let last = -Infinity;
+  for (const s of series) for (const t of s.keys()) if (t > last) last = t;
+  return last + MINUTE;
+}
+
 /**
  * An ended hour of one instrument's rows added together: [bin, buy, sell, buy orders, sell orders] in a row (`HOUR_CELL` numbers), on the
  * step it was recorded at; the orders are those of its minutes that count them by price (zero in the others, as in a minute's own rows).
  */
 interface HourRows { step: number; cells: Float64Array }
 const HOUR_CELL = 5;
+/**
+ * What a minute costs a question's budget in an answer without rows (`#reachSums`), as a share of one held whose rows are merged: about 0.8 µs
+ * against 15 to 55 (a week of thirteen markets, 131,000 minutes, took 0.1 s on the live recording, 2026-11-22), so such a week is one answer.
+ */
+const SUMS_PER_MINUTE = 0.025;
 /** What a whole hour held added together costs a question's budget (in instrument-minutes): about what two minutes in memory do. */
 const HELD_HOUR_COST = 2;
 /** A preparation lets go of the event loop after this long (ms). */

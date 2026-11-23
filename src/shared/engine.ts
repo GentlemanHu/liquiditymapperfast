@@ -652,7 +652,7 @@ export class Engine {
   }
 
   /** One instrument's footprint, or several (comma separated) added together, as the server's route answers. */
-  footprint(instrumentId: string, tfMs: number, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, byVenue = false): FootprintAnswer { return this.footprints.queryMany(instrumentId.split(',').filter(Boolean).slice(0, MAX_PROFILE_INSTRUMENTS), from, to, tfMs, rowStep, this.#cuts(cuts), budget !== undefined && budget > 0 ? budget : Infinity, byVenue); }
+  footprint(instrumentId: string, tfMs: number, from: number, to: number, rowStep: number, cuts: readonly number[] = [], budget?: number, byVenue = false, sums = false): FootprintAnswer { return this.footprints.queryMany(instrumentId.split(',').filter(Boolean).slice(0, MAX_PROFILE_INSTRUMENTS), from, to, tfMs, rowStep, this.#cuts(cuts), budget !== undefined && budget > 0 ? budget : Infinity, byVenue, sums); }
   /** Size lines a question may draw (see `parseCuts`): any that are not are left out rather than refused, as the page asked for them itself. */
   #cuts(cuts: readonly number[]): number[] { return cuts.filter(c => Number.isFinite(c) && c >= this.footprints.floorUsd * (1 - 1e-9) && c <= MAX_CUT_USD).slice(0, MAX_CUTS); }
 

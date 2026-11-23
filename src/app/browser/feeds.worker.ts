@@ -165,7 +165,7 @@ async function answer(call: RpcCall, run: Engine): Promise<{ result: unknown; tr
       const frame = { ...run.columns(call.ids, call.from, call.to, call.stepMs, call.close === true), since: run.heldSince(call.ids, CONTIGUOUS_GAP_MS), ...(preview ? { preview } : {}) };
       return { result: frame, transfer: frame.instruments.flatMap(set => [set.bins.buffer, set.bid.buffer, set.ask.buffer]) };
     }
-    case 'footprint': return { result: run.footprint(call.inst, call.tfMs, call.from, call.to, call.rowStep, call.cuts ?? [], call.budget, call.venues === true), transfer: [] };
+    case 'footprint': return { result: run.footprint(call.inst, call.tfMs, call.from, call.to, call.rowStep, call.cuts ?? [], call.budget, call.venues === true, call.sums === true), transfer: [] };
     case 'prints': return { result: run.prints(call.from, call.to, call.minUsd), transfer: [] };
     case 'liquidations': return { result: run.liquidations(call.from, call.to, call.minUsd), transfer: [] };
     case 'printSums': return { result: run.printSums(call.ids, call.from, call.to, call.minUsd, call.stepMs), transfer: [] };

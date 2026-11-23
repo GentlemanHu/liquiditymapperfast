@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { coinText, minuteOpens, nlnsCardLines, nlnsModel, nlnsWhoLines, whoParts, withLead, type NlnsMarket } from '../src/app/delta/nlns.ts';
+import { coinSize, coinText, minuteOpens, nlnsCardLines, nlnsModel, nlnsWhoLines, whoParts, withLead, type NlnsMarket } from '../src/app/delta/nlns.ts';
 import { fetchOiReading } from '../src/shared/history.ts';
 import { quoteRows } from '../src/shared/series.ts';
 import { atOnePrice, inverseOi } from '../src/app/oi-change.ts';
@@ -32,7 +32,7 @@ test('venues are each read first, then added: new longs on one and new shorts on
   assert.equal(first!.kind, null, 'the first readings have nothing before them');
   assert.deepEqual([c!.dOi, c!.longOpened, c!.shortOpened, c!.longs, c!.shorts, c!.v, c!.kind, c!.counted], [20, 10, 10, 10, 10, 0, 'mixed', 2]);
   const lines = nlnsCardLines(c!, '1h', 'BTC', '2 venues added together', 2);
-  assert.deepEqual(lines.slice(1, 5).map(l => [l.label, l.text]), [['Open interest', '+20 BTC · +6.67%'], ['Read as', 'Both ways'], ['New longs', '+10 BTC'], ['New shorts', '+10 BTC']]);
+  assert.deepEqual(lines.slice(1, 5).map(l => [l.label, l.text]), [['Open interest', '+20 BTC · +6.67%'], ['Read as', 'Both ways'], ['New longs', '10 BTC'], ['New shorts', '10 BTC']]);
   // New longs beside shorts closed: the longs side twice, though open interest did not move.
   const closing: NlnsMarket = { bars: [bar(T, 200), bar(T + H, 190)], flows: [null, flow(5)] };
   const [, d] = nlnsModel(starts, [a, closing], none, keys(starts), H);
@@ -101,7 +101,10 @@ test('the words: coins, signed and short; the popup gives the share of open inte
   assert.deepEqual([coinText(325.4, 'BTC'), coinText(-1_234_567, 'DOGE'), coinText(0.042, 'BTC'), coinText(0, '')], ['+325 BTC', '−1.2M DOGE', '+0.042 BTC', '0']);
   const [, c] = nlnsModel([T, T + H], [{ bars: [bar(T, 92_000), bar(T + H, 92_092)], flows: [null, flow(-1)] }], none, [0, 0], H);
   const lines = nlnsCardLines(c!, '1h', 'BTC', 'Binance BTCUSDT');
-  assert.deepEqual(lines.slice(1, 4).map(l => [l.label, l.text]), [['Open interest', '+92 BTC · +0.10%'], ['Read as', 'New shorts'], ['New shorts', '+92 BTC']]);
+  // A part's word says whether it opened or closed, its colour what its orders did: no sign beside it (Karl, 2026-11-22: a minus in the buy colour).
+  assert.deepEqual(lines.slice(1, 4).map(l => [l.label, l.text]), [['Open interest', '+92 BTC · +0.10%'], ['Read as', 'New shorts'], ['New shorts', '92 BTC']]);
+  assert.equal(lines[3]!.color, 'sell');
+  assert.equal(coinSize(-8_400, 'BTC'), '8.4K BTC');
   assert.deepEqual(lines.slice(4, 7).map(l => [l.label, l.text]), [['Longs', '0 BTC · since the start 0 BTC'], ['Shorts', '+92 BTC · since the start +92 BTC'], ['Net', '−92 BTC · since the start −92 BTC']]);
   assert.match(lines[lines.length - 1]!.text, /Binance BTCUSDT/);
   assert.equal(readDelta({ style: 'nlns' }).style, 'nlns');
@@ -199,7 +202,7 @@ test('who made a change, for the OI pane: the parts of a rise and of a fall, the
   assert.deepEqual(whoParts(c, true), { buy: 30, sell: 0, none: 0 });
   assert.deepEqual(whoParts({ ...c, longClosed: 4, shortClosed: 6, unsidedDown: 2 }, false), { buy: 6, sell: 4, none: 2 }, 'a fall: shorts closed are the buyers\' part');
   const lines = nlnsWhoLines({ ...c, unassigned: 3, fine: 1, counted: 2 }, 'BTC');
-  assert.deepEqual(lines.slice(0, 2).map(l => [l.label, l.text]), [['New longs', '+30 BTC'], ['Takers even', '+3.0 BTC']]);
+  assert.deepEqual(lines.slice(0, 2).map(l => [l.label, l.text]), [['New longs', '30 BTC'], ['Takers even', '+3.0 BTC']]);
   assert.ok(lines[0]!.rule, 'set apart from the lines above it');
   assert.ok(lines.some(l => /Minute by minute for 1 of 2 venues/.test(l.text)));
   // An hour of one market from its minutes: buyers opened 40, sellers 20.

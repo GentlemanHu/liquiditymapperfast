@@ -658,8 +658,11 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     // Bars of whole hours: the hours the answer reads are added together first, a few at a time (`prepare`), and the answer then merges one
     // entry an hour on the request path rather than every minute (a daily bar of fourteen markets read back from the store took seconds).
     // It may go to four budgets: it lets the event loop go every few milliseconds, and fewer answers is fewer round trips for the page.
-    footprint.prepare(ids, span.from, span.to, tfMs, 4 * budget)
-      .then(() => sendJson(res, { instrumentId: id, tf, ...footprint.queryMany(ids, span.from, span.to, tfMs, rows, cuts, budget, url.searchParams.get('venues') === '1') }))
+    // `sums=1`: bars without rows (the Flow history reads only their statistics, minutes and size-line sums, all held in memory): nothing
+    // is prepared or read back from the store, so a week of thirteen markets is one answer (it took some twenty from a cold store, 2026-11-22).
+    const sums = url.searchParams.get('sums') === '1';
+    (sums ? Promise.resolve() : footprint.prepare(ids, span.from, span.to, tfMs, 4 * budget))
+      .then(() => sendJson(res, { instrumentId: id, tf, ...footprint.queryMany(ids, span.from, span.to, tfMs, rows, cuts, budget, url.searchParams.get('venues') === '1', sums) }))
       .catch(error => { console.error('v2 /api/v2/footprint failed:', error); if (!res.headersSent) sendJson(res, { error: 'internal error' }, 500); else res.end(); });
   };
   const liquidationsRoute = (url: URL, res: ServerResponse) => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FOOTPRINT_REFRESH_MS, FootprintData, FootprintLod, footprintWant, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
+import { FOOTPRINT_BUDGET, FOOTPRINT_REFRESH_MS, FootprintData, FootprintLod, SUMS_ROW_STEP, footprintWant, readBar, rowCellAt, rowCellLines, venueOrderOf } from '../src/app/panes/footprint.ts';
 import type { FootprintResponse } from '../src/app/source.ts';
 
 const H = 3_600_000;
@@ -395,12 +395,36 @@ test('a failed question is asked again after its pause and not before, ensure sa
   } finally { time.restore(); }
 });
 
-test('the bars a view asks for: its candles with one each side, on whole candles; the rows held are said', async () => {
+test('the bars a view asks for: its candles with one each side, on whole candles', () => {
   assert.deepEqual(footprintWant({ t0: 10.5 * H, t1: 12.2 * H, p0: 0, p1: 1 }, H), { from: 9 * H, to: 14 * H });
-  const { load } = source(50), data = new FootprintData();
-  assert.equal(data.heldStep, 0, 'nothing held');
-  data.ensure('a', '1h', { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 }, 40, load, () => {}, [25_000, 100_000], 20 * H); await turn();
-  assert.equal(data.heldStep, 40, 'the row size asked, not the size lines');
+});
+
+test('bars without rows (the Flow history\x27s): no step asked first, sums asked on coarse rows and no venues, sliced as a source answers', async () => {
+  const asked: { from: number; to: number; rows: number; cuts: number; budget: number; venues: boolean; sums: boolean }[] = [];
+  const load = async (_i: string, _tf: string, from: number, to: number, rows: number, cuts: readonly number[], budget: number, venues: boolean, sums: boolean): Promise<FootprintResponse> => {
+    asked.push({ from, to, rows, cuts: cuts.length, budget, venues, sums });
+    // Three bars an answer, newest first, without rows.
+    const bars = [];
+    for (let t = Math.floor((to - 1) / H) * H; t >= from && bars.length < 3; t -= H) bars.unshift({ t, rows: [] as [number, number, number][], buyUsd: 0, sellUsd: 0, minutes: 60 });
+    return { step: 5, fine: 5, bars, from: bars.length ? bars[0]!.t : from };
+  };
+  const data = new FootprintData(true), view = { t0: 10 * H, t1: 14 * H, p0: 0, p1: 1 };
+  assert.equal(data.sumsOnly, true);
+  // The row size given (0: the markets' step not known yet) asks no step question: the first question is for the bars.
+  for (let i = 0; i < 3; i++) { data.ensure('a,b', '1h', view, 0, load, () => {}, [], 14 * H); await turn(); }
+  assert.deepEqual(asked, [
+    { from: 9 * H, to: 15 * H, rows: SUMS_ROW_STEP, cuts: 0, budget: FOOTPRINT_BUDGET, venues: false, sums: true },
+    { from: 9 * H, to: 12 * H, rows: SUMS_ROW_STEP, cuts: 0, budget: FOOTPRINT_BUDGET, venues: false, sums: true },
+  ], 'the view in two slices, never a step question, never venues for several markets');
+  assert.deepEqual([...data.bars.keys()].map(t => t / H), [9, 10, 11, 12, 13, 14]);
+  assert.equal(data.covers(9 * H, 15 * H), true);
+  // Another row size asked (the zoom moved) is the same question for bars without rows: nothing is asked again.
+  data.ensure('a,b', '1h', view, 40, load, () => {}, [], 14 * H); await turn();
+  assert.equal(asked.length, 2, 'a row size means nothing to bars without rows');
+  // Bars with rows ask the step first as before, and say sums false.
+  const rows = new FootprintData();
+  rows.ensure('a,b', '1h', view, 0, load, () => {}, [], 14 * H); await turn();
+  assert.deepEqual([asked.at(-1)!.from, asked.at(-1)!.to, asked.at(-1)!.sums], [0, 1, false], 'the step question, alone');
 });
 
 test('a peek at the level leaves the hysteresis of the footprint as it is; the level itself moves it', () => {

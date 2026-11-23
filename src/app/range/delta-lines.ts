@@ -133,6 +133,8 @@ export function deltaStretch(held: DeltaPaneHeld, sel: Pick<RangeSelection, 't0'
 }
 
 const pct = (x: number): string => `${Math.round(x * 100)}%`;
+/** A delta's tone: buying less selling in the colour of its sign, none at zero (Karl, 2026-11-22: a leaning figure is never left in the plain text). */
+const leanTone = (x: number): { tone?: 'buy' | 'sell' } => x > 0 ? { tone: 'buy' } : x < 0 ? { tone: 'sell' } : {};
 /**
  * Whether any market's flow reaches back further now than it did (`then`, `now` in the same markets' order; the markets are in the key): one
  * that had none and has some, or whose first second is earlier. Only then can a candle that had no flow, or fewer markets, have more now; a
@@ -251,8 +253,8 @@ export class DeltaRangeSummary {
       spread.push({ key: 'dl-offset', kind: 'stat', cells: [t('Net left after candles offset each other'), t('{share} of their combined size', { share: pct(Math.abs(s.delta) / s.movement) })] });
     }
     if (s.held >= 2) spread.push({ key: 'dl-count', kind: 'stat', cells: [t('Candle delta signs'), t('{b} buying · {s} selling · {f} flat', { b: s.buying, s: s.selling, f: s.flat })] });
-    if (s.before !== null && !forming && whole) spread.push({ key: 'dl-before', kind: 'stat', cells: [tn(n, 'Previous {n} candle ({span})', 'Previous {n} candles ({span})', { span: durationText(s.t1 - s.t0) }), signedUsd(s.before)] });
-    if (s.largest && s.held > 1) spread.push({ key: 'dl-largest', kind: 'stat', cells: [t('Largest absolute candle delta'), `${clock(s.largest.t, true)} · ${signedUsd(s.largest.delta)}`] });
+    if (s.before !== null && !forming && whole) spread.push({ key: 'dl-before', kind: 'stat', cells: [tn(n, 'Previous {n} candle ({span})', 'Previous {n} candles ({span})', { span: durationText(s.t1 - s.t0) }), signedUsd(s.before)], ...leanTone(s.before) });
+    if (s.largest && s.held > 1) spread.push({ key: 'dl-largest', kind: 'stat', cells: [t('Largest absolute candle delta'), `${clock(s.largest.t, true)} · ${signedUsd(s.largest.delta)}`], ...leanTone(s.largest.delta) });
     if (spread.length) lines.push({ key: 'h-dl-spread', kind: 'heading', cells: [t('How it was spread')] }, ...spread);
     return lines;
   }

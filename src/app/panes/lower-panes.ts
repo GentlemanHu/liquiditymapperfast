@@ -24,7 +24,7 @@ import type { InfoLine } from '../infobox.ts';
 import { barAt, columnAt, depthCardLines, depthColumns, depthKey, depthRankBrief, liqCardLines, liqColumnRows, liqReading, liqTakesLine, ltCardLines, oiCardLines, oiTail, readAt, readsBooksNow, slotAt } from './pane-cards.ts';
 import { LiqHistory, bandIndex, bandOnEdge, type LiqRow } from '../liq-history.ts';
 import { TAKE_DASH, type LevelsKind } from '../liq-levels.ts';
-import { bidAskKey, depthOrderSides, levelsOrderSide, type DepthSides } from '../order-side.ts';
+import { bidAskKey, depthBuyLessSell, depthOrderSides, levelsOrderSide, type DepthSides } from '../order-side.ts';
 import { curveOf, groupTitle, kindName, levelsDescription, liveDepthView, liveSplit, viewKey, type LiqView } from '../liq-view.ts';
 import { toggleLevels } from '../levels-control.ts';
 import { ordersAbsent, readFailed } from '../liq-words.ts';
@@ -60,7 +60,7 @@ import type { RangeTool } from '../range/tool.ts';
 import type { FlowBook } from '../flow-book.ts';
 import { buildOiMarketsPanel, marketPicker } from '../market-picker.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
-import { coinText, nlnsWhoLines, whoParts, type NlnsCandle } from '../delta/nlns.ts';
+import { coinSize, coinText, nlnsWhoLines, whoParts, type NlnsCandle } from '../delta/nlns.ts';
 import type { NlnsSource } from '../delta/nlns-source.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { candleSplitStyles, emphasisFloor, medianRow } from '../traded/emphasis.ts';
@@ -400,6 +400,9 @@ type LiqSeries = {
 };
 /** A difference as the Depth pane writes it, with its sign (a minus sign, not a hyphen). */
 const signedText = (value: number): string => `${value >= 0 ? '+' : '−'}${usd(Math.abs(value))}`;
+/** A readout figure's class where it is buying less selling: the buy colour above zero, the sell colour below, none at zero (never the plain text
+ * colour for a figure that leans: in Terminal that is the buy colour whatever the sign; Karl, 2026-11-22). */
+const leanClass = (value: number): string => value > 0 ? ' class="bid"' : value < 0 ? ' class="ask"' : '';
 /** The Depth table's figures: three significant figures (263M, 1.38B), so its columns stay narrow enough to sit beside the plot. */
 const tableFigures = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 });
 export const tableText = (value: number): string => Number.isFinite(value) ? tableFigures.format(value) : '–';
@@ -811,7 +814,7 @@ export class DepthPane extends TimePane {
       const b = liveNow ? liveFigure('bid', top) : bid[at(lastX, top)]!, a = liveNow ? liveFigure('ask', top) : ask[at(lastX, top)]!;
       const total = b + a, lean = total > 0 ? (b - a) / total : 0, r = sideRatio(b, a);
       const dominant = Math.abs(lean) < 0.005 ? '' : ` <b class="${lean > 0 ? 'bid' : 'ask'}">${lean > 0 ? t('bids') : t('asks')} +${(Math.abs(lean) * 100).toFixed(1)}%${r ? ` · ${ratioFigure(r.ratio)}` : ''}</b>`;
-      setHtml(readout, `±${bandText(s.radii[top]!)}% B <b class="bid">${amountText(b, coins)}</b> A <b class="ask">${amountText(a, coins)}</b> Δ <b>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${dominant}${liveNow && liveShort ? ` · ${liveShort}` : ''}`);
+      setHtml(readout, `±${bandText(s.radii[top]!)}% B <b class="bid">${amountText(b, coins)}</b> A <b class="ask">${amountText(a, coins)}</b> Δ <b${leanClass(b - a)}>${coins ? tableSigned(b - a) : signedText(b - a)}</b>${unit}${dominant}${liveNow && liveShort ? ` · ${liveShort}` : ''}`);
     } else setHtml(readout, '');
     // The order book's column under the pointer, past the newest the newest; with no pointer the newest.
     let readX = lastX, readTime = lastX >= 0 ? colT(lastX) : NaN, pointed = false, under = -1;
@@ -1078,12 +1081,14 @@ const coinOf = (state: Pick<AppState, 'markets' | 'marketId'>): string => state.
 
 /**
  * The OI pane's readout of who made a change (NL/NS): its parts, the side of the change first (what opened on a rise, what closed on a fall),
- * so that with what went to no side they add up to the change.
+ * so that with what went to no side they add up to the change. Each part in the colour of what its orders did (new longs and shorts closed
+ * bought) and without a sign: the word says whether it opened or closed, and "Shorts closed −8.4K" in the buy colour said two things at once
+ * (Karl, 2026-11-22).
  */
 function whoText(c: NlnsCandle | undefined, d: number): string {
   if (!c || d === 0) return '';
-  const opened = [[t('New longs'), c.longOpened, 'bid'], [t('New shorts'), c.shortOpened, 'ask']] as const, closed = [[t('Shorts closed'), -c.shortClosed, 'bid'], [t('Longs closed'), -c.longClosed, 'ask']] as const;
-  return [...(d > 0 ? [...opened, ...closed] : [...closed, ...opened])].filter(([, x]) => x !== 0).map(([label, x, tone]) => ` ${label} <b class="${tone}">${coinText(x, '')}</b>`).join('');
+  const opened = [[t('New longs'), c.longOpened, 'bid'], [t('New shorts'), c.shortOpened, 'ask']] as const, closed = [[t('Shorts closed'), c.shortClosed, 'bid'], [t('Longs closed'), c.longClosed, 'ask']] as const;
+  return [...(d > 0 ? [...opened, ...closed] : [...closed, ...opened])].filter(([, x]) => x !== 0).map(([label, x, tone]) => ` ${label} <b class="${tone}">${coinSize(x, '')}</b>`).join('');
 }
 
 /**
@@ -1095,11 +1100,12 @@ export function depthHeads(kind: LevelsKind | null): [string, string] {
 }
 
 /**
- * The Depth pane's table (both sources): a band a row, its two sides (bids and asks; longs below the price and shorts above), the first less the
- * second (never coloured, in either source: × says which side leads, and longs less shorts is not buying less selling), and how many times the
- * larger side is the smaller in that side's colour (pane-table.ts `ratioCell`). Each side's figures take the colour of what its orders do
- * (`sides`, order-side.ts): the bids' buy colour, the longs' sell colour (a long is closed by a sell), so × points at the column of its colour. A
- * band not read has dashes.
+ * The Depth pane's table (both sources): a band a row, its two sides (bids and asks; longs below the price and shorts above), its Δ (what its orders
+ * would buy less what they would sell, `depthBuyLessSell`: the bids less the asks, the shorts less the longs, in the buy colour where buying is
+ * larger and the sell colour where selling is, as the cards colour theirs), and how many times the larger side is the smaller in that side's colour
+ * (pane-table.ts `ratioCell`). Each side's figures take the colour of what its orders do (`sides`, order-side.ts): the bids' buy colour, the longs'
+ * sell colour (a long is closed by a sell), so × points at the column of its colour and Δ has the colour of the side it favours. A band not read
+ * has dashes.
  */
 export function depthTableRows(rows: readonly { r: number; bid: number; ask: number }[], p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, sides: DepthSides = depthOrderSides(null),
   ranks: readonly ({ bid: BandRank | null; ask: BandRank | null } | undefined)[] = []): TableCell[][] {
@@ -1107,23 +1113,28 @@ export function depthTableRows(rows: readonly { r: number; bid: number; ask: num
   const ink = { bid: p[bidAskKey(sides.below)], ask: p[bidAskKey(sides.above)], text: p.text, muted: p.muted };
   // Where a figure stands in its own history (depth-history.ts): a bar under it that far across, and the figure bold past the 95th percentile or under the 5th.
   const ranked = (r: BandRank | null | undefined): Pick<TableCell, 'bar' | 'bold'> => r ? { bar: r.p, bold: rankKind(r).extreme } : {};
+  const deltaCell = (below: number, above: number): TableCell => {
+    if (!Number.isFinite(below) || !Number.isFinite(above)) return { text: '–' };
+    const d = depthBuyLessSell(below, above, sides);
+    return d === 0 ? { text: '0', color: p.muted } : { text: tableSigned(d), color: tableInk(d > 0 ? p.bid : p.ask, p) };
+  };
   return rows.map((row, j) => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p), ...ranked(ranks[j]?.bid) }, { text: tableText(row.ask), color: tableInk(ink.ask, p), ...ranked(ranks[j]?.ask) },
-    { text: Number.isFinite(row.bid) && Number.isFinite(row.ask) ? tableSigned(row.bid - row.ask) : '–' }, ratioCell(row.bid, row.ask, ink)]);
+    deltaCell(row.bid, row.ask), ratioCell(row.bid, row.ask, ink)]);
 }
 
 /**
- * The Depth pane's header over the liquidation levels: the watched band's two sides and their difference (below the price less above, never
- * coloured, as in the table), the larger side named with how many times the other it is, the take profits beside them, and when the positions
- * stood. Every figure is in the colour of what its orders would do (order-side.ts): the longs below in the sell colour, the shorts above in the
+ * The Depth pane's header over the liquidation levels: the watched band's two sides, their Δ (what they would buy less what they would sell, as
+ * in the table: the shorts less the longs, take profits alone the bids less the asks, in the colour of the side it favours), the larger side named
+ * with how many times the other it is, the take profits beside them, and when the positions stood. Every figure is in the colour of what its orders would do (order-side.ts): the longs below in the sell colour, the shorts above in the
  * buy colour; take profits alone are resting orders, lettered and named as the book's (B and A, bids and asks: the shorts' buys below).
  */
 export function depthLiqReadout(h: { whose: string; band: string; long: number; short: number; coins: boolean; unit: string; kind: LevelsKind; take: { long: number; short: number } | null; asOf: string }): string {
-  const sides = depthOrderSides(h.kind), below = bidAskKey(sides.below), above = bidAskKey(sides.above), r = sideRatio(h.long, h.short);
+  const sides = depthOrderSides(h.kind), below = bidAskKey(sides.below), above = bidAskKey(sides.above), r = sideRatio(h.long, h.short), d = depthBuyLessSell(h.long, h.short, sides);
   const alone = h.kind === 'takes', names = alone ? [t('bids'), t('asks')] : [t('longs'), t('shorts')], letters = alone ? ['B', 'A'] : ['L', 'S'];
   const larger = r?.lead ? ` <b class="${r.lead > 0 ? below : above}">${r.lead > 0 ? names[0] : names[1]} ${ratioFigure(r.ratio)}</b>` : '';
   // The take profits beside the levels: the sells that close longs above the price, the buys that close shorts below.
   const tp = h.take ? ` · ${t('take profits')} <b class="${bidAskKey(levelsOrderSide('takes', 'short'))}">▲${amountText(h.take.short, h.coins)}</b> <b class="${bidAskKey(levelsOrderSide('takes', 'long'))}">▼${amountText(h.take.long, h.coins)}</b>` : '';
-  return `${h.whose}±${h.band}% ${letters[0]} <b class="${below}">${amountText(h.long, h.coins)}</b> ${letters[1]} <b class="${above}">${amountText(h.short, h.coins)}</b> Δ <b>${h.coins ? tableSigned(h.long - h.short) : signedText(h.long - h.short)}</b>${h.unit}${larger}${tp} · ${t('positions as of {time}', { time: h.asOf })}`;
+  return `${h.whose}±${h.band}% ${letters[0]} <b class="${below}">${amountText(h.long, h.coins)}</b> ${letters[1]} <b class="${above}">${amountText(h.short, h.coins)}</b> Δ <b${d ? ` class="${d > 0 ? 'bid' : 'ask'}"` : ''}>${h.coins ? tableSigned(d) : signedText(d)}</b>${h.unit}${larger}${tp} · ${t('positions as of {time}', { time: h.asOf })}`;
 }
 
 /** The OI pane's table: a venue a row, its open interest in coins, its change over the candle read and its share of those read then. */
@@ -1802,10 +1813,10 @@ export class LtPane extends TimePane {
     // Readout follows the cursor, else the newest point.
     let at = n - 1;
     if (state.hover) { at = 0; for (let i = 0; i < n; i++) if (s.times[i]! <= state.hover.t) at = i; }
-    const b = s.bid[at]!, a = s.ask[at]!, total = b + a, r = sideRatio(b, a);
+    const b = s.bid[at]!, a = s.ask[at]!, total = b + a, r = sideRatio(b, a), imb = total > 0 ? Math.round((b - a) / total * 100) : 0;
     const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('bids') : t('asks')} ${ratioFigure(r.ratio)}</b>` : '';
     // ≈: part of the line was worked out from the minutes' average books (a size filter, or minutes recorded before the tracker was kept: see the help).
-    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${usd(b)}</b> ${t('Ask')} <b class="ask">${usd(a)}</b> Δ <b>${usd(b - a)}</b> ${t('imb')} <b>${total > 0 ? Math.round((b - a) / total * 100) : 0}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
+    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${usd(b)}</b> ${t('Ask')} <b class="ask">${usd(a)}</b> Δ <b${leanClass(b - a)}>${signedText(b - a)}</b> ${t('imb')} <b${leanClass(imb)}>${imb > 0 ? '+' : imb < 0 ? '−' : ''}${Math.abs(imb)}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
     // The card reads the windows shown too: in a replay, never one under way at its moment or after it (the mask covers pixels, not the card).
     const over = state.hover && this.pointer ? readAt(slotAt(s.times.subarray(0, n), step, state.hover.t), state.hover.t, n - 1, s.times[n - 1]) : -1;
     if (over >= 0 && state.hover && state.hover.t >= s.times[over]! + step) this.cursorT = s.times[over]! + step / 2;

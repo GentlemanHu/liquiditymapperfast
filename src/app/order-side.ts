@@ -33,6 +33,16 @@ export function depthOrderSides(kind: LevelsKind | null): DepthSides {
 }
 
 /**
+ * A Depth figure's Δ: what its orders would buy less what they would sell (`depthBuyLessSell`), the sign and the colour saying the same thing:
+ * positive in the buy colour, negative in the sell colour. Karl, 2026-11-22: the liquidation table's Δ was the first column less the second,
+ * longs less shorts, which is selling less buying, and left uncoloured; in the Terminal theme the plain text is the buy colour, so "−117M"
+ * (shorts leading: buying) read green whatever its sign, and the same figure was green with either sign.
+ */
+export function depthBuyLessSell(below: number, above: number, sides: DepthSides): number {
+  return sides.below === 'buy' ? below - above : above - below;
+}
+
+/**
  * Which colour of the book's pair a side's orders take, as the palette's key: 'bid' for buys, 'ask' for sells. The surface picks the pair (the
  * Depth pane and every pane table ink in bid and ask, the map's liquidation column in the candle colours); the side's orders pick which of its two.
  */
