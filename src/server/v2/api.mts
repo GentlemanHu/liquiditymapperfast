@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { createLocalServer } from '../http.mts';
 import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from './levels.mts';
@@ -549,10 +550,19 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   // A file that cannot be opened (locked, damaged) costs only the keeping: it is a cache, never a reason not to start.
   let lsStore: SqliteLsStore | null = null;
   if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
-  // `LS_TRACE=<file>`: each failed venue read and each answer whose window could not be read, a JSON line each (diagnostics; off by default).
-  const lsTraceFile = process.env.LS_TRACE, lsTrace = lsTraceFile ? (event: LsTrace): void => {
-    try { fs.appendFileSync(lsTraceFile, `${JSON.stringify({ t: new Date().toISOString(), ...event })}\n`); } catch { /* a trace that cannot be written is none */ }
+  // `LS_TRACE=<file>`: each failed venue read (with how long it took) and each answer whose window could not be read, a JSON line each,
+  // with the event loop's delay since the line before (worst and 99th percentile, ms), so a read that timed out while the loop was held can
+  // be told from a slow or refusing venue; one line when the server starts. Diagnostics, off by default.
+  const lsTraceFile = process.env.LS_TRACE, lsLag = lsTraceFile ? monitorEventLoopDelay({ resolution: 20 }) : null;
+  lsLag?.enable();
+  const lsTrace = lsTraceFile ? (event: LsTrace | { ev: 'trace-start'; pid: number }): void => {
+    try {
+      const lag = lsLag ? { lagMaxMs: Math.round(lsLag.max / 1e6), lagP99Ms: Math.round(lsLag.percentile(99) / 1e6) } : {};
+      lsLag?.reset();
+      fs.appendFileSync(lsTraceFile, `${JSON.stringify({ t: new Date().toISOString(), ...event, ...lag })}\n`);
+    } catch { /* a trace that cannot be written is none */ }
   } : null;
+  lsTrace?.({ ev: 'trace-start', pid: process.pid });
   const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore, lsTrace);
   const priceHistory = new PriceHistoryCache(priceHistoryGet);
   const priceHistoryRoute = (url: URL, res: ServerResponse) => {

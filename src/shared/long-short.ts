@@ -40,8 +40,9 @@ export const LS_METRICS: readonly LsMetric[] = ['accounts', 'topAccounts', 'topP
 export interface LsPoint { t: number; long: number }
 /**
  * `ok` with points; `empty` the venue answered with none for the window; `unsupported` the venue publishes no such series (or none for this
- * market); `serverOnly` a page cannot read it (no CORS header) but a server can; `failed` the request or its answer was not good; `stale`
- * the points held from before, the last request for more having failed.
+ * market); `serverOnly` a page cannot read it (no CORS header) but a server can; `failed` the window could not be read and nothing is held
+ * for it; `stale` the window could not be read (a read it needed failed, or ran out of its turns), with the points held from before. A window
+ * held whole is `ok` whatever another read of the series did.
  */
 export type LsStatus = 'ok' | 'empty' | 'unsupported' | 'serverOnly' | 'failed' | 'stale';
 /**
@@ -498,7 +499,7 @@ export interface LsChange { cleared: boolean; added: readonly LsPoint[]; keep: {
  * What the cache tells an optional trace (the server's `LS_TRACE` file): a read that failed, with its error, and an answer whose window
  * was not read (`answer-stale` with readings held, `answer-failed` with none), with why.
  */
-export interface LsTrace { ev: 'read-failed' | 'answer-stale' | 'answer-failed'; key: string; kind?: string; start?: number; end?: number; error?: string; from?: number; to?: number; why?: string; failedAgoMs?: number | null }
+export interface LsTrace { ev: 'read-failed' | 'answer-stale' | 'answer-failed'; key: string; kind?: string; start?: number; end?: number; error?: string; ms?: number; from?: number; to?: number; why?: string; failedAgoMs?: number | null }
 /**
  * Where a cache keeps its series across restarts. `load` is asked once per series (null: none kept); `save` after every read, never waited for
  * (`full` gives the whole record, for a backing that writes it whole). Either may throw: the cache goes on as if it had none.
@@ -675,6 +676,7 @@ export class LongShortCache {
       // A read that reached back only part of its window (Binance's archive, `ARCHIVE_DAYS` at a time) and got further than before.
       let short = false;
       // The Binance series chosen is Binance's: every other venue publishes its accounts alone.
+      const began = Date.now();
       h.busy = fetchLongShort(venue, symbol, LS_CHOSEN_VENUES.includes(venue) ? metric : 'accounts', periodMs, start, end, get, now, this.#archive).then(({ points, from: reached }) => {
         // A market the venue did not list before (asked again once a minute) is published again once it answers.
         h.failed = 0; h.noMarket = false;
@@ -706,7 +708,7 @@ export class LongShortCache {
       }, error => {
         // When it failed, not when it began: a slow request of many pages would otherwise leave no minute's pause behind it.
         h.failed = this.now();
-        this.#trace({ ev: 'read-failed', key, kind, start, end, error: String(error instanceof Error ? error.message : error).slice(0, 300) });
+        this.#trace({ ev: 'read-failed', key, kind, start, end, ms: Date.now() - began, error: String(error instanceof Error ? error.message : error).slice(0, 300) });
         if (error instanceof LsNoMarket) h.noMarket = true;
         // A crash in the handlers above counts as a failed read: nobody may be waiting on `busy` (a question past its budget) to catch it.
       }).catch(() => { h.failed = this.now(); }).finally(() => {
