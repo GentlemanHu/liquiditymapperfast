@@ -206,12 +206,13 @@ export class LsPane extends TimePane {
     const land = (final: boolean): void => {
       if (over || generation !== this.#generation) return;
       // Judged by the view as it is now (the zoom may have moved on while the round was read), a replay by what it draws.
-      this.#series = lsLanded(ids, this.#series, answers, final, { view: this.view, want: lsPeriods(ids, tfMs, this.view), cut: replaying() ? pageNow() : Infinity });
+      this.#series = lsLanded(ids, this.#series, answers, final, { view: this.view, want: lsPeriods(ids, tfMs, this.view), asked: periods, cut: replaying() ? pageNow() : Infinity });
       if (final) {
         over = true; window.clearTimeout(deadline); round.abort(); this.#stopFollowing();
         if (this.#round === round) this.#round = null;
         this.#loading = false;
-        const at = Date.now(), pending = ids.some(id => answers.get(id)?.pending);
+        // A line still being read: its answer was, or the line was kept over an answer for a zoom since left (`lsLanded`).
+        const at = Date.now(), pending = ids.some(id => answers.get(id)?.pending || this.#series.some(s => s.id === id && s.pending));
         if (this.#held) { this.#held.at = at; if (pending) this.#held.soon = at + LS_SOON_MS; }
         // A venue still being read is asked again shortly, the pane drawn then (a chart standing still draws nothing on its own); the other
         // series are warmed once none is, so their reads do not queue before it at the venue.
@@ -226,7 +227,8 @@ export class LsPane extends TimePane {
     const line = (id: string, population: LsPopulation): LsSeries | undefined => this.#series.find(s => s.id === id && s.points.length > 0 && s.population === population);
     const read = (id: string, attempt: number): void => {
       void source.longShort(id, state.lsMetric, state.timeframe, from, to, round.signal, LS_BUDGET_MS, periods.get(id) || undefined)
-        .catch((): LsSeries => ({ id, population: null, periodMs: 0, points: [], status: 'failed' }))
+        // Failed in the period asked: a failure of a zoom since left leaves the line of this zoom as it is (`lsLanded`).
+        .catch((): LsSeries => ({ id, population: null, periodMs: periods.get(id) ?? 0, points: [], status: 'failed' }))
         .then(series => {
           if (over || generation !== this.#generation) return;
           answers.set(id, series);

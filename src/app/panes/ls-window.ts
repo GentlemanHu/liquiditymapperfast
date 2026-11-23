@@ -77,9 +77,11 @@ export function lsPeriods(ids: readonly string[], tfMs: number, view: { t0: numb
 }
 
 /**
- * The window to ask for now, or null when nothing need be asked. `periods` are those of the markets shown for this view (`lsPeriods`): what
- * is held in a coarser period for a venue is asked again at once (a zoom back in), in a finer one it stays (finer is never worse). The window
- * is never longer than `LS_WINDOW_READINGS` readings at the finest period asked (only a view of years in daily readings comes near).
+ * The window to ask for now, or null when nothing need be asked. `periods` are those of the markets shown for this view (`lsPeriods`): where
+ * a venue's differs from the one last asked (a zoom across a period's edge, either way) it is asked at once, so the line changes period with
+ * the zoom and never later with a pan (asked only when finer, a zoom out kept the finer line until a pan left what it held, and the pan turned
+ * it coarser: review 2026-11-23). The window is never longer than `LS_WINDOW_READINGS` readings at the finest period asked (only a view of
+ * years in daily readings comes near).
  */
 export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, view: { t0: number; t1: number }, tfMs: number, now: number, periods: ReadonlyMap<string, number> = new Map()): { from: number; to: number } | null {
   // Around the view: three quarters of a view before it and a quarter after (two views at most, so `LS_VIEW_READINGS` readings in view keep
@@ -91,11 +93,11 @@ export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, v
   const needFrom = Math.max(ask.from, view.t0 - span / 2), needTo = Math.min(view.t1 + tfMs, now + tfMs);
   if (held && held.ident === ident) {
     if (loading) return null;
-    // Only finer: a coarser period than what is held is never a reason to ask (its finer readings draw the view as well).
-    const finer = [...periods].some(([id, period]) => period > 0 && period < (held.periods?.get(id) ?? period));
+    // Another period than the one asked, finer or coarser.
+    const changed = [...periods].some(([id, period]) => period > 0 && period !== (held.periods?.get(id) ?? period));
     // `soon`: the round ended with a venue still being read; its readings are asked for again then, not at the minute.
     const due = now - held.at >= MINUTE || (held.soon !== undefined && now >= held.soon);
-    if (!finer && held.from <= needFrom && held.to >= needTo - MINUTE && !due) return null;
+    if (!changed && held.from <= needFrom && held.to >= needTo - MINUTE && !due) return null;
   }
   return ask;
 }
@@ -106,16 +108,22 @@ export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, v
  */
 export const lsReach = (s: Pick<LsSeries, 'points' | 'periodMs'>): number => s.points.reduce((latest, p) => Math.max(latest, p.t), -Infinity) + s.periodMs;
 /**
- * Whether a series has a step drawn in `view` (any reading at all with none given): one that covers some of it, of a reading published by
- * `cut` (a replay draws only what had been published by the moment shown: a reading once its period is over).
+ * Whether a series has a step drawn in `view` (any reading at all with none given): one that covers some of it, among the readings published
+ * by `cut` (a replay draws only what had been published by the moment shown: a reading once its period is over), each step ending where the
+ * paint ends it (at the next of those readings, not at one still to come).
  */
-export const lsDrawnIn = (s: Pick<LsSeries, 'points' | 'periodMs'>, view?: { t0: number; t1: number }, cut = Infinity): boolean =>
-  s.points.some((q, i) => q.t + s.periodMs <= cut && (!view || (stepEnd(s, i) > view.t0 && q.t < view.t1)));
+export function lsDrawnIn(s: Pick<LsSeries, 'points' | 'periodMs'>, view?: { t0: number; t1: number }, cut = Infinity): boolean {
+  const shown = { points: cut === Infinity ? s.points : s.points.filter(q => q.t + s.periodMs <= cut), periodMs: s.periodMs };
+  return shown.points.some((q, i) => !view || (stepEnd(shown, i) > view.t0 && q.t < view.t1));
+}
 /** `s` with `status`, no longer pending. */
 function settledAs(s: LsSeries, status: LsSeries['status']): LsSeries { const out: LsSeries = { ...s, status }; delete out.pending; return out; }
 
-/** What a landing is judged by: the view shown, each market's period for it now (`lsPeriods`) and a replay's moment (`lsDrawnIn`). */
-export interface LsLandAt { view?: { t0: number; t1: number }; want?: ReadonlyMap<string, number>; cut?: number }
+/**
+ * What a landing is judged by: the view shown, each market's period for it now (`want`, `lsPeriods`), the period the round asked each in
+ * (`asked`: a failure or a question never answered is of that period) and a replay's moment (`cut`, `lsDrawnIn`).
+ */
+export interface LsLandAt { view?: { t0: number; t1: number }; want?: ReadonlyMap<string, number>; asked?: ReadonlyMap<string, number>; cut?: number }
 
 /**
  * The series drawn while a round lands, in the order of `ids`: a venue's answer as soon as it comes; until then what it had before (`before`).
@@ -124,18 +132,21 @@ export interface LsLandAt { view?: { t0: number; t1: number }; want?: ReadonlyMa
  * than the line drawn (the source holds none for this window yet, or an older stretch while it reads the rest) keeps the line, still
  * pending, so it never blanks or loses its newest hours while its venue is read. One in a finer period than the line (a zoom back in) takes
  * its place as soon as it has a step in the view: a coarser line's step reaches a whole period past its reading, and kept the daily line
- * drawn over the hourly answer, and stale over it when its round failed (2026-11-23). An answer in a period the view no longer asks (the
- * zoom moved on while it was read) never replaces a line in the period it asks.
+ * drawn over the hourly answer, and stale over it when its round failed (2026-11-23). A question in a period the view no longer asks (the
+ * zoom moved on while it was read), answered, failed or never answered, leaves a line in the period it asks as it is (the next round asks
+ * that period). A line with no step in view gives way to an answer that has one (a pan into history at the same zoom).
  */
 export function lsLanded(ids: readonly string[], before: readonly LsSeries[], answers: ReadonlyMap<string, LsSeries>, final: boolean, at: LsLandAt = {}): LsSeries[] {
   const out: LsSeries[] = [];
+  const shows = (s: LsSeries): boolean => lsDrawnIn(s, at.view, at.cut);
   for (const id of ids) {
     const answer = answers.get(id), prev = before.find(s => s.id === id), held = prev?.points.length ? prev : null, wanted = at.want?.get(id);
-    // Asked for a zoom since left: the line already in this zoom's period stays as it is (the next round asks this zoom's).
-    if (answer && held && wanted !== undefined && answer.periodMs !== wanted && held.periodMs === wanted) { out.push(final && held.pending ? settledAs(held, held.status) : held); continue; }
+    const asked = at.asked?.get(id) ?? answer?.periodMs;
+    // Asked for a zoom since left: the line already in this zoom's period stays as it is (pending lines are asked again soon by the pane).
+    if (held && wanted !== undefined && asked !== undefined && asked !== wanted && held.periodMs === wanted) { out.push(held); continue; }
     // Reaching less far than the line, or (the same period) as far with fewer readings: an older stretch while the rest is read. Finer than
-    // the line: only with no step in view.
-    const shorter = answer?.pending && held && (answer.periodMs < held.periodMs ? !lsDrawnIn(answer, at.view, at.cut)
+    // the line: only with no step in view. Never over a line with no step in view when the answer has one.
+    const shorter = answer?.pending && held && !(at.view && !shows(held) && shows(answer)) && (answer.periodMs < held.periodMs ? !shows(answer)
       : lsReach(answer) < lsReach(held) || (answer.periodMs === held.periodMs && lsReach(answer) === lsReach(held) && answer.points.length < held.points.length));
     if (shorter && held) out.push({ ...held, pending: true });
     else if (answer && !(answer.status === 'failed' && held)) out.push(answer);

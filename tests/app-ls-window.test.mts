@@ -59,7 +59,7 @@ test('at every timeframe and zoom the readings in view keep to LS_VIEW_READINGS 
   }
 });
 
-test('a zoom back in asks at once where a venue\'s period is finer than what is held; a coarser one asks nothing', () => {
+test('a zoom across a period\'s edge asks at once, back in and out alike, so a pan never changes a line\'s period', () => {
   // A 120-day view is read every two to 24 hours; back to 90 days every venue is hourly again: the held coarse steps once stayed drawn until
   // the minute refresh (2026-10-23).
   const wideHeld = heldOf({ t0: NOW - 120 * DAY, t1: NOW + 2 * DAY }, TF), back = { t0: NOW - 90 * DAY, t1: NOW + 2 * DAY };
@@ -71,10 +71,13 @@ test('a zoom back in asks at once where a venue\'s period is finer than what is 
   const daysHeld = heldOf({ t0: NOW - 10 * DAY, t1: NOW + HOUR }, 5 * MIN), five = { t0: NOW - 5 * DAY, t1: NOW + HOUR };
   assert.deepEqual([...daysHeld.periods!.values()].map(name), ['15m', '15m', '1h', '15m', '15m']);
   assert.notEqual(lsWindow(daysHeld, false, 'k', five, 5 * MIN, NOW + 1_000, lsPeriods(['bitget:BTCUSDT'], 5 * MIN, five)), null, 'Bitget alone finer is enough');
-  // Eight days are five-minutely (2,304 readings), nine every 15 minutes: zoomed out that far, what is held still covers the view, finer.
+  // Eight days are five-minutely (2,304 readings), nine every 15 minutes: zoomed out across that edge, asked at once although what is held
+  // covers the view (kept five-minutely, the next pan out of what is held turned the line 15-minutely: review 2026-11-23).
   const fineHeld = heldOf({ t0: NOW - 8 * DAY, t1: NOW + HOUR }, 5 * MIN), out = { t0: NOW - 9 * DAY, t1: NOW + HOUR }, outPeriods = lsPeriods(IDS, 5 * MIN, out);
   assert.deepEqual([[...fineHeld.periods!.values()].map(name), [...outPeriods.values()].map(name)], [['5m', '5m', '5m', '5m', '5m'], ['15m', '15m', '1h', '15m', '15m']]);
-  assert.equal(lsWindow(fineHeld, false, 'k', out, 5 * MIN, NOW + 1_000, outPeriods), null, 'held finer than the view needs: nothing asked while it covers the view');
+  assert.notEqual(lsWindow(fineHeld, false, 'k', out, 5 * MIN, NOW + 1_000, outPeriods), null, 'the coarser period asked at the zoom');
+  const outHeld = heldOf(out, 5 * MIN), panned = { t0: out.t0 - 2 * DAY, t1: out.t1 - 2 * DAY };
+  assert.deepEqual([...lsPeriods(IDS, 5 * MIN, panned).values()], [...outHeld.periods!.values()], 'the pan after it asks the same periods');
 });
 
 test('right after a round, the same view asks nothing, nor does a live view a minute short of the refresh', () => {
@@ -201,7 +204,7 @@ test('an answer for a zoom since left never replaces the line in the period the 
   assert.equal(lsLanded([id], [five], new Map([[id, hourly]]), false, { view, want })[0], five, 'the five-minute line stays');
   assert.equal(lsLanded([id], [five], new Map([[id, hourly]]), false, { view })[0], hourly, 'without the view\'s periods, by reach as before');
   const settled = lsLanded([id], [{ ...five, pending: true }], new Map([[id, { ...hourly, status: 'failed' as const, points: [] }]]), true, { view, want })[0]!;
-  assert.deepEqual([settled.periodMs, settled.status, 'pending' in settled], [5 * MIN, 'ok', false], 'the round over: kept as it was, no longer pending');
+  assert.deepEqual([settled.periodMs, settled.status, settled.pending], [5 * MIN, 'ok', true], 'the round over: kept as it was, still pending (the pane asks again soon)');
   // A replay at 12:02 draws a five-minute reading of 12:00 only from 12:05: it does not yet replace the hourly line.
   const noon = Math.floor(NOW / DAY) * DAY + 12 * HOUR, hours: LsSeries = { ...hourly, points: [{ t: noon - 2 * HOUR, long: 0.6 }, { t: noon - HOUR, long: 0.61 }] };
   const fine: LsSeries = { ...five, pending: true, points: [{ t: noon, long: 0.6 }] }, around = { t0: noon - 3 * HOUR, t1: noon + HOUR };
@@ -219,4 +222,31 @@ test('a pan never changes a period, even where floating point leaves the view\'s
     const dt = (k - 200) * 7_919.37, moved = { t0: edge.t0 + dt, t1: edge.t1 + dt };
     assert.deepEqual([...lsPeriods(IDS, TF, moved).values()], [...lsPeriods(IDS, TF, edge).values()]);
   }
+});
+
+test('a failure or a question never answered counts for the period it was asked in', () => {
+  // Review 2026-11-23: a failure had no period (0) and read as a zoom since left, so the line stayed "ok"; a timed-out question of a zoom
+  // since left marked the current line stale.
+  const id = 'bybit:BTCUSDT', fifteen: LsSeries = { id, population: 'accounts', periodMs: 15 * MIN, status: 'ok', points: [{ t: NOW - 15 * MIN, long: 0.6 }, { t: NOW, long: 0.6 }] };
+  const failed = (periodMs: number): LsSeries => ({ id, population: null, periodMs, points: [], status: 'failed' });
+  const want = new Map([[id, 15 * MIN]]);
+  assert.equal(lsLanded([id], [fifteen], new Map([[id, failed(15 * MIN)]]), true, { view, want, asked: want })[0]!.status, 'stale', 'failed in this zoom\'s period: stale');
+  assert.equal(lsLanded([id], [fifteen], new Map([[id, failed(5 * MIN)]]), true, { view, want, asked: new Map([[id, 5 * MIN]]) })[0], fifteen, 'failed for a zoom since left: as it was');
+  assert.equal(lsLanded([id], [fifteen], new Map(), true, { view, want, asked: new Map([[id, 5 * MIN]]) })[0], fifteen, 'never answered, for a zoom since left: as it was');
+  assert.equal(lsLanded([id], [fifteen], new Map(), true, { view, want, asked: want })[0]!.status, 'stale', 'never answered in this zoom\'s period: stale');
+});
+
+test('a replay judges a step by the readings it draws, and a line with nothing in view gives way to an answer with something', () => {
+  // Review 2026-11-23: at a 13:02 cut a pending answer with 12:45 and 13:00 extended the 12:45 step to 13:00, though the paint ends it at 12:50.
+  const noon = Math.floor(NOW / DAY) * DAY + 12 * HOUR, id = 'binance:BTCUSDT';
+  const hourly: LsSeries = { id, population: 'accounts', periodMs: HOUR, status: 'ok', points: [{ t: noon - HOUR, long: 0.6 }, { t: noon, long: 0.6 }] };
+  const fine: LsSeries = { id, population: 'accounts', periodMs: 5 * MIN, status: 'ok', pending: true, points: [{ t: noon + 45 * MIN, long: 0.6 }, { t: noon + 60 * MIN, long: 0.6 }] };
+  const late = { t0: noon + 51 * MIN, t1: noon + 59 * MIN };
+  assert.equal(lsLanded([id], [hourly], new Map([[id, fine]]), false, { view: late, cut: noon + 62 * MIN })[0]!.periodMs, HOUR, 'nothing of it drawn in view yet');
+  // Panned into history at the same zoom: the live line has nothing there, the archive's answer (reaching less far) has.
+  const live: LsSeries = { id, population: 'accounts', periodMs: HOUR, status: 'ok', points: [{ t: NOW - HOUR, long: 0.6 }, { t: NOW, long: 0.6 }] };
+  const old: LsSeries = { ...live, pending: true, points: [{ t: NOW - 40 * DAY, long: 0.6 }, { t: NOW - 39 * DAY, long: 0.6 }] };
+  const back = { t0: NOW - 41 * DAY, t1: NOW - 38 * DAY };
+  assert.equal(lsLanded([id], [live], new Map([[id, old]]), false, { view: back })[0], old);
+  assert.deepEqual(lsLanded([id], [live], new Map([[id, old]]), false, { view })[0]!.points, live.points, 'in the live view, the live line stays');
 });
