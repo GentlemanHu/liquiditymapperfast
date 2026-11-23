@@ -256,7 +256,11 @@ export class SizeHistoryPane extends TimePane {
     if (state.sizesTable) {
       const read = hoverIdx >= 0 ? hoverIdx : last, room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hv };
       const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} USD`;
-      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}` });
+      // At rest no row is pointed at, so the table says no lines: the room under its rows is kept for the longest card a row of the newest candles
+      // would bring (the one under way says it is, the one before is settled), so that pointing at one does not leave its lines hanging below.
+      const restLines = !hv && !this.pointer ? [last, visible[visible.length - 2]].filter((i): i is number => i !== undefined)
+        .flatMap(i => rows.map((_, r) => tableLines(this.#cardFor(model, r, i, times, tfMs, now, live, perps, state, oiHeld?.coins)))) : undefined;
+      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}`, ...(restLines ? { restLines } : {}) });
       if (placed?.complete) this.#lines = null;
     }
   }

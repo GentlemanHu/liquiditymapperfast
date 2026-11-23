@@ -76,6 +76,12 @@ export interface TableSpec {
    * afresh (`PaneTable`), so that a table switched to another coin, timeframe or venue does not stand for minutes where the last one's lines left it.
    */
   restKey?: string;
+  /**
+   * The lines a pointer would bring, for a table that says none at rest (the Flow history's card is a row's, and no row is pointed at then): the room its
+   * rows keep under them at rest is the largest of these that fits (`PaneTable#takeRest`), so that pointing at a row lays its lines under the rows with
+   * the whole in the middle, rather than hanging below rows centred alone (Karl, 2026-11-22).
+   */
+  restLines?: readonly (readonly InfoLine[])[];
 }
 
 /**
@@ -434,7 +440,7 @@ export class PaneTable {
     const lines = spec.lines ?? [], now = this.now(), rows = rowsIn(measure, { ...room, pointing: true }, spec);
     const key = `${room.h}\u0001${spec.heads.join('\u0001')}\u0001${spec.restKey ?? ''}`;
     if (key !== this.#restKey) { this.#restKey = key; this.#stood = []; this.#saying = null; this.#misfit = null; }
-    const lift = rows ? liftUnder(rows, room, lines, spec.brief ?? []) : 0, said = this.#saying;
+    const lift = rows ? Math.max(liftUnder(rows, room, lines, spec.brief ?? []), ...(spec.restLines ?? []).map(shown => liftUnder(rows, room, shown))) : 0, said = this.#saying;
     if (said && (said.lift === lift ? now : said.last) - said.since >= REST_STAND_MS) this.#stand(said.lift, now);
     this.#saying = said?.lift === lift ? { lift, since: said.since, last: now } : { lift, since: now, last: now };
     const stood = this.#stood;
