@@ -419,6 +419,8 @@ function bandError(code: 'empty' | 'number' | 'range' | 'count' | 'repeat'): str
 /** The Depth pane's columns drawn through a weighted lens, and what they were worked out from. */
 interface LensHeld {
   bid: ArrayLike<number>; ask: ArrayLike<number>; takeBid: ArrayLike<number> | null; takeAsk: ArrayLike<number> | null; top: number; radii: string; kind: LensKind; strength: number;
+  /** The columns the weights were read over (Even room reads the peaks of those, which a replay's moment widens). */
+  cols: number;
   weights: Float64Array; wBid: Float32Array; wAsk: Float32Array; wTakeBid: Float32Array | null; wTakeAsk: Float32Array | null;
 }
 /**
@@ -561,7 +563,7 @@ export class DepthPane extends TimePane {
     this.#edit.onclick = () => this.#openEdit();
     // One group, so the header's rule that puts its last control at the right edge moves the select and its button together.
     const group = el('span', { class: 'ctl ctl-group' }, bands, this.#edit);
-    const scale = el('label', { class: 'ctl', tip: t('Linear: heights in proportion to the money. Detail: the square root of it, so a thin inner band shows; the figures stay the money.') }, t('Scale'));
+    const scale = el('label', { class: 'ctl', tip: `${t('Linear: heights in proportion to the money. Detail: the square root of it, so a thin inner band shows; the figures stay the money.')} ${t('The lens at the plot\'s top left, while on, bends the heights further.')}` }, t('Scale'));
     this.#scale.append(new Option(t('Linear'), 'linear'), new Option(t('Detail'), 'detail'));
     this.#scale.onchange = () => this.#set({ scale: this.#scale.value === 'detail' ? 'detail' : 'linear' });
     scale.append(this.#scale);
@@ -596,7 +598,7 @@ export class DepthPane extends TimePane {
     // The switches last, the table's at the right end (as on every pane).
     this.head.append(source, this.#levelsButton, this.#venues.root, group, scale, units, bell, table);
     this.root.append(this.#lensRoot);
-    this.syncSound(); this.#sync();
+    this.syncSound(); this.#sync(); this.#placeLens();
     // On a phone the source stays in the row and the rest waits behind the key (pane-tune.ts); on a desktop the venues fold last.
     addTune(this.head, [this.#venues.root, group, scale, units, bell, table], t('Depth'), { fold: true });
     this.#lock.onclick = () => { togglePlus(this.#lock); };
@@ -700,7 +702,7 @@ export class DepthPane extends TimePane {
     const at = this.pointer;
     if (this.#lines && at) this.#card.show(this.#lines, at.x, at.y); else this.#card.hide();
   }
-  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); this.#lockAt = null; this.#placeLock(); }
+  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); this.#lockAt = null; this.#placeLens(); this.#placeLock(); }
   protected override ownsPoint(x: number): boolean { return this.#table.owns(x, this.pointer); }
   protected override ownsPress(x: number): boolean { return this.#table.takesPress(x, this.pointer); }
   protected override claimTap(p: Pt): boolean { return this.#table.tap(p); }
@@ -764,9 +766,10 @@ export class DepthPane extends TimePane {
   /** The columns through a weighted lens (depth-lens.ts), worked out again only for another answer, band brought forward, bands, kind or strength. */
   #lensColumns(spec: LensSpec, radii: readonly number[], top: number, k: number, w: number, cols: number, bid: ArrayLike<number>, ask: ArrayLike<number>, takeBid: ArrayLike<number> | null, takeAsk: ArrayLike<number> | null): LensHeld {
     const held = this.#lensHeld, radiiKey = radii.join(',');
-    if (held && held.bid === bid && held.ask === ask && held.takeBid === takeBid && held.takeAsk === takeAsk && held.top === top && held.radii === radiiKey && held.kind === spec.kind && held.strength === spec.strength) return held;
+    if (held && held.bid === bid && held.ask === ask && held.takeBid === takeBid && held.takeAsk === takeAsk && held.top === top && held.radii === radiiKey && held.kind === spec.kind && held.strength === spec.strength
+      && (spec.kind !== 'even' || held.cols === cols)) return held;
     const weights = lensWeights(spec, radii, top, { bid, ask, k, cols });
-    this.#lensHeld = { bid, ask, takeBid, takeAsk, top, radii: radiiKey, kind: spec.kind, strength: spec.strength, weights,
+    this.#lensHeld = { bid, ask, takeBid, takeAsk, top, radii: radiiKey, kind: spec.kind, strength: spec.strength, cols, weights,
       wBid: warpColumns(bid, w, k, top, weights), wAsk: warpColumns(ask, w, k, top, weights),
       wTakeBid: takeBid ? warpColumns(takeBid, w, k, top, weights) : null, wTakeAsk: takeAsk ? warpColumns(takeAsk, w, k, top, weights) : null };
     return this.#lensHeld;
@@ -840,7 +843,7 @@ export class DepthPane extends TimePane {
     // The take profits (a dashed line each side, never added to the levels: they sit on the other side of the price), on the same scale.
     const takes = liqHeld?.takes ?? null, takeBid = takes ? (coins ? takes.bidCoin : takes.bid) : null, takeAsk = takes ? (coins ? takes.askCoin : takes.ask) : null;
     // Through the lens (depth-lens.ts) the bands are drawn from weighted copies of the columns; everything read as money keeps `bid` and `ask`.
-    const lensOn = settings.lens, lensSpec: LensSpec = { kind: settings.lensKind, strength: this.#lensLive ?? settings.lensStrength }, weighted = lensOn && lensSpec.kind !== 'log';
+    const lensOn = settings.lens, lensSpec: LensSpec = { kind: settings.lensKind, strength: this.#lensLive ?? settings.lensStrength }, weighted = lensOn && lensSpec.kind !== 'log' && lensSpec.strength > 0;
     const drawn = weighted ? this.#lensColumns(lensSpec, s.radii, top, k, s.w, cutW, bid, ask, takeBid, takeAsk) : null;
     const dBid = drawn ? drawn.wBid : bid, dAsk = drawn ? drawn.wAsk : ask, dTakeBid = drawn ? drawn.wTakeBid : takeBid, dTakeAsk = drawn ? drawn.wTakeAsk : takeAsk;
     let max = 0, lastX = -1;
@@ -919,13 +922,14 @@ export class DepthPane extends TimePane {
     const share = (value: number): number => { const f = logC ? logShare(value, max, logC) : value / max; return detail ? Math.sqrt(f) : f; };
     const shareValue = (f: number): number => { const g = detail ? f * f : f; return logC ? logValue(g, max, logC) : g * max; };
     const yOf = (value: number): number => value > 0 ? share(value) * half : 0;
-    // Through a weighted lens a height is money only within a column (each ring has its own weight): the tag reads the column under the pointer,
-    // and says nothing past its widest band.
+    // Through a weighted lens a height is money only within a column (each ring has its own weight): the tag reads the column the reading is of
+    // (under the pointer, or the newest past it), and says nothing past its widest band.
     this.scaleAt = y => {
       const u = shareValue(Math.abs(y - mid) / half);
       if (!drawn) return amountText(u, coins);
-      if (under < 0) return null;
-      const money = y < mid ? moneyAt(ask, dAsk, under, k, top, drawn.weights, u) : moneyAt(bid, dBid, under, k, top, drawn.weights, u);
+      const col = readX >= 0 ? readX : under;
+      if (col < 0) return null;
+      const money = y < mid ? moneyAt(ask, dAsk, col, k, top, drawn.weights, u) : moneyAt(bid, dBid, col, k, top, drawn.weights, u);
       return money === null ? null : amountText(money, coins);
     };
     const xs = new Float64Array(s.w + 1);
@@ -1026,8 +1030,10 @@ export class DepthPane extends TimePane {
     if (liqHeld?.absent) {
       const measure = (text: string): number => ctx.measureText(text).width, lines = wrapText(measure, ordersAbsent(), Math.max(40, pw - 24), 3);
       ctx.save(); ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-      ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(8, 4, Math.max(0, ...lines.map(measure)) + 8, 2 + 14 * lines.length);
-      ctx.globalAlpha = 1; ctx.fillStyle = p.muted; lines.forEach((line, i) => ctx.fillText(line, 12, 11 + 14 * i)); ctx.restore();
+      // Under the lens's controls at the plot's top left.
+      const below = this.#lensRoot.offsetHeight > 0 ? this.#lensRoot.offsetHeight + 6 : 0;
+      ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(8, 4 + below, Math.max(0, ...lines.map(measure)) + 8, 2 + 14 * lines.length);
+      ctx.globalAlpha = 1; ctx.fillStyle = p.muted; lines.forEach((line, i) => ctx.fillText(line, 12, 11 + below + 14 * i)); ctx.restore();
     }
     // The table's reading (see above): each band's figures, and what its foot says of them.
     let rows: { r: number; bid: number; ask: number }[], foot: string, readRow: LiqRow | null = null, readTake: LiqRow | null = null, live = false;
@@ -1114,7 +1120,9 @@ export class DepthPane extends TimePane {
   #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], brief: readonly InfoLine[], keepBrief: boolean, restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', titles[0], titles[1], 'Δ', '×'];
-    return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest }, {
+    // A table on a plate over the plot starts under the lens's controls at its top left.
+    const lensH = this.#lensRoot.offsetHeight;
+    return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest, ...(lensH > 0 ? { plateTop: lensH + 10 } : {}) }, {
       heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, brief, briefRoom: keepBrief, restKey,
     });
   }

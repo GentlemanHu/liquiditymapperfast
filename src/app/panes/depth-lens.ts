@@ -5,7 +5,7 @@
  * from one moment to the next and between the bids and the asks, and the table, header and cards keep the money itself.
  *
  * The kinds (`LENS_KINDS`, depth-settings.ts; Karl picked Log curve at 0.1 as the default, 2026-11-23):
- * - `log`: no weights; heights on a logarithmic curve of the money, `ln(1 + c·v/max) / ln(1 + c)`, `c = 10^(1.5·strength)`: the scale stays
+ * - `log`: no weights; heights on a logarithmic curve of the money, `ln(1 + c·v/max) / ln(1 + c)`, `c = logBend(strength)`: the scale stays
  *   the money.
  * - `width`: a ring's weight is its width in price to the power `-strength` (strength 1: the money per 1 % of price, so the outer rings, each
  *   twice as wide as the one inside, are halved and quartered).
@@ -75,8 +75,8 @@ export function moneyAt(raw: ArrayLike<number>, warped: ArrayLike<number>, x: nu
   return null;
 }
 
-/** The logarithmic curve's bend for a strength. */
-export const logBend = (strength: number): number => Math.pow(10, 1.5 * Math.max(0.05, strength));
+/** The curve's bend for a strength: `10^(1.5·strength)` from 0.1, and below it falling in a straight line to 0 (no bend: heights in proportion). */
+export const logBend = (strength: number): number => strength >= 0.1 ? Math.pow(10, 1.5 * strength) : strength > 0 ? Math.pow(10, 0.15) * strength / 0.1 : 0;
 /** A height's share of the half plot (0..1) for a value under the logarithmic curve, and back. */
-export const logShare = (value: number, max: number, c: number): number => value > 0 && max > 0 ? Math.log1p(c * value / max) / Math.log1p(c) : 0;
-export const logValue = (share: number, max: number, c: number): number => max * Math.expm1(share * Math.log1p(c)) / c;
+export const logShare = (value: number, max: number, c: number): number => !(value > 0 && max > 0) ? 0 : c > 1e-9 ? Math.log1p(c * value / max) / Math.log1p(c) : value / max;
+export const logValue = (share: number, max: number, c: number): number => c > 1e-9 ? max * Math.expm1(share * Math.log1p(c)) / c : share * max;

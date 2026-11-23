@@ -90,7 +90,8 @@ export interface TableSpec {
  * `rest`: whether the table reads the moment it reads at rest, no pointer anywhere (the map's or another pane's too) having chosen another
  * (`state.hover` null). Left out: as if a pointer had, so the rows are not centred with what it says then.
  */
-export interface TableRoom { w: number; h: number; plotW: number; axisW: number; pointing: boolean; rest?: boolean }
+/** `plateTop`: the least top of a table on a plate over the plot (a control the pane keeps at the plot's top left: the Depth pane's lens). */
+export interface TableRoom { w: number; h: number; plotW: number; axisW: number; pointing: boolean; rest?: boolean; plateTop?: number }
 
 /**
  * Where a table goes: the row height, what of it fits, its left edge and width, whether it is on a plate, its top, its first row, each column's right edge
@@ -189,7 +190,8 @@ export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, l
   const { rowH, titles, foot, cols, left, plate, widths, width, height, framed, under, kept } = at, lines = spec.lines ?? [];
   // A table that keeps room for its brief stands with at least that room under it, whatever stood at rest (`TableSpec.briefRoom`).
   const under0 = Math.max(lift, kept ? SEP + rowH : 0);
-  const y0 = under0 > 0 ? Math.max(0, Math.round(room.h / 2 - (height + under0) / 2)) : Math.round(room.h / 2 - height / 2);
+  const centred = under0 > 0 ? Math.max(0, Math.round(room.h / 2 - (height + under0) / 2)) : Math.round(room.h / 2 - height / 2);
+  const y0 = plate && room.plateTop ? Math.max(room.plateTop, centred) : centred;
   const first = y0 + (titles ? rowH : 0), rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
   const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, widths: widths.slice(0, cols), summary: [], summaryW: width, summaryH: 0 };

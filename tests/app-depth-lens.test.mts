@@ -80,3 +80,12 @@ test('log curve: 0 at nothing, 1 at the top, the inverse exact, more room for sm
   assert.ok(6.9 / 405 < inner(0.1) && inner(0.1) < inner(1) && inner(1) < inner(2), 'the thin inner band grows with the strength');
   assert.ok(close(logBend(0.1), Math.pow(10, 0.15)), 'the default 0.1 bends gently');
 });
+
+test('strength 0 is no lens: the log curve straight, the bend continuous at 0.1', () => {
+  assert.equal(logBend(0), 0);
+  assert.equal(logShare(100, 400, 0), 0.25);
+  assert.equal(logValue(0.25, 400, 0), 100);
+  assert.ok(close(logBend(0.0999999), logBend(0.1)), 'no jump at 0.1');
+  assert.ok(logBend(0.05) < logBend(0.1) && logBend(0.05) > 0);
+  for (const s of [0.02, 0.05]) { const c = logBend(s); assert.ok(close(logValue(logShare(43, 405, c), 405, c), 43)); }
+});
