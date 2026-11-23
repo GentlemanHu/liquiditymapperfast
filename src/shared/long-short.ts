@@ -77,9 +77,11 @@ const BITGET_SERIES: Readonly<Record<LsMetric, readonly [string, string, string,
 };
 /**
  * The least time between two requests to a venue, the cache's whole (ms): Bitget allows one a second, and a round reads the series shown and
- * then the other two at once (the pane's warming), which it once answered "Too Many Requests" (2026-10-21).
+ * then the other two at once (the pane's warming), which it once answered "Too Many Requests" (2026-10-21). OKX allows five every two
+ * seconds an address: its hourly readings of a wide view are 15 pages of 100, read one after another, and it answered the sixth with
+ * HTTP 429 (2026-11-23).
  */
-export const VENUE_GAP_MS: Readonly<Record<string, number>> = { bitget: 1_100 };
+export const VENUE_GAP_MS: Readonly<Record<string, number>> = { bitget: 1_100, okx: 450 };
 /**
  * The most requests that wait for a paced venue's turn: one more fails at once (read again with the minute's retry), so no request goes out
  * long after the round that asked for it gave up, and a burst of questions for other windows cannot queue without end.

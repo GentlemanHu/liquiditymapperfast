@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
+import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, LsNoMarket, VENUE_GAP_MS, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsIds, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
 import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
@@ -947,7 +947,7 @@ test('a read that goes on by itself stays in the period named: after the backing
   const D = 24 * H;
   const okxPage = (url: URL) => { const end = Number(url.searchParams.get('end')), p = url.searchParams.get('period') === '1H' ? H : D, limit = Number(url.searchParams.get('limit'));
     return { code: '0', data: Array.from({ length: limit }, (_, i) => [String(Math.floor(end / p) * p - i * p), '1.5']).filter(r => Number(r[0]) < NOW && Number(r[0]) > NOW - 60 * D) }; };
-  const get = fake({ 'https://www.okx.com/': okxPage }), cache = new LongShortCache(get, false, () => NOW);
+  const get = fake({ 'https://www.okx.com/': okxPage }), cache = new LongShortCache(get, false, () => NOW, undefined, undefined, undefined, {});
   await cache.series('okx:BTC-USDT-SWAP', 'accounts', H, NOW - 60 * D, NOW, 0, H);
   for (let i = 0; i < 100 && get.asked.length < 15; i++) await settle();
   assert.ok(get.asked.length >= 15, `read on past its twelve pages (${get.asked.length})`);
@@ -1088,4 +1088,8 @@ test('the newest readings Bitget publishes reach a line whose first window was n
   const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 });
   assert.ok((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 4 * H, NOW, undefined, H)).points.length <= 5, 'the first window holds a few');
   assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 10 * 24 * H, NOW, undefined, H)).points.length, 30);
+});
+
+test('OKX is asked at most five times every two seconds, as it allows an address (a wide hourly view is 15 pages)', () => {
+  assert.ok(VENUE_GAP_MS.okx! >= 400 && VENUE_GAP_MS.bitget! >= 1_000);
 });
