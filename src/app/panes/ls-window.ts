@@ -138,18 +138,25 @@ export interface LsLandAt { view?: { t0: number; t1: number }; want?: ReadonlyMa
  */
 export function lsLanded(ids: readonly string[], before: readonly LsSeries[], answers: ReadonlyMap<string, LsSeries>, final: boolean, at: LsLandAt = {}): LsSeries[] {
   const out: LsSeries[] = [];
-  const shows = (s: LsSeries): boolean => lsDrawnIn(s, at.view, at.cut);
+  const cut = at.cut ?? Infinity, shows = (s: LsSeries): boolean => lsDrawnIn(s, at.view, cut);
+  // How far a line is drawn, of the readings a replay has published (one still to come reaches nothing yet: review round 3).
+  const reach = (s: LsSeries): number => lsReach(cut === Infinity ? s : { ...s, points: s.points.filter(q => q.t + s.periodMs <= cut) });
   for (const id of ids) {
     const answer = answers.get(id), prev = before.find(s => s.id === id), held = prev?.points.length ? prev : null, wanted = at.want?.get(id);
-    const asked = at.asked?.get(id) ?? answer?.periodMs;
-    // Asked for a zoom since left: the line already in this zoom's period stays as it is (pending lines are asked again soon by the pane).
-    if (held && wanted !== undefined && asked !== undefined && asked !== wanted && held.periodMs === wanted) { out.push(held); continue; }
+    // The period of the question, and of what came back: an answer's own (a server from before reads the window's), a failure's the question's.
+    const asked = at.asked?.get(id) ?? answer?.periodMs, answered = answer && answer.status !== 'failed' ? answer.periodMs : asked;
+    const other = wanted !== undefined && ((asked !== undefined && asked !== wanted) || (answered !== undefined && answered !== wanted));
+    // A question or an answer of another period than this zoom's (a zoom since left; a server from before, daily past its 30 days): the line
+    // in this zoom's period stays as it is, unless it has nothing in view and the answer has (pending lines are asked again soon by the pane).
+    if (held && other && held.periodMs === wanted && !(at.view && !shows(held) && answer && shows(answer))) { out.push(held); continue; }
     // Reaching less far than the line, or (the same period) as far with fewer readings: an older stretch while the rest is read. Finer than
     // the line: only with no step in view. Never over a line with no step in view when the answer has one.
     const shorter = answer?.pending && held && !(at.view && !shows(held) && shows(answer)) && (answer.periodMs < held.periodMs ? !shows(answer)
-      : lsReach(answer) < lsReach(held) || (answer.periodMs === held.periodMs && lsReach(answer) === lsReach(held) && answer.points.length < held.points.length));
+      : reach(answer) < reach(held) || (answer.periodMs === held.periodMs && reach(answer) === reach(held) && answer.points.length < held.points.length));
+    // A stale answer (its update failed) with nothing to draw in view does not take the place of a line that has: that line goes stale.
+    const failed = answer && (answer.status === 'failed' || (answer.status === 'stale' && !answer.pending && held && at.view && shows(held) && !shows(answer)));
     if (shorter && held) out.push({ ...held, pending: true });
-    else if (answer && !(answer.status === 'failed' && held)) out.push(answer);
+    else if (answer && !(failed && held)) out.push(answer);
     // Stale: nothing is being read for it any more (a line kept while its venue was read says so no longer).
     else if (answer || final) out.push(held ? settledAs(held, 'stale') : answer ?? { id, population: prev?.population ?? null, periodMs: prev?.periodMs ?? 0, points: [], status: 'failed' });
     else if (prev) out.push(prev);

@@ -250,3 +250,26 @@ test('a replay judges a step by the readings it draws, and a line with nothing i
   assert.equal(lsLanded([id], [live], new Map([[id, old]]), false, { view: back })[0], old);
   assert.deepEqual(lsLanded([id], [live], new Map([[id, old]]), false, { view })[0]!.points, live.points, 'in the live view, the live line stays');
 });
+
+test('an answer in another period than this zoom\'s, from a server that read its own, leaves the line in this zoom\'s period while it shows', () => {
+  // Review round 3: a server from before read a 32-day window daily though hourly was asked (a pan of a 16-day view): it replaced the hourly
+  // line that still covered the view. Judged by the period that came back; a line with nothing in view gives way all the same.
+  const id = 'bybit:BTCUSDT', want = new Map([[id, HOUR]]);
+  const hourly: LsSeries = { id, population: 'accounts', periodMs: HOUR, status: 'ok', points: Array.from({ length: 30 }, (_, i) => ({ t: NOW - (29 - i) * HOUR, long: 0.6 })) };
+  const today = Math.floor(NOW / DAY) * DAY, daily: LsSeries = { ...hourly, periodMs: DAY, points: [{ t: today - DAY, long: 0.6 }, { t: today, long: 0.61 }] };
+  assert.equal(lsLanded([id], [hourly], new Map([[id, daily]]), true, { view, want, asked: want })[0], hourly);
+  const away = { t0: NOW - 60 * DAY, t1: NOW - 30 * DAY }, oldDaily: LsSeries = { ...daily, points: [{ t: today - 45 * DAY, long: 0.6 }] };
+  assert.equal(lsLanded([id], [hourly], new Map([[id, oldDaily]]), true, { view: away, want, asked: want })[0], oldDaily, 'the hourly line has nothing there: the daily answer, not a blank');
+});
+
+test('in a replay, an answer reaches only as far as what it has published, and a stale one with nothing to draw leaves the line that has', () => {
+  // Review round 3: zoomed out from eight days to nine in a replay, the 15-minute answer's readings after the cut out-reached the visible
+  // five-minute line and blanked it, and stayed blank when its read then failed.
+  const id = 'bybit:BTCUSDT', cut = NOW - 2 * HOUR, around = { t0: cut - 6 * HOUR, t1: cut };
+  const five: LsSeries = { id, population: 'accounts', periodMs: 5 * MIN, status: 'ok', points: Array.from({ length: 60 }, (_, i) => ({ t: cut - 5 * HOUR + i * 5 * MIN, long: 0.6 })) };
+  const later: LsSeries = { id, population: 'accounts', periodMs: 15 * MIN, status: 'ok', pending: true, points: [{ t: cut + 15 * MIN, long: 0.6 }, { t: cut + 30 * MIN, long: 0.6 }] };
+  const landed = lsLanded([id], [five], new Map([[id, later]]), false, { view: around, cut })[0]!;
+  assert.deepEqual([landed.periodMs, landed.pending], [5 * MIN, true], 'the five-minute line stays while it is read');
+  const stale = lsLanded([id], [five], new Map([[id, { ...later, pending: undefined, status: 'stale' as const }]]), true, { view: around, cut })[0]!;
+  assert.deepEqual([stale.periodMs, stale.status], [5 * MIN, 'stale'], 'its read failed: the five-minute line, stale');
+});
