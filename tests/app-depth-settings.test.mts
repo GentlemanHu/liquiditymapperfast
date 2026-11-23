@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEPTH_DEFAULT, MAX_BANDS, PRESET_BANDS, bandEditText, bandText, bandsOf, cleanBands, parseBands, readDepthSettings, watchedBand } from '../src/app/depth-settings.ts';
+import { DEPTH_DEFAULT, LENS_KINDS, LENS_MAX, MAX_BANDS, PRESET_BANDS, bandEditText, bandText, bandsOf, cleanBands, parseBands, readDepthSettings, watchedBand } from '../src/app/depth-settings.ts';
 
 test('the default is five doubling bands from ±0.31 % to ±5 %, drawn in full on a linear scale with the table', () => {
   const s = readDepthSettings(undefined);
@@ -14,7 +14,7 @@ test('the default is five doubling bands from ±0.31 % to ±5 %, drawn in full o
 
 test('a save or a layout from anywhere: every field checked, anything else its default', () => {
   assert.deepEqual(readDepthSettings({ preset: 'wide', scale: 'detail', units: 'coin', table: false, focus: 2, custom: [0.001, 0.01] }),
-    { preset: 'wide', scale: 'detail', units: 'coin', table: false, focus: 2, custom: [0.001, 0.01] });
+    { preset: 'wide', scale: 'detail', units: 'coin', table: false, focus: 2, custom: [0.001, 0.01], lens: true, lensKind: 'log', lensStrength: 0.1 });
   const bad = readDepthSettings({ preset: 'huge', scale: 'log', units: 'eur', table: 'yes', focus: 1.5, custom: [0.01, 0.005] });
   assert.deepEqual(bad, DEPTH_DEFAULT, 'nothing it does not know survives');
   assert.equal(readDepthSettings({ preset: 'custom', custom: [0.01, 0.02], focus: 2 }).focus, null, 'a band past the list is not brought forward');
@@ -45,4 +45,20 @@ test('typed bands: percentages in any order and separator, a % allowed; a reason
   }
   assert.deepEqual(PRESET_BANDS.balanced.map(bandEditText), ['0.3125', '0.625', '1.25', '2.5', '5']);
   assert.notDeepEqual(PRESET_BANDS.balanced.map(bandText), PRESET_BANDS.balanced.map(bandEditText), 'the label rounds, the editor does not');
+});
+
+test('the lens: on by default with the Log curve at 0.1 (an older save, without it, reads as on); a kind or strength it does not know is the default', () => {
+  assert.equal(DEPTH_DEFAULT.lens, true);
+  assert.equal(DEPTH_DEFAULT.lensKind, 'log');
+  assert.equal(DEPTH_DEFAULT.lensStrength, 0.1);
+  const old = readDepthSettings({ preset: 'wide', table: true });
+  assert.equal(old.lens, true, 'a save from before the lens has it on');
+  const set = readDepthSettings({ lens: false, lensKind: 'width', lensStrength: 1.5 });
+  assert.deepEqual([set.lens, set.lensKind, set.lensStrength], [false, 'width', 1.5]);
+  for (const k of LENS_KINDS) assert.equal(readDepthSettings({ lensKind: k }).lensKind, k);
+  const bad = readDepthSettings({ lens: 'yes', lensKind: 'fisheye', lensStrength: LENS_MAX + 0.5 });
+  assert.deepEqual([bad.lens, bad.lensKind, bad.lensStrength], [true, 'log', 0.1]);
+  assert.equal(readDepthSettings({ lensStrength: -0.1 }).lensStrength, 0.1);
+  assert.equal(readDepthSettings({ lensStrength: Number.NaN }).lensStrength, 0.1);
+  assert.equal(readDepthSettings({ lens: false }, { ...DEPTH_DEFAULT, lens: true }).lens, false);
 });
