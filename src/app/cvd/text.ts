@@ -18,11 +18,11 @@ export interface LabelLine { text: string; tone: 'text' | 'muted' | 'buy' | 'sel
   /** A short line in the text colour ahead of the text (the legend of the price drawn over the flow). */
   swatch?: 'price' }
 
-/** The ranking window as a short name: "1H". */
 /** A delta's tone: the buy colour above zero, the sell colour below (never the plain text: in Terminal that is the buy colour; Karl, 2026-11-22). */
 export const leanTone = (v: number): LabelLine['tone'] => v > 0 ? 'buy' : v < 0 ? 'sell' : 'text';
 const leanColor = (v: number | undefined): InfoLine['color'] => v === undefined || !Number.isFinite(v) || v === 0 ? 'text' : v > 0 ? 'below' : 'above';
 
+/** The ranking window as a short name: "1H". */
 export const windowName = (rankSec: number): string => rankSec >= 86_400 ? `${Math.round(rankSec / 86_400)}D` : rankSec >= 3_600 ? `${Math.round(rankSec / 3_600)}H` : `${Math.round(rankSec / 60)}M`;
 
 const letter = (kind: Kind): string => kind === 'spot' ? t('S') : t('P');

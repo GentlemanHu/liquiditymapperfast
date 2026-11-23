@@ -19,7 +19,7 @@ import { drawVenueMark } from '../venue-marks.ts';
 import { instrumentIdFor } from '../../shared/coins.ts';
 import { FUNDING_VENUES, FundingSource, buyerShare, continuousFunding, cutAt, fundingAt, fundingBase, fundingIn, fundingMedian, fundingTail, fundingVenueOf, hasPremium, medianIn, medianNeeds, rowStart, showsEvery, type FundingNow, type FundingRow, type FundingVenue, type FundingView, type MedianStep, type PremiumRow, type VenueFunding } from '../funding.ts';
 import type { HourOpens, NlnsSource } from '../delta/nlns-source.ts';
-import { coinText } from '../delta/nlns.ts';
+import { coinSize } from '../delta/nlns.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { fitText } from '../text-fit.ts';
 import { fundingHeldKey, type FundingPaneHeld } from '../range/funding-lines.ts';
@@ -108,7 +108,7 @@ export function fundingCardLines(h: { time: number; venue: string; row: FundingR
   if (h.opens) {
     const share = buyerShare(h.opens);
     if (share !== null) lines.push({ label: t('Buyers opened'), text: `${Math.round(share * 100)}%`, color: share > 0.5 ? 'buy' : share < 0.5 ? 'sell' : 'text', bold: true, rule: true });
-    lines.push({ label: t('New longs'), text: coinText(h.opens.longOpened, h.coin), color: 'buy' }, { label: t('New shorts'), text: coinText(h.opens.shortOpened, h.coin), color: 'sell' });
+    lines.push({ label: t('New longs'), text: coinSize(h.opens.longOpened, h.coin), color: 'buy' }, { label: t('New shorts'), text: coinSize(h.opens.shortOpened, h.coin), color: 'sell' });
   }
   // Only where the band's dotted lines are drawn (a venue with a premium line: on OKX and Bitget it would speak of lines not there).
   if (!h.continuous && h.band !== false) lines.push({ text: t('Per eight hours on every venue. Funding stays at its base rate (dashed) while the premium stays between the dotted lines, and follows the premium outside them.'), color: 'muted', wrap: true, rule: true, table: false });

@@ -220,7 +220,7 @@ export class LtRangeSummary {
         lines.push({ key: 'h-lt-imb', kind: 'heading', cells: [t('Imbalance')] });
         lines.push({ key: 'lt-imb', kind: 'stat', ...toneOf(im.mean, d), cells: [s.windows > 1 ? t('Time mean of the windows\' imbalances') : t('Imbalance of the one window'), pct(im.mean, d)] });
         if (s.windows > 1) {
-          lines.push({ key: 'lt-imb-move', kind: 'stat', ...toneOf(im.last - im.first, d), cells: [t('First → last defined imbalance'), `${pct(im.first, d)} → ${pct(im.last, d)} (${pp(im.last - im.first, d)})`] });
+          lines.push({ key: 'lt-imb-move', kind: 'stat', cells: [t('First → last defined imbalance'), `${pct(im.first, d)} → ${pct(im.last, d)} (${pp(im.last - im.first, d)})`] });
           lines.push({ key: 'lt-imb-bids', kind: 'stat', cells: [t('Time with bids heavier'), `${share(im.bidHeavier, im.defined)} · ${shortDuration(im.bidHeavier)}`] });
           lines.push({ key: 'lt-imb-asks', kind: 'stat', cells: [t('Time with asks heavier'), `${share(im.askHeavier, im.defined)} · ${shortDuration(im.askHeavier)}`] });
           lines.push(note('lt-imb-shares', t('Shares use included time where bids plus asks is above zero. Equal sides count for neither side.')));

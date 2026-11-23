@@ -34,10 +34,11 @@ const bar = (t: number, v: number): OiBar => [t, v, v, v, v];
 const none = new Map<number, number>();
 
 test('NL/NS: a part without a sign in the colour of what its orders did; the card\'s Net in the colour of its own figure, not the running sum\'s', () => {
-  const [, c] = nlnsModel([T, T + H], [{ bars: [bar(T, 1_000), bar(T + H, 1_000 - 84)], flows: [null, { delta: -1, low: -1, high: 0, gross: 2 }] }], none, [0, 0], H);
+  const [, c] = nlnsModel([T, T + H], [{ bars: [bar(T, 1_000), bar(T + H, 1_000 - 84)], flows: [null, { delta: 1, low: 0, high: 1, gross: 2 }] }], none, [0, 0], H);
   const parts = nlnsWhoLines(c!, 'BTC').filter(l => /closed/.test(l.label ?? ''));
   assert.ok(parts.length > 0);
-  for (const l of parts) assert.ok(!/^[+−]/.test(l.text), `${l.label}: ${l.text}`);
+  // Open interest fell under net buying: shorts closed, in the buy colour, once written "−84 BTC".
+  assert.deepEqual(parts.map(l => [l.label, l.text, l.color]), [['Shorts closed', '84 BTC', 'buy']]);
   // A buying candle in a run that has sold: the figure is the candle's, so is the colour.
   const net = (v: number, cum: number) => nlnsCardLines({ ...c!, v, cum }, '1h', 'BTC', 'Binance BTCUSDT').find(l => l.label === 'Net')!;
   assert.deepEqual([net(5, -10).color, net(-5, 10).color, net(0, 10).color], ['buy', 'sell', 'text']);
@@ -68,7 +69,7 @@ test('canvas and readout wiring, pinned by source: the headers, the boxes and th
   const delta = read('src/app/range/delta-lines.ts');
   assert.match(delta, /signedUsd\(s\.before\)\], \.\.\.leanTone\(s\.before\)/);
   assert.match(delta, /signedUsd\(s\.largest\.delta\)\}`\], \.\.\.leanTone\(s\.largest\.delta\)/);
-  assert.match(read('src/app/range/lt-lines.ts'), /\.\.\.toneOf\(im\.last - im\.first, d\), cells: \[t\('First → last defined imbalance'\)/);
+
   assert.match(read('src/app/sound/panel.ts'), /class: e\.side \? `panel-note alert-\$\{e\.side\}` : 'panel-note'/);
   const css = read('src/app/styles.css');
   assert.match(css, /\.alert-log \.alert-buy \{ color: var\(--bid\); \}/);

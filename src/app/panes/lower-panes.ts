@@ -1116,7 +1116,7 @@ export function depthTableRows(rows: readonly { r: number; bid: number; ask: num
   const deltaCell = (below: number, above: number): TableCell => {
     if (!Number.isFinite(below) || !Number.isFinite(above)) return { text: '–' };
     const d = depthBuyLessSell(below, above, sides);
-    return { text: tableSigned(d), ...(d !== 0 ? { color: tableInk(d > 0 ? p.bid : p.ask, p) } : {}) };
+    return d === 0 ? { text: '0', color: p.muted } : { text: tableSigned(d), color: tableInk(d > 0 ? p.bid : p.ask, p) };
   };
   return rows.map((row, j) => [{ text: `±${bandText(row.r)}%` }, { text: tableText(row.bid), color: tableInk(ink.bid, p), ...ranked(ranks[j]?.bid) }, { text: tableText(row.ask), color: tableInk(ink.ask, p), ...ranked(ranks[j]?.ask) },
     deltaCell(row.bid, row.ask), ratioCell(row.bid, row.ask, ink)]);

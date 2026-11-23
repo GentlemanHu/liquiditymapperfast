@@ -60,7 +60,7 @@ test('the Depth table: longs lead in the sell colour, so × points at the longs\
     assert.deepEqual([r[0]![1]!.color, r[0]![2]!.color, r[0]![4]!.color, r[1]![4]!.color], [BUY, SELL, BUY, SELL]);
     assert.deepEqual([r[0]![3]!.text, r[0]![3]!.color, r[1]![3]!.text, r[1]![3]!.color], ['+8.76M', BUY, '−13.6M', SELL]);
   }
-  assert.equal(depthTableRows([{ r: 0.01, bid: 5, ask: 5 }], P, depthOrderSides('liq'))[0]![3]!.color, undefined, 'no difference: no side\'s colour');
+  assert.deepEqual(depthTableRows([{ r: 0.01, bid: 5, ask: 5 }], P, depthOrderSides('liq'))[0]![3], { text: '0', color: P.muted }, 'no difference: a muted 0, no side\'s colour');
   assert.deepEqual(depthTableRows([{ r: 0.01, bid: NaN, ask: 5 }], P, depthOrderSides('liq'))[0]![3], { text: '–' }, 'a band not read');
   assert.deepEqual(depthTableRows([{ r: 0.01, bid: 5, ask: 5 }], P, depthOrderSides('liq'))[0]![4], { text: '1.00×', color: P.muted }, 'a tie names no side');
   assert.equal(depthTableRows([{ r: 0.01, bid: 0, ask: 5 }], P, depthOrderSides('liq'))[0]![4]!.color, BUY, 'only shorts: their buy colour');
