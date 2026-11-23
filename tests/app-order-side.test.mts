@@ -142,13 +142,13 @@ test('the drawings follow the rule too: the Depth pane\'s rings, terraces, lit b
   assert.match(series, /bid\[x \* k \+ j\] = row\.long\[b\]!; ask\[x \* k \+ j\] = row\.short\[b\]!; bidCoin\[x \* k \+ j\] = row\.longCoin\[b\]!; askCoin\[x \* k \+ j\] = row\.shortCoin\[b\]!;/);
   assert.match(depth, /return \(coins \? \(side === 'long' \? row\.longCoin : row\.shortCoin\) : \(side === 'long' \? row\.long : row\.short\)\)\[b\] \?\? 0;/, 'liqFigure reads the side asked for');
   assert.match(depth, /const levelsKind = liq \? curveOf\(liqHeld!\.view\) : null, sides = depthOrderSides\(levelsKind\), upInk = p\[bidAskKey\(sides\.above\)\], downInk = p\[bidAskKey\(sides\.below\)\];/);
-  // Up is the ask array (above the price: asks, or the shorts' levels), down the bid array (bids, or the longs').
-  assert.match(depth, /ctx\.fillStyle = shade\(upInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(ask\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid - h,/);
-  assert.match(depth, /ctx\.fillStyle = shade\(downInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(bid\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid,/);
-  assert.match(depth, /\[\[ask, -1, edge\(upInk\)\], \[bid, 1, edge\(downInk\)\]\]/);
+  // Up is the ask array (above the price: asks, or the shorts' levels), down the bid array (bids, or the longs'). Drawn from `dAsk`/`dBid`: the same arrays, or their copies through the Depth lens (depth-lens.ts).
+  assert.match(depth, /const dBid = drawn \? drawn\.wBid : bid, dAsk = drawn \? drawn\.wAsk : ask,/, 'the lens keeps each side its own array');  assert.match(depth, /ctx\.fillStyle = shade\(upInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(dAsk\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid - h,/);
+  assert.match(depth, /ctx\.fillStyle = shade\(downInk, j\);\n\s+for \(let x = 0; x < s\.w; x\+\+\) \{ const h = yOf\(dBid\[at\(x, j\)\]!\); if \(h > 0\) ctx\.fillRect\(xs\[x\]!, mid,/);
+  assert.match(depth, /\[\[dAsk, -1, edge\(upInk\)\], \[dBid, 1, edge\(downInk\)\]\]/);
   // The terraces (the default look) and the lit band take the same inks; depth-look.ts draws `up` from the ask array above the price.
-  assert.match(depth, /this\.#bandLayer\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid, ask, /, 'the terraces');
-  assert.match(depth, /this\.#litPainter\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid, ask, /, 'the lit band');
+  assert.match(depth, /this\.#bandLayer\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid: dBid, ask: dAsk, /, 'the terraces');
+  assert.match(depth, /this\.#litPainter\.paint\(ctx, \{ [^}]*up: upInk, down: downInk, [^}]*bid: dBid, ask: dAsk, /, 'the lit band');
   const look = read('src/app/panes/depth-look.ts');
   assert.match(look, /u\[x\] = yOf\(ask\[x \* k \+ j\]!\); d\[x\] = yOf\(bid\[x \* k \+ j\]!\);/);
   assert.match(look, /return \[\{ hs: up, sign: -1, ink: input\.up \}, \{ hs: down, sign: 1, ink: input\.down \}\];/);
