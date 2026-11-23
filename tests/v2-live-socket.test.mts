@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createLocalServer } from '../src/server/http.mts';
 import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
@@ -233,5 +236,22 @@ test('a socket runs four tracker questions at once: the fifth, a reused id and a
   } finally {
     socket.terminate(); v2.close();
     app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await app.close();
+  }
+});
+
+test('LS_TRACE names a file the server writes its long/short trace to, a line when it starts, written off the loop', async () => {
+  const file = path.join(os.tmpdir(), `ls-trace-${process.pid}-${Date.now()}.jsonl`);
+  process.env.LS_TRACE = file;
+  const app = createLocalServer({ history: new HistoryStore({ filePath: ':memory:' }), quota: new QuotaLedger({ filePath: ':memory:' }), persistFixture: false });
+  const v2 = installV2(app, { dataDir: '', persist: false, liveMs: 20 });
+  try {
+    for (let i = 0; i < 100 && !(fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('\n')); i++) await new Promise<void>(resolve => setTimeout(resolve, 20));
+    const first = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[0]!) as { ev: string; pid: number; lagMaxMs: number | null };
+    assert.deepEqual([first.ev, first.pid], ['trace-start', process.pid]);
+    assert.ok(first.lagMaxMs === null || typeof first.lagMaxMs === 'number', 'the loop delay, or null with no sample yet');
+  } finally {
+    delete process.env.LS_TRACE;
+    v2.close(); await app.close();
+    fs.rmSync(file, { force: true });
   }
 });

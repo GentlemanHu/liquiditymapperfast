@@ -552,14 +552,27 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
   // `LS_TRACE=<file>`: each failed venue read (with how long it took) and each answer whose window could not be read, a JSON line each,
   // with the event loop's delay since the line before (worst and 99th percentile, ms), so a read that timed out while the loop was held can
-  // be told from a slow or refusing venue; one line when the server starts. Diagnostics, off by default.
-  const lsTraceFile = process.env.LS_TRACE, lsLag = lsTraceFile ? monitorEventLoopDelay({ resolution: 20 }) : null;
+  // be told from a slow or refusing venue (null with no sample since); one line when the server starts. Diagnostics, off by default. Written
+  // off the loop, a batch at a time, at most `LS_TRACE_QUEUE` lines waiting (more are counted and dropped): a synchronous append on a slow
+  // disk would hold the very loop it measures (review 2026-11-23).
+  const LS_TRACE_QUEUE = 1_000, lsTraceFile = process.env.LS_TRACE, lsLag = lsTraceFile ? monitorEventLoopDelay({ resolution: 20 }) : null;
   lsLag?.enable();
+  let lsTraceLines: string[] = [], lsTraceWriting = false, lsTraceDropped = 0;
+  const lsTraceFlush = async (): Promise<void> => {
+    if (lsTraceWriting || !lsTraceFile) return;
+    lsTraceWriting = true;
+    try {
+      while (lsTraceLines.length) { const batch = lsTraceLines.join(''); lsTraceLines = []; await fs.promises.appendFile(lsTraceFile, batch).catch(() => undefined); }
+    } finally { lsTraceWriting = false; }
+  };
   const lsTrace = lsTraceFile ? (event: LsTrace | { ev: 'trace-start'; pid: number }): void => {
     try {
-      const lag = lsLag ? { lagMaxMs: Math.round(lsLag.max / 1e6), lagP99Ms: Math.round(lsLag.percentile(99) / 1e6) } : {};
+      const sampled = lsLag && lsLag.count > 0, lag = { lagMaxMs: sampled ? Math.round(lsLag.max / 1e6) : null, lagP99Ms: sampled ? Math.round(lsLag.percentile(99) / 1e6) : null };
       lsLag?.reset();
-      fs.appendFileSync(lsTraceFile, `${JSON.stringify({ t: new Date().toISOString(), ...event, ...lag })}\n`);
+      if (lsTraceLines.length >= LS_TRACE_QUEUE) { lsTraceDropped++; return; }
+      const dropped = lsTraceDropped; lsTraceDropped = 0;
+      lsTraceLines.push(`${JSON.stringify({ t: new Date().toISOString(), ...event, ...lag, ...(dropped ? { droppedBefore: dropped } : {}) })}\n`);
+      void lsTraceFlush();
     } catch { /* a trace that cannot be written is none */ }
   } : null;
   lsTrace?.({ ev: 'trace-start', pid: process.pid });
@@ -920,6 +933,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     },
     close() {
       closed = true;
+      lsLag?.disable();
       clearInterval(loop); clearTimeout(absorptionWarm); clearTimeout(ltWarm); syncFar([]); fullDepth.close(); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).
