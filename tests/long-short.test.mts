@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, LsNoMarket, VENUE_GAP_MS, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
+import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, type LsTrace, LsNoMarket, VENUE_GAP_MS, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsIds, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
 import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
@@ -1092,4 +1092,40 @@ test('the newest readings Bitget publishes reach a line whose first window was n
 
 test('OKX is asked at most five times every two seconds, as it allows an address (a wide hourly view is 15 pages)', () => {
   assert.ok(VENUE_GAP_MS.okx! >= 400 && VENUE_GAP_MS.bitget! >= 1_000);
+});
+
+test('a failed read of one stretch never marks another window of the series stale: one held whole answers ok', async () => {
+  // 8787, 2026-11-23: after a failed read (a wide zoom's older stretch), every window of the series answered stale for a minute, held or
+  // not (the minute's pause came before the test of what is held), and after it until a read succeeded (an hour on for a held live window).
+  const D = 24 * H;
+  let now = NOW, failing = false;
+  const page = (url: URL) => { if (failing) throw new Error('HTTP 503'); const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / H) * H - i * H) })).filter(r => Number(r.timestamp) > NOW - 20 * D && Number(r.timestamp) < now) } }; };
+  const events: LsTrace[] = [];
+  const cache = new LongShortCache(fake({ 'https://api.bybit.com/': page }), false, () => now, undefined, undefined, undefined, {}, null, e => events.push(e));
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok');
+  failing = true; now += 30_000;
+  const wide = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 40 * D, NOW, undefined, H);
+  assert.equal(wide.status, 'stale', 'the wide window was not read: stale, with what is held');
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok', 'the held window, within the minute');
+  now += 2 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok', 'and after it, no refresh due');
+  assert.ok(events.some(e => e.ev === 'read-failed' && e.kind === 'older' && /503/.test(e.error ?? '')), 'the trace names the failed read');
+  assert.ok(events.some(e => e.ev === 'answer-stale' && e.why === 'failed within the minute'), 'and why the wide window was not read');
+});
+
+test('a failed refresh of the live edge says stale for a window that needs it, and ok for a held window before it', async () => {
+  const D = 24 * H;
+  let now = NOW, failing = false;
+  const page = (url: URL) => { if (failing) throw new Error('HTTP 429'); const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / H) * H - i * H) })).filter(r => Number(r.timestamp) > NOW - 20 * D && Number(r.timestamp) < now) } }; };
+  const cache = new LongShortCache(fake({ 'https://api.bybit.com/': page }), false, () => now, undefined, undefined, undefined, {});
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW + H, undefined, H)).status, 'ok');
+  now += 2 * H; failing = true;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'stale', 'the live window needs the refresh that failed');
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW - 5 * D, undefined, H)).status, 'ok', 'a window before the edge is held whole');
+  now += 5 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'stale', 'still failing a few minutes on: still stale');
+  failing = false; now += 2 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'ok', 'read again once it answers');
 });

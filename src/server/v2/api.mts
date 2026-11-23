@@ -7,7 +7,7 @@ import type { createLocalServer } from '../http.mts';
 import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from './levels.mts';
 import { FAR_STALE_MS, FarPoller, farSource, freshFar, type FarBook } from '../../shared/far-book.ts';
 import { OiSampler, oiHistoryWriter } from './oi-sampler.mts';
-import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-short.ts';
+import { LS_METRICS, LongShortCache, type LsMetric, type LsTrace } from '../../shared/long-short.ts';
 import { SqliteLsStore } from './ls-store.mts';
 import { webGet, type Fetcher } from '../../shared/history.ts';
 import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing, priceTimeframeMs } from '../../shared/price-history.ts';
@@ -549,7 +549,11 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   // A file that cannot be opened (locked, damaged) costs only the keeping: it is a cache, never a reason not to start.
   let lsStore: SqliteLsStore | null = null;
   if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
-  const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore);
+  // `LS_TRACE=<file>`: each failed venue read and each answer whose window could not be read, a JSON line each (diagnostics; off by default).
+  const lsTraceFile = process.env.LS_TRACE, lsTrace = lsTraceFile ? (event: LsTrace): void => {
+    try { fs.appendFileSync(lsTraceFile, `${JSON.stringify({ t: new Date().toISOString(), ...event })}\n`); } catch { /* a trace that cannot be written is none */ }
+  } : null;
+  const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore, lsTrace);
   const priceHistory = new PriceHistoryCache(priceHistoryGet);
   const priceHistoryRoute = (url: URL, res: ServerResponse) => {
     // The line's intervals (`PRICE_TIMEFRAMES`: weeks too, for a window of more than 2,000 days), bounded to 2,000 bars like each of them.

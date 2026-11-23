@@ -495,6 +495,11 @@ export interface LsHeldRecord { points: LsPoint[]; from: number; to: number; che
  */
 export interface LsChange { cleared: boolean; added: readonly LsPoint[]; keep: { first: number; last: number } | null; from: number; to: number; checked: number }
 /**
+ * What the cache tells an optional trace (the server's `LS_TRACE` file): a read that failed, with its error, and an answer whose window
+ * was not read (`answer-stale` with readings held, `answer-failed` with none), with why.
+ */
+export interface LsTrace { ev: 'read-failed' | 'answer-stale' | 'answer-failed'; key: string; kind?: string; start?: number; end?: number; error?: string; from?: number; to?: number; why?: string; failedAgoMs?: number | null }
+/**
  * Where a cache keeps its series across restarts. `load` is asked once per series (null: none kept); `save` after every read, never waited for
  * (`full` gives the whole record, for a backing that writes it whole). Either may throw: the cache goes on as if it had none.
  */
@@ -541,7 +546,10 @@ export class LongShortCache {
   /** Binance's archive days read lately, for every series of the market (`ArchiveMemo`). */
   #archive = new ArchiveMemo();
   constructor(private get: Fetcher, private browser: boolean, private now: () => number = Date.now, private maxSeries = 48, private maxPoints = 10_000, private pageDeadlineMs = LS_PAGE_DEADLINE_MS,
-    private gapMs: Readonly<Record<string, number>> = VENUE_GAP_MS, private backing: LsBacking | null = null) {}
+    private gapMs: Readonly<Record<string, number>> = VENUE_GAP_MS, private backing: LsBacking | null = null, private trace: ((event: LsTrace) => void) | null = null) {}
+
+  /** Hand `trace` an event; a trace that throws costs nothing. */
+  #trace(event: LsTrace): void { try { this.trace?.(event); } catch { /* diagnostics only */ } }
 
   /** Fill a new series from the backing (once; every question for it waits for this first). A record that cannot be read is no record. */
   async #restore(key: string, h: HeldSeries): Promise<void> {
@@ -632,17 +640,16 @@ export class LongShortCache {
     // request is at most `PAGES` pages, each page at most `pageDeadlineMs`); a question that runs out of either before its window is read says
     // it could not be read (`covered`), never that there are no readings.
     // Past the budget the read goes on: its handlers below update the series whether it succeeds or fails, and `busy` clears itself.
-    let covered = false, pending = false;
+    let covered = false, pending = false, why = '';
     for (let reads = 0, waits = 0; ;) {
       if (held.busy) {
-        if (waits++ >= 64) break;
+        if (waits++ >= 64) { why = 'waited 64 times'; break; }
         held.waiting++;
         const settled = await settledBy(held.busy, until).finally(() => { held.waiting--; });
         if (!settled) { pending = true; break; }
         continue;
       }
       const h = held, now = this.now(), want = Math.min(to, now + periodMs);
-      if (now - h.failed < MINUTE) break;
       let start: number, end: number, kind: 'whole' | 'older' | 'newer';
       // Never read (or started again); a stretch that ends before it starts is held all the same (see below). A venue that publishes only its
       // newest readings is read for an older stretch too: its newest may fall in it (a first window of four hours kept four of Bitget's 30).
@@ -652,7 +659,11 @@ export class LongShortCache {
       // before it was not held up to it, and its newest readings were not read), at the live edge at most once a period (and once a minute).
       else if (want > h.to && (h.to < now - 2 * periodMs || h.to < h.checked - periodMs || now - h.checked >= Math.max(periodMs, MINUTE))) { start = h.to - 2 * periodMs; end = want; kind = 'newer'; }
       else { covered = true; break; }
-      if (reads++ >= 4) break;
+      // A read is needed, and not within a minute of the series' last failure. That pause holds new reads only: it once came before the
+      // test above, so a minute after any failed read (for any window, a wide zoom's older stretch) every window of the series, held or
+      // not, answered stale (seen on 8787, 2026-11-23).
+      if (now - h.failed < MINUTE) { why = 'failed within the minute'; break; }
+      if (reads++ >= 4) { why = 'four reads'; break; }
       // Too far from what is held for one question to join them without a hole: the series starts again at this window (and so does what the
       // backing keeps, once it is read: a failed read leaves it as it was, a stretch as good as it ever was). The older stretch of a window that
       // reaches what is held joins it however far back it goes: each read reaches back as far as it can and the next reads on from there
@@ -695,6 +706,7 @@ export class LongShortCache {
       }, error => {
         // When it failed, not when it began: a slow request of many pages would otherwise leave no minute's pause behind it.
         h.failed = this.now();
+        this.#trace({ ev: 'read-failed', key, kind, start, end, error: String(error instanceof Error ? error.message : error).slice(0, 300) });
         if (error instanceof LsNoMarket) h.noMarket = true;
         // A crash in the handlers above counts as a failed read: nobody may be waiting on `busy` (a question past its budget) to catch it.
       }).catch(() => { h.failed = this.now(); }).finally(() => {
@@ -710,10 +722,12 @@ export class LongShortCache {
     const failedLast = held.failed > 0 && held.failed >= held.checked;
     // A read still under way when the budget ran out: what is held now, said as it would be without it, and asked again for the rest.
     if (pending) return { ...answer(points, points.length ? (failedLast ? 'stale' : 'ok') : failedLast ? 'failed' : 'empty'), pending: true };
-    // The last request failing after the last success says so, with what is held from before; so does a window not read in its turns.
-    const failing = !covered || failedLast;
-    if (points.length) return answer(points, failing ? 'stale' : 'ok');
-    return answer([], failing ? 'failed' : 'empty');
+    // A window not read (a read it needed failed, or could not be made in its turns) says so, with what is held from before. One held
+    // whole is read: the series' last failure was of another stretch, or of a refresh this window does not need (a failure once marked
+    // every window of the series stale until the next read that succeeded, an hour on for a held live window of hourly readings).
+    if (!covered) this.#trace({ ev: points.length ? 'answer-stale' : 'answer-failed', key, from, to, why, failedAgoMs: held.failed ? this.now() - held.failed : null });
+    if (points.length) return answer(points, covered ? 'ok' : 'stale');
+    return answer([], covered ? 'empty' : 'failed');
   }
 }
 
