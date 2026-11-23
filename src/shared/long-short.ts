@@ -643,9 +643,9 @@ export class LongShortCache {
       if (now - h.failed < MINUTE) break;
       let start: number, end: number, kind: 'whole' | 'older' | 'newer';
       // Never read (or started again); a stretch that ends before it starts is held all the same (see below). A venue that publishes only its
-      // newest readings has no older stretch to read: a window before what it holds is answered from what it holds.
+      // newest readings is read for an older stretch too: its newest may fall in it (a first window of four hours kept four of Bitget's 30).
       if (h.from === Infinity) { start = from; end = want; kind = 'whole'; }
-      else if (from < h.from && !newestOnly) { start = from; end = h.from; kind = 'older'; }
+      else if (from < h.from) { start = from; end = h.from; kind = 'older'; }
       // Past what is held: at once where that ends before the live edge (now's, or the one at the last read: a window that ended a little
       // before it was not held up to it, and its newest readings were not read), at the live edge at most once a period (and once a minute).
       else if (want > h.to && (h.to < now - 2 * periodMs || h.to < h.checked - periodMs || now - h.checked >= Math.max(periodMs, MINUTE))) { start = h.to - 2 * periodMs; end = want; kind = 'newer'; }

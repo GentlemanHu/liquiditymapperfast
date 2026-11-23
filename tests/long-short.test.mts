@@ -972,7 +972,10 @@ test('Bitget, which publishes only its newest readings, never loses what it gath
   const gathered = (await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length;
   assert.equal(gathered, 30 + 6 * 24, 'a week gathered, the newest 30 hours each day');
   const asked = get.asked.length, back = await cache.series('bitget:BTCUSDT', 'accounts', H, now - 90 * D, now - 60 * D, undefined, H);
-  assert.deepEqual([back.status, back.points.length, get.asked.length], ['empty', 0, asked], 'nothing to read there, nothing asked');
+  assert.deepEqual([back.status, back.points.length], ['empty', 0], 'nothing there');
+  assert.ok(get.asked.length <= asked + 1, 'one look at most');
+  await cache.series('bitget:BTCUSDT', 'accounts', H, now - 90 * D, now - 60 * D, undefined, H);
+  assert.ok(get.asked.length <= asked + 1, 'held as looked at: not asked again');
   assert.ok(!saved.some(change => change.cleared && saved.indexOf(change) > 0), 'never written over');
   assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length, gathered, 'back at the live edge: all of it');
   // Hidden for three weeks (past its reach of 13.5 days): the next read adds the newest readings to what it gathered.
@@ -1076,4 +1079,13 @@ test('a window trimmed to LS_WINDOW_READINGS still gets the reading before it fr
   const trimmed = NOW - LS_WINDOW_READINGS * 5 * M;
   assert.equal(s.status, 'ok');
   assert.ok(s.points[0]!.t < trimmed && s.points[0]!.t >= trimmed - 5 * M, `the reading before the newest ${LS_WINDOW_READINGS} periods (${(trimmed - s.points[0]!.t) / M} min before)`);
+});
+
+test('the newest readings Bitget publishes reach a line whose first window was narrower: a wider one takes them in', async () => {
+  // Found in the 2026-11-23 browser probe: with no older read for Bitget a first window of four hours kept its line at four readings of 30.
+  let now = NOW;
+  const get = fake({ 'https://api.bitget.com/': () => ({ code: '00000', data: Array.from({ length: 30 }, (_, i) => ({ ts: String(Math.floor(now / H) * H - (30 - i) * H), longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5' })) }) });
+  const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 });
+  assert.ok((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 4 * H, NOW, undefined, H)).points.length <= 5, 'the first window holds a few');
+  assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 10 * 24 * H, NOW, undefined, H)).points.length, 30);
 });
