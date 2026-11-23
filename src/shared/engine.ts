@@ -13,6 +13,7 @@ import { TIMEFRAMES, quoteRows, type Candle, type OiBar, type OiRow } from './se
 import { OI_PAGE_VENUES, OI_SAMPLE_VENUES, fetchCandles, fetchOiHistory, fetchOiReading, oiBars, venueOf, webGet, type Fetcher } from './history.ts';
 import { inverseOiId, oiInstrument, oiProfileOf, type OiProfileAnswer, type OiSeries } from './oi-profile.ts';
 import { oneSidedReading } from './oi-sides.ts';
+import { closeRead, filedAt } from './oi-close.ts';
 import { browserVenues, type BrowserVenue } from './venues.ts';
 import { BTC, SCALES, type Coin, type MarketVenue } from './coins.ts';
 import type { BookConnector, OiEvent, TradeEvent } from './connector.ts';
@@ -256,7 +257,10 @@ export class Engine {
   /** Where the open-interest readings outlive the page (the browser's recordings), and how long they are kept there. */
   #oiStore: OiStore | null = null;
   readonly #retentionMs: number;
+  /** When Binance was last asked (it is polled every 5 s). */
   readonly #oiAsked = new Map<string, number>();
+  /** The newest minute whose close each venue read once a minute was asked for (`closeRead`, oi-close.ts). */
+  readonly #oiClosed = new Map<string, number>();
   /** When (on this clock) each venue's socket last brought an open-interest reading: the WS venues skip REST while this is fresh. */
   readonly #oiTouched = new Map<string, number>();
   /** Each venue's newest reading by its own time: an older one (the socket and REST land in either order) changes nothing. */
@@ -832,22 +836,35 @@ export class Engine {
     if (instrumentId) this.onOiLive(instrumentId, { t: reading.t, base: reading.base, ...quote });
   }
 
+  /**
+   * Open interest read from REST: Binance every 5 s (its minute's last reading is near the minute's end); the others, and Bybit and OKX
+   * while their socket has brought nothing for a minute, once a minute at the minute's close (`closeRead`, oi-close.ts), a reading with no
+   * clock of its own filed in the minute it was asked for (`filedAt`).
+   */
   #pollOi(now: number): void {
     for (const venue of OI_SAMPLE_VENUES) {
       const run = this.#runs.get(venue); if (!run) continue;
       // Bybit and OKX open interest arrives on the book socket: REST is asked only once that stream has brought none for a minute.
       if (OI_WS_VENUES.has(venue) && now - (this.#oiTouched.get(venue) ?? 0) < OI_SAMPLE_MS) continue;
-      const interval = venue === 'binance' ? OI_BINANCE_POLL_MS : OI_SAMPLE_MS;
-      if (now - (this.#oiAsked.get(venue) ?? 0) < interval) continue;
-      // One request of a venue at a time: a slow answer (up to the fetcher's deadline) must not be overtaken by the next one's.
+      // One request of a venue at a time: a slow answer (up to the fetcher's deadline) must not be overtaken by the next one's. A close not
+      // asked for because of it is asked on a later step (the window lasts to `OI_LATE_MS` into the next minute).
       if (this.#oiPolling.has(venue)) continue;
-      this.#oiAsked.set(venue, now);
+      let due: ReturnType<typeof closeRead> = null;
+      if (venue === 'binance') {
+        if (now - (this.#oiAsked.get(venue) ?? 0) < OI_BINANCE_POLL_MS) continue;
+        this.#oiAsked.set(venue, now);
+      } else {
+        due = closeRead(now, this.#oiClosed.get(venue)); if (!due) continue;
+        this.#oiClosed.set(venue, due.closed);
+      }
       const listing = this.#coin.markets[venue as MarketVenue]; if (!listing) continue;
       this.#oiPolling.add(venue);
       void fetchOiReading(venue, this.#get, listing).then(reading => {
         if (reading === null) return;
-        // The venue's own clock where the answer carries one, so the reading lands in the minute the exchange stamped.
-        this.#applyLiveOi(venue, { t: reading.sourceTimestamp ?? this.#now(), base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }, false, `${venue}:${listing.symbol}`);
+        // The venue's own clock where the answer carries one, so the reading lands in the minute the exchange stamped (it says when the
+        // figure was set); without one, a reading asked for in a minute is filed in it, even when it answered after that minute ended.
+        const t = reading.sourceTimestamp ?? (due ? filedAt(this.#now(), due.files, due.close) : this.#now());
+        this.#applyLiveOi(venue, { t, base: reading.base, ...(reading.quote !== undefined ? { quote: reading.quote } : {}) }, false, `${venue}:${listing.symbol}`);
       }, () => { /* the next tick asks again */ }).finally(() => { this.#oiPolling.delete(venue); });
     }
   }

@@ -295,8 +295,9 @@ test('open interest pushed on a venue socket lands in its own minute and the new
   assert.equal(bars.at(-1)![4], 50_500, 'the newest push is the minute\'s close');
 });
 
-test('a venue with a socket OI feed asks REST only once the stream has brought nothing for a minute, and then once a minute', async () => {
-  let now = Date.now(), calls = 0;
+test("a venue with a socket OI feed asks REST only once the stream has brought nothing for a minute, and then at each minute's close", async () => {
+  const minute = 60_000, m = Math.floor(Date.now() / minute) * minute;
+  let now = m + 10_000, calls = 0;
   const get = async (url: string) => {
     if (url.includes('api.bybit.com/v5/market/tickers')) { calls++; return { result: { list: [{ openInterest: '200', singleOpenInterest: '100' }] } }; }
     throw new Error('offline');
@@ -311,9 +312,11 @@ test('a venue with a socket OI feed asks REST only once the stream has brought n
   now += 2_000; engine.step(); await settle();
   assert.equal(calls, 1, 'after a silent minute the fallback asks');
   now += 30_000; engine.step(); await settle();
-  assert.equal(calls, 1, "the fallback keeps the minute's cadence it always had");
-  now += 30_000; engine.step(); await settle();
-  assert.equal(calls, 2, 'a due pass asks');
+  assert.equal(calls, 1, "then nothing until the minute's close (oi-close.ts)");
+  now = m + minute + 57_000; engine.step(); await settle();
+  assert.equal(calls, 2, 'the close is asked for');
+  now = m + 2 * minute + 11_000; engine.step(); await settle();
+  assert.equal(calls, 2, 'once a minute');
 });
 
 test("an open-interest reading older than the venue's newest changes nothing, and the store keeps each minute's last reading", async () => {
@@ -488,5 +491,48 @@ test('the page\'s own Hyperliquid reading is one side of its two-sided figure, h
   for (let i = 0; i < 5; i++) await settle();
   assert.deepEqual(live, [50]);
   assert.deepEqual(saved.map(r => [r.venue, r.t, r.base, r.sides]), [['hyperliquid', now - 30_000, 50, 1]]);
+  engine.stop();
+});
+
+test('a venue read once a minute is read at the minute\'s close and filed in that minute, even when it answers after it (oi-close.ts)', async () => {
+  // 2026-11-23: Hyperliquid was read 60 s after its last read, at the second the page opened on, and filed in the minute it was taken, so
+  // each minute's row was the minute before's close and a rise showed on the next candle. Binance stays at every 5 s.
+  const minute = 60_000, m = Math.floor(Date.now() / minute) * minute + 10 * minute;
+  let clock = m + 20_000, figure = 100;
+  const asked: { venue: string; at: number }[] = [], pending: (() => void)[] = [];
+  const saved: OiReading[] = [];
+  const oi: OiStore = { load: () => [], save: rows => { saved.push(...rows); }, close() {} };
+  const get = (url: string, init?: { body?: string }): Promise<unknown> => {
+    const venue = url.includes('hyperliquid') ? 'hyperliquid' : url.includes('binance') ? 'binance' : '';
+    if (!venue || (venue === 'hyperliquid' && !init?.body?.includes('metaAndAssetCtxs'))) return Promise.reject(new Error('offline'));
+    asked.push({ venue, at: clock });
+    // Each answer waits until the test lets it go, holding the figure of when it was asked.
+    const held = figure;
+    return new Promise(resolve => pending.push(() => resolve(venue === 'hyperliquid'
+      ? [{ universe: [{ name: 'BTC' }] }, [{ openInterest: String(held * 2) }]]
+      : { openInterest: String(held), time: clock })));
+  };
+  const answer = async () => { for (const go of pending.splice(0)) go(); for (let i = 0; i < 5; i++) await settle(); };
+  const { engine } = setup(['hyperliquid', 'binance'], { now: () => clock, oi, get });
+  engine.select(['hyperliquid', 'binance']);
+  const hl = () => asked.filter(a => a.venue === 'hyperliquid').map(a => a.at - m);
+  const rows = () => saved.filter(r => r.venue === 'hyperliquid').map(r => [r.t - m, (r.at ?? 0) - m, r.base]);
+  const run = async (from: number, to: number) => { for (clock = m + from; clock <= m + to; clock += 250) { engine.step(clock); await answer(); } };
+  await run(20_000, 56_750);
+  assert.deepEqual(hl(), [20_000], 'at once when the page opens, then nothing until the close');
+  assert.ok(asked.filter(a => a.venue === 'binance').length >= 7, 'Binance every 5 s');
+  // The close is asked at second 57 and answers 3.5 s later, after the minute ended: it is filed in the minute it closes.
+  clock = m + 57_000; figure = 140; engine.step(clock);
+  clock = m + 60_500; await answer();
+  assert.deepEqual(hl(), [20_000, 57_000]);
+  assert.deepEqual(rows().at(-1), [0, minute - 1, 140], 'the close of the minute asked for, one side of its two-sided 280');
+  // Held from the next minute's 56th second to the one after's 3rd: the missed close is read then, filed in the minute it closes.
+  await run(60_750, minute + 56_000);
+  assert.deepEqual(hl(), [20_000, 57_000]);
+  clock = m + 2 * minute + 3_000; figure = 180; engine.step(clock); await answer();
+  assert.deepEqual(hl(), [20_000, 57_000, 2 * minute + 3_000]);
+  assert.deepEqual(rows().at(-1), [minute, 2 * minute - 1, 180]);
+  await run(2 * minute + 3_250, 2 * minute + 57_000);
+  assert.deepEqual(hl(), [20_000, 57_000, 2 * minute + 3_000, 2 * minute + 57_000]);
   engine.stop();
 });

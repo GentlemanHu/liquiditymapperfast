@@ -7,6 +7,7 @@ import type { SortedBook } from '../core/normalize.mts';
 import type { ProcessMemoryReservation } from './process-memory.mts';
 import type { ProviderClient, ProviderResourceResult, MarkCrossingAccumulator, PublishMarkOptions } from './http-contracts.mts';
 import { recordValue } from '../adapters/common.mts';
+import { filedAt } from '../shared/oi-close.ts';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RuntimeState, RuntimeBook, RuntimeCandle, RuntimeMessage, RuntimeStatus, RuntimeLevel } from '../domain/runtime-state.mts';
 import type { PublishedRetainedBudget } from './retained-budget.mts';
@@ -1699,12 +1700,17 @@ export function createLocalServer({
       // A venue's history reading (`historySource`, Binance's statistics) is observed a millisecond before its moment, so it closes the bar
       // that ends there (`normalizeBinanceOpenInterestHistory`); taken at its source time it opened the next one, a period late in any
       // stretch no live sample covers. A live sample is observed at its source time.
-      const { historySource, observationTimestamp: given } = message as { historySource?: unknown; observationTimestamp?: unknown };
+      const { historySource, observationTimestamp: given, closeOf, close } = message as { historySource?: unknown; observationTimestamp?: unknown; closeOf?: unknown; close?: unknown };
       const reading = historySource != null && sourceKnown && typeof given === 'number' && Number.isFinite(given) && given > 0 && given < sourceTimestamp;
+      // A REST-only venue's read of a minute's close (`closeOf`, the OI sampler; shared/oi-close.ts) is filed no later than that minute's end:
+      // its answer can come a moment after the minute ended, and filed at its arrival it would close the next minute instead. Only a sampled
+      // reading with no clock of its own: a venue's stamp says when its figure was set and is kept (Sol 6.2).
+      const own = sourceKnown ? sourceTimestamp : receivedAt;
+      const closes = !reading && !sourceKnown && message.quality === 'sampled' && typeof closeOf === 'number' && Number.isFinite(closeOf) && closeOf % 60_000 === 0 && own >= closeOf && own - closeOf < 120_000;
       const sample = {
         ...(message as RuntimeMessage & OpenInterestSample),
         sourceTimestamp: sourceKnown ? sourceTimestamp : null,
-        observationTimestamp: reading ? given : sourceKnown ? sourceTimestamp : receivedAt,
+        observationTimestamp: reading ? given : closes ? filedAt(own, closeOf, close !== false) : own,
         timeBasis: sourceKnown ? 'exchange' : 'receipt',
         quality: message.quality ?? (sourceKnown ? 'native' : 'sampled'),
       };
