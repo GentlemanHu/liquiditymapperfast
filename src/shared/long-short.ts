@@ -102,8 +102,10 @@ const ARCHIVE_PARALLEL = 48;
 const PAGES = 12;
 /** Readings a page, per venue (Bitget has one page of 30). */
 const PAGE_ROWS: Readonly<Record<string, number>> = { binance: 500, bybit: 500, okx: 100, bitget: 30, gateio: 500 };
-/** The most readings one window takes from a venue: well inside what one question's pages reach, and far below what a series keeps. */
+/** The most readings one window takes from a venue when the question names no period (a page from before `lsViewPeriod`): well inside what one question's pages reach. */
 const windowReadings = (venue: string): number => Math.min(2_000, Math.floor(PAGES * (PAGE_ROWS[venue] ?? 30) * 0.8));
+/** The venues that publish only their newest readings (Bitget its newest 30): no older stretch can be read. */
+const NEWEST_ONLY: ReadonlySet<string> = new Set(['bitget']);
 /**
  * The longest the cache waits for one page. A request on the live server once never settled at all: the series' one request never ended, and
  * every later question for it (Bybit's and OKX's hourly BTC readings) waited for good (2026-10-15). `webGet`'s 15 s limit was then only the
@@ -143,28 +145,30 @@ export function lsPeriodAtLeast(venue: string, ms: number): number | null {
 }
 
 /**
- * The period a window [from, to) is read in when the question names none (a page from before `lsViewPeriod`): the chart's own where that fits
- * the window, else the shortest that does (a window keeps to `windowReadings`). 0 for a venue that publishes none. Daily readings from a
- * 30-day window on (2026-10-18, to read less history) made every venue's line turn 24 times coarser at once wherever a zoom or a pan of a
- * few pixels took the window past 30 days, on any timeframe (Karl, 2026-11-23: the pane looks fine when opened and turns coarse a little
- * zoom or move later); they are gone.
- */
-export function lsWindowPeriod(venue: string, tfMs: number, from: number, to: number): number {
-  const need = (to - from) / windowReadings(venue), fine = LS_VENUES.includes(venue) ? lsPeriodOf(venue, tfMs) : null;
-  return fine === null ? 0 : fine >= need ? fine : lsPeriodAtLeast(venue, need) ?? 0;
-}
-
-/**
  * The most readings a venue's line takes across the view: a coarser period comes only where the chart's own would put more than this in
  * view, about one and a quarter a pixel on a 2,000-pixel plot, so the finer line's steps are under a pixel there and the coarser's a few
  * pixels at most (an hourly chart keeps hourly readings up to a 104-day view).
  */
 export const LS_VIEW_READINGS = 2_500;
 /**
- * The most readings one window is read in at its period: two views of `LS_VIEW_READINGS` and a candle fit, and so do one question's pages at
- * Binance, Bybit and Gate (`PAGES` of 500).
+ * The most readings one window is read in at its period: two views of `LS_VIEW_READINGS`, a candle and the window's rounding fit, and so
+ * do the reading before the window and the rest within one question's pages at Binance, Bybit and Gate (`PAGES` of 500, 6,000: Gate read
+ * from a window of exactly 6,000 left out the reading before it, review 2026-11-23).
  */
-export const LS_WINDOW_READINGS = 6_000;
+export const LS_WINDOW_READINGS = 5_500;
+
+/**
+ * The period a window [from, to) is read in when the question names none (a page from before `lsViewPeriod`): the chart's own where that fits
+ * the window, else the shortest that does (a window keeps to `windowReadings`). 0 for a venue that publishes none. Daily readings from a 30-day window on
+ * (2026-10-18, to read less history) made every venue's line turn 24 times coarser at once wherever a zoom or a pan of a few pixels took the
+ * window past 30 days, on any timeframe (Karl, 2026-11-23: the pane looks fine when opened and turns coarse a little zoom or move later);
+ * they are gone. A page from before still turns a line coarser where a pan takes its window past `windowReadings` (OKX's 960 hours, Binance's
+ * 2,000): never coarser than an old server read it, and a reload asks its view's periods.
+ */
+export function lsWindowPeriod(venue: string, tfMs: number, from: number, to: number): number {
+  const need = (to - from) / windowReadings(venue), fine = LS_VENUES.includes(venue) ? lsPeriodOf(venue, tfMs) : null;
+  return fine === null ? 0 : fine >= need ? fine : lsPeriodAtLeast(venue, need) ?? 0;
+}
 
 /**
  * The period a venue's line is read in for a view `spanMs` long on candles of `tfMs`: the venue's own for the candle (`lsPeriodOf`), or,
@@ -615,10 +619,10 @@ export class LongShortCache {
       // Its read starts once the series is loaded (a question with no wait: one read for all such questions, the others find it under way),
       // if the cache still holds it: one evicted meanwhile is asked for anew by its next question (kicking it here could evict another
       // series waiting on its own load, and so on without end).
-      void restoring.then(() => { if (this.#series.get(key) === held) return this.series(id, metric, tfMs, from, to, 0); }).catch(() => undefined);
+      void restoring.then(() => { if (this.#series.get(key) === held) return this.series(id, metric, tfMs, from, to, 0, periodMs); }).catch(() => undefined);
       return { ...answer([], 'empty'), pending: true };
     }
-    const reach = PAGES * PAGE_ROWS[venue]! * periodMs * 0.9;
+    const reach = PAGES * PAGE_ROWS[venue]! * periodMs * 0.9, newestOnly = NEWEST_ONLY.has(venue);
     // The page's deadline counts from when the request goes out, not from a wait for the venue's turn.
     const get: Fetcher = (url, init) => this.#paced(venue, () => withDeadline(this.get(url, init), this.pageDeadlineMs));
     // At most four requests of its own; waiting for a request (another question's or its own) is not one of them, or five questions at once for
@@ -638,9 +642,10 @@ export class LongShortCache {
       const h = held, now = this.now(), want = Math.min(to, now + periodMs);
       if (now - h.failed < MINUTE) break;
       let start: number, end: number, kind: 'whole' | 'older' | 'newer';
-      // Never read (or started again); a stretch that ends before it starts is held all the same (see below).
+      // Never read (or started again); a stretch that ends before it starts is held all the same (see below). A venue that publishes only its
+      // newest readings has no older stretch to read: a window before what it holds is answered from what it holds.
       if (h.from === Infinity) { start = from; end = want; kind = 'whole'; }
-      else if (from < h.from) { start = from; end = h.from; kind = 'older'; }
+      else if (from < h.from && !newestOnly) { start = from; end = h.from; kind = 'older'; }
       // Past what is held: at once where that ends before the live edge (now's, or the one at the last read: a window that ended a little
       // before it was not held up to it, and its newest readings were not read), at the live edge at most once a period (and once a minute).
       else if (want > h.to && (h.to < now - 2 * periodMs || h.to < h.checked - periodMs || now - h.checked >= Math.max(periodMs, MINUTE))) { start = h.to - 2 * periodMs; end = want; kind = 'newer'; }
@@ -650,7 +655,9 @@ export class LongShortCache {
       // backing keeps, once it is read: a failed read leaves it as it was, a stretch as good as it ever was). The older stretch of a window that
       // reaches what is held joins it however far back it goes: each read reaches back as far as it can and the next reads on from there
       // (started again instead, a window wider than `reach` read its newest stretch over and over, never further back: 2026-11-06 review).
-      const restarted = kind !== 'whole' && end - start > reach && !(kind === 'older' && to >= h.from);
+      // Never a venue that publishes only its newest readings: started again, its series lost every reading it had gathered, none of which
+      // it could read again (a Bitget hourly series of a week, gone with one pan to a month two months back: review 2026-11-23).
+      const restarted = !newestOnly && kind !== 'whole' && end - start > reach && !(kind === 'older' && to >= h.from);
       if (restarted) { h.points.clear(); h.from = Infinity; h.to = -Infinity; start = from; end = want; kind = 'whole'; }
       // A read that reached back only part of its window (Binance's archive, `ARCHIVE_DAYS` at a time) and got further than before.
       let short = false;
@@ -692,7 +699,8 @@ export class LongShortCache {
         h.busy = null;
         // With no question waiting for it (each gave up at its budget), the rest of the window is read on at once rather than at the next
         // question, seconds later: its line grows a read at a time. A question still waiting reads on itself, in its own turns.
-        if (short && !h.waiting && this.#series.get(key) === h) void this.series(id, metric, tfMs, from, to, 0).catch(() => undefined);
+        // In the period of this series: named, or the window's own work out to another for a question naming none (review 2026-11-23).
+        if (short && !h.waiting && this.#series.get(key) === h) void this.series(id, metric, tfMs, from, to, 0, periodMs).catch(() => undefined);
       });
     }
     if (held.noMarket) return answer([], 'unsupported');

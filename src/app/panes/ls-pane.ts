@@ -205,7 +205,8 @@ export class LsPane extends TimePane {
     let over = false;
     const land = (final: boolean): void => {
       if (over || generation !== this.#generation) return;
-      this.#series = lsLanded(ids, this.#series, answers, final, this.view);
+      // Judged by the view as it is now (the zoom may have moved on while the round was read), a replay by what it draws.
+      this.#series = lsLanded(ids, this.#series, answers, final, { view: this.view, want: lsPeriods(ids, tfMs, this.view), cut: replaying() ? pageNow() : Infinity });
       if (final) {
         over = true; window.clearTimeout(deadline); round.abort(); this.#stopFollowing();
         if (this.#round === round) this.#round = null;
@@ -269,8 +270,11 @@ export class LsPane extends TimePane {
         const inWindow = points.filter(p => p.t >= from - periodMs && p.t < to);
         if (!inWindow.length) return;
         const kept: LsSeries = { id, population, periodMs, points: inWindow, status: 'ok', pending: true }, current = line(id, population);
-        // Over a line of another period: a finer one where it has a step in view (a zoom back in), a coarser one only where it reaches further.
-        if (current && (current.periodMs === periodMs || (periodMs < current.periodMs ? !lsDrawnIn(kept, this.view) : lsReach(current) >= lsReach(kept)))) return;
+        // Over a line of another period: a finer one where it has a step in view (a zoom back in), a coarser one only where it reaches further;
+        // never over the line of the period the view asks now (the zoom moved on while the store was read).
+        const wanted = lsPeriods([id], tfMs, this.view).get(id), cut = replaying() ? pageNow() : Infinity;
+        if (current && (current.periodMs === periodMs || (periodMs !== wanted && current.periodMs === wanted)
+          || (periodMs < current.periodMs ? !lsDrawnIn(kept, this.view, cut) : lsReach(current) >= lsReach(kept)))) return;
         this.#series = this.#series.some(s => s.id === id) ? this.#series.map(s => s.id === id ? kept : s) : [...this.#series, kept];
         this.invalidate();
       });

@@ -174,7 +174,7 @@ test('lines of different periods compare by how far they are drawn: a daily read
   assert.equal(lsReach(daily), today + DAY);
   assert.equal(lsLanded(['binance:BTCUSDT'], [hourly], new Map([['binance:BTCUSDT', daily]]), false)[0], daily, 'zoomed out to days: the daily line, though its newest reading is stamped at midnight');
   const oldHourly: LsSeries = { ...hourly, pending: true, points: [{ t: NOW - 30 * HOUR, long: 0.6 }] };
-  assert.equal(lsLanded(['binance:BTCUSDT'], [{ ...daily, pending: undefined }], new Map([['binance:BTCUSDT', oldHourly]]), false, view)[0]!.periodMs, DAY, 'zoomed in, the finer series holds only an old stretch out of view: the daily line stays while it is read');
+  assert.equal(lsLanded(['binance:BTCUSDT'], [{ ...daily, pending: undefined }], new Map([['binance:BTCUSDT', oldHourly]]), false, { view })[0]!.periodMs, DAY, 'zoomed in, the finer series holds only an old stretch out of view: the daily line stays while it is read');
 });
 
 test('zoomed back in, a finer line takes the coarser one\'s place as soon as it has a step in view, though the coarser one reaches further', () => {
@@ -184,10 +184,39 @@ test('zoomed back in, a finer line takes the coarser one\'s place as soon as it 
   const daily: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: DAY, status: 'ok', points: [{ t: today - DAY, long: 0.6 }, { t: today, long: 0.62 }] };
   const hours: LsSeries = { id: 'binance:BTCUSDT', population: 'accounts', periodMs: HOUR, status: 'ok', pending: true, points: Array.from({ length: 24 }, (_, i) => ({ t: NOW - (23 - i) * HOUR, long: 0.6 })) };
   assert.ok(lsReach(daily) > lsReach(hours));
-  assert.equal(lsLanded(['binance:BTCUSDT'], [daily], new Map([['binance:BTCUSDT', hours]]), false, view)[0], hours, 'pending, in view: drawn');
-  const failed = lsLanded(['binance:BTCUSDT'], [hours], new Map([['binance:BTCUSDT', { ...daily, status: 'failed' as const, points: [] }]]), true, view)[0]!;
+  assert.equal(lsLanded(['binance:BTCUSDT'], [daily], new Map([['binance:BTCUSDT', hours]]), false, { view })[0], hours, 'pending, in view: drawn');
+  const failed = lsLanded(['binance:BTCUSDT'], [hours], new Map([['binance:BTCUSDT', { ...daily, status: 'failed' as const, points: [] }]]), true, { view })[0]!;
   assert.deepEqual([failed.periodMs, failed.status], [HOUR, 'stale'], 'a failure after it keeps the hourly line, stale');
   // A coarser answer still reaches as far before it replaces a finer line (a zoom out past the switch, read in its older stretch first).
   const oldDaily: LsSeries = { ...daily, pending: true, points: [{ t: today - 3 * DAY, long: 0.6 }] };
-  assert.deepEqual(lsLanded(['binance:BTCUSDT'], [{ ...hours, pending: undefined }], new Map([['binance:BTCUSDT', oldDaily]]), false, view).map(s => [s.periodMs, s.pending]), [[HOUR, true]]);
+  assert.deepEqual(lsLanded(['binance:BTCUSDT'], [{ ...hours, pending: undefined }], new Map([['binance:BTCUSDT', oldDaily]]), false, { view }).map(s => [s.periodMs, s.pending]), [[HOUR, true]]);
+});
+
+test('an answer for a zoom since left never replaces the line in the period the view asks now; a replay and the view\'s edge count what is drawn', () => {
+  // Review 2026-11-23: OKX drawn five-minutely at eight days, a zoom out to 12 days asked hourly, back at eight before it answered: the
+  // hourly answer (reaching further) replaced the five-minute line until the next round read it again.
+  const id = 'okx:BTC-USDT-SWAP', five: LsSeries = { id, population: 'accounts', periodMs: 5 * MIN, status: 'ok', points: Array.from({ length: 12 }, (_, i) => ({ t: NOW - (11 - i) * 5 * MIN, long: 0.6 })) };
+  const hourly: LsSeries = { id, population: 'accounts', periodMs: HOUR, status: 'ok', points: [{ t: NOW - HOUR, long: 0.6 }, { t: NOW, long: 0.62 }] };
+  const want = new Map([[id, 5 * MIN]]);
+  assert.equal(lsLanded([id], [five], new Map([[id, hourly]]), false, { view, want })[0], five, 'the five-minute line stays');
+  assert.equal(lsLanded([id], [five], new Map([[id, hourly]]), false, { view })[0], hourly, 'without the view\'s periods, by reach as before');
+  const settled = lsLanded([id], [{ ...five, pending: true }], new Map([[id, { ...hourly, status: 'failed' as const, points: [] }]]), true, { view, want })[0]!;
+  assert.deepEqual([settled.periodMs, settled.status, 'pending' in settled], [5 * MIN, 'ok', false], 'the round over: kept as it was, no longer pending');
+  // A replay at 12:02 draws a five-minute reading of 12:00 only from 12:05: it does not yet replace the hourly line.
+  const noon = Math.floor(NOW / DAY) * DAY + 12 * HOUR, hours: LsSeries = { ...hourly, points: [{ t: noon - 2 * HOUR, long: 0.6 }, { t: noon - HOUR, long: 0.61 }] };
+  const fine: LsSeries = { ...five, pending: true, points: [{ t: noon, long: 0.6 }] }, around = { t0: noon - 3 * HOUR, t1: noon + HOUR };
+  assert.equal(lsLanded([id], [hours], new Map([[id, fine]]), false, { view: around, cut: noon + 2 * MIN })[0]!.periodMs, HOUR);
+  assert.equal(lsLanded([id], [hours], new Map([[id, fine]]), false, { view: around, cut: noon + 5 * MIN })[0], fine);
+  // A step that ends where the view begins draws nothing in it.
+  assert.equal(lsLanded([id], [hours], new Map([[id, { ...fine, points: [{ t: around.t0 - 5 * MIN, long: 0.6 }] }]]), false, { view: around })[0]!.periodMs, HOUR);
+});
+
+test('a pan never changes a period, even where floating point leaves the view\'s length a fraction of a millisecond off its edge', () => {
+  // Review 2026-11-23: 2,500 hours and 0.000244 ms read OKX daily, the same view panned 150 px on 300 hourly.
+  const t1 = Date.UTC(2026, 10, 23, 13), edge = { t0: t1 - 2_500 * HOUR - 0.000244, t1 };
+  assert.deepEqual([...lsPeriods(IDS, TF, edge).values()].map(name), ['1h', '1h', '1h', '1h', '1h']);
+  for (let k = 0; k < 400; k++) {
+    const dt = (k - 200) * 7_919.37, moved = { t0: edge.t0 + dt, t1: edge.t1 + dt };
+    assert.deepEqual([...lsPeriods(IDS, TF, moved).values()], [...lsPeriods(IDS, TF, edge).values()]);
+  }
 });

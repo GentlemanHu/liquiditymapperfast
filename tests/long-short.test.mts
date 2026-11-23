@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
+import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsIds, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
 import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
@@ -940,6 +940,51 @@ test('a question naming its period is read in it over a window past 30 days, and
   const long = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 60 * D, NOW, undefined, 5 * M);
   assert.equal(long.periodMs, 5 * M);
   assert.ok(long.points.length <= LS_WINDOW_READINGS + 1 && long.points[0]!.t >= NOW - LS_WINDOW_READINGS * 5 * M - 5 * M, `the newest ${LS_WINDOW_READINGS} readings (${long.points.length})`);
+});
+
+test('a read that goes on by itself stays in the period named: after the backing loads, and after a read short of its window', async () => {
+  // Review 2026-11-23: both went on in the window's own period (four-hourly, daily), another series than the one asked.
+  const D = 24 * H;
+  const okxPage = (url: URL) => { const end = Number(url.searchParams.get('end')), p = url.searchParams.get('period') === '1H' ? H : D, limit = Number(url.searchParams.get('limit'));
+    return { code: '0', data: Array.from({ length: limit }, (_, i) => [String(Math.floor(end / p) * p - i * p), '1.5']).filter(r => Number(r[0]) < NOW && Number(r[0]) > NOW - 60 * D) }; };
+  const get = fake({ 'https://www.okx.com/': okxPage }), cache = new LongShortCache(get, false, () => NOW);
+  await cache.series('okx:BTC-USDT-SWAP', 'accounts', H, NOW - 60 * D, NOW, 0, H);
+  for (let i = 0; i < 100 && get.asked.length < 15; i++) await settle();
+  assert.ok(get.asked.length >= 15, `read on past its twelve pages (${get.asked.length})`);
+  assert.ok(get.asked.every(u => new URL(u).searchParams.get('period') === '1H'), 'hourly throughout');
+  const restoring: LsBacking = { load: async () => { await settle(); return null; }, save: () => undefined };
+  const bybitPage = (url: URL) => { const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return bybitRows(Array.from({ length: limit }, (_, i) => Math.floor(end / H) * H - i * H).filter(t => t < NOW)); };
+  const get2 = fake({ 'https://api.bybit.com/': bybitPage }), cold = new LongShortCache(get2, false, () => NOW, undefined, undefined, undefined, undefined, restoring);
+  assert.equal((await cold.series('bybit:BTCUSDT', 'accounts', H, NOW - 100 * D, NOW, 0, H)).pending, true);
+  for (let i = 0; i < 100 && !get2.asked.length; i++) await settle();
+  assert.ok(get2.asked.length > 0 && get2.asked.every(u => new URL(u).searchParams.get('period') === '1h'), 'the read after the backing loaded is hourly');
+});
+
+test('Bitget, which publishes only its newest readings, never loses what it gathered to a window it cannot read', async () => {
+  // Review 2026-11-23: a week of hourly readings gathered, then a month two months back: the series started again, empty, and saved so.
+  const D = 24 * H;
+  let now = NOW;
+  const get = fake({ 'https://api.bitget.com/': () => ({ code: '00000', data: Array.from({ length: 30 }, (_, i) => ({ ts: String(Math.floor(now / H) * H - (30 - i) * H), longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5' })) }) });
+  const saved: LsChange[] = [], backing: LsBacking = { load: async () => null, save: change => { saved.push(change); } };
+  const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 }, backing);
+  for (let day = 0; day < 7; day++) { now = NOW + day * D; await cache.series('bitget:BTCUSDT', 'accounts', H, now - 2 * D, now, undefined, H); }
+  const gathered = (await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length;
+  assert.equal(gathered, 30 + 6 * 24, 'a week gathered, the newest 30 hours each day');
+  const asked = get.asked.length, back = await cache.series('bitget:BTCUSDT', 'accounts', H, now - 90 * D, now - 60 * D, undefined, H);
+  assert.deepEqual([back.status, back.points.length, get.asked.length], ['empty', 0, asked], 'nothing to read there, nothing asked');
+  assert.ok(!saved.some(change => change.cleared && saved.indexOf(change) > 0), 'never written over');
+  assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length, gathered, 'back at the live edge: all of it');
+  // Hidden for three weeks (past its reach of 13.5 days): the next read adds the newest readings to what it gathered.
+  now += 21 * D;
+  const after = await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H);
+  assert.equal(after.points.length, gathered + 30);
+});
+
+test('a page from before naming no period is never read coarser than an old server read it, and never daily for a 30-day window', () => {
+  const D = 24 * H;
+  for (const venue of ['okx', 'binance', 'bybit', 'gateio']) assert.equal(lsWindowPeriod(venue, H, NOW - 30 * D - 59 * M, NOW), H, venue);
+  assert.equal(lsWindowPeriod('okx', H, NOW - 960 * H - 59 * M, NOW), D, 'OKX past its 960-reading window (an old server read it daily from 30 days)');
 });
 
 /** A venue whose answers wait until the test lets them go: `release()` answers every request asked so far. */

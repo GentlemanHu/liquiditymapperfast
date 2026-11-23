@@ -68,10 +68,12 @@ export function lsMessage(series: readonly LsSeries[], loading: boolean): 'readi
 
 /**
  * Each market's period for this view (`lsViewPeriod`, by id; 0 for a venue that publishes none): what every question for it names, and what
- * the line held is judged by.
+ * the line held is judged by. The view's length is taken to the minute: a pan moves both ends by the same amount, yet in floating point the
+ * difference can come out a fraction of a millisecond off, enough to cross a period's edge (review 2026-11-23).
  */
 export function lsPeriods(ids: readonly string[], tfMs: number, view: { t0: number; t1: number }): Map<string, number> {
-  return new Map(ids.map(id => [id, lsViewPeriod(id.slice(0, id.indexOf(':')), tfMs, view.t1 - view.t0)]));
+  const span = Math.round((view.t1 - view.t0) / MINUTE) * MINUTE;
+  return new Map(ids.map(id => [id, lsViewPeriod(id.slice(0, id.indexOf(':')), tfMs, span)]));
 }
 
 /**
@@ -103,11 +105,17 @@ export function lsWindow(held: LsHeld | null, loading: boolean, ident: string, v
  * hour), so lines of different periods compare by how far they are drawn. -Infinity with no readings.
  */
 export const lsReach = (s: Pick<LsSeries, 'points' | 'periodMs'>): number => s.points.reduce((latest, p) => Math.max(latest, p.t), -Infinity) + s.periodMs;
-/** Whether a series has a step drawn in `view` (any reading at all with none given). */
-export const lsDrawnIn = (s: Pick<LsSeries, 'points' | 'periodMs'>, view?: { t0: number; t1: number }): boolean =>
-  s.points.some((q, i) => !view || (stepEnd(s, i) >= view.t0 && q.t <= view.t1));
+/**
+ * Whether a series has a step drawn in `view` (any reading at all with none given): one that covers some of it, of a reading published by
+ * `cut` (a replay draws only what had been published by the moment shown: a reading once its period is over).
+ */
+export const lsDrawnIn = (s: Pick<LsSeries, 'points' | 'periodMs'>, view?: { t0: number; t1: number }, cut = Infinity): boolean =>
+  s.points.some((q, i) => q.t + s.periodMs <= cut && (!view || (stepEnd(s, i) > view.t0 && q.t < view.t1)));
 /** `s` with `status`, no longer pending. */
 function settledAs(s: LsSeries, status: LsSeries['status']): LsSeries { const out: LsSeries = { ...s, status }; delete out.pending; return out; }
+
+/** What a landing is judged by: the view shown, each market's period for it now (`lsPeriods`) and a replay's moment (`lsDrawnIn`). */
+export interface LsLandAt { view?: { t0: number; t1: number }; want?: ReadonlyMap<string, number>; cut?: number }
 
 /**
  * The series drawn while a round lands, in the order of `ids`: a venue's answer as soon as it comes; until then what it had before (`before`).
@@ -115,16 +123,19 @@ function settledAs(s: LsSeries, status: LsSeries['status']): LsSeries { const ou
  * stale, or is failed when it had none: never left out, so the popup says it could not be read. A `pending` answer that reaches less far
  * than the line drawn (the source holds none for this window yet, or an older stretch while it reads the rest) keeps the line, still
  * pending, so it never blanks or loses its newest hours while its venue is read. One in a finer period than the line (a zoom back in) takes
- * its place as soon as it has a step in `view`: a coarser line's step reaches a whole period past its reading, and kept the daily line
- * drawn over the hourly answer, and stale over it when its round failed (2026-11-23).
+ * its place as soon as it has a step in the view: a coarser line's step reaches a whole period past its reading, and kept the daily line
+ * drawn over the hourly answer, and stale over it when its round failed (2026-11-23). An answer in a period the view no longer asks (the
+ * zoom moved on while it was read) never replaces a line in the period it asks.
  */
-export function lsLanded(ids: readonly string[], before: readonly LsSeries[], answers: ReadonlyMap<string, LsSeries>, final: boolean, view?: { t0: number; t1: number }): LsSeries[] {
+export function lsLanded(ids: readonly string[], before: readonly LsSeries[], answers: ReadonlyMap<string, LsSeries>, final: boolean, at: LsLandAt = {}): LsSeries[] {
   const out: LsSeries[] = [];
   for (const id of ids) {
-    const answer = answers.get(id), prev = before.find(s => s.id === id), held = prev?.points.length ? prev : null;
+    const answer = answers.get(id), prev = before.find(s => s.id === id), held = prev?.points.length ? prev : null, wanted = at.want?.get(id);
+    // Asked for a zoom since left: the line already in this zoom's period stays as it is (the next round asks this zoom's).
+    if (answer && held && wanted !== undefined && answer.periodMs !== wanted && held.periodMs === wanted) { out.push(final && held.pending ? settledAs(held, held.status) : held); continue; }
     // Reaching less far than the line, or (the same period) as far with fewer readings: an older stretch while the rest is read. Finer than
     // the line: only with no step in view.
-    const shorter = answer?.pending && held && (answer.periodMs < held.periodMs ? !lsDrawnIn(answer, view)
+    const shorter = answer?.pending && held && (answer.periodMs < held.periodMs ? !lsDrawnIn(answer, at.view, at.cut)
       : lsReach(answer) < lsReach(held) || (answer.periodMs === held.periodMs && lsReach(answer) === lsReach(held) && answer.points.length < held.points.length));
     if (shorter && held) out.push({ ...held, pending: true });
     else if (answer && !(answer.status === 'failed' && held)) out.push(answer);
