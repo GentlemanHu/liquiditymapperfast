@@ -4472,7 +4472,8 @@ export class HeatPane {
     // or what both add up (everyone beside the +PnL traders), that the take profits are not in the curve, and that the +PnL traders' orders are
     // not on the server.
     const absent = sets.some(set => !!set && set.ordersAbsent());
-    const notes: HeadLine[] = splitNotes(pair, takesShown, absent).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
+    const old = sets.some(set => !!set && !!set.levels && set.state === 'ready' && set.liqOld());
+    const notes: HeadLine[] = splitNotes(pair, takesShown, absent, old).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     // The profiles, and the scales they are drawn on: one shared (liquidations beside stops), or one each.
     const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);

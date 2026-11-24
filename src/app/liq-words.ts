@@ -111,8 +111,8 @@ export function columnNotes(view: LiqView, groupOnButton: boolean, takesShown: b
  * of the +PnL traders) or what both add up (everyone beside the +PnL traders), each a name; that the take profits are not in the curve (a
  * note); that a group's orders are not on the server (a warning).
  */
-export function splitNotes(pair: LiqPair, takesShown: boolean, absent: boolean): HeadLine[] {
-  return [...(pair.split === 'kinds' && pair.left.group !== 'all' ? [{ text: groupTitle(pair.left.group), role: 'name' as const }] : []),
+export function splitNotes(pair: LiqPair, takesShown: boolean, absent: boolean, old = false): HeadLine[] {
+  return [...(old ? [{ text: liqOldWords(), role: 'warn' as const }] : []), ...(pair.split === 'kinds' && pair.left.group !== 'all' ? [{ text: groupTitle(pair.left.group), role: 'name' as const }] : []),
     ...(pair.split === 'groups' ? [{ text: kindTitle(curveOf(pair.left)), role: 'name' as const }] : []),
     ...(takesShown ? [{ text: takesLeftOut(), role: 'note' as const }] : []), ...(absent ? [{ text: ordersAbsent(), role: 'warn' as const }] : [])];
 }
@@ -185,11 +185,13 @@ export function liqNote(src: Pick<LiqLevelsSource, 'view' | 'takesState' | 'asOf
  * times as its note states them, null where it states none) or their stops are old (Sol, review 2026-11-19: their orders hours old drew with
  * no word of it). Nothing where both groups' times agree: the left part says them.
  */
-export function groupNoteParts(right: Pick<LiqSet, 'state' | 'view' | 'levels' | 'missing' | 'blame' | 'asOfs' | 'ordersOld' | 'ordersAbsent'>, left: { liq: number | null; orders: number | null }): string[] {
+export function groupNoteParts(right: Pick<LiqSet, 'state' | 'view' | 'levels' | 'missing' | 'blame' | 'asOfs' | 'ordersOld' | 'ordersAbsent' | 'liqOld'>, left: { liq: number | null; orders: number | null }): string[] {
   const named = (what: string): string => ofGroup(groupTitle(right.view.group), what), absent = right.ordersAbsent(), parts = absent ? [ordersAbsent()] : [];
   if (!right.levels || right.state !== 'ready') return absent ? parts : [...parts, named(liqWhy(right, right.asOfs().liq) || t('Liquidation levels are loading.'))];
   const at = right.asOfs();
   if (at.liq !== null && at.liq !== left.liq) parts.push(named(t('positions as of {time}', { time: clock(at.liq) })));
+  // Their liquidations out of date are said by their own name, as the left part says its own (`liqNote`).
+  if (right.view.liq && right.liqOld()) parts.push(named(liqOldWords()));
   if (at.orders !== null && (right.ordersOld() || at.orders !== left.orders)) parts.push(named(t('stops as of {time}', { time: clock(at.orders) })));
   return parts;
 }
