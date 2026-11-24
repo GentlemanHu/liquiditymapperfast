@@ -17,14 +17,22 @@ export interface InspectorModel {
   title: string; sub: string;
   ref: { label: string; change: string; tone: Tone } | null;
   moves: string | null;
+  buyHead: string; sellHead: string;
   markets: { id: string; name: string; buy: string; sell: string }[];
   notes: { text: string; tone: Tone }[];
   largestTitle: string;
   largest: { id: string; side: 'buy' | 'sell'; usd: string; detail: string }[];
+  liquidations?: { title: string; summary: string; items: { id: string; side: 'buy' | 'sell'; usd: string; detail: string }[] };
 }
 
 /** One of a block's largest orders, as the inspector lists it. */
 export interface ListedOrder { t: number; id: string; usd: number; price: number; lo: number; hi: number }
+
+/** Liquidations summary for a trade block in Both mode. */
+export interface BlockLiquidations {
+  buy: number; sell: number; n: number;
+  largest: { id: string; side: 'long' | 'short'; usd: number; t: number; price: number }[];
+}
 
 export interface InspectorInput {
   block: Block;
@@ -41,6 +49,10 @@ export interface InspectorInput {
   largest: readonly ListedOrder[];
   /** Stretches of the block (ms) nobody recorded: its totals miss them. */
   unrecorded?: readonly (readonly [number, number])[];
+  /** True when the Tape is in Liquidations-only mode. */
+  liqMode?: boolean;
+  /** Liquidations that occurred inside this block (Both mode). */
+  liquidations?: BlockLiquidations | null;
 }
 
 /** Dollars as Trades writes them: the page's way, with cents under a dollar (a thin coin's orders are $0.30, not $0; under a cent, <0.01). */
@@ -57,11 +69,12 @@ const tone = (v: number, dp: number): Tone => Number(Math.abs(v).toFixed(dp)) ==
 export const reachBp = (o: { price: number; lo: number; hi: number }): number => o.price > 0 && o.hi >= o.lo ? 1e4 * (o.hi - o.lo) / o.price : 0;
 
 export function inspectorModel(i: InspectorInput): InspectorModel {
-  const b = i.block, held = i.state === 'held';
+  const b = i.block, held = i.state === 'held', liqMode = i.liqMode === true;
   const title = held ? t('{time} · held', { time: i.time }) : t('{time} · newest settled', { time: i.time });
   const sizes = i.minUsd > 0 ? t('From ${usd}', { usd: fmtUsd(i.minUsd) }) : t('All sizes');
   const parts = [sizes, tn(i.marketCount, '{n} market', '{n} markets')];
-  if (b.n >= 0) parts.push(tn(b.n, '{n} order', '{n} orders'));
+  if (liqMode) parts.push(tn(Math.max(0, b.n), '{n} liquidation', '{n} liquidations'));
+  else if (b.n >= 0) parts.push(tn(b.n, '{n} order', '{n} orders'));
   else if (b.from === 0) parts.push(t('not recorded'));
   else parts.push(t('orders not counted before the page listened'));
   let ref: InspectorModel['ref'] = null;
@@ -83,13 +96,38 @@ export function inspectorModel(i: InspectorInput): InspectorModel {
     notes.push({ text: r.side > 0 ? t('Repeated size: {market} buys, {n} × about ${usd} {when}', { market: marketName(r.id), n: String(r.n), usd: fmtUsd((r.lo + r.hi) / 2), when }) : t('Repeated size: {market} sells, {n} × about ${usd} {when}', { market: marketName(r.id), n: String(r.n), usd: fmtUsd((r.lo + r.hi) / 2), when }), tone: 'muted' });
   }
   const recorded = b.from !== 0 && !(b.from & 1);
+  const liqs = !liqMode && i.liquidations && i.liquidations.n > 0 ? i.liquidations : null;
+  const liqSummaryParts: string[] = [];
+  if (liqs) {
+    if (liqs.sell > 0) liqSummaryParts.push(`${t('Longs liquidated')} ${money(liqs.sell)}`);
+    if (liqs.buy > 0) liqSummaryParts.push(`${t('Shorts liquidated')} ${money(liqs.buy)}`);
+  }
   return {
     title, sub: parts.join(' · '), ref, moves: movesText,
+    buyHead: liqMode ? t('Shorts liq.') : t('Bought'),
+    sellHead: liqMode ? t('Longs liq.') : t('Sold'),
     // The markets that bought or sold within the block's filter (one that traded only under a size floor moves the median, not the table).
     markets: i.rows.filter(r => r.buy > 0 || r.sell > 0).map(r => ({ id: r.id, name: marketName(r.id), buy: money(r.buy), sell: money(r.sell) })),
     notes,
-    largestTitle: recorded ? t('Largest recorded orders (from ${usd})', { usd: fmtUsd(i.recordedFloor) }) : t('Largest orders'),
-    largest: i.largest.map(o => ({ id: o.id, side: o.usd > 0 ? 'buy' as const : 'sell' as const, usd: `${o.usd > 0 ? '▲' : '▼'} ${money(Math.abs(o.usd))}`, detail: `${clockSeconds(o.t)}.${String(Math.round(((o.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(o.price)}  ${t('{bp} bp', { bp: reachBp(o).toFixed(1) })}` })),
+    largestTitle: liqMode ? t('Largest liquidations') : recorded ? t('Largest recorded orders (from ${usd})', { usd: fmtUsd(i.recordedFloor) }) : t('Largest orders'),
+    largest: i.largest.map(o => ({
+      id: o.id, side: o.usd > 0 ? 'buy' as const : 'sell' as const,
+      usd: `${liqMode ? '◆' : o.usd > 0 ? '▲' : '▼'} ${money(Math.abs(o.usd))}`,
+      detail: liqMode
+        ? `${clockSeconds(o.t)}.${String(Math.round(((o.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(o.price)}`
+        : `${clockSeconds(o.t)}.${String(Math.round(((o.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(o.price)}  ${t('{bp} bp', { bp: reachBp(o).toFixed(1) })}`,
+    })),
+    ...(liqs ? {
+      liquidations: {
+        title: `${t('Liquidations')} (${tn(liqs.n, '{n} liquidation', '{n} liquidations')})`,
+        summary: liqSummaryParts.join(' · '),
+        items: liqs.largest.map(l => ({
+          id: l.id, side: l.side === 'short' ? 'buy' as const : 'sell' as const,
+          usd: `◆ ${money(l.usd)}`,
+          detail: `${clockSeconds(l.t)}.${String(Math.round(((l.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(l.price)}`,
+        })),
+      },
+    } : {}),
   };
 }
 
@@ -99,11 +137,17 @@ export function renderInspector(root: HTMLElement, m: InspectorModel): void {
   if (m.ref) parts.push(el('div', { class: 'ti-ref' }, el('span', {}, m.ref.label), el('span', { class: `ti-${m.ref.tone}` }, m.ref.change)));
   if (m.moves) parts.push(el('div', { class: 'ti-moves' }, m.moves));
   if (m.markets.length) {
-    const head = el('div', { class: 'ti-row ti-head' }, el('span', {}, ''), el('span', {}, t('Bought')), el('span', {}, t('Sold')));
+    const head = el('div', { class: 'ti-row ti-head' }, el('span', {}, ''), el('span', {}, m.buyHead), el('span', {}, m.sellHead));
     parts.push(el('div', { class: 'ti-markets' }, head, ...m.markets.map(r => el('div', { class: 'ti-row' },
       el('span', { class: 'ti-name' }, venueMark(r.id, 13), el('span', {}, r.name)), el('span', { class: 'ti-up' }, r.buy), el('span', { class: 'ti-down' }, r.sell)))));
   }
   if (m.notes.length) parts.push(el('div', { class: 'ti-h' }, t('Notes')), ...m.notes.map(n => el('div', { class: `ti-note ti-${n.tone}` }, n.text)));
+  if (m.liquidations) {
+    parts.push(el('div', { class: 'ti-h' }, m.liquidations.title));
+    if (m.liquidations.summary) parts.push(el('div', { class: 'ti-note ti-muted' }, m.liquidations.summary));
+    for (const o of m.liquidations.items) parts.push(el('div', { class: 'ti-order' },
+      venueMark(o.id, 13), el('span', { class: `ti-${o.side === 'buy' ? 'up' : 'down'} ti-usd` }, o.usd), el('span', { class: 'ti-detail' }, o.detail)));
+  }
   if (m.largest.length) parts.push(el('div', { class: 'ti-h' }, m.largestTitle), ...m.largest.map(o => el('div', { class: 'ti-order' },
     venueMark(o.id, 13), el('span', { class: `ti-${o.side === 'buy' ? 'up' : 'down'} ti-usd` }, o.usd), el('span', { class: 'ti-detail' }, o.detail))));
   root.replaceChildren(...parts);

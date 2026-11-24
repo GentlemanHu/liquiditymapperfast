@@ -9,6 +9,7 @@ import { contrastRatio, type Palette, PALETTES } from '../theme.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { scaledUsd } from '../coin.ts';
 import { BlockReader, barLength, emptyBlock, fullScale, type Block } from '../trades/blocks.ts';
+import { liqBlockFullScale } from '../trades/liquidations.ts';
 import { RowWalker, type Row, type RowKind } from '../trades/rows.ts';
 import { newestStep, scrolledBack } from '../trades/follow.ts';
 import { RetainedRows } from './retained-rows.ts';
@@ -99,6 +100,8 @@ export class BlockList {
   now: () => number = () => Date.now();
   /** The words where the list ends, at second `at` (set by the shell: they depend on the size and the sources). */
   endNote: (at: number) => string = () => '';
+  /** Empty-state words when nothing has loaded yet (set by the shell for liquidations coverage). */
+  emptyText = '';
   /** The whale size (the coin's dollars): a named order this large is drawn heavier. */
   whale = 400_000;
   /** A block was chosen or let go, or the newest settled block moved on (the shell redraws the inspector). */
@@ -336,14 +339,14 @@ export class BlockList {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const drawn: Drawn[] = []; this.#drawn = drawn;
     this.#items.length = 0;
-    const phone = isPhone(), rowH = this.#rowH(), c = blockColumns(w, phone), B = this.unit;
-    const full = scaledUsd(fullScale(B)), barW = c.bars - 10;
+    const phone = isPhone(), rowH = this.#rowH(), c = blockColumns(w, phone), B = this.unit, liqMode = this.reader.mode === 'liquidations';
+    const full = scaledUsd(liqMode ? liqBlockFullScale(B) : fullScale(B)), barW = c.bars - 10;
     const newest = this.newestStart(), oldest = this.reader.oldestSec();
     // The newest settled block moved on: the inspector follows it (once a block, not every frame), after this frame.
     const settled = newest - B;
     if (settled !== this.#lastNewest) { this.#lastNewest = settled; if (this.selected === null) this.#inspectSoon(); }
     // Device pixels from here (the rows' tops and heights; what `drawn` keeps for the pointer is in CSS pixels).
-    const H = this.#canvas.height, rowD = Math.round(rowH * dpr), quietD = Math.round(QUIET * dpr), noteD = Math.round(NOTE * dpr), lateD = this.late.length ? noteD : 0;
+    const H = this.#canvas.height, rowD = Math.round(rowH * dpr), quietD = Math.round(QUIET * dpr), noteD = Math.round(NOTE * dpr), lateD = !liqMode && this.late.length ? noteD : 0;
     const top = this.#anchor ? this.#anchor.s : newest;
     // Held: the offset in whole device pixels.
     let y = lateD - (this.#anchor ? Math.round(this.#anchor.offset * dpr) : 0);
@@ -353,7 +356,7 @@ export class BlockList {
       this.rows.reset();
       ctx.fillStyle = p.panel; ctx.fillRect(0, 0, this.#canvas.width / dpr, H / dpr);
       ctx.fillStyle = p.muted; ctx.font = `12px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(t('Waiting for live orders'), w / 2, Math.min(h / 2, 60));
+      ctx.fillText(this.emptyText || (liqMode ? t('Waiting for liquidations') : t('Waiting for live orders')), w / 2, Math.min(h / 2, 60));
       return;
     }
     // The rows from the top one down (`trades/rows.ts`): a block, or a run of empty blocks of one kind as one line saying why. The list ends
@@ -365,7 +368,7 @@ export class BlockList {
     // unknown only for a moment (a flow reload) keeps the place (the list ends there meanwhile).
     if (!row && this.#anchor && this.#anchor.s + B <= oldest) { this.release(false); this.#paint(); return; }
     // The late venues' banner first in what the pointer finds (it is drawn over the rows scrolled under it, so it is what is there).
-    if (this.late.length) drawn.push({ kind: 'note', y: 0, h: noteD / dpr });
+    if (!liqMode && this.late.length) drawn.push({ kind: 'note', y: 0, h: noteD / dpr });
     let lo = Infinity, hi = -Infinity;
     while (row && y < H) {
       if (row.kind === 'block') { const chosen = this.selected === b.s; this.#item('block', this.#settleSig(row.top, blockSig(b, chosen), b.forming, chosen, nowMs), y, rowD, b); drawn.push({ kind: 'block', s: row.top, y: y / dpr, h: rowD / dpr }); y += rowD; b = take(); lo = Math.min(lo, row.top); hi = Math.max(hi, row.top); }
@@ -383,13 +386,13 @@ export class BlockList {
       if (words) { this.#item('end', `e|${words}`, y, noteD, null, 0, 0, words); drawn.push({ kind: 'note', y: y / dpr, h: noteD / dpr }); y += noteD; }
     }
     // The late venues' banner over the top of the list, drawn last (a row scrolled under it stays under it).
-    if (this.late.length) {
+    if (!liqMode && this.late.length) {
       const words = w < 300 ? t('{venues} delayed', { venues: this.late.join(', ') }) : t('{venues} delayed: the last minute may still grow', { venues: this.late.join(', ') });
       this.#item('late', `l|${words}`, 0, noteD, null, 0, 0, words, true);
     }
     [this.#shownSig, this.#nextSig] = [this.#nextSig, this.#shownSig]; this.#nextSig.clear();
     // What the rows' pixels depend on beyond their own signatures: any change draws the whole frame.
-    const look = `${w}|${h}|${dpr}|${phone}|${B}|${this.venueIds.join(',')}|${this.whale}|${this.reader.version}|${this.reader.flowVersion()}|${this.#epoch}|${marksEpoch()}|${document.documentElement.lang}`;
+    const look = `${w}|${h}|${dpr}|${phone}|${B}|${this.reader.mode}|${this.reader.liqVersion}|${this.venueIds.join(',')}|${this.whale}|${this.reader.version}|${this.reader.flowVersion()}|${this.#epoch}|${marksEpoch()}|${document.documentElement.lang}`;
     const items = this.#items, draw = this.rows.plan(ctx, look, items, 1, H, p.panel, Math.min(H, Math.max(y, lateD)));
     // Rows fill to the canvas's own width in device pixels (a width like 366 px at 1.25 is 457.5 of them: a fill to 366 would leave the
     // last column half covered, blended with whatever was under it, which a kept frame and a whole one differ in), and to their own
@@ -438,7 +441,8 @@ export class BlockList {
     ctx.font = `11px ${MONO}`; ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     // A run longer than half a day says its dates (a run of minutes reaches 60 hours).
     const dated = to - from > 12 * 3600, fmt = (sec: number): string => dated ? clock(sec * 1000, true) : this.unit >= 60 ? clock(sec * 1000) : clockSeconds(sec * 1000), at = { from: fmt(from), to: fmt(to) };
-    fitText(ctx, kind === 'unrecorded' ? t('Not recorded {from}–{to}', at) : kind === 'missing' ? t('Orders may be missing {from}–{to}', at) : t('No orders {from}–{to}', at), PAD, y + QUIET / 2, w - 2 * PAD);
+    const emptyWords = this.reader.mode === 'liquidations' ? t('No liquidations {from}–{to}', at) : t('No orders {from}–{to}', at);
+    fitText(ctx, kind === 'unrecorded' ? t('Not recorded {from}–{to}', at) : kind === 'missing' ? t('Orders may be missing {from}–{to}', at) : emptyWords, PAD, y + QUIET / 2, w - 2 * PAD);
   }
   #paintEnd(ctx: CanvasRenderingContext2D, fh: number, w: number, words: string, p: Palette): void {
     const y = 0;
@@ -465,7 +469,9 @@ export class BlockList {
   /** A block's row in its own coordinates (its top at 0): `h` its nominal height (what is inside is placed from it), `fh` its device height. */
   #paintBlock(ctx: CanvasRenderingContext2D, b: Block, h: number, fh: number, w: number, c: ReturnType<typeof blockColumns>, full: number, barW: number, p: Palette): void {
     const chosen = this.selected === b.s, phone = h === ROW_PHONE, f = this.#rowFonts(ctx, phone), y = 0;
+    const liqMode = this.reader.mode === 'liquidations', hasBothLiq = this.reader.mode === 'both' && b.liqN > 0;
     ctx.fillStyle = chosen ? mixHex(p.panel, p.ui ?? p.text, 0.12) : p.panel; ctx.fillRect(0, y, w, fh);
+    if (hasBothLiq) { ctx.fillStyle = b.liqSell >= b.liqBuy ? p.candleDown : p.candleUp; ctx.fillRect(0, y, 3, fh - 1); }
     ctx.fillStyle = p.line; ctx.fillRect(0, fh - 1, w, 1);
     if (chosen) { ctx.strokeStyle = p.ui ?? p.text; ctx.lineWidth = 1.5; ctx.strokeRect(1, 1, w - 2, fh - 2); }
     const l1 = Math.round(y + h * 0.31), l2 = Math.round(y + h * 0.71);
@@ -480,10 +486,15 @@ export class BlockList {
     if (Number.isFinite(d)) { const r = Number(Math.abs(d).toFixed(dp)); ctx.fillStyle = r === 0 ? p.muted : d > 0 ? p.candleUp : p.candleDown; ctx.fillText(r === 0 ? (0).toFixed(dp) : `${d > 0 ? '+' : '−'}${r.toFixed(dp)}`, PAD, l2); }
     else { ctx.fillStyle = p.muted; ctx.fillText('–', PAD, l2); }
     const xAmt = PAD + c.t, xBars = xAmt + c.amt, xBig = xBars + c.bars + 6;
-    // Both sides' amounts in one font, then their bars, then both largest orders.
+    // Both sides' amounts in one font (diamonds in Liquidations mode; small diamond tag in Both mode when liquidations occurred), then their bars, then both largest orders.
+    if (hasBothLiq) {
+      ctx.font = `9px ${MONO}`; ctx.textAlign = 'left';
+      if (b.liqBuy > 0) { ctx.fillStyle = p.candleUp; ctx.fillText('◆', xAmt, l1); }
+      if (b.liqSell > 0) { ctx.fillStyle = p.candleDown; ctx.fillText('◆', xAmt, l2); }
+    }
     ctx.font = f.amount; ctx.textAlign = 'right';
-    ctx.fillStyle = p.candleUp; ctx.fillText(`▲ ${money(b.buy)}`, xBars - 7, l1);
-    ctx.fillStyle = p.candleDown; ctx.fillText(`▼ ${money(b.sell)}`, xBars - 7, l2);
+    ctx.fillStyle = p.candleUp; ctx.fillText(`${liqMode ? '◆' : '▲'} ${money(b.buy)}`, xBars - 7, l1);
+    ctx.fillStyle = p.candleDown; ctx.fillText(`${liqMode ? '◆' : '▼'} ${money(b.sell)}`, xBars - 7, l2);
     ctx.fillStyle = p.line; ctx.fillRect(xBars, l1 - 7, 1, 14); ctx.fillRect(xBars, l2 - 7, 1, 14);
     let over = false;
     for (let side = 0; side < 2; side++) {
@@ -554,7 +565,7 @@ export class BlockList {
 /** Everything a block's row shows, as a key: a settled block keeps it, so its row is shifted with the canvas instead of drawn again. */
 function blockSig(b: Block, chosen: boolean): string {
   const tb = b.topBuy, ts = b.topSell;
-  return `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}`;
+  return `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.liqBuy}|${b.liqSell}|${b.liqN}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}`;
 }
 /** Text cut with an ellipsis to fit `max` px (one measure per cut step: only short notes go through it). */
 function fitText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, max: number): void {

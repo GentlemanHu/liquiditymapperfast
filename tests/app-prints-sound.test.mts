@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PrintBook, bubbleRadius, fromWire, topPrints, type Print } from '../src/app/prints.ts';
-import { Coalescer, DEFAULT_SOUNDS, MIN_TIER_USD, chimeNotes, notesFor, readSounds, tierOf } from '../src/app/sound/rules.ts';
+import { Coalescer, DEFAULT_LIQ_SOUNDS, DEFAULT_SOUNDS, LiqCoalescer, MIN_LIQ_TIER_USD, MIN_TIER_USD, chimeNotes, liqNotesFor, notesFor, readLiqSounds, readSounds, tierOf } from '../src/app/sound/rules.ts';
+import type { Liquidation } from '../src/shared/liquidations.ts';
 
 const print = (t: number, usd: number, side: 'buy' | 'sell' = 'buy', id = 'binance:BTCUSDT', price = 85_000): Print => ({ t, id, side, price, usd });
 
@@ -77,13 +78,38 @@ test('buys climb, sells fall, bigger tiers add notes, and loudness stays bounded
 });
 
 test('saved sound settings are merged over the defaults, clamped, and thresholds stay ascending above the floor', () => {
-  assert.deepEqual(readSounds(undefined), { ...DEFAULT_SOUNDS, tiers: DEFAULT_SOUNDS.tiers.map(t => ({ ...t })) });
-  const s = readSounds({ on: true, volume: 7, scope: 'spot', tiers: [{ id: 'signal', usd: 1, on: true }, { id: 'surge', usd: 40_000, on: false }, { id: 'whale', usd: 'x' }] });
-  assert.equal(s.on, true); assert.equal(s.volume, 1); assert.equal(s.scope, 'spot');
+  assert.deepEqual(readSounds(undefined), { ...DEFAULT_SOUNDS, tiers: DEFAULT_SOUNDS.tiers.map(t => ({ ...t })), liquidations: { ...DEFAULT_LIQ_SOUNDS, tiers: DEFAULT_LIQ_SOUNDS.tiers.map(t => ({ ...t })) } });
+  const s = readSounds({ on: true, volume: 7, scope: 'spot', tradeSide: 'sell', tiers: [{ id: 'signal', usd: 1, on: true }, { id: 'surge', usd: 40_000, on: false }, { id: 'whale', usd: 'x' }] });
+  assert.equal(s.on, true); assert.equal(s.volume, 1); assert.equal(s.scope, 'spot'); assert.equal(s.tradeSide, 'sell');
   assert.equal(s.tiers[0]!.usd, MIN_TIER_USD, 'below the server floor is raised to it');
   assert.ok(s.tiers.every((t, i) => i === 0 || t.usd > s.tiers[i - 1]!.usd), 'ascending');
   assert.equal(s.tiers[2]!.usd, 400_000, 'a bad value falls back to the default');
   assert.equal(s.tiers[1]!.on, false); assert.equal(s.tiers[0]!.on, true);
-  assert.deepEqual(readSounds({ scope: 'weird', volume: NaN }).scope, 'all');
+  assert.deepEqual(readSounds({ scope: 'weird', tradeSide: 'nope', volume: NaN }).scope, 'all');
+  assert.equal(readSounds({ tradeSide: 'nope' }).tradeSide, 'both');
   assert.equal(readSounds({ volume: NaN }).volume, DEFAULT_SOUNDS.volume);
+});
+
+test('liquidation sound rules: 3 ascending tiers, cascade coalescer and filtered sawtooth notes', () => {
+  const ls = readLiqSounds({ on: true, side: 'long', tiers: [{ id: 'snap', usd: 5, on: true }, { id: 'cascade', usd: 100, on: true }, { id: 'wipeout', usd: 'bad' }] });
+  assert.equal(ls.on, true); assert.equal(ls.side, 'long');
+  assert.equal(ls.tiers[0]!.usd, MIN_LIQ_TIER_USD);
+  assert.ok(ls.tiers.every((t, i) => i === 0 || t.usd > ls.tiers[i - 1]!.usd), 'ascending liquidation tiers');
+  assert.equal(ls.tiers[2]!.usd, 250_000);
+  const liq = (t: number, side: 'long' | 'short', usd: number, id = 'binance:BTCUSDT'): Liquidation => ({ t, id, side, price: 85_000, usd, reported: 85_000, kind: 'fill' });
+  const c = new LiqCoalescer(300);
+  c.add(liq(1_000, 'long', 30_000, 'binance:BTCUSDT'), 0);
+  c.add(liq(1_120, 'long', 45_000, 'bybit:BTCUSDT'), 120);
+  c.add(liq(1_150, 'short', 20_000, 'okx:BTC-USDT-SWAP'), 150);
+  assert.deepEqual(c.drain(250), []);
+  const out = c.drain(350);
+  assert.equal(out.length, 1);
+  assert.deepEqual([out[0]!.side, out[0]!.usd, out[0]!.n, out[0]!.venues], ['long', 75_000, 2, 2]);
+  assert.equal(c.drain(500)[0]!.side, 'short');
+  const up = liqNotesFor('short', 2, 300_000, 250_000, 0.8), down = liqNotesFor('long', 2, 300_000, 250_000, 0.8);
+  assert.equal(up.length, 3); assert.equal(down.length, 3);
+  assert.ok(up.every(n => n.wave === 'sawtooth' && (n.filterHz ?? 0) > 0), 'distinct filtered sawtooth timbre');
+  assert.ok(up.every((n, i) => i === 0 || n.freq > up[i - 1]!.freq), 'short liquidation (forced buy) rises');
+  assert.ok(down.every((n, i) => i === 0 || n.freq < down[i - 1]!.freq), 'long liquidation (forced sell) falls');
+  assert.ok(liqNotesFor('long', 1, 50_000, 50_000, 0).every(n => n.gain === 0), 'volume 0 is silent');
 });

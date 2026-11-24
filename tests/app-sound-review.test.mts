@@ -66,6 +66,27 @@ test("a trade sounds by the map's venue rule: not when its venue's chip is off, 
   assert.equal(heard(null, [], 'okx:BTC-USDT-SWAP'), 1, 'before the first frame nothing is left out');
 });
 
+test('tradeSide filters large trade sounds, and liquidation sounds coalesce, respect side/venue filters and reject stale events', () => {
+  const buysOnly = soundsRig({ tradeSide: 'buy' });
+  buysOnly.sounds.feed([print(buysOnly.T, 1_000_000, 'sell'), print(buysOnly.T, 1_000_000, 'buy')]);
+  buysOnly.advance(300); buysOnly.sounds.drainNow();
+  assert.equal(buysOnly.sounds.log.length, 1);
+  assert.equal(buysOnly.sounds.log[0]!.side, 'buy');
+
+  const liqRig = soundsRig({ liquidations: { on: true, side: 'long', tiers: [{ id: 'snap', usd: 10_000, on: true }, { id: 'cascade', usd: 50_000, on: true }, { id: 'wipeout', usd: 250_000, on: true }] } });
+  const mk = (t: number, side: 'long' | 'short', usd: number, id = 'binance:BTCUSDT') => ({ t, id, side, price: 100_000, usd, reported: 100_000, kind: 'fill' as const });
+  liqRig.sounds.feedLiquidations([mk(liqRig.T, 'short', 80_000), mk(liqRig.T, 'long', 30_000), mk(liqRig.T + 50, 'long', 40_000, 'bybit:BTCUSDT')]);
+  liqRig.advance(350); liqRig.sounds.drainNow();
+  assert.equal(liqRig.sounds.log.length, 1, 'short filtered out, two longs coalesced into one cascade');
+  assert.equal(liqRig.sounds.log[0]!.kind, 'liquidation');
+  assert.equal(liqRig.sounds.log[0]!.liqSide, 'long');
+  assert.equal(liqRig.sounds.log[0]!.usd, 70_000);
+  // Stale liquidation (> 4s old) is ignored.
+  liqRig.sounds.feedLiquidations([mk(liqRig.T - 10_000, 'long', 500_000)]);
+  liqRig.advance(350); liqRig.sounds.drainNow();
+  assert.equal(liqRig.sounds.log.length, 1, 'stale liquidation does not sound');
+});
+
 // The candle chime and the panel alerts watch the closing of the candle that is on screen; they have to be told apart from what is merely loaded.
 
 function stubBrowser(): () => void {

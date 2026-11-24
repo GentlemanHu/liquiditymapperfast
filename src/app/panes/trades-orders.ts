@@ -17,7 +17,9 @@ import { RetainedRows } from './retained-rows.ts';
 import { newestStep, scrolledBack } from '../trades/follow.ts';
 import { DIVIDER_ROW, InkCache, ORDER_TINT, ROW_GAP, ROW_MARK, ROW_PAD, TIERS, amountText, clockForm, orderBarFull, priceWidth, rowGeom, tierOf, type RowFontWidths, type RowGeom, type Tier } from '../trades/style.ts';
 import { GROUP_MS } from '../trades/settings.ts';
+import { LIQ_TINT, buildLiqRows, liqBarFull, liqRowsInRange, type LiqRow } from '../trades/liquidations.ts';
 import { Conveyor } from '../trades/conveyor.ts';
+import { liquidationLines, type LiquidationBook } from '../liquidations.ts';
 import type { TnsLine } from '../tns/model.ts';
 import type { Store } from '../store.ts';
 
@@ -37,12 +39,12 @@ const reducedMotion = (): boolean => typeof matchMedia === 'function' && matchMe
 /** The widths the rows are laid out by (`rowGeom`), at the pixel ratio they were measured at. */
 interface FontWidths extends RowFontWidths { dpr: number }
 /** What an order row shows (one order, or the orders a row groups): its time, price, signed dollars, market and how many orders. */
-interface RowOrder { t: number; price: number; usd: number; id: string; orders: number }
+interface RowOrder { t: number; price: number; usd: number; id: string; orders: number; liq: boolean }
 /** A row of a frame (device pixels), laid out before anything is drawn: its signature and what draws it. */
-interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; tier: (typeof TIERS)[number]; orders: number; usd: number; timeY: number; outlined: boolean; reasons: number; words: string }
-/** A line the last frame drew: an order (or a burst of them when grouping is on), or a divider where orders may be missing. */
+interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; liq: LiqRow | null; tier: (typeof TIERS)[number]; orders: number; usd: number; timeY: number; outlined: boolean; reasons: number; words: string }
+/** A line the last frame drew: an order (or a burst of them when grouping is on), a liquidation, or a divider where orders may be missing. */
 type Drawn =
-  | { kind: 'row'; k: number; y: number; h: number; rec: TradeRecord; orders: number; usd: number }
+  | { kind: 'row'; k: number; y: number; h: number; rec: TradeRecord; orders: number; usd: number; liq?: LiqRow }
   | { kind: 'divider'; y: number; h: number; reasons: number };
 
 /**
@@ -96,7 +98,11 @@ export class OrderList {
   /** The widest price of the recording's rows (characters) and the rows it was counted for (the shell sets a new list when they change). */
   #historyCharsOf: TnsLine[] | null = null; #historyCharsN = 0;
   /** The one row description the painter is handed, filled for each row (no object made for every row drawn). */
-  #order: RowOrder = { t: 0, price: 0, usd: 0, id: '', orders: 1 };
+  #order: RowOrder = { t: 0, price: 0, usd: 0, id: '', orders: 1, liq: false };
+  /** Cached filtered & grouped liquidation rows (rebuilt only when the liquidation book or filter changes). */
+  #liqRows: LiqRow[] = []; #liqKey = '';
+  /** Scroll and hold state for Liquidations-only mode (pixel offset from newest, key pinned at top while held, and new rows arrived since). */
+  #liqScroll = 0; #liqHeld = false; #liqHoldKey: string | null = null; #liqHoldTotal = 0; #liqNew = 0;
   /** Prices as written, by value (a moving list draws a row or two a frame, mostly at prices it wrote moments before). */
   #prices = new Map<number, string>();
   #scanTimer = 0;
@@ -112,6 +118,10 @@ export class OrderList {
   #pillPressed = false;
   /** The tape ring (set by the page: it exists once a view has asked for the tape). */
   ring: () => TapeRing | null = () => null;
+  /** The liquidation book (set by the shell: read in Liquidations and Both modes). */
+  liquidations: () => LiquidationBook | null = () => null;
+  /** Empty-state text for Liquidations mode when no reporting venue is enabled (set by the shell). */
+  emptyText = '';
   /** Take the map to an order (set by the shell). */
   onGoTo: (at: number, price: number) => void = () => {};
   /** Since when the list holds every order, as the status says it (set as each frame is drawn). */
@@ -212,9 +222,32 @@ export class OrderList {
   }
   setPalette(p: Palette): void { this.#palette = p; this.#epoch++; this.invalidate(); }
   /** The list's settings, the venues or the sizes changed: found again from the newest order, from the top. */
-  refresh(): void { this.#release(false); this.#conveyor.reset(); this.#drawn = []; this.#index.reset(null); this.#filterKey = ''; if (this.#shown) this.#sync(); }
+  refresh(): void { this.#release(false); this.#conveyor.reset(); this.#drawn = []; this.#index.reset(null); this.#filterKey = ''; this.#liqKey = ''; this.#liqScroll = 0; this.#liqHeld = false; this.#liqHoldKey = null; this.#liqNew = 0; if (this.#shown) this.#sync(); }
   /** Something the rows are drawn with changed (the whale size, the time zone, a replay): drawn again as they stand. */
   redraw(): void { this.#epoch++; this.invalidate(); }
+  /** New liquidations landed in the book: update hold count in Liquidations mode and repaint. */
+  liquidationsChanged(): void {
+    if (!this.#shown || this.store.state.trades.mode === 'trades') return;
+    if (this.store.state.trades.mode === 'liquidations') {
+      const rows = this.#getLiqRows();
+      if (this.#liqHeld && rows.length > this.#liqHoldTotal) {
+        this.#liqNew = rows.length - this.#liqHoldTotal;
+        this.#showLiqHeld();
+      }
+    }
+    this.invalidate();
+  }
+  #isLiqOnly(): boolean { return this.store.state.trades.mode === 'liquidations'; }
+  #getLiqRows(): LiqRow[] {
+    const book = this.liquidations(), s = this.store.state, tr = s.trades;
+    if (!book) return this.#liqRows = [];
+    const minUsd = scaledUsd(tr.liqMinUsd);
+    const key = `${book.version}|${minUsd}|${tr.side}|${tr.group}|${this.#filterKeyNow()}`;
+    if (key === this.#liqKey) return this.#liqRows;
+    this.#liqKey = key;
+    return this.#liqRows = buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group);
+  }
+  #showLiqHeld(): void { this.#pill.hidden = this.#liqNew <= 0; if (this.#liqNew > 0) setText(this.#pill, t('Held · {n} new ↑', { n: String(this.#liqNew) })); }
 
   /**
    * A batch reached the ring: a list following the newest takes it above the top, to come down on the next frames as far as the batch added
@@ -355,10 +388,18 @@ export class OrderList {
   }
 
   #hold(): void {
+    if (this.#isLiqOnly()) {
+      if (this.#liqHeld) return;
+      const rows = this.#getLiqRows();
+      if (!rows.length) return;
+      this.#liqHeld = true; this.#liqHoldTotal = rows.length; this.#liqHoldKey = rows[0]?.key ?? null; this.#liqNew = 0;
+      this.#showLiqHeld();
+      return;
+    }
     if (this.#anchor || !this.#index.length) return;
     // Held where it stands: the row at the top (as the last frame drew it) stays there while new orders are counted, and so do the rows
     // above it that had not come down yet (the key counts them with what comes).
-    const top = this.#drawn.find(d => d.kind === 'row');
+    const top = this.#drawn.find(d => d.kind === 'row' && !d.liq);
     if (!top || top.kind !== 'row') return;
     this.#conveyor.reset();
     // A row under a line at the top (rows were coming down) is held at the top, the line dropped: a held list draws no line above the row it
@@ -375,6 +416,13 @@ export class OrderList {
    * `draw` false: the list is being found again or hidden, and stands at the newest at once.
    */
   #release(draw = true): void {
+    if (this.#isLiqOnly()) {
+      if (!this.#liqHeld && this.#liqScroll === 0 && this.#pinned === null) return;
+      this.#liqHeld = false; this.#liqScroll = 0; this.#liqHoldKey = null; this.#liqNew = 0;
+      this.#pill.hidden = true; this.#scrolled = false; this.#pinned = null;
+      if (draw) this.invalidate();
+      return;
+    }
     if (!this.#anchor && !this.#index.held) return;
     const a = this.#anchor, cap = this.#cap();
     const from = draw && a && this.#glides() && this.#index.valid(a.k) ? this.#edgeOf(a.k, false, cap) + a.offset : 0;
@@ -384,6 +432,26 @@ export class OrderList {
   }
   /** The wheel moves the held top row by `dy` px (down: older orders); back at the newest, the list follows again. */
   #scroll(dy: number): void {
+    if (this.#isLiqOnly()) {
+      if (!dy) return;
+      const rows = this.#getLiqRows();
+      if (!rows.length) return;
+      if (!this.#liqHeld) { if (!(dy > 0)) return; this.#hold(); }
+      const whale = this.#whale().whale;
+      let totalH = 0;
+      for (const r of rows) totalH += TIERS[tierOf(r.signedUsd, scaledUsd, whale)]!.row;
+      const maxScroll = Math.max(0, totalH - Math.max(TIERS[0]!.row, this.#h * 0.5));
+      const next = this.#liqScroll + dy;
+      if (next <= 0) {
+        const step = newestStep(dy, next, this.#pointerIn, this.#pinned !== null);
+        if (step === 'follow') { this.#follow(); return; }
+        this.#liqScroll = 0; this.#scrolled = false; this.invalidate(); return;
+      }
+      this.#liqScroll = Math.min(maxScroll, next);
+      this.#scrolled = this.#liqScroll > 0.5;
+      this.invalidate();
+      return;
+    }
     if (!this.#index.length) return;
     // A sideways swipe moves nothing. Following, the newest is at the top: up goes nowhere (a trackpad's momentum tail after the list came
     // back takes no hold).
@@ -429,10 +497,65 @@ export class OrderList {
 
   /** A row of this frame, laid out before anything is drawn: device-pixel top and height, and what draws it. */
   #item(sig: string, y: number, h: number, kind: Item['kind'], fixed = false): Item {
-    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, shown: null, tier: TIERS[0]!, timeY: -1, outlined: false, reasons: 0, words: '' };
-    it.sig = sig; it.y = y; it.h = h; it.kind = kind; it.fixed = fixed; it.rec = null; it.shown = null; it.timeY = -1; it.outlined = false; it.reasons = 0; it.words = '';
+    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, shown: null, liq: null, tier: TIERS[0]!, timeY: -1, outlined: false, reasons: 0, words: '' };
+    it.sig = sig; it.y = y; it.h = h; it.kind = kind; it.fixed = fixed; it.rec = null; it.shown = null; it.liq = null; it.timeY = -1; it.outlined = false; it.reasons = 0; it.words = '';
     this.#items.push(it);
     return it;
+  }
+
+  /** Liquidations-only canvas painter: newest on top, same crisp layout, diamond glyph, left accent stripe and dedicated bar scale. */
+  #paintLiqs(): void {
+    const ctx = this.#ctx, w = this.#w, h = this.#h, p = this.#palette, dpr = this.#dpr;
+    const rows = this.#getLiqRows(), replay = replaying(), s = this.store.state.trades;
+    const oldest = rows.length ? rows[rows.length - 1]!.t : null;
+    const since = oldest === null ? '' : replay ? t('Not the replay: live liquidations since {time}', { time: clockSeconds(oldest) }) : t('Since {time}', { time: clockSeconds(oldest) });
+    if (since !== this.since) { this.since = since; this.onSince(); }
+    this.root.classList.toggle('replaying', replay);
+    const drawn: Drawn[] = []; this.#drawn = drawn;
+    this.rows.reset();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const fw = this.#canvas.width / dpr, fh = this.#canvas.height / dpr;
+    ctx.fillStyle = p.panel; ctx.fillRect(0, 0, fw, fh);
+    if (!rows.length) {
+      ctx.fillStyle = p.muted; ctx.font = `12px ${MONO}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(this.emptyText || t('Waiting for liquidations'), w / 2, Math.min(h / 2, 60));
+      return;
+    }
+    // While held, keep the row that was at the top in place even if newer liquidations arrive above it.
+    let startIdx = 0;
+    if (this.#liqHeld && this.#liqHoldKey) {
+      const idx = rows.findIndex(r => r.key === this.#liqHoldKey);
+      if (idx >= 0) startIdx = idx;
+    }
+    const { whale } = this.#whale(), widths = this.#widths(ctx), form = clockForm(w), clockW = form === 'none' ? 0 : form === 'hms' ? widths.hms : widths.ms;
+    let y = -this.#liqScroll, priceChars = 0;
+    const visible: { idx: number; row: LiqRow; y: number; tier: Tier; rowH: number; timeY: number }[] = [];
+    let lastSecond = '', first = true;
+    for (let i = startIdx; i < rows.length && y < h; i++) {
+      const r = rows[i]!, tier = TIERS[tierOf(r.signedUsd, scaledUsd, whale)]!, rowH = Math.round(tier.row * dpr) / dpr;
+      if (y + rowH <= 0) { lastSecond = clockSeconds(r.t); y += rowH; continue; }
+      priceChars = Math.max(priceChars, priceWidth(r.price));
+      const second = clockSeconds(r.t), showTime = clockW > 0 && (second !== lastSecond || first);
+      const timeY = !showTime ? -1 : y < 0 ? Math.min(tier.row - 6, Math.max(tier.row / 2, -y + 7)) : tier.row / 2;
+      visible.push({ idx: i, row: r, y, tier, rowH, timeY });
+      const k = -1_000_000 - i;
+      drawn.push({ kind: 'row', k, y, h: rowH, rec: { k, t: r.t, price: r.price, usd: r.signedUsd, id: r.id, lo: r.lo, hi: r.hi }, orders: r.count, usd: r.signedUsd, liq: r });
+      lastSecond = second; first = false; y += rowH;
+    }
+    const full = scaledUsd(liqBarFull(s.liqMinUsd));
+    const g = rowGeom(w, widths, s.group, priceChars, full);
+    this.#barFull = g.barRoom ? g.full : 0;
+    const hover = this.#hovered();
+    for (const v of visible) {
+      const k = -1_000_000 - v.idx, outlined = hover?.row.k === k;
+      this.#drawOrder(ctx, g, this.#fill(v.row.t, v.row.price, v.row.signedUsd, v.row.id, v.row.count, true), v.y, v.tier, v.rowH, fw, v.timeY, outlined, p);
+    }
+    if (hover) {
+      const row = hover.row, pt = hover.pinned ? { x: w / 2, y: row.y + row.h / 2 } : this.#pointer!;
+      paintInfoBox(ctx, this.#lines(row), pt.x, pt.y, { x0: 0, y0: 0, x1: w, y1: h }, p, { placement: pt.y < h / 2 ? 'down' : 'up', edge: row.usd > 0 ? p.candleUp : p.candleDown });
+    }
+    if (this.#pointerIn && !this.#liqHeld) this.#hold();
+    if (this.#pointer) this.#hoverChanged();
   }
 
   /**
@@ -445,6 +568,7 @@ export class OrderList {
   #paint(now = performance.now()): void {
     const ctx = this.#ctx, w = this.#w, h = this.#h, p = this.#palette, dpr = this.#dpr;
     if (!this.#shown || w < 40 || h < 20) return;
+    if (this.#isLiqOnly()) { this.#paintLiqs(); return; }
     const ring = this.#index.ring, replay = replaying();
     const heldFrom = ring && ring.written ? readRecord(ring, ring.first).t : null;
     const since = heldFrom === null ? '' : replay ? t('Not the replay: live orders since {time}', { time: clockSeconds(heldFrom) }) : t('Since {time}', { time: clockSeconds(heldFrom) });
@@ -475,11 +599,33 @@ export class OrderList {
     // Device pixels from here: each row's top on a whole one, its height its nominal height rounded at this ratio.
     // The price column is sized for the widest price among the rows laid out (`rowGeom`).
     let yd = Math.round(y * dpr), lastSecond = '', above = -1, first = true, priceChars = 0;
-    const top = pos;
+    const top = pos, both = s.mode === 'both';
+    // In Both mode, interleave liquidations whose timestamp falls inside the visible trade stream, newest first.
+    const liqPool = both ? this.#getLiqRows() : [];
+    const topTime = both && pos >= 0 && this.#index.valid(this.#index.at(pos)) ? readRecord(ring, this.#index.at(pos)).t : 0;
+    const liqMax = !this.#anchor ? Infinity : topTime;
+    const ringMin = ring.written > ring.first ? readRecord(ring, ring.first).t : 0;
+    const visibleLiqs = both && liqPool.length ? liqRowsInRange(liqPool, ringMin, liqMax) : [];
+    let liqAt = 0;
+    const pushLiq = (lr: LiqRow): void => {
+      const tier = TIERS[tierOf(lr.signedUsd, scaledUsd, whale)]!, hd = Math.round(tier.row * dpr);
+      if (yd + hd <= 0) { lastSecond = clockSeconds(lr.t); yd += hd; return; }
+      priceChars = Math.max(priceChars, priceWidth(lr.price));
+      const second = clockSeconds(lr.t), showTime = clockW > 0 && (second !== lastSecond || first);
+      const timeY = !showTime ? -1 : yd < 0 ? Math.min(tier.row - 6, Math.max(tier.row / 2, -yd / dpr + 7)) : tier.row / 2;
+      const lk = -2_000_000 - liqAt;
+      const rec: TradeRecord = { k: lk, t: lr.t, price: lr.price, usd: lr.signedUsd, id: lr.id, lo: lr.lo, hi: lr.hi };
+      const it = this.#item(`q|${lr.key}|${lr.count}|${Math.round(lr.usd)}|${timeY}`, yd, hd, 'row');
+      it.rec = rec; it.shown = rec; it.liq = lr; it.tier = tier; it.orders = lr.count; it.usd = lr.signedUsd; it.timeY = timeY;
+      drawn.push({ kind: 'row', k: lk, y: yd / dpr, h: hd / dpr, rec, orders: lr.count, usd: lr.signedUsd, liq: lr });
+      lastSecond = second; first = false; yd += hd;
+    };
     while (pos >= 0 && yd < H) {
       const k = this.#index.at(pos);
       if (!this.#index.valid(k)) break;
       const rec = readRecord(ring, k);
+      while (both && liqAt < visibleLiqs.length && visibleLiqs[liqAt]!.t >= rec.t && yd < H) { pushLiq(visibleLiqs[liqAt]!); liqAt++; }
+      if (yd >= H) break;
       // Grouping: the older orders of the same market, side and slice of GROUP_MS join this row (fixed slices: rows stay put as the list scrolls).
       let orders = 1, usd = Math.abs(rec.usd), qty = usd / rec.price, lowest = k, next = pos - 1, lo = rec.lo, hi = rec.hi;
       if (s.group) {
@@ -526,16 +672,18 @@ export class OrderList {
     const g = this.#geom(ctx, w, history ? Math.max(priceChars, this.#historyChars()) : priceChars);
     // What the rows' pixels depend on beyond their own signatures (a cleared ring numbers its writes from 0 again): any change draws the
     // whole frame.
-    const look = `${w}|${h}|${dpr}|${ring.generation}|${this.#epoch}|${marksEpoch()}|${whale}|${form}|${clockW}|${s.group}|${replay}|${document.documentElement.lang}|${g.xBar}|${g.barRoom}|${g.full}`;
+    const liqFull = both ? scaledUsd(liqBarFull(s.liqMinUsd)) : 0;
+    const look = `${w}|${h}|${dpr}|${ring.generation}|${this.#epoch}|${marksEpoch()}|${whale}|${form}|${clockW}|${s.group}|${s.mode}|${liqFull}|${replay}|${document.documentElement.lang}|${g.xBar}|${g.barRoom}|${g.full}`;
     if (history) this.rows.reset();
     const items = this.#items, draw = this.rows.plan(ctx, look, items, 1, H, p.panel, Math.min(H, yd));
     const fw = this.#canvas.width / dpr;
+    const lg = both ? { ...g, full: liqFull } : g;
     for (let i = 0; i < items.length; i++) {
       if (!draw[i]) continue;
       const it = items[i]!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, it.y);
       const fh = it.h / dpr;
-      if (it.kind === 'row') this.#drawOrder(ctx, g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders), 0, it.tier, fh, fw, it.timeY, it.outlined, p);
+      if (it.kind === 'row') this.#drawOrder(ctx, it.liq ? lg : g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders, !!it.liq), 0, it.tier, fh, fw, it.timeY, it.outlined, p);
       else if (it.kind === 'divider') this.#paintDivider(ctx, 0, w, it.reasons, p, fh, fw);
       else { ctx.fillStyle = p.panel; ctx.fillRect(0, 0, fw, fh); this.#paintNote(ctx, 0, w, it.words, p, fh); }
     }
@@ -601,8 +749,8 @@ export class OrderList {
     return s;
   }
   /** The scratch row description filled with one row's parts (see `#order`). */
-  #fill(t: number, price: number, usd: number, id: string, orders: number): RowOrder {
-    const o = this.#order; o.t = t; o.price = price; o.usd = usd; o.id = id; o.orders = orders;
+  #fill(t: number, price: number, usd: number, id: string, orders: number, liq = false): RowOrder {
+    const o = this.#order; o.t = t; o.price = price; o.usd = usd; o.id = id; o.orders = orders; o.liq = liq;
     return o;
   }
   /** The font widths at this pixel ratio (see `#fontWidths`). */
@@ -623,8 +771,9 @@ export class OrderList {
    * square root of its dollars over the full dollars, a mark past them) and the size. The tape's rows and the recording's are drawn alike.
    */
   #drawOrder(ctx: CanvasRenderingContext2D, g: RowGeom, o: RowOrder, y0: number, tier: Tier, fh: number, fw: number, timeY: number, outlined: boolean, p: Palette): void {
-    const buy = o.usd > 0, usd = Math.abs(o.usd), top = p.dark ? TINT_TOP_DARK : TINT_TOP_LIGHT, ink = this.#inks.get(p, buy, ORDER_TINT, top), mid = y0 + tier.row / 2;
+    const buy = o.usd > 0, usd = Math.abs(o.usd), top = p.dark ? TINT_TOP_DARK : TINT_TOP_LIGHT, ink = this.#inks.get(p, buy, o.liq ? LIQ_TINT : ORDER_TINT, top), mid = y0 + tier.row / 2;
     ctx.fillStyle = ink.bg; ctx.fillRect(0, y0, fw, fh);
+    if (o.liq) { ctx.fillStyle = buy ? p.candleUp : p.candleDown; ctx.fillRect(0, y0, 3, fh); }
     // The bar straight after the row's fill, before any text is set up (it touches no text): one colour and one rectangle a row.
     if (g.barRoom) {
       const bh = tier.row >= 30 ? 12 : 10, len = Math.max(1, Math.round(g.barRoom * Math.min(1, Math.sqrt(usd / g.full))));
@@ -640,7 +789,7 @@ export class OrderList {
     // The side's glyph in its colour where that reads on the row, else in the row's text colour; past the bar's full dollars, a mark in the
     // same ink after it.
     ctx.font = `10px ${MONO}`; ctx.fillStyle = ink.glyph;
-    ctx.fillText(buy ? '▲' : '▼', g.xSide, mid);
+    ctx.fillText(o.liq ? '◆' : buy ? '▲' : '▼', g.xSide, mid);
     if (g.barRoom && usd > g.full) { ctx.font = `700 12px ${MONO}`; ctx.fillText('›', g.xMore, mid); }
     ctx.font = `13px ${MONO}`; ctx.fillStyle = ink.text;
     ctx.fillText(this.#priceText(o.price), g.xPrice, mid);
@@ -653,6 +802,13 @@ export class OrderList {
   }
 
   #lines(row: Extract<Drawn, { kind: 'row' }>): InfoLine[] {
+    if (row.liq) {
+      const lr = row.liq;
+      const lines = liquidationLines(lr.count > 1 ? { ...lr.rep, t: lr.t, price: lr.price, usd: lr.usd } : lr.rep);
+      if (lr.count > 1) lines.push({ label: t('Liquidations'), text: String(lr.count) });
+      if (!replaying() && !isPhone() && !this.#lastTouch) lines.push({ text: t('Click to show it on the map'), color: 'muted' });
+      return lines;
+    }
     const r = row.rec, buy = row.usd > 0, ms = String(Math.round(((r.t % 1000) + 1000) % 1000)).padStart(3, '0');
     const lines: InfoLine[] = [
       { text: `${buy ? t('BUY') : t('SELL')}  ${amountText(Math.abs(row.usd))}`, bold: true, color: buy ? 'buy' : 'sell', mark: r.id },

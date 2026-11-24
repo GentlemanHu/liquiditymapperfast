@@ -1,4 +1,5 @@
 import type { Print } from '../prints.ts';
+import type { Liquidation } from '../liquidations.ts';
 import type { Scope } from '../store.ts';
 
 /** A size class of trade. A trade belongs to the highest tier whose threshold it reaches, and sounds only when that tier is on. */
@@ -56,6 +57,34 @@ export function readPanelSounds(saved: unknown): PanelSounds {
   };
 }
 
+/** Liquidation sound settings: off until chosen, side filter, and three explicit coin-scaled tiers. */
+export interface LiquidationSoundSettings { on: boolean; side: 'both' | 'long' | 'short'; tiers: Tier[] }
+/** Smallest threshold a liquidation sound tier may have (matches the liquidation stream's recording floor). */
+export const MIN_LIQ_TIER_USD = 100;
+export const DEFAULT_LIQ_SOUNDS: Readonly<LiquidationSoundSettings> = Object.freeze({
+  on: false, side: 'both',
+  tiers: [
+    { id: 'snap', name: 'Snap', usd: 10_000, on: false },
+    { id: 'cascade', name: 'Cascade', usd: 50_000, on: true },
+    { id: 'wipeout', name: 'Wipeout', usd: 250_000, on: true },
+  ],
+});
+
+/** Merge saved liquidation sound settings over the defaults, keeping thresholds ascending above the floor. */
+export function readLiqSounds(saved: unknown): LiquidationSoundSettings {
+  const o = saved && typeof saved === 'object' ? saved as Partial<Record<keyof LiquidationSoundSettings, unknown>> : {};
+  const d = DEFAULT_LIQ_SOUNDS;
+  const savedTiers = Array.isArray(o.tiers) ? o.tiers as Partial<Tier>[] : [];
+  let floor = MIN_LIQ_TIER_USD;
+  const tiers = d.tiers.map((tier, i) => {
+    const s = savedTiers.find(t => t?.id === tier.id) ?? savedTiers[i];
+    const usd = typeof s?.usd === 'number' && Number.isFinite(s.usd) ? Math.max(floor, Math.round(s.usd)) : Math.max(floor, tier.usd);
+    floor = usd + 100;
+    return { id: tier.id, name: tier.name, usd, on: typeof s?.on === 'boolean' ? s.on : tier.on };
+  });
+  return { on: typeof o.on === 'boolean' ? o.on : d.on, side: o.side === 'long' || o.side === 'short' ? o.side : 'both', tiers };
+}
+
 export interface SoundSettings {
   /** Master switch. */
   on: boolean;
@@ -63,7 +92,11 @@ export interface SoundSettings {
   volume: number;
   /** Which markets' trades sound: every enabled venue, or spot only, or perpetual only. */
   scope: Scope;
+  /** Which side of large trades sounds: both, buys only, or sells only. */
+  tradeSide: 'both' | 'buy' | 'sell';
   tiers: Tier[];
+  /** Realtime liquidation sounds: three explicit tiers, off until chosen. */
+  liquidations: LiquidationSoundSettings;
   /** A soft chime when a candle closes with unusually large volume. */
   barChime: boolean;
   /** What each panel may sound about. */
@@ -74,7 +107,8 @@ export interface SoundSettings {
 export const MIN_TIER_USD = 25_000;
 
 export const DEFAULT_SOUNDS: Readonly<SoundSettings> = Object.freeze({
-  on: false, volume: 0.35, scope: 'all' as Scope, barChime: false, panels: DEFAULT_PANEL_SOUNDS,
+  on: false, volume: 0.35, scope: 'all' as Scope, tradeSide: 'both' as const, barChime: false, panels: DEFAULT_PANEL_SOUNDS,
+  liquidations: DEFAULT_LIQ_SOUNDS,
   tiers: [
     { id: 'signal', name: 'Splash', usd: 50_000, on: false },
     { id: 'surge', name: 'Surge', usd: 150_000, on: false },
@@ -99,8 +133,10 @@ export function readSounds(saved: unknown): SoundSettings {
     on: typeof o.on === 'boolean' ? o.on : d.on,
     volume: typeof o.volume === 'number' && Number.isFinite(o.volume) ? Math.min(1, Math.max(0, o.volume)) : d.volume,
     scope: o.scope === 'spot' || o.scope === 'perp' ? o.scope : 'all',
+    tradeSide: o.tradeSide === 'buy' || o.tradeSide === 'sell' ? o.tradeSide : 'both',
     barChime: typeof o.barChime === 'boolean' ? o.barChime : d.barChime,
     panels: readPanelSounds(o.panels),
+    liquidations: readLiqSounds(o.liquidations),
     tiers,
   };
 }
@@ -136,6 +172,32 @@ export class Coalescer {
   clear(): void { this.#groups.clear(); this.#closed.length = 0; }
 }
 
+/** One liquidation burst: the forced closes of one side within the coalescing window across venues. */
+export interface LiqSoundEvent { side: 'long' | 'short'; usd: number; n: number; venues: number; largest: number; firstT: number; queuedAt: number }
+
+/**
+ * Merges a liquidation cascade on one side (longs or shorts liquidated) arriving across venues within `windowMs` into one sound event,
+ * so a burst of dozens of forced fills plays one escalated strike instead of flooding the audio engine.
+ */
+export class LiqCoalescer {
+  #groups = new Map<'long' | 'short', Group>();
+  #closed: LiqSoundEvent[] = [];
+  constructor(private windowMs = 300) {}
+  static #event(side: 'long' | 'short', g: Group): LiqSoundEvent { return { side, usd: g.usd, n: g.n, venues: g.venues.size, largest: g.largest, firstT: g.firstT, queuedAt: g.first }; }
+  add(liq: Liquidation, now: number): void {
+    let g = this.#groups.get(liq.side);
+    if (g && now - g.first >= this.windowMs) { this.#closed.push(LiqCoalescer.#event(liq.side, g)); this.#groups.delete(liq.side); g = undefined; }
+    if (!g) { g = { first: now, usd: 0, n: 0, venues: new Set(), largest: 0, firstT: liq.t }; this.#groups.set(liq.side, g); }
+    g.usd += liq.usd; g.n++; g.venues.add(liq.id.split(':')[0]!); g.largest = Math.max(g.largest, liq.usd); g.firstT = Math.min(g.firstT, liq.t);
+  }
+  drain(now: number, force = false): LiqSoundEvent[] {
+    const out = this.#closed.splice(0);
+    for (const [side, g] of this.#groups) if (force || now - g.first >= this.windowMs) { out.push(LiqCoalescer.#event(side, g)); this.#groups.delete(side); }
+    return out;
+  }
+  clear(): void { this.#groups.clear(); this.#closed.length = 0; }
+}
+
 /** The tier a size belongs to: the highest threshold it reaches (null below the first). */
 export function tierOf(usd: number, tiers: readonly Tier[]): { tier: Tier; index: number } | null {
   let found: { tier: Tier; index: number } | null = null;
@@ -143,10 +205,12 @@ export function tierOf(usd: number, tiers: readonly Tier[]): { tier: Tier; index
   return found;
 }
 
-export interface Note { freq: number; gain: number; decay: number; delay: number; wave: 'triangle' | 'sine' }
+export interface Note { freq: number; gain: number; decay: number; delay: number; wave: 'triangle' | 'sine' | 'sawtooth'; filterHz?: number }
 
 /** Buys climb (E5 G#5 B5 E6), sells fall (B4 F#4 D4 B3): the contour says the side, the number of notes says the tier. */
 const BUY = [659.26, 830.6, 987.76, 1318.52], SELL = [493.88, 369.99, 293.66, 246.94];
+/** Shorts liquidated (forced buy) snap upward (C5 E5 A5); longs liquidated (forced sell) drop sharply (G4 Eb4 Bb3). */
+const LIQ_SHORT = [523.25, 659.25, 880.0], LIQ_LONG = [392.0, 311.13, 233.08];
 
 /**
  * The notes for one event. `index` is the tier's position (0 = smallest): one note for the first tier, up to four for the fourth.
@@ -157,6 +221,22 @@ export function notesFor(side: 'buy' | 'sell', index: number, usd: number, tierU
   const loud = Math.min(3, Math.max(1, Math.sqrt(usd / tierUsd)));
   const base = Math.min(0.35, 0.05 + 0.07 * loud) * volume * (side === 'sell' ? 1.2 : 1);
   return Array.from({ length: count }, (_, k) => ({ freq: ladder[k]!, gain: base * (k === count - 1 ? 1.15 : 0.85), decay: 0.22 + 0.06 * index + 0.04 * (loud - 1), delay: k * 0.08, wave: 'triangle' as const }));
+}
+
+/**
+ * The notes for one liquidation event: a filtered sawtooth percussive strike so the ear separates forced closes from organic trade chimes.
+ * Shorts liquidated rise; longs liquidated fall; tier index (0..2) adds strikes and weight.
+ */
+export function liqNotesFor(side: 'long' | 'short', index: number, usd: number, tierUsd: number, volume: number): Note[] {
+  const count = Math.min(3, index + 1), ladder = side === 'short' ? LIQ_SHORT : LIQ_LONG;
+  const loud = Math.min(3, Math.max(1, Math.sqrt(usd / Math.max(1, tierUsd))));
+  const base = Math.min(0.3, 0.045 + 0.06 * loud) * volume * (side === 'long' ? 1.15 : 1);
+  const filterHz = side === 'short' ? 1600 : 1100;
+  return Array.from({ length: count }, (_, k) => ({
+    freq: ladder[k]!, gain: base * (k === count - 1 ? 1.15 : 0.85),
+    decay: (side === 'long' ? 0.17 : 0.15) + 0.05 * index + 0.03 * (loud - 1),
+    delay: k * 0.065, wave: 'sawtooth' as const, filterHz,
+  }));
 }
 
 /** A neutral two-note chime for an unusual candle: it carries no side. */

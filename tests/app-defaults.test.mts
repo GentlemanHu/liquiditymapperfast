@@ -161,7 +161,8 @@ test('Scripts is on for a first visit and for a save from before it existed; a s
 });
 test('revision 6: Trades opens on each order, any size, bursts one row (Karl, 2026-11-14); a save holding revision 5 defaults moves once, a choice stays', () => {
   assert.ok(DEFAULTS_REV >= 6);
-  const now = { unit: 0, minUsd: 0, side: 'both', group: true }, rev5 = { unit: 1, minUsd: 0, side: 'both', group: false };
+  const extra = { mode: 'trades', liqMinUsd: 1_000, pinLiq: false };
+  const now = { unit: 0, minUsd: 0, side: 'both', group: true, ...extra }, rev5 = { unit: 1, minUsd: 0, side: 'both', group: false };
   const screens = (): AppState[] => [initialState(true, true), initialState(false, false)];
   // A first visit, a phone and a desktop.
   saved(null, () => { for (const s of screens()) assert.deepEqual(s.trades, now); });
@@ -170,9 +171,9 @@ test('revision 6: Trades opens on each order, any size, bursts one row (Karl, 20
   saved({ defaultsRev: 3, trades: rev5 }, () => assert.deepEqual(initialState(false, false).trades, now, 'an older revision too'));
   // Any setting changed is a choice: kept as it is.
   for (const trades of [{ ...rev5, minUsd: 25_000 }, { ...rev5, unit: 60 }, { ...rev5, side: 'buy' }, { unit: 0, minUsd: 0, side: 'both', group: false }, { ...rev5, group: true }])
-    saved({ defaultsRev: 5, trades }, () => assert.deepEqual(initialState(false, false).trades, trades, JSON.stringify(trades)));
+    saved({ defaultsRev: 5, trades }, () => assert.deepEqual(initialState(false, false).trades, { ...trades, ...extra }, JSON.stringify(trades)));
   // The same values saved under revision 6 were chosen there: kept.
-  saved({ defaultsRev: 6, trades: rev5 }, () => assert.deepEqual(initialState(false, false).trades, rev5));
+  saved({ defaultsRev: 6, trades: rev5 }, () => assert.deepEqual(initialState(false, false).trades, { ...rev5, ...extra }));
 });
 
 test('a phone\'s Tape tab shows the list of every order by default; the chart is kept once chosen, and never travels in a layout', () => {

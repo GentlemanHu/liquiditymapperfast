@@ -12,7 +12,7 @@ export class SoundEngine {
   #master: GainNode | null = null;
   #voices = 0;
   /** Most notes sounding at once; further ones are dropped, not queued. */
-  readonly maxVoices = 8;
+  readonly maxVoices = 12;
   /** Notes dropped because too many were already sounding. */
   dropped = 0;
   #volume = 1;
@@ -56,9 +56,16 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.0001, t);
       gain.gain.linearRampToValueAtTime(note.gain, t + 0.004);
       gain.gain.exponentialRampToValueAtTime(0.0001, end);
-      osc.connect(gain).connect(master);
+      let filter: BiquadFilterNode | null = null;
+      if (note.filterHz && note.filterHz > 0) {
+        filter = ctx.createBiquadFilter();
+        filter.type = 'lowpass'; filter.frequency.value = note.filterHz; filter.Q.value = 1.4;
+        osc.connect(filter).connect(gain).connect(master);
+      } else {
+        osc.connect(gain).connect(master);
+      }
       this.#voices++;
-      osc.onended = () => { this.#voices--; gain.disconnect(); };
+      osc.onended = () => { this.#voices--; filter?.disconnect(); gain.disconnect(); };
       osc.start(t); osc.stop(end + 0.03);
       played++;
     }

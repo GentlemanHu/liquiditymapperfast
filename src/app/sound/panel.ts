@@ -1,9 +1,9 @@
 import { el } from '../dom.ts';
 import type { Store } from '../store.ts';
 import { button, heading, note, numberRow, rangeRow, selectRow, switchRow } from '../ui.ts';
-import { DEPTH_MAX_HOURS, DEPTH_RANGES, MIN_TIER_USD, readSounds, type SoundSettings } from './rules.ts';
+import { DEPTH_MAX_HOURS, DEPTH_RANGES, MIN_LIQ_TIER_USD, MIN_TIER_USD, readSounds, type LiquidationSoundSettings, type SoundSettings } from './rules.ts';
 import { DEPTH_MIN_BASELINE } from './depth-watch.ts';
-import type { Sounds } from './sounds.ts';
+import type { SoundLogEntry, Sounds } from './sounds.ts';
 import type { Alerts } from './alerts.ts';
 import type { PanelSounds } from './rules.ts';
 import { clock } from '../format.ts';
@@ -11,7 +11,50 @@ import { usd as formatUsd } from '../format.ts';
 import { t, tn } from '../i18n.ts';
 import { scaledUsd, unscaledUsd } from '../coin.ts';
 
-/** Contents of the Sounds panel: a master switch, volume, which trades count, the size tiers (each with a Test), and the candle chime. */
+/** Reusable liquidation sound controls (Sounds panel and Tape settings share the same store state). */
+export function liqSoundRows(store: Store, sounds: Sounds | null, rerender: () => void): HTMLElement[] {
+  const s = store.state.sounds, l = s.liquidations;
+  const setLiq = (change: Partial<LiquidationSoundSettings>): void => {
+    const cur = store.state.sounds;
+    store.set({ sounds: readSounds({ ...cur, liquidations: { ...cur.liquidations, ...change } }) });
+    rerender();
+  };
+  const setLiqTier = (id: string, change: Partial<LiquidationSoundSettings['tiers'][number]>): void =>
+    setLiq({ tiers: store.state.sounds.liquidations.tiers.map(tier => tier.id === id ? { ...tier, ...change } : tier) });
+  const rows: HTMLElement[] = [
+    switchRow(t('Play liquidation sounds'), t('Percussive strike when forced closes arrive across Binance, Bybit, OKX and Deribit. Obeys the master Sounds switch and volume; cascades within 300 ms coalesce into one sound.'), l.on, on => {
+      setLiq({ on });
+      if (on && store.state.sounds.on && sounds) void sounds.engine.unlock().then(() => { store.set({ soundState: sounds.engine.state }); rerender(); });
+    }),
+    selectRow(t('Liquidation side'), t('Both sides, or only longs liquidated (forced sells) or only shorts liquidated (forced buys).'), [['both', t('Both')], ['long', t('Longs liquidated')], ['short', t('Shorts liquidated')]], l.side, side => setLiq({ side: side === 'long' || side === 'short' ? side : 'both' })),
+  ];
+  l.tiers.forEach((tier, index) => {
+    const min = scaledUsd(MIN_LIQ_TIER_USD);
+    const amount = el('input', { type: 'number', min: String(min), step: String(Math.max(100, scaledUsd(1_000))), value: String(scaledUsd(tier.usd)), tip: t('Smallest liquidation in this tier, USD notional (at least {min})', { min: formatUsd(min) }) });
+    amount.onchange = () => { const v = Number(amount.value); if (Number.isFinite(v)) setLiqTier(tier.id, { usd: unscaledUsd(v) }); };
+    const on = el('input', { type: 'checkbox', checked: tier.on, tip: tier.on ? t('Mute the {tier} tier', { tier: tier.name }) : t('Sound the {tier} tier', { tier: tier.name }) });
+    on.onchange = () => setLiqTier(tier.id, { on: on.checked });
+    rows.push(el('div', { class: 'tier-row' },
+      el('label', { class: 'tier-name' }, on, el('span', { class: 'name', textContent: tier.name }), el('span', { class: 'desc', textContent: tn(index + 1, '{n} note', '{n} notes') })),
+      el('label', { class: 'tier-usd' }, el('span', { class: 'muted', textContent: '≥ $' }), amount),
+      el('span', { class: 'tier-test' },
+        button(t('Short'), () => sounds?.testLiquidation(tier.id, 'short'), t('Hear a {tier} short liquidation', { tier: tier.name }), 'tier-buy'),
+        button(t('Long'), () => sounds?.testLiquidation(tier.id, 'long'), t('Hear a {tier} long liquidation', { tier: tier.name }), 'tier-sell'),
+      ),
+    ));
+  });
+  return rows;
+}
+
+function soundLogText(e: SoundLogEntry): string {
+  const amt = e.usd ? `$${formatUsd(e.usd)}` : '';
+  const multi = e.venues && e.venues > 1 ? ` · ${tn(e.venues, '{n} venue', '{n} venues')}` : '';
+  if (e.kind === 'liquidation') return `${e.liqSide === 'short' ? t('Shorts liquidated') : t('Longs liquidated')} ${amt}${multi}`;
+  if (e.kind === 'trade') return `${e.side === 'buy' ? t('BUY') : t('SELL')} ${amt}${multi}`;
+  return t('Unusual candle volume');
+}
+
+/** Contents of the Sounds panel: a master switch, volume, which trades count, the size tiers (each with a Test), liquidation tiers and the candle chime. */
 export function buildSoundPanel(store: Store, sounds: Sounds, rerender: () => void, tools: HTMLElement, body: HTMLElement, alerts: Alerts | null = null): void {
   const s = store.state.sounds;
   const set = (change: Partial<SoundSettings>): void => { store.set({ sounds: readSounds({ ...store.state.sounds, ...change }) }); rerender(); };
@@ -26,6 +69,7 @@ export function buildSoundPanel(store: Store, sounds: Sounds, rerender: () => vo
     switchRow(t('Play sounds'), t('Master switch. Nothing plays while this is off; the Test buttons below still do, so you can hear what you would get.'), s.on, on => { set({ on }); if (on) void sounds.engine.unlock().then(() => { store.set({ soundState: sounds.engine.state }); rerender(); }); }),
     rangeRow(t('Volume'), t('Master volume. Sounds are also compressed, so several at once never clip.'), { min: 0, max: 1, step: 0.05, value: s.volume, format: v => `${Math.round(v * 100)}%` }, volume => { store.set({ sounds: readSounds({ ...store.state.sounds, volume }) }); }),
     selectRow(t('Trades from'), t('Which markets can make a sound. Spot and perpetual follow the market type of each venue.'), [['all', t('Every enabled venue')], ['spot', t('Spot venues only')], ['perp', t('Perpetual venues only')]], s.scope, scope => set({ scope: scope as SoundSettings['scope'] })),
+    selectRow(t('Trade side'), t('Both sides, or only large market buys or only large market sells.'), [['both', t('Both')], ['buy', t('Buys only')], ['sell', t('Sells only')]], s.tradeSide, tradeSide => set({ tradeSide: tradeSide === 'buy' || tradeSide === 'sell' ? tradeSide : 'both' })),
   );
 
   body.append(heading(t('Large trades')));
@@ -41,10 +85,12 @@ export function buildSoundPanel(store: Store, sounds: Sounds, rerender: () => vo
     ));
   });
 
+  body.append(heading(t('Liquidations')));
+  body.append(...liqSoundRows(store, sounds, rerender));
+
   body.append(heading(t('Candles')));
   body.append(switchRow(t('Chime on unusual volume'), t('One soft chime when a candle closes with unusually large volume (the sensitivity is set in Highlights).'), s.barChime, barChime => set({ barChime })));
-  body.append(note(t('Liquidations have no sound; the Liquidations button draws them on the map.')));
-  if (alerts) panelSounds(store, s.panels, alerts, set, body, rerender);
+  if (alerts) panelSounds(store, s.panels, alerts, sounds, set, body, rerender);
 }
 
 /** The panel sounds that can also be switched on in the pane they are about. */
@@ -88,7 +134,7 @@ export function burstSizeRows(store: Store, onChange: () => void = () => {}): HT
  * another screen for; a level or a trend that is on screen all the time is not. Each is off until chosen, has its own cool-down, and the
  * four loudest moments in ten seconds are all that can sound.
  */
-function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, set: (change: Partial<SoundSettings>) => void, body: HTMLElement, rerender: () => void): void {
+function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, sounds: Sounds, set: (change: Partial<SoundSettings>) => void, body: HTMLElement, rerender: () => void): void {
   const change = <K extends keyof PanelSounds>(panel: K, patch: Partial<PanelSounds[K]>): void => set({ panels: { ...store.state.sounds.panels, [panel]: { ...store.state.sounds.panels[panel], ...patch } } });
   const tests = (kind: Parameters<Alerts['test']>[0], both = true): HTMLElement => el('div', { class: 'tier-test' },
     ...(both ? [button(t('Buy'), () => alerts.test(kind, 'buy'), t('Hear this sound for buying'), 'tier-buy'), button(t('Sell'), () => alerts.test(kind, 'sell'), t('Hear this sound for selling'), 'tier-sell')] : [button(t('Test'), () => alerts.test(kind, null), t('Hear this sound'))]));
@@ -133,7 +179,10 @@ function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, set: (change:
     switchRow(t('Unusual open interest change'), t('A candle closed with an open-interest change that Highlights calls unusual. Two quick ticks.'), p.oi.jump, jump => change('oi', { jump })),
     tests('oi-jump', false));
 
-  const recent = alerts.log.slice(-5).reverse();
+  const recent = [
+    ...alerts.log.slice(-6).map(e => ({ at: e.at, side: e.side, text: e.text, audible: e.audible })),
+    ...sounds.log.filter(e => e.kind !== 'test').slice(-6).map(e => ({ at: e.at, side: e.side ?? null, text: soundLogText(e), audible: e.audible })),
+  ].sort((a, b) => b.at - a.at).slice(0, 6);
   body.append(heading(t('Recent')));
   body.append(recent.length ? el('div', { class: 'alert-log' }, ...recent.map(e => el('p', { class: e.side ? `panel-note alert-${e.side}` : 'panel-note', textContent: `${clock(e.at)}  ${e.text}${e.audible ? '' : ' ' + t('(not heard: sound was locked)')}` }))) : note(t('Nothing yet.')));
 }

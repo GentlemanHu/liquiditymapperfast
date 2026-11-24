@@ -9,6 +9,8 @@ import { focusWindow } from '../src/app/panes/heat-zoom.ts';
 import { RECORDED_AGAIN_MS, recordedDue, recordedSeam } from '../src/app/trades/asks.ts';
 import { FlowBook } from '../src/app/flow-book.ts';
 import { TRADES_DEFAULTS, readTrades, readUnit } from '../src/app/trades/settings.ts';
+import { inspectorModel } from '../src/app/panes/trades-inspector.ts';
+import type { Liquidation } from '../src/shared/liquidations.ts';
 
 /** A batch of orders: [market, exchange time, price, signed usd]. */
 function batch(seq: number, rows: [string, number, number, number][]): TapeBatch {
@@ -32,7 +34,7 @@ function reader(ring: TapeRing, filter: TallyFilter = all, markets = [B, BS, O])
 
 test('the unit and the settings read back: each order by default, a second is 1, a custom length up to fifteen minutes', () => {
   assert.equal(TRADES_DEFAULTS.unit, 0);
-  assert.deepEqual(readTrades(undefined), { unit: 0, minUsd: 0, side: 'both', group: true });
+  assert.deepEqual(readTrades(undefined), { unit: 0, mode: 'trades', minUsd: 0, liqMinUsd: 1_000, side: 'both', group: true, pinLiq: false });
   assert.equal(readTrades({ minUsd: 5_000, side: 'sell', group: true }).unit, 0, 'a save from before the unit opens on the default, each order');
   assert.equal(readTrades({ unit: 1 }).unit, 1);
   assert.equal(readTrades({ unit: 0 }).unit, 0);
@@ -477,4 +479,49 @@ test('a block read again is read anew when the reference market\'s first order r
   r.read(s, 1, out, now); make().read(s, 1, fresh, now);
   assert.ok(Number.isNaN(fresh.refPrev));
   assert.ok(Number.isNaN(out.refPrev), 'the kept copy follows the reference into the ring');
+});
+
+test('time-grouped blocks in Liquidations mode and Both mode (never double-counting liquidations into trade volume)', () => {
+  const ring = new TapeRing(BLOCK);
+  ring.add(batch(1, [[B, T0 - 1_000, 70_000, 1_000], [B, T0 + 1_000, 70_000, 10_000], [O, T0 + 2_000, 70_010, -4_000]]), 1, 0);
+  const liqs: Liquidation[] = [
+    { t: T0 + 1_500, id: B, side: 'long', price: 69_950, usd: 25_000, reported: 69_950, kind: 'fill' },
+    { t: T0 + 2_500, id: O, side: 'short', price: 70_050, usd: 12_000, reported: 70_050, kind: 'fill' },
+    { t: T0 + 3_000, id: B, side: 'long', price: 69_900, usd: 500, reported: 69_900, kind: 'fill' }, // below $1K liqMinUsd
+  ];
+  const { r } = reader(ring);
+  r.liqItems = liqs; r.liqVersion = 1; r.liqSince = T0; r.liqMinUsd = 1_000;
+  // Both mode: trade totals untouched, liquidation totals populated separately.
+  r.mode = 'both';
+  const bothOut = emptyBlock(2);
+  r.read(T0 / 1000, 60, bothOut, T0 + 120_000);
+  assert.equal(bothOut.buy, 10_000, 'trade buy volume untouched');
+  assert.equal(bothOut.sell, 4_000, 'trade sell volume untouched');
+  assert.equal(bothOut.n, 2, 'trade order count untouched');
+  assert.equal(bothOut.liqBuy, 12_000, 'short liquidations = forced buys');
+  assert.equal(bothOut.liqSell, 25_000, 'long liquidations = forced sells');
+  assert.equal(bothOut.liqN, 2, 'sub-floor liquidation excluded');
+  // Inspector in Both mode adds dedicated Liquidations section.
+  const bothInsp = inspectorModel({
+    block: bothOut, state: 'held', time: '12:00', marketCount: 2, ref: B, minUsd: 0, recordedFloor: 25_000,
+    rows: r.marketRows(T0 / 1000, 60), coincidences: [], repeats: [], largest: [],
+    liquidations: { buy: bothOut.liqBuy, sell: bothOut.liqSell, n: bothOut.liqN, largest: [{ id: B, side: 'long', usd: 25_000, t: T0 + 1_500, price: 69_950 }] },
+  });
+  assert.ok(bothInsp.liquidations && bothInsp.liquidations.items.length === 1);
+  // Liquidations-only mode: block buy/sell/vBuy/vSell/marketRows come exclusively from liquidations.
+  r.mode = 'liquidations'; r.forget();
+  const liqOut = emptyBlock(2);
+  r.read(T0 / 1000, 60, liqOut, T0 + 120_000);
+  assert.equal(liqOut.buy, 12_000); assert.equal(liqOut.sell, 25_000); assert.equal(liqOut.n, 2);
+  assert.equal(liqOut.vSell[0], 25_000); assert.equal(liqOut.vBuy[1], 12_000);
+  assert.equal(liqOut.topSell.usd, 25_000); assert.equal(liqOut.topBuy.usd, 12_000);
+  const liqMarkets = r.marketRows(T0 / 1000, 60);
+  assert.deepEqual(liqMarkets.map(m => [m.id, m.buy, m.sell]), [[B, 0, 25_000], [O, 12_000, 0]]);
+  const liqInsp = inspectorModel({
+    block: liqOut, state: 'held', time: '12:00', marketCount: 2, ref: B, minUsd: 1_000, recordedFloor: 25_000,
+    rows: liqMarkets, coincidences: [], repeats: [], largest: [], liqMode: true,
+  });
+  assert.equal(liqInsp.buyHead, 'Shorts liq.');
+  assert.equal(liqInsp.sellHead, 'Longs liq.');
+  assert.match(liqInsp.sub, /2 liquidations/);
 });

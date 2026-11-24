@@ -443,9 +443,46 @@ html[data-layout="desktop"] .side-head > strong.cvd-views { max-width: none; ove
    the inspector beside it (the list keeps 367 px). The inspector is page elements: it wraps in every language. */
 .trades { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .trades[hidden] { display: none; }
-.trades-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
-.trades-unit, .trades-floor { padding: 1px 4px; font-size: 11px; }
+.trades-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; padding: 4px 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; flex-wrap: nowrap; min-width: 0; }
+.trades-mode, .trades-unit, .trades-floor { padding: 1px 4px; font-size: 11px; min-width: 0; }
+.trades-pin { flex: 0 0 auto; padding: 1px 6px; font-size: 11px; line-height: 1.3; color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius); background: transparent; cursor: pointer; }
+.trades-pin:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 35%, var(--line)); }
+.trades-pin.active { color: var(--ui); border-color: var(--ui); background: color-mix(in srgb, var(--ui) 14%, transparent); }
+.trades-pin[hidden] { display: none; }
 .trades-status { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+.trades-liq-strip { flex: 0 0 auto; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 94%, var(--text)); font-size: 11px; }
+.trades-liq-strip[hidden] { display: none; }
+.tls-head { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent); color: var(--muted); }
+.tls-title { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; }
+.tls-title:hover { color: var(--ui); }
+.tls-diamond { font-size: 10px; color: var(--candle-down); }
+.tls-floor { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10.5px; color: var(--muted); }
+.tls-spacer { flex: 1 1 auto; }
+.tls-btn { padding: 0 6px; font-size: 10.5px; line-height: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: transparent; color: var(--muted); cursor: pointer; }
+.tls-btn:hover { color: var(--text); }
+.tls-sound.active { color: var(--ui); border-color: var(--ui); background: color-mix(in srgb, var(--ui) 12%, transparent); }
+.tls-close { font-size: 13px; padding: 0 5px; border-color: transparent; }
+.tls-list { display: flex; flex-direction: column; }
+.tls-empty { padding: 6px 8px; color: var(--muted); text-align: center; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+.tls-row { display: grid; grid-template-columns: auto 14px 10px auto minmax(18px, 1fr) auto auto; align-items: center; gap: 5px; padding: 3px 8px 3px 6px; border-left: 3px solid transparent; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; cursor: pointer; }
+.tls-row.tls-buy { border-left-color: var(--candle-up); background: color-mix(in srgb, var(--panel) 88%, var(--candle-up)); }
+.tls-row.tls-sell { border-left-color: var(--candle-down); background: color-mix(in srgb, var(--panel) 88%, var(--candle-down)); }
+.tls-row:hover { filter: brightness(1.06); }
+.tls-time { color: var(--muted); font-size: 10.5px; }
+.tls-glyph { font-size: 9.5px; text-align: center; }
+.tls-row.tls-buy .tls-glyph { color: var(--candle-up); }
+.tls-row.tls-sell .tls-glyph { color: var(--candle-down); }
+.tls-price { color: var(--text); font-size: 11.5px; }
+.tls-bar-wrap { height: 8px; display: flex; align-items: center; min-width: 18px; }
+.tls-bar { height: 7px; width: var(--bar-pct, 10%); border-radius: 1px; opacity: 0.85; }
+.tls-row.tls-buy .tls-bar { background: var(--candle-up); }
+.tls-row.tls-sell .tls-bar { background: var(--candle-down); }
+.tls-count { color: var(--muted); font-size: 10.5px; text-align: right; }
+.tls-usd { color: var(--text); font-weight: 600; font-size: 12px; text-align: right; grid-column: -2 / -1; }
+.tls-row:has(.tls-count) .tls-usd { grid-column: auto; }
+@keyframes tls-flash { 0% { filter: brightness(1.32); } 100% { filter: brightness(1); } }
+.tls-row.tls-fresh { animation: tls-flash 650ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .tls-row.tls-fresh { animation: none; } }
 .trades-body { flex: 1 1 auto; min-height: 0; display: flex; }
 .trades-wrap { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; overflow: hidden; }
 .trades-wrap[hidden] { display: none; }
