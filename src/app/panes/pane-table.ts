@@ -6,8 +6,9 @@ import { layoutInfo, type InfoColor, type InfoLine, type InfoRow } from '../info
  * The table a pane under the map draws on itself: several things of one kind read at one moment (the Depth pane's bands, the venues of the Funding, Open
  * Interest and Long/Short panes), while its chart shows their history or their sum, and under its rows what the pane's card says of that moment that the
  * rows do not (`TableSpec.lines`: the sum, who opened and closed, the rank, how it was read). Beside the plot where the columns right of it leave room, the
- * last columns going first; else over the plot's left end on a plate while the pointer (or a pinned finger) is on the pane, so it never covers the newest
- * candles and leaves the chart clear at rest; a plate keeps every column, or as many as its `plateMin` says. In a short pane the rows close up (15 px down
+ * last columns going first; else right-aligned against the price axis on a plate (using the right strip first and overflowing left into the plot's right
+ * margin), staying visible at rest on desktop plots where the overlap stays modest and hover-only on narrow/phone panes so small charts stay clear at rest;
+ * a plate keeps every column, or as many as its `plateMin` says. In a short pane the rows close up (15 px down
  * to 12) and the titles, then the foot, are left out; where even a row each does not fit, there is no table. The card's lines hang under the foot, whole or
  * not at all. The table stands in the middle of the pane's height with the lines it says at rest under it (the newest moment's with no pointer anywhere,
  * the largest block of late as they come and go: `PaneTable`), so that a table with lines does not stand low (Karl, 2026-11-21), and those lines are held
@@ -90,8 +91,8 @@ export interface TableSpec {
  * `rest`: whether the table reads the moment it reads at rest, no pointer anywhere (the map's or another pane's too) having chosen another
  * (`state.hover` null). Left out: as if a pointer had, so the rows are not centred with what it says then.
  */
-/** `plateTop`: the least top of a table on a plate over the plot (a control the pane keeps at the plot's top left: the Depth pane's lens). */
-export interface TableRoom { w: number; h: number; plotW: number; axisW: number; pointing: boolean; rest?: boolean; plateTop?: number }
+/** `plateTop`: the least top of a table on a plate over the plot when it reaches left of `plateTopX` (a control at the plot's top left: the Depth pane's lens). */
+export interface TableRoom { w: number; h: number; plotW: number; axisW: number; pointing: boolean; rest?: boolean; plateTop?: number; plateTopX?: number }
 
 /**
  * Where a table goes: the row height, what of it fits, its left edge and width, whether it is on a plate, its top, its first row, each column's right edge
@@ -112,6 +113,10 @@ export type TablePalette = Pick<Palette, 'panel' | 'line' | 'text' | 'muted'> & 
 
 const GAP = 7, PAD = 5;
 const ROW_HEIGHTS = [15, 14, 13, 12] as const;
+/** Minimum plot width (px) for a right-aligned plate table to stay visible at rest (matches heat-pane's NARROW_PLOT: phones and tight splits stay hover-only). */
+export const PLATE_REST_PLOT = 420;
+/** Most of the plot a plate table may overlap at rest (its width past the right strip). Past this, it shows only under a pointer. */
+export const PLATE_REST_SHARE = 0.45;
 /**
  * The lines a table says at rest change with the newest moment: on a one-minute chart the Open Interest card says six lines as a candle opens and
  * up to nine before it closes (who opened and closed comes in), and a note flashes for a frame; the Liquidity Tracker's Ratio line comes and goes at
@@ -175,13 +180,14 @@ type PlaceSpec = Pick<TableSpec, 'heads' | 'rows' | 'minCols' | 'plateMin' | 'li
 
 /**
  * Where a table goes in `room`, or null where it does not fit. `measure` is the width of a text in the pane's font (`bold`: in its heavier face). The rows
- * go where they went before the card's lines: beside the plot where the columns right of it leave room (as many columns as fit, down to `minCols`), else,
- * under a pointer, on a plate over the plot's left end (down to `plateMin` columns), their titles and then their foot left out where it is short. They
- * stand in the middle of the pane's height with `lift` px kept under them: room for the lines the table says at rest, as `PaneTable` holds it
+ * go where they went before the card's lines: beside the plot where the columns right of it leave room (as many columns as fit, down to `minCols`), else
+ * right-aligned against the price axis on a plate (down to `plateMin` columns, using the right strip first and up to 60 % of the plot; visible at rest on
+ * desktop plots where the overlap stays within `PLATE_REST_SHARE`, hover-only on narrow/phone plots), their titles and then their foot left out where it is
+ * short. They stand in the middle of the pane's height with `lift` px kept under them: room for the lines the table says at rest, as `PaneTable` holds it
  * (`restLift`), taken as it is, so that a table and its lines stand in the middle at rest (Karl, 2026-11-21: with its lines under it a table stood low)
  * and nothing of the moment read (its lines, its figures' widths and so its columns) moves the rows; kept inside the pane. The lines go under the foot
- * where the pane has room below and, beside the plot, the strip (on a plate, 60 % of the plot) has room across: as wide as the widest one that does not
- * wrap and never narrower than the rows, their sentences wrapped to that; where they do not fit, the lines in brief (`TableSpec.brief`) the same way.
+ * where the pane has room below and, beside the plot, the strip (on a plate, the strip plus 60 % of the plot) has room across: as wide as the widest one that
+ * does not wrap and never narrower than the rows, their sentences wrapped to that; where they do not fit, the lines in brief (`TableSpec.brief`) the same way.
  * Complete: the titles, the foot and the columns the card needs (`cardCols`), with every line.
  */
 export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, lift = 0): TablePlace | null {
@@ -191,7 +197,7 @@ export function placeTable(measure: Measure, room: TableRoom, spec: PlaceSpec, l
   // A table that keeps room for its brief stands with at least that room under it, whatever stood at rest (`TableSpec.briefRoom`).
   const under0 = Math.max(lift, kept ? SEP + rowH : 0);
   const centred = under0 > 0 ? Math.max(0, Math.round(room.h / 2 - (height + under0) / 2)) : Math.round(room.h / 2 - height / 2);
-  const y0 = plate && room.plateTop ? Math.max(room.plateTop, centred) : centred;
+  const y0 = plate && room.plateTop && (room.plateTopX === undefined || left < room.plateTopX) ? Math.max(room.plateTop, centred) : centred;
   const first = y0 + (titles ? rowH : 0), rights: number[] = [];
   for (let c = 0, x = left + PAD; c < cols; c++) { x += widths[c]!; rights.push(x); x += GAP; }
   const rowsOnly = { rowH, titles, foot, cols, left, plate, width, y0, first, rights, height, widths: widths.slice(0, cols), summary: [], summaryW: width, summaryH: 0 };
@@ -245,15 +251,23 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
   const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? '', row[c]?.bold === true))));
   const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
   const free = room.w - room.axisW - room.plotW;
+  const rightEdge = room.w - room.axisW - 4;
+  const strip = Math.max(0, free - 4);
   let cols = n, left = room.plotW + 4, plate = false;
-  while (cols >= spec.minCols && width(cols) > free - 4) cols--;
+  while (cols >= spec.minCols && width(cols) > strip) cols--;
+  // Budget for a right-aligned plate: the free right strip plus up to 60 % of the plot, kept inside [6, rightEdge].
+  const maxPlateW = Math.min(rightEdge - 6, strip + room.plotW * 0.6);
   if (cols < spec.minCols) {
-    left = 6; plate = true;
-    if (!room.pointing) return null;
+    plate = true;
     // On a plate the last columns go first too, down to `plateMin` (every column unless the table says otherwise).
     const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
-    for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
-    if (width(cols) > room.plotW * 0.6) return null;
+    for (cols = n; cols > least && width(cols) > maxPlateW;) cols--;
+    const plateW = width(cols);
+    if (plateW > maxPlateW) return null;
+    // Stay visible at rest on desktop plots where the overlap over the plot stays modest; narrow/phone panes stay hover-only.
+    const restOk = room.plotW >= PLATE_REST_PLOT && Math.max(0, plateW - strip) <= room.plotW * PLATE_REST_SHARE;
+    if (!room.pointing && !restOk) return null;
+    left = Math.max(6, rightEdge - plateW);
   }
   // Complete only with the titles over the figures, the foot that says the moment read and the columns that say what the card says.
   const enough = cols >= Math.min(n, Math.max(spec.minCols, spec.cardCols ?? n));
@@ -273,7 +287,7 @@ function rowsIn(measure: Measure, room: TableRoom, spec: PlaceSpec) {
     const natural = Math.max(0, ...shown.map(line => line.wrap === true ? (line.label !== undefined ? measure(line.label) : 0)
       : (line.label !== undefined ? measure(line.label) + 2 * GAP : 0) + measure(line.text, line.bold === true)));
     const summaryW = Math.max(width(cols), natural + 2 * PAD);
-    if (summaryW > (plate ? room.plotW * 0.6 : free - 4)) return null;
+    if (summaryW > (plate ? maxPlateW : strip)) return null;
     const summary = layoutInfo((text, bold) => measure(text, bold), shown, summaryW - 2 * PAD).rows;
     // The first line's hairline is the one over them.
     return { summary, summaryW, summaryH: SEP + summary.length * rowH + summary.filter((row, i) => row.rule && i > 0).length * RULE };
@@ -305,7 +319,9 @@ function inkOf(color: InfoColor, p: TablePalette): string {
  */
 export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: TablePlace, spec: TableSpec, hover: number): void {
   const k = spec.rows.length, wide = at.summary.length ? Math.max(at.width, at.summaryW) : at.width, tall = at.height + (at.summary.length ? at.summaryH : 0);
-  if (at.plate) { ctx.fillStyle = p.panel; ctx.globalAlpha = 0.9; ctx.fillRect(at.left, at.y0 - 2, wide, tall + 4); ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.strokeRect(at.left + 0.5, at.y0 - 1.5, wide - 1, tall + 3); }
+  // A right-aligned plate widens leftward when its summary lines exceed the rows' width, so its right edge stays clear of the price axis.
+  const boxLeft = at.plate ? at.left + at.width - wide : at.left;
+  if (at.plate) { ctx.fillStyle = p.panel; ctx.globalAlpha = 0.9; ctx.fillRect(boxLeft, at.y0 - 2, wide, tall + 4); ctx.globalAlpha = 1; ctx.strokeStyle = p.line; ctx.strokeRect(boxLeft + 0.5, at.y0 - 1.5, wide - 1, tall + 3); }
   ctx.textAlign = 'right'; ctx.fillStyle = p.muted;
   if (at.titles) for (let c = 1; c < at.cols; c++) ctx.fillText(spec.heads[c]!, at.rights[c]!, at.y0 + at.rowH / 2);
   for (let j = 0; j < k; j++) {
@@ -329,17 +345,17 @@ export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: T
   ctx.textAlign = 'left'; ctx.fillStyle = p.muted;
   if (at.foot && spec.foot) ctx.fillText(spec.foot, at.left + PAD, at.first + k * at.rowH + at.rowH / 2);
   if (at.summary.length) {
-    const base = ctx.font, heavy = boldFont(base), right = at.left + at.summaryW - PAD;
-    const rule = (yy: number): void => { ctx.globalAlpha = 0.5; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(at.left + PAD, Math.round(yy) + 0.5); ctx.lineTo(right, Math.round(yy) + 0.5); ctx.stroke(); ctx.globalAlpha = 1; };
+    const base = ctx.font, heavy = boldFont(base), sumLeft = at.plate ? at.left + at.width - at.summaryW : at.left, right = sumLeft + at.summaryW - PAD;
+    const rule = (yy: number): void => { ctx.globalAlpha = 0.5; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(sumLeft + PAD, Math.round(yy) + 0.5); ctx.lineTo(right, Math.round(yy) + 0.5); ctx.stroke(); ctx.globalAlpha = 1; };
     let y = at.y0 + at.height;
     rule(y + SEP / 2); y += SEP;
     at.summary.forEach((row, i) => {
       if (row.rule && i > 0) { rule(y + RULE / 2); y += RULE; }
       const mid = y + at.rowH / 2;
-      if (row.label !== undefined) { ctx.textAlign = 'left'; ctx.fillStyle = p.muted; ctx.fillText(row.label, at.left + PAD, mid); }
+      if (row.label !== undefined) { ctx.textAlign = 'left'; ctx.fillStyle = p.muted; ctx.fillText(row.label, sumLeft + PAD, mid); }
       if (row.text) {
         ctx.font = row.bold ? heavy : base; ctx.fillStyle = inkOf(row.color, p);
-        if (row.label !== undefined) { ctx.textAlign = 'right'; ctx.fillText(row.text, right, mid); } else { ctx.textAlign = 'left'; ctx.fillText(row.text, at.left + PAD, mid); }
+        if (row.label !== undefined) { ctx.textAlign = 'right'; ctx.fillText(row.text, right, mid); } else { ctx.textAlign = 'left'; ctx.fillText(row.text, sumLeft + PAD, mid); }
         ctx.font = base;
       }
       y += at.rowH;
@@ -347,8 +363,8 @@ export function paintTable(ctx: CanvasRenderingContext2D, p: TablePalette, at: T
   }
 }
 
-/** What a table needs of its pane. */
-export interface TableHost { canvas: HTMLCanvasElement; left: () => number; rangeGesture: () => boolean; invalidate: () => void }
+/** What a table needs of its pane. `defer`, when given, paints the table after the pane's replay mask and range band so a plate over the plot is never masked out. */
+export interface TableHost { canvas: HTMLCanvasElement; left: () => number; rangeGesture: () => boolean; invalidate: () => void; defer?: (paint: () => void) => void }
 
 /**
  * A pane's table and the pointer over it. It owns the pointer over it (the time is not read there, so that it can be read); with `onRow`, a row under
@@ -399,7 +415,11 @@ export class PaneTable {
     if (room.rest === true && !room.pointing) this.#takeRest(measure, room, spec);
     const at = placeTable(measure, room, spec, this.#lift);
     this.#at = at; this.#rows = spec.rows.length;
-    if (at) paintTable(ctx, p, at, spec, this.#hover >= 0 ? this.#hover : spec.lit ?? -1);
+    if (at) {
+      const hover = this.#hover >= 0 ? this.#hover : spec.lit ?? -1;
+      const paint = (): void => paintTable(ctx, p, at, spec, hover);
+      if (this.host.defer) this.host.defer(paint); else paint();
+    }
     return at;
   }
 

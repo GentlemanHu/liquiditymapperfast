@@ -133,7 +133,7 @@ export class LsPane extends TimePane {
   #sync: (() => void)[] = [];
   readonly #tableBox = document.createElement('input');
   /** Each venue's exact figures at one moment, on the pane (pane-table.ts). */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
 
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
     super(host, store, view, 'ls');

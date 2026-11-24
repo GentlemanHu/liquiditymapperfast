@@ -306,13 +306,26 @@ export abstract class TimePane {
     if (hidden) { this.#endPan(); if (!was) this.#prepare(); return; }
     this.invalidate();
   }
+  #afterMask: (() => void) | null = null;
+  /** Schedule a pane table draw after the replay mask and range band so a right-aligned plate over the plot is never erased by the mask. */
+  protected deferOverlay(fn: () => void): void { this.#afterMask = fn; }
+  #runOverlay(): void {
+    const fn = this.#afterMask; this.#afterMask = null;
+    if (!fn) return;
+    this.ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; this.ctx.textBaseline = 'middle';
+    this.ctx.globalAlpha = 1; this.ctx.lineWidth = 1; this.ctx.setLineDash([]);
+    fn();
+  }
   #prepare(): void {
     const left = this.#left;
     this.w = Math.max(1, this.#canvasW - left);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); this.ctx.clearRect(0, 0, this.#canvasW, this.h);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, this.dpr * left, 0);
     this.ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; this.ctx.textBaseline = 'middle';
-    if (this.view.t1 > this.view.t0 && this.w > 1) { this.cursorT = null; this.scaleAt = null; this.leftTag = false; this.#grid(); this.draw(); this.#replayMask(); this.#rangeBand(); this.#crosshair(); } else { if (this.#pinned) this.#unpin(); this.undrawn(); }
+    if (this.view.t1 > this.view.t0 && this.w > 1) {
+      this.cursorT = null; this.scaleAt = null; this.leftTag = false; this.#afterMask = null;
+      this.#grid(); this.draw(); this.#replayMask(); this.#rangeBand(); this.#runOverlay(); this.#crosshair();
+    } else { if (this.#pinned) this.#unpin(); this.undrawn(); }
   }
   #grid(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW;
@@ -489,7 +502,7 @@ export class DepthPane extends TimePane {
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   /** The bands' figures on the pane (pane-table.ts): a click on a row brings that band forward, or puts it back. */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() }, row => this.#clickRow(row));
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) }, row => this.#clickRow(row));
   /** The bands drawn as terraces (depth-look.ts), cached: a pointer move only copies them. */
   readonly #bandLayer = new BandLayer();
   /** The band under the pointer, lit with its neighbours (depth-look.ts), and the one lit last (kept while the pointer stays near its edges). */
@@ -1120,9 +1133,9 @@ export class DepthPane extends TimePane {
   #drawTable(rows: readonly { r: number; bid: number; ask: number }[], pointing: boolean, rest: boolean, focus: number, time: string, unit: string, titles: readonly [string, string], sides: DepthSides, lines: readonly InfoLine[], brief: readonly InfoLine[], keepBrief: boolean, restKey: string, ranks: readonly { bid: BandRank | null; ask: BandRank | null }[] = [], lit = -1): TablePlace | null {
     const { ctx, palette: p } = this;
     const heads = ['', titles[0], titles[1], 'Δ', '×'];
-    // A table on a plate over the plot starts under the lens's controls at its top left.
-    const lensH = this.#lensRoot.offsetHeight;
-    return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest, ...(lensH > 0 ? { plateTop: lensH + 10 } : {}) }, {
+    // A table on a plate over the plot starts under the lens's controls at its top left where it reaches that far across.
+    const lensH = this.#lensRoot.offsetHeight, lensW = this.#lensRoot.offsetWidth;
+    return this.#table.draw(ctx, p, { w: this.w, h: this.h, plotW: this.plotW, axisW: AXIS_W, pointing, rest, ...(lensH > 0 ? { plateTop: lensH + 10, plateTopX: lensW + 14 } : {}) }, {
       heads, minCols: 3, focus, lit, foot: `${time}${unit}`, rows: depthTableRows(rows, p, sides, ranks), lines, brief, briefRoom: keepBrief, restKey,
     });
   }
@@ -1268,7 +1281,7 @@ export class OiPane extends TimePane {
   readonly #bars = document.createElement('select');
   readonly #tableBox = document.createElement('input');
   /** Each venue's reading on the pane while venues are added together (pane-table.ts): the chart shows their sum, the table who holds it and who moved it. */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
   #panel: Panel | null = null;
   /** `nlns`: the NL/NS model the Delta and Funding panes read too (delta/nlns-source.ts). */
   constructor(host: HTMLElement, store: Store, view: View, flow: FlowBook, private readonly nlns: NlnsSource, private readonly reach: (t0: number) => void = () => {}) {
@@ -1720,7 +1733,7 @@ export class LtPane extends TimePane {
   /** Whose books the lines add up (book-markets.ts), one choice with the Depth pane's. */
   readonly #venues: BookVenues;
   /** Each market's figures at the window read, on the pane (pane-table.ts): who holds the liquidity the lines add up, and which way each leans. */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
   /** The markets in the table's order (`ltRank`: the most liquidity on average over the windows each holds first), worked out once per series. */
   #rank: { series: object; n: number; order: number[] } | null = null;
   constructor(host: HTMLElement, store: Store, view: View, private hub: Hub) {
