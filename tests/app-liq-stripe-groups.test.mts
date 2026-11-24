@@ -342,7 +342,7 @@ test('beside the two group lanes the note says the profitable traders\' own time
   const old = familyService({ [U.triggersGroups]: ordersOf(4 * HOUR) }), s = setting({ split: 'groups' });
   await show(old, s);
   assert.ok(frame(old, s, true, { levels: null, takes: null, right: null }).painted?.right, 'their lane still draws');
-  assert.equal(noteOf(old, s), `${liqNote(old, effectiveView(s, true), AS_OF)} · +PnL traders: stops as of ${clock(AS_OF - 4 * HOUR)}`);
+  assert.equal(noteOf(old, s), `${liqNote(old, effectiveView(s, true), AS_OF)} · +PnL traders: Stops out of date: no newer order file yet · +PnL traders: stops as of ${clock(AS_OF - 4 * HOUR)}`);
   // Stops alone, theirs an hour behind (not old by the three-hour rule, but not the time everyone's part says).
   const behind = familyService({ [U.triggersGroups]: ordersOf(HOUR) }), stops = setting({ liq: false, takes: false, split: 'groups' });
   await show(behind, stops);
@@ -355,7 +355,7 @@ test('beside the two group lanes the note says the profitable traders\' own time
   const both = familyService({ [U.triggers]: { status: 200, body: aged(triggers(FAM.all.stops, FAM.all.takes), 4 * HOUR) }, [U.triggersGroups]: ordersOf(4 * HOUR) });
   await show(both, s);
   const t4 = clock(AS_OF - 4 * HOUR);
-  assert.equal(noteOf(both, s), `Hyperliquid liquidations and stops at ${clock(AS_OF)} · Powered by HyperTracker · All traders: stops and take profits as of ${t4} · +PnL traders: stops as of ${t4}`);
+  assert.equal(noteOf(both, s), `Hyperliquid liquidations and stops at ${clock(AS_OF)} · Powered by HyperTracker · All traders: Stops out of date: no newer order file yet · All traders: stops and take profits as of ${t4} · +PnL traders: Stops out of date: no newer order file yet · +PnL traders: stops as of ${t4}`);
 });
 
 test('beside the two group lanes a lane with nothing names its group\'s reason; everyone\'s and the profitable traders\' status each said', async () => {

@@ -57,7 +57,7 @@ import { blockMsOf, editScope, withEdits } from '../tpo/settings.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
 import { curveOf, groupName, heldBack, kindName, levelsDescription, liveAsk, liveSplit, liveView, narrowView, pairKey, plusOn, viewKey, viewParts, type LiqPair, type LiqView } from '../liq-view.ts';
-import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, subNames } from '../liq-words.ts';
+import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, staleOfAll, staleWords, subNames } from '../liq-words.ts';
 import { levelsOrderSide } from '../order-side.ts';
 import { mirrorSplits, readingTexts, setBoxLines, stripeBoxLines } from '../liq-box.ts';
 import { layNote, paintStripe, stripeNote, stripeStands, type LaneCaption, type StripeHeld, type StripePainted } from '../liq-stripe.ts';
@@ -4406,7 +4406,7 @@ export class HeatPane {
     // After the figures (map-top.ts), each in its role: that a split has no room, the group where the button had no room for it, that the take
     // profits are not in the curve while they show, that the group's orders are not on the server; at most three lines each.
     const look = document.documentElement.dataset.frame;
-    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null, set.liqOld()) : [];
+    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null, staleWords(set)) : [];
     const left: HeadLine[] = notes.flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     const history = !!s && !strip && !(state.show.depth && state.depthSource === 'liq'), heading = liqHeading(look, 2 + left.length, history);
@@ -4536,8 +4536,8 @@ export class HeatPane {
     // or what both add up (everyone beside the +PnL traders), that the take profits are not in the curve, and that the +PnL traders' orders are
     // not on the server.
     const absent = sets.some(set => !!set && set.ordersAbsent());
-    const old = sets.some(set => !!set && !!set.levels && set.state === 'ready' && set.liqOld());
-    const notes: HeadLine[] = splitNotes(pair, takesShown, absent, old).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
+    const stale = staleOfAll(sets.filter((set): set is LiqSet => !!set && !!set.levels && set.state === 'ready'));
+    const notes: HeadLine[] = splitNotes(pair, takesShown, absent, stale).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     // The profiles, and the scales they are drawn on: one shared (liquidations beside stops), or one each.
     const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);

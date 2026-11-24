@@ -748,6 +748,8 @@ export interface LiqSet {
   liqOld(): boolean;
   /** Whether anything it draws is older than `OLD_MS`: its liquidations, or the order file its stops or take profits come from (`outOfDate`). */
   outOfDate(): boolean;
+  /** Whether the order file its stops (or take profits on alone) come from is older than `OLD_MS` (`ordersOutOfDate`). */
+  ordersOutOfDate(): boolean;
   /** Liquidations and stops apart while it adds them up (see `LiqParts`), else null. */
   partStandings(): LiqParts | null;
 }
@@ -863,6 +865,7 @@ export class LiqLevelsSource implements LiqSet {
       ordersOld: () => this.#ordersOldOf(v),
       liqOld: () => this.#liqOldOf(v),
       outOfDate: () => this.#outOfDateOf(v),
+      ordersOutOfDate: () => this.#ordersAgedOf(v),
       partStandings: () => { const main = layer(); return main instanceof SumLayer ? { liq: main.a.derive(this.candles).standing, stops: main.b.derive(this.candles).standing } : null; },
     };
   }
@@ -900,11 +903,16 @@ export class LiqLevelsSource implements LiqSet {
    * snapshot has come (the stripe's lane titles, heat-pane.ts `#paintLiqPlates`).
    */
   outOfDate(): boolean { return this.#outOfDateOf(this.#view); }
-  #outOfDateOf(v: LiqView): boolean {
-    // The order file counts only where the lane draws from it: stops in the curve, or take profits on alone (the take profits beside the curve
-    // have their own lane and `takesOutOfDate`; review r1).
+  #outOfDateOf(v: LiqView): boolean { return this.#liqOldOf(v) || this.#ordersAgedOf(v); }
+  /**
+   * Whether the order file the view draws from is older than `OLD_MS`: counted only where it draws from it, stops in the curve or take profits
+   * on alone (the take profits beside the curve have their own lane and `takesOutOfDate`; review r1). HyperTracker's positions and its order
+   * files can stall apart (2026-11-24: positions back at 14:45Z, order files still missing), so the stops can be old beside fresh liquidations.
+   */
+  ordersOutOfDate(): boolean { return this.#ordersAgedOf(this.#view); }
+  #ordersAgedOf(v: LiqView): boolean {
     const { orders } = this.#asOfsOf(v), fromOrders = v.stops || curveOf(v) === 'takes';
-    return this.#liqOldOf(v) || (fromOrders && orders !== null && this.now() - orders > OLD_MS);
+    return fromOrders && orders !== null && this.now() - orders > OLD_MS;
   }
   /** Whether the take profits beside the curve come from an order file older than `OLD_MS` (their lane's title says so). */
   takesOutOfDate(): boolean { const o = takesBeside(this.#view) ? this.#orders()?.data.asOf ?? null : null; return o !== null && this.now() - o > OLD_MS; }

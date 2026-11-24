@@ -3358,5 +3358,7 @@
  "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "ルーペ(チャート左上の虫眼鏡。既定でオン、オンの間は光ります)は価格に近いバンドを遠いバンドより大きく描きます。既定の対数カーブは高さを金額の対数カーブで描くので、小さな金額も見え、目盛りは金額のままです。価格1%あたりは各バンドのリングを価格1%あたりの金額で描き、均等な高さは各リングを表示範囲で最も厚い時点で同じ高さにします。この二つでは外側の縁はもう合計ではないので、目盛りはゼロだけを残し、十字線はその下の時点を読みます。スライダーで拡大の強さを決めます。表とヘッダーは常に金額を示します。",
  "The lens at the plot's top left, while on, bends the heights further.": "チャート左上のルーペがオンの間は、高さをさらに曲げます。",
  "Out of date: no newer snapshot yet": "古いデータ: 新しいスナップショットはまだありません",
- "Out of date": "古いデータ"
+ "Out of date": "古いデータ",
+ "Stops out of date: no newer order file yet": "ストップは古いデータ: 新しい注文ファイルはまだありません",
+ "Take profits out of date: no newer order file yet": "利確は古いデータ: 新しい注文ファイルはまだありません"
 }
