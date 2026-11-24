@@ -256,7 +256,10 @@ test('the map draws the stripe through its painter and takes only what it painte
   assert.match(heat, /export const stripeSplitRoom = \(state: AppState\): boolean => liqSplitDrawn\(state\) \|\| \(!COMPACT && !state\.liqLevels\.column\);/);
   assert.match(heat, /this\.#liqLanes = null; this\.#liqRightLane = null; this\.#liqNoteBox = null;\n    const ask = liveAsk/, 'neither lane answers the pointer before this frame draws it (another coin, a replay)');
   assert.match(heat, /const painted = paintStripe\(ctx, \{ src, plan, pair, x0: this\.#liqStripeLeft\(pw\), pw, ph, view: v, colors: p, held: this\.#liqHeld \}\);/);
-  assert.match(heat, /this\.#liqLanes = painted\.lanes; this\.#liqRightLane = painted\.right;\n        if \(painted\.captions\) this\.#placeLiqCaptions\(ctx, painted\.captions, pw\);\n        else if \(painted\.takesLane\) this\.#placeLiqCaptions\(ctx, \[\{ lane: painted\.takesLane, words: t\('Take profits'\), dashed: true \}\], pw\);/);
+  assert.match(heat, /this\.#liqLanes = painted\.lanes; this\.#liqRightLane = painted\.right;\n        if \(painted\.captions\) this\.#placeLiqCaptions\(ctx, painted\.captions, pw\);/);
+  // The take profits' caption and a lane that is only out of date come from the painter (liq-stripe.ts), and the corner tools end left of the lanes.
+  assert.match(stripe, /\.\.\.\(left\?\.takes \? \[\{ lane: left\.takes, words: t\('Take profits'\), dashed: true, old: src\.takesOutOfDate\(\) \}\] : \[\]\),/);
+  assert.match(heat, /if \(lanes\.length\) this\.#laneEdge = Math\.min\(\.\.\.lanes\.map\(l => l\.x0\), \.\.\.\(this\.#liqPlates \?\? \[\]\)\.map\(pl => pl\.x\)\);/);
   assert.match(heat, /if \(replaying\(\)\) return \[\];\n    const held = this\.#liqHeld\.right;\n    if \(right && held && x >= right\.lane\.x0 && x < right\.lane\.x1\) return this\.#laneLines\(state, right\.set, held, y, ph, touch, right\.whose\);\n    if \(!lanes \|\| src\.state !== 'ready'\) return \[\];/);
   assert.match(heat, /inTakes \? lanes\.takesWhose : lanes\.whose\);/);
   assert.match(heat, /return setBoxLines\(found, set, at > 0 \? at : this\.hub\.liqLevels\.lastPriceOf\(levels\), side => shown\(found, side\), whose\);/);
