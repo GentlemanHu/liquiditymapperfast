@@ -4342,7 +4342,7 @@ export class HeatPane {
     // After the figures (map-top.ts), each in its role: that a split has no room, the group where the button had no room for it, that the take
     // profits are not in the curve while they show, that the group's orders are not on the server; at most three lines each.
     const look = document.documentElement.dataset.frame;
-    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null) : [];
+    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null, set.liqOld()) : [];
     const left: HeadLine[] = notes.flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     const history = !!s && !strip && !(state.show.depth && state.depthSource === 'liq'), heading = liqHeading(look, 2 + left.length, history);

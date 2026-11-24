@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LiqLevelsSource, STALE_MS, TAKE_DASH, binsPerRow, captionPlace, dashPhase, heatScale, liqCurves, liqProfile, liqRows, onTheWay, liqStanding, parseLiqLevels, seamStats, spearman, standingBelow, stripeLanes, takenByCandles, paintLiqStripe, type LiqLevels, type LiqRow } from '../src/app/liq-levels.ts';
+import { LiqLevelsSource, OLD_MS, STALE_MS, TAKE_DASH, binsPerRow, captionPlace, dashPhase, heatScale, liqCurves, liqProfile, liqRows, onTheWay, liqStanding, parseLiqLevels, seamStats, spearman, standingBelow, stripeLanes, takenByCandles, paintLiqStripe, type LiqLevels, type LiqRow } from '../src/app/liq-levels.ts';
 import { View } from '../src/app/view.ts';
 import { LIQ_LEVELS_URL, liqLevelsUrl, readLiqLevels } from '../src/app/liq-url.ts';
 import { FIRST_LEAD_MS, LATE_EVERY_MS, SNAPSHOT_DUE_MS, SNAPSHOT_LATE_MS, createdOnPageClock, nextAskAt } from '../src/app/liq-schedule.ts';
@@ -229,7 +229,11 @@ test('the source asks for the file, says when it cannot, retries sooner, keeps t
   now += SNAPSHOT_DUE_MS + 1_000; src.ensure(BTC, () => {}); await tick();
   assert.equal(asked, 5);
   assert.equal(src.levels!.asOf, newer);
-  // Levels too old are held but not drawn.
+  // Levels older than OLD_MS are drawn still and said to be old (Karl, 2026-11-24); older than STALE_MS they are held but not drawn.
+  now = newer + OLD_MS - MIN; src.ensure(BTC, () => {});
+  assert.equal(src.state, 'ready'); assert.equal(src.liqOld(), false);
+  now = newer + OLD_MS + MIN; src.ensure(BTC, () => {});
+  assert.equal(src.state, 'ready', 'three hours old: still drawn'); assert.equal(src.liqOld(), true, 'and said to be out of date');
   now = newer + STALE_MS + MIN; src.ensure(BTC, () => {});
   assert.equal(src.state, 'stale');
   // A source that never read the file says it could not.
