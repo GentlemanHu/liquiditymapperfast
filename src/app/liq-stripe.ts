@@ -9,6 +9,7 @@ import { splitLanes, type StripePlan } from './liq-split.ts';
 import { groupTitle, narrowView, type LiqPair, type LiqView } from './liq-view.ts';
 import { groupNoteParts, liqNote, liqWhy, ofGroup } from './liq-words.ts';
 import { fitText } from './text-fit.ts';
+import { PLATE_H } from './map-top.ts';
 import { t } from './i18n.ts';
 import type { View } from './view.ts';
 
@@ -16,8 +17,11 @@ import type { View } from './view.ts';
 export interface StripeHeld { levels: LaneRows | null; takes: LaneRows | null; right: LaneRows | null }
 /** The colours the stripe is painted in (the pane's palette). */
 export interface StripeColors { candleUp: string; candleDown: string; text: string; muted: string; bg: string }
-/** A caption over a lane: its words and whether its sample is dashed (take profits). */
-export interface LaneCaption { lane: Lane; words: string; dashed: boolean }
+/**
+ * A caption over a lane: its words (none for a lane that only says it is out of date: the one lane of no split, which the column's button names),
+ * whether its sample is dashed (take profits), and whether what the lane draws is out of date (older than `OLD_MS`: a line under the words).
+ */
+export interface LaneCaption { lane: Lane; words: string; dashed: boolean; old: boolean }
 /**
  * What the stripe painted this frame: the left set's lanes (the levels' and the take profits'), with the group each reading names; a split's
  * right lane with the set it was painted from; the captions under a split; and, without one, the take profits' lane for their own caption.
@@ -74,11 +78,21 @@ export function paintStripe(ctx: CanvasRenderingContext2D, o: { src: LiqLevelsSo
     // lane with nothing painted has no caption (the note under the legend says why).
     const [leftWords, rightWords] = plan.captions, left = painted.lanes;
     painted.captions = [
-      ...(left?.takes && plan.takes ? [{ lane: left.takes, words: plan.takes, dashed: true }] : []),
-      ...(left && leftWords ? [{ lane: left.levels, words: leftWords, dashed: false }] : []),
-      ...(painted.right && rightWords ? [{ lane: painted.right.lane, words: rightWords, dashed: false }] : []),
+      ...(left?.takes && plan.takes ? [{ lane: left.takes, words: plan.takes, dashed: true, old: src.takesOutOfDate() }] : []),
+      ...(left && leftWords ? [{ lane: left.levels, words: leftWords, dashed: false, old: src.outOfDate() }] : []),
+      ...(painted.right && rightWords ? [{ lane: painted.right.lane, words: rightWords, dashed: false, old: painted.right.set.outOfDate() }] : []),
     ];
-  } else painted.takesLane = painted.lanes?.takes ?? null;
+  } else {
+    // No split: the take profits' lane has its caption (heat-pane.ts), and the levels' lane, which the column's button names, says only that it
+    // is out of date where it is (Karl, 2026-11-24: the message belongs on the lanes, not only in the column's heading).
+    painted.takesLane = painted.lanes?.takes ?? null;
+    const left = painted.lanes;
+    painted.captions = [
+      ...(left?.takes ? [{ lane: left.takes, words: t('Take profits'), dashed: true, old: src.takesOutOfDate() }] : []),
+      ...(left && src.outOfDate() ? [{ lane: left.levels, words: '', dashed: false, old: true }] : []),
+    ];
+    if (!painted.captions.length) painted.captions = null;
+  }
   return painted;
 }
 
@@ -119,11 +133,11 @@ export function noteLines(measure: (words: string) => number, note: string, room
 
 /**
  * How many lines the note under the legend may take on a plot `ph` tall whose note starts at `under`: what leaves room below it, under the
- * line the "depth recorded from" note may take, for the stripe's captions (three at most, 17 px each), two at least (as the note always had)
+ * line the "depth recorded from" note may take, for the stripe's captions (three at most, `PLATE_H` + 2 px each), two at least (as the note always had)
  * and four at most (Sol, review 2026-11-19: on a 138 px phone map a four-line note pushed the last caption under the time axis).
  */
 export function noteMostLines(ph: number, under: number): number {
-  return Math.max(2, Math.min(4, Math.floor((ph - under - 13 - 3 - 3 * 17) / 13)));
+  return Math.max(2, Math.min(4, Math.floor((ph - under - 13 - 3 - 3 * (PLATE_H + 2)) / 13)));
 }
 
 /**

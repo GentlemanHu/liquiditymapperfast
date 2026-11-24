@@ -21,8 +21,16 @@ import type { View } from './view.ts';
 const MINUTE = 60_000, HOUR = 3_600_000, DAY = 24 * HOUR;
 /** A failed read is tried again this soon (a new snapshot is asked for when it can be there: `liq-schedule.ts`). */
 const RETRY_MS = 30_000;
-/** Older than this, the levels are not drawn: too many positions have opened and closed since. */
-export const STALE_MS = 3 * HOUR;
+/**
+ * Older than this, the levels drawn are said to be out of date (`liqOld`): HyperTracker has published nothing newer for that long. They stay
+ * drawn (Karl, 2026-11-24, when HyperTracker's snapshots stalled at 09:21 and the column went empty at 12:21): the last snapshot, said as
+ * old, says more than an empty column.
+ */
+export const OLD_MS = 3 * HOUR;
+/** Older than this, the levels are not drawn at all: the candles that take crossed levels away reach back only so far (`CANDLES_BACK_MS`). */
+export const STALE_MS = 24 * HOUR;
+/** How far back Hyperliquid's candles are kept: past `STALE_MS`, so every crossing since the oldest snapshot drawn is taken away. */
+const CANDLES_BACK_MS = STALE_MS + 2 * HOUR;
 /** Stop and take-profit orders more than this older than the liquidations beside them are said to be so (`ordersOld`). */
 const ORDERS_BEHIND_MS = 2 * HOUR;
 /** Hyperliquid's candles are asked again this often; the chart's own price covers the time between. */
@@ -736,6 +744,12 @@ export interface LiqSet {
   asOfs(): { liq: number | null; orders: number | null };
   /** Whether its stop and take-profit orders are old enough to say so (see `LiqLevelsSource.ordersOld`). */
   ordersOld(): boolean;
+  /** Whether its liquidations are drawn though out of date (older than `OLD_MS`, see `LiqLevelsSource.liqOld`). */
+  liqOld(): boolean;
+  /** Whether anything it draws is older than `OLD_MS`: its liquidations, or the order file its stops or take profits come from (`outOfDate`). */
+  outOfDate(): boolean;
+  /** Whether the order file its stops (or take profits on alone) come from is older than `OLD_MS` (`ordersOutOfDate`). */
+  ordersOutOfDate(): boolean;
   /** Liquidations and stops apart while it adds them up (see `LiqParts`), else null. */
   partStandings(): LiqParts | null;
 }
@@ -784,7 +798,7 @@ export class LiqLevelsSource implements LiqSet {
 
   constructor(private get: Fetcher = webGet, private now: () => number = Date.now, private url: () => string = () => liqLevelsUrl(),
     private read: LiqFetch = linkedWebFetch, private access: LiqPlusAccess = MEMBER) {
-    this.candles = new KeyLevelHistory(get, now, CANDLES_MS, 12 * HOUR);
+    this.candles = new KeyLevelHistory(get, now, CANDLES_MS, CANDLES_BACK_MS);
   }
 
   /** What is drawn (the effective view: the free view without Plus; a split's left column). */
@@ -849,6 +863,9 @@ export class LiqLevelsSource implements LiqSet {
       blame: () => blame,
       asOfs: () => this.#asOfsOf(v),
       ordersOld: () => this.#ordersOldOf(v),
+      liqOld: () => this.#liqOldOf(v),
+      outOfDate: () => this.#outOfDateOf(v),
+      ordersOutOfDate: () => this.#ordersAgedOf(v),
       partStandings: () => { const main = layer(); return main instanceof SumLayer ? { liq: main.a.derive(this.candles).standing, stops: main.b.derive(this.candles).standing } : null; },
     };
   }
@@ -876,7 +893,32 @@ export class LiqLevelsSource implements LiqSet {
   ordersOld(): boolean { return this.#ordersOldOf(this.#view); }
   #ordersOldOf(v: LiqView): boolean {
     const { liq, orders } = this.#asOfsOf(v);
-    return orders !== null && (this.now() - orders > STALE_MS || (liq !== null && liq - orders > ORDERS_BEHIND_MS));
+    return orders !== null && (this.now() - orders > OLD_MS || (liq !== null && liq - orders > ORDERS_BEHIND_MS));
+  }
+  /** Whether the liquidations drawn are older than `OLD_MS`: drawn still, and said to be out of date (`liqNote`, the column's heading). */
+  liqOld(): boolean { return this.#liqOldOf(this.#view); }
+  /**
+   * Whether anything the view draws is older than `OLD_MS`: its liquidations, or the order file its stops or take profits come from. Not
+   * `ordersOld`, which is also true of orders merely two hours behind the liquidations beside them: a lane says "out of date" only when no newer
+   * snapshot has come (the stripe's lane titles, heat-pane.ts `#paintLiqPlates`).
+   */
+  outOfDate(): boolean { return this.#outOfDateOf(this.#view); }
+  #outOfDateOf(v: LiqView): boolean { return this.#liqOldOf(v) || this.#ordersAgedOf(v); }
+  /**
+   * Whether the order file the view draws from is older than `OLD_MS`: counted only where it draws from it, stops in the curve or take profits
+   * on alone (the take profits beside the curve have their own lane and `takesOutOfDate`; review r1). HyperTracker's positions and its order
+   * files can stall apart (2026-11-24: positions back at 14:45Z, order files still missing), so the stops can be old beside fresh liquidations.
+   */
+  ordersOutOfDate(): boolean { return this.#ordersAgedOf(this.#view); }
+  #ordersAgedOf(v: LiqView): boolean {
+    const { orders } = this.#asOfsOf(v), fromOrders = v.stops || curveOf(v) === 'takes';
+    return fromOrders && orders !== null && this.now() - orders > OLD_MS;
+  }
+  /** Whether the take profits beside the curve come from an order file older than `OLD_MS` (their lane's title says so). */
+  takesOutOfDate(): boolean { const o = takesBeside(this.#view) ? this.#orders()?.data.asOf ?? null : null; return o !== null && this.now() - o > OLD_MS; }
+  #liqOldOf(v: LiqView): boolean {
+    const liq = this.#asOfsOf(v).liq;
+    return liq !== null && this.now() - liq > OLD_MS;
   }
   /** Why nothing of the view is drawn where the state is `missing`: no groups or orders there yet, or none of the profitable traders' orders on the server. */
   missing(): 'groups' | 'orders' | 'profitable-orders' | null { return this.#missingOf(this.#view, this.state); }

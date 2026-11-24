@@ -57,7 +57,7 @@ import { blockMsOf, editScope, withEdits } from '../tpo/settings.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
 import { curveOf, groupName, heldBack, kindName, levelsDescription, liveAsk, liveSplit, liveView, narrowView, pairKey, plusOn, viewKey, viewParts, type LiqPair, type LiqView } from '../liq-view.ts';
-import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, subNames } from '../liq-words.ts';
+import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, staleOfAll, staleWords, subNames } from '../liq-words.ts';
 import { levelsOrderSide } from '../order-side.ts';
 import { mirrorSplits, readingTexts, setBoxLines, stripeBoxLines } from '../liq-box.ts';
 import { layNote, paintStripe, stripeNote, stripeStands, type LaneCaption, type StripeHeld, type StripePainted } from '../liq-stripe.ts';
@@ -110,7 +110,7 @@ import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { TpoLayer, type TpoFrame } from '../tpo/layer.ts';
 import type { TpoInfo } from '../tpo/panel.ts';
-import { HEAD_ALPHA, HEAD_INSET, HEAD_PITCH, TOOLS_TOP, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, splitNames, type HeadLine } from '../map-top.ts';
+import { HEAD_ALPHA, HEAD_INSET, HEAD_PITCH, PLATE_H, TOOLS_TOP, bodyFont, firstLine, headBand, liqHeading, nameFont, plateTop, roleFont, roleInk, rowNameSize, rowNameTop, splitNames, toolsRight, type HeadLine } from '../map-top.ts';
 
 /** The colour of a flag on a candle's wick: amber reads on every theme and is neither side's colour. */
 const TRAP_COLOR = '#f5a524';
@@ -431,6 +431,16 @@ export class HeatPane {
   /** The corner buttons' elements (the desktop's row, a phone's Draw key) and their rectangle as last measured, with what it was measured for (`#cornerTools`). */
   #cornerEls: (HTMLElement | null)[] = [null, null];
   #cornerBox: { key: string; box: Rect | null } = { key: '', box: null };
+  /**
+   * The corner tools' row: where it ends this frame (map-top.ts `toolsRight`), its widths named and as drawings alone (measured when what
+   * sizes them changes), the shift its CSS holds, and the liquidation stripe's left edge with its lanes' titles as last painted (null: none).
+   */
+  #toolsAt: { right: number; anchored: boolean } = { right: Infinity, anchored: false };
+  #toolsW = { key: '', named: 0, compact: 0 };
+  #toolsShift = 0;
+  #laneEdge: number | null = null;
+  /** Whether the corner tools' row is on the map to place (not a phone's, not the compact bar's, which takes it off): only then does it follow the lanes. */
+  #toolsLive = false;
   /** The stripe's caption plates of this frame, their places across (`#placeLiqCaptions`), placed and painted once the map's lines and the volume strip are drawn (`#paintLiqPlates`). */
   #liqPlates: (LaneCaption & { x: number; w: number; rank: number })[] | null = null;
   /** Where this frame's volume strip printed its names (`paintVolumeStrip`), which the stripe's captions keep clear of. */
@@ -1479,7 +1489,10 @@ export class HeatPane {
     this.#paintTapeStart(ctx, state, pw, ph, p);
     this.#paintProfileAnchor(ctx, pw, ph, this.#tradedPalette(state));
     this.#paintLayers(ctx, state, pw, ph);
+    this.#laneEdge = null;
     if (state.liqLevels.on) this.#paintLiquidationLevels(ctx, state, pw, ph);
+    // The corner tools' row follows the lanes (`#fitCorner`, at the next frame's start): where this frame's lanes want it elsewhere, one more frame.
+    if (this.#toolsLive) { const at = this.#cornerAt(pw); if (at.right !== this.#toolsAt.right || at.anchored !== this.#toolsAt.anchored) this.invalidate(); }
     this.#paintVolume(ctx, state, pw, ph, this.#lodFrame.narrowing);
     // Under the candles as the volume bars are, and under the legend and the corner buttons, whose bottoms it is placed by; over what the
     // columns add up, with the marks' absorption thresholds; what it asked for redraws the map when it comes.
@@ -1856,15 +1869,39 @@ export class HeatPane {
    */
   #fitCorner(pw: number): void {
     const tools = this.root.querySelector<HTMLElement>('.map-tools');
-    if (!tools || isPhone()) return;
-    const key = `${pw}|${this.#legendNeed}|${tools.querySelectorAll(':scope > :not([hidden])').length}|${tools.textContent?.length ?? 0}|${document.documentElement.dataset.frame ?? ''}`;
+    // No row to place (a phone, the compact bar): nothing follows the lanes, and none of the frame's checks asks for another frame (review r1, P1).
+    this.#toolsLive = !!tools && !isPhone();
+    if (!tools || !this.#toolsLive) { this.#toolsAt = { right: Infinity, anchored: false }; return; }
+    const html = document.documentElement;
+    // Its widths, named and drawings alone, measured again only when what sizes them can have changed.
+    const wKey = `${tools.querySelectorAll(':scope > :not([hidden])').length}|${tools.textContent?.length ?? 0}|${html.dataset.frame ?? ''}|${html.lang}`;
+    if (wKey !== this.#toolsW.key) {
+      const was = tools.classList.contains('compact');
+      tools.classList.remove('compact'); const named = tools.offsetWidth;
+      tools.classList.add('compact'); const compact = tools.offsetWidth;
+      tools.classList.toggle('compact', was);
+      this.#toolsW = { key: wKey, named, compact };
+    }
+    // Where it ends: left of the liquidation lanes and their titles, else in the corner (`toolsRight`). While a hand moves the map (the
+    // live edge moves with it) the row stays where it was, and goes where it belongs once the hand lets go.
+    const at = this.#cornerAt(pw);
+    if (at.right !== this.#toolsAt.right || at.anchored !== this.#toolsAt.anchored) this.#toolsAt = at;
+    const shift = Math.max(0, pw - 8 - this.#toolsAt.right);
+    if (shift !== this.#toolsShift) { this.#toolsShift = shift; tools.style.setProperty('--tools-shift', `${shift}px`); }
+    const key = `${pw}|${this.#toolsAt.right}|${this.#legendNeed}|${wKey}`;
     if (key === this.#cornerKey) return;
     this.#cornerKey = key;
     const was = tools.classList.contains('compact');
-    if (was) tools.classList.remove('compact');
-    const named = tools.offsetWidth;
-    tools.classList.toggle('compact', pw - 28 - named < this.#legendNeed + (was ? 16 : 0));
+    tools.classList.toggle('compact', this.#toolsRight(pw) - 20 - this.#toolsW.named < this.#legendNeed + (was ? 16 : 0));
   }
+  /** Where the corner tools' row should end now (`toolsRight`), or where it is while a hand moves the map. */
+  #cornerAt(pw: number): { right: number; anchored: boolean } {
+    if (this.#followHeld() && Number.isFinite(this.#toolsAt.right)) return this.#toolsAt;
+    // The legend stands beside the row with 20 px between (`#paintLegend`): the row moves only where that leaves it its least room (review r1).
+    return toolsRight({ pw, edge: this.#laneEdge, width: this.#toolsW.compact, minLeft: LEGEND_MIN_BESIDE_PX + 20, anchored: this.#toolsAt.anchored });
+  }
+  /** The corner tools' row's right edge on the plot (px from its left): the plot's corner, or left of the liquidation lanes. */
+  #toolsRight(pw: number): number { return Math.min(pw - 8, Number.isFinite(this.#toolsAt.right) ? this.#toolsAt.right : pw - 8); }
 
   #paintLegend(ctx: CanvasRenderingContext2D, state: AppState): void {
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, p = this.#palette;
@@ -1893,7 +1930,7 @@ export class HeatPane {
     }
     // A translucent plate keeps the text readable over bright heat.
     // The map's corner tools (Go to, Select, Recenter) lie over the top right of the plot: the text ends before them (with an ellipsis) instead of running under them.
-    const corner = this.root.querySelector<HTMLElement>('.map-tools'), beside = this.plotW - 20 - (corner ? corner.offsetWidth + 8 : 0);
+    const corner = this.root.querySelector<HTMLElement>('.map-tools'), beside = corner ? this.#toolsRight(this.plotW) - corner.offsetWidth - 20 : this.plotW - 20;
     // Where even their drawings alone leave the legend too little room beside them (a narrow map), it stands under them instead, as wide as the plot.
     const stacked = corner !== null && corner.offsetWidth > 0 && beside < LEGEND_MIN_BESIDE_PX, room = stacked ? this.plotW - 20 : Math.max(160, beside);
     const dy = stacked && corner ? Math.max(0, corner.offsetTop + corner.offsetHeight + 4 - (ctx.canvas as HTMLCanvasElement).offsetTop - 6) : 0;
@@ -2358,7 +2395,7 @@ export class HeatPane {
     let top = left < box.right + 8 ? box.bottom + 6 : 6;
     // Select and Recenter sit in the top-right corner of the map on the full toolbar: the note does not run under them.
     const corner = this.root.querySelector<HTMLElement>('.map-tools');
-    if (top < 40 && corner && (right ? x - 6 : x + 6 + w) > pw - corner.offsetWidth - 16) top = 40;
+    if (top < 40 && corner && (right ? x - 6 : x + 6 + w) > this.#toolsRight(pw) - corner.offsetWidth - 8) top = 40;
     if (right) { ctx.textAlign = 'right'; ctx.fillText(label, x - 6, top); } else { ctx.textAlign = 'left'; ctx.fillText(label, x + 6, top); }
     this.#historyNote = { x0: left, x1: left + w, top };
     ctx.restore();
@@ -2402,7 +2439,9 @@ export class HeatPane {
       if (painted) {
         this.#liqLanes = painted.lanes; this.#liqRightLane = painted.right;
         if (painted.captions) this.#placeLiqCaptions(ctx, painted.captions, pw);
-        else if (painted.takesLane) this.#placeLiqCaptions(ctx, [{ lane: painted.takesLane, words: t('Take profits'), dashed: true }], pw);
+        // The corner tools end left of the stripe and of its lanes' titles (`#fitCorner`).
+        const lanes = [painted.lanes?.takes, painted.lanes?.levels, painted.right?.lane].filter((l): l is { x0: number; x1: number } => !!l);
+        if (lanes.length) this.#laneEdge = Math.min(...lanes.map(l => l.x0), ...(this.#liqPlates ?? []).map(pl => pl.x));
       }
     }
     ctx.save();
@@ -2423,10 +2462,14 @@ export class HeatPane {
    */
   #placeLiqCaptions(ctx: CanvasRenderingContext2D, items: readonly LaneCaption[], pw: number): void {
     ctx.save();
-    ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
-    const wide = (words: string): number => ctx.measureText(words).width, SAMPLE = 12;
+    const narrow = pw < NARROW_PLOT, title = nameFont(rowNameSize(narrow)), SAMPLE = 12;
+    const wide = (font: string, words: string): number => { ctx.font = font; return ctx.measureText(words).width; };
     // The take profits' plate goes first where not every plate has room (rank 1): the split's own lanes keep theirs.
-    this.#liqPlates = items.map(item => ({ ...item, ...captionPlace(item.lane, Math.min(Math.max(40, pw - 16), Math.ceil(SAMPLE + wide(item.words) + 10))), rank: item.dashed ? 1 : 0 }));
+    this.#liqPlates = items.map(item => {
+      // A title's plate is as wide as its title; the out-of-date line under the titles is a plate of its own (`#paintLiqPlates`).
+      const need = item.words ? SAMPLE + wide(title, item.words) + 12 : wide(bodyFont(10), t('Out of date')) + 12;
+      return { ...item, ...captionPlace(item.lane, Math.min(Math.max(40, pw - 16), Math.ceil(need))), rank: item.dashed ? 1 : 0 };
+    });
     ctx.restore();
   }
 
@@ -2434,26 +2477,45 @@ export class HeatPane {
    * The stripe's caption plates of this frame, placed (`captionKeepOut`, `placeCaptions`: the volume strip's names are known by now, and a
    * plate with no room above the plot's foot is left out) and painted on plates of the panel's colour so they read in every theme, after the
    * map's lines, bars and candles (the price line, the VWAP and key levels, the volume strip), none of which is drawn across one (2026-11-19:
-   * on a phone held sideways a dashed line ran across the take profits' plate and the volume bars over it).
+   * on a phone held sideways a dashed line ran across the take profits' plate and the volume bars over it). A lane's title is a name on the
+   * tools' row (map-top.ts: the size every column's name has there, centred on the buttons, which end left of the stripe), and a lane whose
+   * levels are out of date says so under it in the theme's caution words (Karl, 2026-11-24).
    */
   #paintLiqPlates(ctx: CanvasRenderingContext2D): void {
     const plates = this.#liqPlates, p = this.#palette, pw = this.plotW;
     this.#liqPlates = null;
     if (!plates?.length) return;
+    const look = document.documentElement.dataset.frame, size = rowNameSize(pw < NARROW_PLOT), SAMPLE = 12, warn = t('Out of date');
     const keep = captionKeepOut({ corner: this.#cornerTools(pw), legend: this.#legendBox, history: this.#historyNote, note: this.#liqNoteBox, names: this.#stripNames });
-    const ys = placeCaptions(plates, keep, 6, 15, this.plotH);
     ctx.save();
-    ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
-    const wide = (words: string): number => ctx.measureText(words).width, SAMPLE = 12;
+    ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    // Titled lanes out of date say so under their titles (Karl, 2026-11-24): one plate under them all where all are (one snapshot), else one under
+    // each. The plates are placed with the titles (`placeCaptions`, after them, last where room is short), so none lands on a title, a note or past
+    // the plot's foot (review r1, P2).
+    ctx.font = bodyFont(10);
+    const need = Math.ceil(ctx.measureText(warn).width) + 12, titled = plates.filter(pl => pl.words), fitX = (x: number, w: number): number => Math.max(2, Math.min(x, pw - 2 - w));
+    const warns = titled.length && titled.every(pl => pl.old) ? [{ x: fitX(Math.min(...titled.map(pl => pl.x)), need), w: need, rank: 2 }]
+      : titled.filter(pl => pl.old).map(pl => ({ x: fitX(pl.x, Math.max(pl.w, need)), w: Math.max(pl.w, need), rank: 2 }));
+    const ys = placeCaptions([...plates, ...warns], keep, plateTop(look), PLATE_H, this.plotH);
+    const fit = (words: string, room: number): string => fitText(w2 => ctx.measureText(w2).width, words, room);
+    // A label, not a button (map-top.ts): a plate like the legend's, rounded and without an edge.
+    const plate = (x: number, y: number, w: number): void => {
+      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(x, y, w, PLATE_H, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
+    };
+    const warnAt = (x: number, y: number, w: number): void => { plate(x, y, w); ctx.font = bodyFont(10); ctx.fillStyle = cautionInk(p); ctx.fillText(fit(warn, w - 12), x + 6, y + PLATE_H / 2 + 0.5); };
     plates.forEach(({ x, w, words, dashed }, i) => {
       const y = ys[i];
       if (y === null || y === undefined) return;
-      // A label, not a button (map-top.ts): a plate like the legend's, rounded and without an edge.
-      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(x, y, w, 15, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
+      // The one lane of no split, which the column's button names, says only that it is out of date.
+      if (!words) { warnAt(x, y, w); return; }
+      plate(x, y, w);
+      const mid = y + PLATE_H / 2;
       ctx.strokeStyle = p.text; ctx.lineWidth = 3; ctx.setLineDash(dashed ? TAKE_DASH as number[] : []); ctx.lineDashOffset = 0;
-      ctx.beginPath(); ctx.moveTo(x + 4, y + 7.5); ctx.lineTo(x + 4 + SAMPLE - 2, y + 7.5); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = p.text; ctx.fillText(fitText(wide, words, w - SAMPLE - 10), x + 6 + SAMPLE, y + 8);
+      ctx.beginPath(); ctx.moveTo(x + 5, mid); ctx.lineTo(x + 5 + SAMPLE - 2, mid); ctx.stroke(); ctx.setLineDash([]);
+      ctx.font = nameFont(size); ctx.fillStyle = p.text;
+      ctx.fillText(fit(words, w - SAMPLE - 12), x + 7 + SAMPLE, mid + 0.5);
     });
+    warns.forEach(({ x, w }, i) => { const y = ys[plates.length + i]; if (y !== null && y !== undefined) warnAt(x, y, w); });
     ctx.restore();
   }
 
@@ -4045,10 +4107,11 @@ export class HeatPane {
     }
     const headSize = pw < NARROW_PLOT ? 9.5 : 10, headRoom = W - HEAD_INSET - 4;
     ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.fillRect(inner, 0, W - 1, headH); ctx.globalAlpha = 1;
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = nameFont(headSize); ctx.fillStyle = p.text;
+    const nameSize = rowNameSize(pw < NARROW_PLOT);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = nameFont(nameSize); ctx.fillStyle = p.text;
     // Its name, or its short one where the whole has no room ("Open interest change" is "OI change" in a 120 px column).
     const def = measureDef(metric), measure = (words: string): number => ctx.measureText(words).width;
-    ctx.fillText(measure(def.name()) <= headRoom ? def.name() : fitText(measure, def.short(), headRoom), x0 + HEAD_INSET, rowNameTop(look));
+    ctx.fillText(measure(def.name()) <= headRoom ? def.name() : fitText(measure, def.short(), headRoom), x0 + HEAD_INSET, rowNameTop(look, nameSize));
     ctx.fillStyle = p.muted; ctx.font = bodyFont(headSize);
     const held = this.hub.profile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
     const measured = measureDef(metric).header(rows, flags);
@@ -4177,8 +4240,9 @@ export class HeatPane {
       const look = document.documentElement.dataset.frame, headSize = pw < NARROW_PLOT ? 9.5 : 10, first = firstLine(look);
       const fit = (words: string): string => fitText(w => ctx.measureText(w).width, words, W - HEAD_INSET - 4);
       ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, headBand(look, 2)); ctx.globalAlpha = 1;
-      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = nameFont(headSize); ctx.fillStyle = p.text;
-      ctx.fillText(fit(t('Profile')), x0 + HEAD_INSET, rowNameTop(look));
+      const nameSize = rowNameSize(pw < NARROW_PLOT);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = nameFont(nameSize); ctx.fillStyle = p.text;
+      ctx.fillText(fit(t('Profile')), x0 + HEAD_INSET, rowNameTop(look, nameSize));
       ctx.font = bodyFont(headSize); ctx.fillStyle = p.muted;
       ctx.fillText(fit(t('LEVEL MAX {value}', { value: usd(maxLevel) })), x0 + HEAD_INSET, first); ctx.fillText(fit(t('CUM MAX {value}', { value: usd(maxCum) })), x0 + HEAD_INSET, first + HEAD_PITCH);
     }
@@ -4342,7 +4406,7 @@ export class HeatPane {
     // After the figures (map-top.ts), each in its role: that a split has no room, the group where the button had no room for it, that the take
     // profits are not in the curve while they show, that the group's orders are not on the server; at most three lines each.
     const look = document.documentElement.dataset.frame;
-    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null) : [];
+    const notes = s && !strip ? columnNotes(set.view, pair ? false : !this.#liqKindGroupOff, takesShown, set.ordersAbsent(), pair ? narrowNote(pair.split === 'kinds' ? kindName('both') : groupName('all')) : null, staleWords(set)) : [];
     const left: HeadLine[] = notes.flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     const history = !!s && !strip && !(state.show.depth && state.depthSource === 'liq'), heading = liqHeading(look, 2 + left.length, history);
@@ -4472,7 +4536,8 @@ export class HeatPane {
     // or what both add up (everyone beside the +PnL traders), that the take profits are not in the curve, and that the +PnL traders' orders are
     // not on the server.
     const absent = sets.some(set => !!set && set.ordersAbsent());
-    const notes: HeadLine[] = splitNotes(pair, takesShown, absent).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
+    const stale = staleOfAll(sets.filter((set): set is LiqSet => !!set && !!set.levels && set.state === 'ready'));
+    const notes: HeadLine[] = splitNotes(pair, takesShown, absent, stale).flatMap(note => { ctx.font = roleFont(note.role, size); return wrapText(wide, note.text, liqRoom(W), 3).map(text => ({ text, role: note.role })); });
     ctx.font = bodyFont(size);
     // The profiles, and the scales they are drawn on: one shared (liquidations beside stops), or one each.
     const step = niceStep(v.p1 - v.p0, ph / 3), price = this.#liqPrice(state);

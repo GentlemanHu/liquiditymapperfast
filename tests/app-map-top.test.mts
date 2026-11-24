@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PALETTES, cautionInk, chromeFor, contrastRatio } from '../src/app/theme.ts';
-import { HEAD_INSET, HEAD_PITCH, bodyFont, firstLine, headBand, liqHeading, nameFont, roleFont, roleInk, rowNameTop, splitNames, toolsH } from '../src/app/map-top.ts';
+import { HEAD_INSET, HEAD_PITCH, PLATE_H, bodyFont, firstLine, headBand, liqHeading, nameFont, plateTop, roleFont, roleInk, rowNameSize, rowNameTop, splitNames, toolsH, toolsRight } from '../src/app/map-top.ts';
 
 test('the map\'s top strip is one grid: the tools\' row, then every column\'s first line (Karl, 2026-11-21)', () => {
   // A map button is 26 px from 8 px down; the Bevel frame's are 23 px (styles.css), so its first line is 3 px higher.
@@ -63,8 +63,10 @@ test('the split\'s names on the levels button: each as far into its own sub-colu
 test('every column\'s heading draws on the grid: its name on the tools\' row, its figures from the first line', () => {
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   // The profile column and a measure's column name themselves on the tools' row in the name's look.
-  assert.match(heat, /ctx\.fillText\(fit\(t\('Profile'\)\), x0 \+ HEAD_INSET, rowNameTop\(look\)\)/);
-  assert.match(heat, /measure\(def\.name\(\)\) <= headRoom \? def\.name\(\) : fitText\(measure, def\.short\(\), headRoom\), x0 \+ HEAD_INSET, rowNameTop\(look\)\)/);
+  // A column's name a step above the buttons' labels (rowNameSize), level with them.
+  assert.match(heat, /ctx\.fillText\(fit\(t\('Profile'\)\), x0 \+ HEAD_INSET, rowNameTop\(look, nameSize\)\)/);
+  assert.match(heat, /measure\(def\.name\(\)\) <= headRoom \? def\.name\(\) : fitText\(measure, def\.short\(\), headRoom\), x0 \+ HEAD_INSET, rowNameTop\(look, nameSize\)\)/);
+  assert.equal(heat.match(/const nameSize = rowNameSize\(pw < NARROW_PLOT\);/g)?.length, 2);
   // Their figures, and the liquidation column's, start on the first line; the split's sub-columns too, then the words across, then the notes.
   assert.match(heat, /fit\(t\('LEVEL MAX \{value\}', \{ value: usd\(maxLevel\) \}\)\), x0 \+ HEAD_INSET, first\)/);
   assert.match(heat, /ctx\.fillText\(head, x0 \+ HEAD_INSET, firstY\);/);
@@ -112,4 +114,43 @@ test('History is a map button like the levels button and the corner tools, with 
   assert.match(css, /\.pane\.heat \.liq-history::before \{[^}]*mask:/, 'a drawn glyph, not a typed one');
   assert.match(css, /:root\[data-frame="bevel"\] \.pane\.heat \.liq-history \{ height: 23px; box-shadow: none; \}/);
   assert.match(chrome, /\.pane\.heat :is\([^)]*\.liq-kind, \.liq-history\) \{ border-radius: var\(--radius\); background: var\(--face\)/);
+});
+
+test("names on the tools' row are a step above the buttons' 11 px labels, level with them, and a lane's plate centred on them (Karl, 2026-11-24)", () => {
+  assert.equal(rowNameSize(false), 12); assert.equal(rowNameSize(true), 11);
+  for (const frame of [undefined, 'bevel']) {
+    for (const size of [11, 12]) {
+      const middle = 8 + toolsH(frame) / 2, words = rowNameTop(frame, size) + size / 2;
+      assert.ok(Math.abs(words - middle) <= 1, `${size} px words level with the buttons (${frame ?? 'editor'}): ${words} against ${middle}`);
+    }
+    const plate = plateTop(frame) + PLATE_H / 2, middle = 8 + toolsH(frame) / 2;
+    assert.ok(Math.abs(plate - middle) <= 1, `the plate centred on the buttons (${frame ?? 'editor'})`);
+  }
+});
+
+test('the corner tools end left of the liquidation lanes and their titles, else in the corner, with slack at the switch (Karl, 2026-11-24)', () => {
+  // Karl's 8787 map: a 1,561 px plot, the stripe from 1,436, a 430 px row (about 190 as drawings alone).
+  assert.deepEqual(toolsRight({ pw: 1561, edge: 1436, width: 190, minLeft: 160, anchored: false }), { right: 1428, anchored: true });
+  // No stripe (levels off, another coin, a replay, the live edge off the map): the corner, 8 px in.
+  assert.deepEqual(toolsRight({ pw: 1561, edge: null, width: 190, minLeft: 160, anchored: true }), { right: 1553, anchored: false });
+  // A stripe reaching the plot's right edge (nothing to keep clear of): the corner.
+  assert.deepEqual(toolsRight({ pw: 1561, edge: 1600, width: 190, minLeft: 160, anchored: false }), { right: 1553, anchored: false });
+  // The live edge so far left that the row would leave the legend under 160 px: the corner, as before.
+  assert.equal(toolsRight({ pw: 1561, edge: 300, width: 190, minLeft: 160, anchored: false }).anchored, false);
+  // At the switch: 16 px of slack each way, so a width at the edge does not flip back and forth.
+  const at = 8 + 190 + 160; // the edge where the row just leaves the legend its room
+  assert.equal(toolsRight({ pw: 1561, edge: at + 10, width: 190, minLeft: 160, anchored: false }).anchored, false, 'not yet: 16 px more first');
+  assert.equal(toolsRight({ pw: 1561, edge: at + 17, width: 190, minLeft: 160, anchored: false }).anchored, true);
+  assert.equal(toolsRight({ pw: 1561, edge: at - 10, width: 190, minLeft: 160, anchored: true }).anchored, true, 'kept until 16 px past');
+  assert.equal(toolsRight({ pw: 1561, edge: at - 17, width: 190, minLeft: 160, anchored: true }).anchored, false);
+});
+
+test('the corner tools follow the lanes only where the row is on the map: no frame asks for another on a phone or under the compact bar (review r1)', () => {
+  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
+  assert.match(heat, /this\.#toolsLive = !!tools && !isPhone\(\);\n    if \(!tools \|\| !this\.#toolsLive\) \{ this\.#toolsAt = \{ right: Infinity, anchored: false \}; return; \}/);
+  assert.match(heat, /if \(this\.#toolsLive\) \{ const at = this\.#cornerAt\(pw\); if \(at\.right !== this\.#toolsAt\.right \|\| at\.anchored !== this\.#toolsAt\.anchored\) this\.invalidate\(\); \}/);
+  // The legend stands 20 px beside the row: the row moves only where that leaves the legend its least room.
+  assert.match(heat, /minLeft: LEGEND_MIN_BESIDE_PX \+ 20,/);
+  // The out-of-date plates are placed with the titles, after them, so none lands on a title, a note or past the foot.
+  assert.match(heat, /const ys = placeCaptions\(\[\.\.\.plates, \.\.\.warns\], keep, plateTop\(look\), PLATE_H, this\.plotH\);/);
 });

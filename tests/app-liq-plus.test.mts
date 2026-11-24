@@ -1572,9 +1572,9 @@ test('Sol r2-1 (P2): the chart\'s price takes the right half\'s levels away on t
 });
 
 test('Sol r2-2 (P2): with the left half out of date and no chart price, the ladder is centred on the right half\'s mark, not the left snapshot\'s', async () => {
-  // Liquidations beside stops: everyone's liquidations four hours old marked at 80 (out of date), their stops fresh, marked at 100.
+  // Liquidations beside stops: everyone's liquidations a day old marked at 80 (past STALE_MS: not drawn), their stops fresh, marked at 100.
   const t = await tabWith({ [U.triggers]: { status: 200, body: triggers(NEAR.all.stops, NEAR.all.takes) } }, { liq: true, stops: true, takes: false, group: 'all', split: 'kinds' },
-    () => ({ ...free(NEAR.all.liq, AS_OF - 210 * MIN), mark: 80 }));
+    () => ({ ...free(NEAR.all.liq, AS_OF - 25 * 60 * MIN), mark: 80 }));
   try {
     assert.equal(t.src.state, 'stale', 'the left half is out of date'); assert.equal(t.src.right!.state, 'ready');
     assert.equal(t.src.lastPrice(), 80, 'the left snapshot\'s mark');

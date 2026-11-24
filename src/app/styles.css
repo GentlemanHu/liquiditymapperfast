@@ -372,7 +372,8 @@ html[data-bar="compact"] .toast { bottom: 76px; }
 /* The pointer's layer (crosshair, legend) lies over the overlay, which takes the pointer. */
 .pane.heat canvas.hover { pointer-events: none; }
 /* Select and Recenter act on the map, so they sit in the map's top-right corner, left of the profile column. */
-.pane.heat .map-tools { position: absolute; z-index: 3; top: 8px; right: calc(var(--gutter, 192px) + 8px); display: flex; gap: 6px; }
+/* Where the liquidation stripe is drawn the row ends just left of it and its lanes' titles (heat-pane.ts `#fitCorner`, map-top.ts `toolsRight`): --tools-shift. */
+.pane.heat .map-tools { position: absolute; z-index: 3; top: 8px; right: calc(var(--gutter, 192px) + 8px + var(--tools-shift, 0px)); display: flex; gap: 6px; }
 .pane.heat .map-recenter, .pane.heat .map-select, .pane.heat .map-goto, .pane.heat .map-draw, .pane.heat .map-layout, .pane.heat .map-max { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px 0 7px; border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 86%, transparent); font-size: 11px; color: var(--text); box-shadow: 3px 3px 0 var(--shadow); }
 /* Select wears the Range lamp on its left, then a dashed box: the selection it makes. */
