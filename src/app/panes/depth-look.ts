@@ -322,7 +322,8 @@ export class LitPainter {
       if (this.#overlay.height !== H) this.#overlay.height = H;
       const o = layerContext(this.#overlay);
       o.setTransform(1, 0, 0, 1, 0, 0); o.clearRect(0, 0, W, H); o.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // A compact pane (its usual height) takes thinner lit lines and no halo: there a band is a few pixels, and the glow filled them.
+      // A compact pane (its usual height) takes thinner lit lines and no halo: there a band is a few pixels, and the glow filled them. The lit edge
+      // is at most half a pixel over the plain 1 px contour (Karl, 2026-11-24: 2.5 px read too thick), its halo 5 px at most and fainter.
       const compact = input.ph <= 160, soft = p.frame !== 'bevel' && p.frame !== 'textmode', glow = soft && !compact, weights = litWeights(input.top, lit);
       // The lit strips first, then the halo under the edges (drawn opaque on a layer of its own and laid on once at low alpha, so overlapping
       // pieces never add up), then the edges.
@@ -344,16 +345,16 @@ export class LitPainter {
           const w = i === 0 ? weights.up : weights.down;
           for (let j = input.top; j >= 0; j--) {
             const k = Math.min(1, Math.max(w[j]!, j < input.top ? w[j + 1]! : 0)) ** 1.5; if (k < 0.25) continue;
-            halo.fillStyle = p.dark ? s.ink[j]! : s.side; litEdge(halo, s.runs[j]!, 1 + 6 * k, dpr);
+            halo.fillStyle = p.dark ? s.ink[j]! : s.side; litEdge(halo, s.runs[j]!, 1 + 4 * k, dpr);
           }
         });
-        o.setTransform(1, 0, 0, 1, 0, 0); o.globalAlpha = p.dark ? 0.24 : 0.16; o.drawImage(this.#halo, 0, 0); o.globalAlpha = 1; o.setTransform(dpr, 0, 0, dpr, 0, 0);
+        o.setTransform(1, 0, 0, 1, 0, 0); o.globalAlpha = p.dark ? 0.18 : 0.12; o.drawImage(this.#halo, 0, 0); o.globalAlpha = 1; o.setTransform(dpr, 0, 0, dpr, 0, 0);
       }
       this.#sides.forEach((s, i) => {
         const w = i === 0 ? weights.up : weights.down;
         for (let j = input.top; j >= 0; j--) {
           const k = Math.min(1, Math.max(w[j]!, j < input.top ? w[j + 1]! : 0)) ** 1.5; if (k < 0.05) continue;
-          o.fillStyle = s.ink[j]!; o.globalAlpha = 0.25 + 0.75 * k; litEdge(o, s.runs[j]!, 1 + (glow ? 1.5 : 1) * k, dpr); o.globalAlpha = 1;
+          o.fillStyle = s.ink[j]!; o.globalAlpha = 0.25 + 0.75 * k; litEdge(o, s.runs[j]!, 1 + (glow ? 0.5 : 0.35) * k, dpr); o.globalAlpha = 1;
         }
       });
       this.#litKey = litKey;
