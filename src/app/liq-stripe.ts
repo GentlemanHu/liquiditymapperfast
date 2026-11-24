@@ -110,7 +110,7 @@ export function stripeNote(src: LiqLevelsSource, view: LiqView, pair: LiqPair | 
     const all = groupTitle(view.group), head = levels && ready ? liqNote(src, view, levels.asOf, all) : ofGroup(all, why());
     return [head, ...groupNoteParts(right, ready ? src.asOfs() : { liq: null, orders: null })].join(' · ');
   }
-  const said = both ? { ...src.setOf(both), takesState: src.takesState } : src;
+  const said = both ? { ...src.setOf(both), takesState: src.takesState, attribution: () => src.attribution() } : src;
   return levels && ready ? liqNote(said, both ?? view, levels.asOf) : why();
 }
 
