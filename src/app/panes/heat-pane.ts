@@ -439,6 +439,8 @@ export class HeatPane {
   #toolsW = { key: '', named: 0, compact: 0 };
   #toolsShift = 0;
   #laneEdge: number | null = null;
+  /** Whether the corner tools' row is on the map to place (not a phone's, not the compact bar's, which takes it off): only then does it follow the lanes. */
+  #toolsLive = false;
   /** The stripe's caption plates of this frame, their places across (`#placeLiqCaptions`), placed and painted once the map's lines and the volume strip are drawn (`#paintLiqPlates`). */
   #liqPlates: (LaneCaption & { x: number; w: number; rank: number })[] | null = null;
   /** Where this frame's volume strip printed its names (`paintVolumeStrip`), which the stripe's captions keep clear of. */
@@ -1490,7 +1492,7 @@ export class HeatPane {
     this.#laneEdge = null;
     if (state.liqLevels.on) this.#paintLiquidationLevels(ctx, state, pw, ph);
     // The corner tools' row follows the lanes (`#fitCorner`, at the next frame's start): where this frame's lanes want it elsewhere, one more frame.
-    { const at = this.#cornerAt(pw); if (at.right !== this.#toolsAt.right || at.anchored !== this.#toolsAt.anchored) this.invalidate(); }
+    if (this.#toolsLive) { const at = this.#cornerAt(pw); if (at.right !== this.#toolsAt.right || at.anchored !== this.#toolsAt.anchored) this.invalidate(); }
     this.#paintVolume(ctx, state, pw, ph, this.#lodFrame.narrowing);
     // Under the candles as the volume bars are, and under the legend and the corner buttons, whose bottoms it is placed by; over what the
     // columns add up, with the marks' absorption thresholds; what it asked for redraws the map when it comes.
@@ -1867,7 +1869,9 @@ export class HeatPane {
    */
   #fitCorner(pw: number): void {
     const tools = this.root.querySelector<HTMLElement>('.map-tools');
-    if (!tools || isPhone()) return;
+    // No row to place (a phone, the compact bar): nothing follows the lanes, and none of the frame's checks asks for another frame (review r1, P1).
+    this.#toolsLive = !!tools && !isPhone();
+    if (!tools || !this.#toolsLive) { this.#toolsAt = { right: Infinity, anchored: false }; return; }
     const html = document.documentElement;
     // Its widths, named and drawings alone, measured again only when what sizes them can have changed.
     const wKey = `${tools.querySelectorAll(':scope > :not([hidden])').length}|${tools.textContent?.length ?? 0}|${html.dataset.frame ?? ''}|${html.lang}`;
@@ -1893,7 +1897,8 @@ export class HeatPane {
   /** Where the corner tools' row should end now (`toolsRight`), or where it is while a hand moves the map. */
   #cornerAt(pw: number): { right: number; anchored: boolean } {
     if (this.#followHeld() && Number.isFinite(this.#toolsAt.right)) return this.#toolsAt;
-    return toolsRight({ pw, edge: this.#laneEdge, width: this.#toolsW.compact, minLeft: LEGEND_MIN_BESIDE_PX, anchored: this.#toolsAt.anchored });
+    // The legend stands beside the row with 20 px between (`#paintLegend`): the row moves only where that leaves it its least room (review r1).
+    return toolsRight({ pw, edge: this.#laneEdge, width: this.#toolsW.compact, minLeft: LEGEND_MIN_BESIDE_PX + 20, anchored: this.#toolsAt.anchored });
   }
   /** The corner tools' row's right edge on the plot (px from its left): the plot's corner, or left of the liquidation lanes. */
   #toolsRight(pw: number): number { return Math.min(pw - 8, Number.isFinite(this.#toolsAt.right) ? this.#toolsAt.right : pw - 8); }
@@ -2482,36 +2487,35 @@ export class HeatPane {
     if (!plates?.length) return;
     const look = document.documentElement.dataset.frame, size = rowNameSize(pw < NARROW_PLOT), SAMPLE = 12, warn = t('Out of date');
     const keep = captionKeepOut({ corner: this.#cornerTools(pw), legend: this.#legendBox, history: this.#historyNote, note: this.#liqNoteBox, names: this.#stripNames });
-    const ys = placeCaptions(plates, keep, plateTop(look), PLATE_H, this.plotH);
     ctx.save();
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+    // Titled lanes out of date say so under their titles (Karl, 2026-11-24): one plate under them all where all are (one snapshot), else one under
+    // each. The plates are placed with the titles (`placeCaptions`, after them, last where room is short), so none lands on a title, a note or past
+    // the plot's foot (review r1, P2).
+    ctx.font = bodyFont(10);
+    const need = Math.ceil(ctx.measureText(warn).width) + 12, titled = plates.filter(pl => pl.words), fitX = (x: number, w: number): number => Math.max(2, Math.min(x, pw - 2 - w));
+    const warns = titled.length && titled.every(pl => pl.old) ? [{ x: fitX(Math.min(...titled.map(pl => pl.x)), need), w: need, rank: 2 }]
+      : titled.filter(pl => pl.old).map(pl => ({ x: fitX(pl.x, Math.max(pl.w, need)), w: Math.max(pl.w, need), rank: 2 }));
+    const ys = placeCaptions([...plates, ...warns], keep, plateTop(look), PLATE_H, this.plotH);
     const fit = (words: string, room: number): string => fitText(w2 => ctx.measureText(w2).width, words, room);
     // A label, not a button (map-top.ts): a plate like the legend's, rounded and without an edge.
-    const plate = (x: number, y: number, w: number, h: number): void => {
-      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(x, y, w, h, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
+    const plate = (x: number, y: number, w: number): void => {
+      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(x, y, w, PLATE_H, Math.min(6, this.#radius * 2)); ctx.fill(); ctx.globalAlpha = 1;
     };
-    const warnAt = (x: number, y: number, w: number): void => { ctx.font = bodyFont(10); ctx.fillStyle = cautionInk(p); ctx.fillText(fit(warn, w - 12), x + 6, y + PLATE_H / 2 + 0.5); };
-    const titled: { x: number; y: number; w: number; old: boolean }[] = [];
-    plates.forEach(({ x, w, words, dashed, old }, i) => {
+    const warnAt = (x: number, y: number, w: number): void => { plate(x, y, w); ctx.font = bodyFont(10); ctx.fillStyle = cautionInk(p); ctx.fillText(fit(warn, w - 12), x + 6, y + PLATE_H / 2 + 0.5); };
+    plates.forEach(({ x, w, words, dashed }, i) => {
       const y = ys[i];
       if (y === null || y === undefined) return;
-      plate(x, y, w, PLATE_H);
       // The one lane of no split, which the column's button names, says only that it is out of date.
       if (!words) { warnAt(x, y, w); return; }
+      plate(x, y, w);
       const mid = y + PLATE_H / 2;
       ctx.strokeStyle = p.text; ctx.lineWidth = 3; ctx.setLineDash(dashed ? TAKE_DASH as number[] : []); ctx.lineDashOffset = 0;
       ctx.beginPath(); ctx.moveTo(x + 5, mid); ctx.lineTo(x + 5 + SAMPLE - 2, mid); ctx.stroke(); ctx.setLineDash([]);
       ctx.font = nameFont(size); ctx.fillStyle = p.text;
       ctx.fillText(fit(words, w - SAMPLE - 12), x + 7 + SAMPLE, mid + 0.5);
-      titled.push({ x, y, w, old });
     });
-    // Titled lanes out of date say so under their titles (Karl, 2026-11-24): once under them all where all are (one snapshot), else under each.
-    ctx.font = bodyFont(10);
-    const need = Math.ceil(ctx.measureText(warn).width) + 12, under = (t0: { y: number }): number => t0.y + PLATE_H + 2;
-    if (titled.length && titled.every(t0 => t0.old)) {
-      const y = Math.max(...titled.map(under)), x = Math.max(2, Math.min(Math.min(...titled.map(t0 => t0.x)), pw - 2 - need));
-      plate(x, y, need, PLATE_H); warnAt(x, y, need);
-    } else for (const t0 of titled) if (t0.old) { const w = Math.max(t0.w, need), x = Math.max(2, Math.min(t0.x, pw - 2 - w)); plate(x, under(t0), w, PLATE_H); warnAt(x, under(t0), w); }
+    warns.forEach(({ x, w }, i) => { const y = ys[plates.length + i]; if (y !== null && y !== undefined) warnAt(x, y, w); });
     ctx.restore();
   }
 

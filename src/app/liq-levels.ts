@@ -901,8 +901,10 @@ export class LiqLevelsSource implements LiqSet {
    */
   outOfDate(): boolean { return this.#outOfDateOf(this.#view); }
   #outOfDateOf(v: LiqView): boolean {
-    const { orders } = this.#asOfsOf(v);
-    return this.#liqOldOf(v) || (orders !== null && this.now() - orders > OLD_MS);
+    // The order file counts only where the lane draws from it: stops in the curve, or take profits on alone (the take profits beside the curve
+    // have their own lane and `takesOutOfDate`; review r1).
+    const { orders } = this.#asOfsOf(v), fromOrders = v.stops || curveOf(v) === 'takes';
+    return this.#liqOldOf(v) || (fromOrders && orders !== null && this.now() - orders > OLD_MS);
   }
   /** Whether the take profits beside the curve come from an order file older than `OLD_MS` (their lane's title says so). */
   takesOutOfDate(): boolean { const o = takesBeside(this.#view) ? this.#orders()?.data.asOf ?? null : null; return o !== null && this.now() - o > OLD_MS; }

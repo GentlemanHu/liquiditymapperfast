@@ -2,6 +2,7 @@
 // where the column is drawn split, everyone's chosen kinds beside the profitable traders', each on its own scale, captioned and named in its
 // reading by its group; the profitable traders' lane from their own files alone (absent orders said, never everyone's in their place); every
 // lane's rows kept by a key that names its group and order family; and one lane, everyone's, wherever the column is not drawn split.
+import { PLATE_H } from '../src/app/map-top.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -419,7 +420,7 @@ test('a short map gives the note fewer lines, so the stripe\'s captions keep the
     const most = noteMostLines(ph, under);
     assert.ok(most >= 2 && most <= 4, `${ph}/${under}: two to four lines`);
     // Past the two lines the note always had, a line is given only where the history note's line, the note and three captions still fit.
-    if (most > 2) assert.ok(under + 13 + 13 * most + 3 + 3 * 17 <= ph, `${ph}/${under}: ${most} lines leave the captions their room`);
+    if (most > 2) assert.ok(under + 13 + 13 * most + 3 + 3 * (PLATE_H + 2) <= ph, `${ph}/${under}: ${most} lines leave the captions their room`);
   }
   const pane = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   // `layNote` lays it out in `noteMostLines`, then fewer where the volume strip's names stand (tests/app-liq-split-phone.test.mts).

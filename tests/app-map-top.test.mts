@@ -144,3 +144,13 @@ test('the corner tools end left of the liquidation lanes and their titles, else 
   assert.equal(toolsRight({ pw: 1561, edge: at - 10, width: 190, minLeft: 160, anchored: true }).anchored, true, 'kept until 16 px past');
   assert.equal(toolsRight({ pw: 1561, edge: at - 17, width: 190, minLeft: 160, anchored: true }).anchored, false);
 });
+
+test('the corner tools follow the lanes only where the row is on the map: no frame asks for another on a phone or under the compact bar (review r1)', () => {
+  const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
+  assert.match(heat, /this\.#toolsLive = !!tools && !isPhone\(\);\n    if \(!tools \|\| !this\.#toolsLive\) \{ this\.#toolsAt = \{ right: Infinity, anchored: false \}; return; \}/);
+  assert.match(heat, /if \(this\.#toolsLive\) \{ const at = this\.#cornerAt\(pw\); if \(at\.right !== this\.#toolsAt\.right \|\| at\.anchored !== this\.#toolsAt\.anchored\) this\.invalidate\(\); \}/);
+  // The legend stands 20 px beside the row: the row moves only where that leaves the legend its least room.
+  assert.match(heat, /minLeft: LEGEND_MIN_BESIDE_PX \+ 20,/);
+  // The out-of-date plates are placed with the titles, after them, so none lands on a title, a note or past the foot.
+  assert.match(heat, /const ys = placeCaptions\(\[\.\.\.plates, \.\.\.warns\], keep, plateTop\(look\), PLATE_H, this\.plotH\);/);
+});
