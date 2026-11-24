@@ -3639,5 +3639,6 @@
  "Hear a {tier} long liquidation": "Ouvir uma liquidação de long {tier}",
  "Unusual candle volume": "Volume de vela incomum",
  "Trade side": "Lado das ordens",
- "Both sides, or only large market buys or only large market sells.": "Ambos os lados, ou apenas grandes compras a mercado ou apenas grandes vendas a mercado."
+ "Both sides, or only large market buys or only large market sells.": "Ambos os lados, ou apenas grandes compras a mercado ou apenas grandes vendas a mercado.",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Como os níveis mostrados aqui mudaram ao longo do tempo, sejam quais forem os tipos que o botão no topo da coluna mostra (liquidações, stops, take profits): abre-os no painel Profundidade."
 }

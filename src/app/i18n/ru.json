@@ -3691,5 +3691,6 @@
  "Hear a {tier} long liquidation": "Прослушать ликвидацию лонга ({tier})",
  "Unusual candle volume": "Необычный объём свечи",
  "Trade side": "Сторона сделок",
- "Both sides, or only large market buys or only large market sells.": "Обе стороны, только крупные рыночные покупки или только крупные рыночные продажи."
+ "Both sides, or only large market buys or only large market sells.": "Обе стороны, только крупные рыночные покупки или только крупные рыночные продажи.",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Как показанные здесь уровни менялись со временем, какие бы виды ни показывала кнопка вверху колонки (ликвидации, стопы, тейк-профиты): открывает их в панели «Глубина»."
 }

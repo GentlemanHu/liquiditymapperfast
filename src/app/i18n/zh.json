@@ -3393,5 +3393,6 @@
  "Hear a {tier} long liquidation": "试听 {tier} 档多单强平音",
  "Unusual candle volume": "异常K线成交量",
  "Trade side": "成交方向",
- "Both sides, or only large market buys or only large market sells.": "双向，或仅大额市价买入，或仅大额市价卖出。"
+ "Both sides, or only large market buys or only large market sells.": "双向，或仅大额市价买入，或仅大额市价卖出。",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "这里显示的价位随时间如何变化，无论这一栏顶部按钮显示哪些种类（强平、止损、止盈）：在深度面板中打开它们。"
 }

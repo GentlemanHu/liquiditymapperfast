@@ -3393,5 +3393,6 @@
  "Hear a {tier} long liquidation": "{tier} 롱 청산 소리 듣기",
  "Unusual candle volume": "이례적 캔들 거래량",
  "Trade side": "체결 방향",
- "Both sides, or only large market buys or only large market sells.": "양방향, 대형 시장가 매수만 또는 대형 시장가 매도만."
+ "Both sides, or only large market buys or only large market sells.": "양방향, 대형 시장가 매수만 또는 대형 시장가 매도만.",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "여기 표시된 레벨이 시간에 따라 어떻게 바뀌었는지(열 위쪽 버튼에서 고른 종류: 청산, 손절, 익절). 뎁스 패널에서 엽니다."
 }

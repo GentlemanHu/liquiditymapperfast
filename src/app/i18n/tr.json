@@ -3571,5 +3571,6 @@
  "Hear a {tier} long liquidation": "{tier} long likidasyon sesini dinle",
  "Unusual candle volume": "Olağandışı mum hacmi",
  "Trade side": "İşlem yönü",
- "Both sides, or only large market buys or only large market sells.": "Her iki yön, yalnızca büyük piyasa alışları veya yalnızca büyük piyasa satışları."
+ "Both sides, or only large market buys or only large market sells.": "Her iki yön, yalnızca büyük piyasa alışları veya yalnızca büyük piyasa satışları.",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Burada gösterilen seviyelerin zaman içinde nasıl değiştiği; sütunun üstündeki düğme hangi türleri gösteriyorsa (tasfiyeler, stoplar, kâr al): bunları Derinlik panelinde açar."
 }

@@ -3393,5 +3393,6 @@
  "Hear a {tier} long liquidation": "{tier} のロング清算を試聴",
  "Unusual candle volume": "異常なローソク出来高",
  "Trade side": "約定サイド",
- "Both sides, or only large market buys or only large market sells.": "両サイド、大口成行買いのみ、または大口成行売りのみ。"
+ "Both sides, or only large market buys or only large market sells.": "両サイド、大口成行買いのみ、または大口成行売りのみ。",
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "ここに表示されているレベルが時間とともにどう変わったか（列の上部のボタンで選んだ種類のとおり：清算、ストップ、利益確定）。それらをデプスパネルで開きます。"
 }
