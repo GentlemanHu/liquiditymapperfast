@@ -29,7 +29,7 @@ import { curveOf, groupTitle, kindName, levelsDescription, liveDepthView, liveSp
 import { toggleLevels } from '../levels-control.ts';
 import { ordersAbsent, readFailed } from '../liq-words.ts';
 import { wrapText } from '../text-fit.ts';
-import { FREE_DAYS, freeFrom, plusOnSale } from '../plus/config.ts';
+import { FREE_DAYS, FREE_PASS, freeFrom, plusFree, plusOnSale } from '../plus/config.ts';
 import { plus } from '../plus/pass.ts';
 import { togglePlus } from '../plus/panel.ts';
 import type { StatOptions } from '../stat-options.ts';
@@ -540,7 +540,7 @@ export class DepthPane extends TimePane {
   /** The liquidation levels' history (liq-history.ts), read a UTC day at a time while the pane shows Liquidation levels. */
   // The server's boundary decides what goes with a pass, sale or no sale. While Plus is not on sale the page closes nothing by itself: every
   // day is asked for, and only the gate's own refusal closes one (and the days before it).
-  readonly #history = new LiqHistory(undefined, { freeFrom, onSale: plusOnSale, pass: now => plus().pass(now), refused: pass => plus().refused(pass) });
+  readonly #history = new LiqHistory(undefined, { freeFrom, onSale: plusOnSale, pass: now => plusFree() ? FREE_PASS : plus().pass(now), refused: pass => { if (!plusFree()) plus().refused(pass); } });
   /** The Liquidation levels series last built, with the row in force in each pixel column, kept until the history, the view or the bands change. */
   #liq: LiqSeries | null = null;
   /**

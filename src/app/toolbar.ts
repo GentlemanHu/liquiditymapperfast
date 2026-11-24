@@ -17,6 +17,7 @@ import { InstallButton } from './install.ts';
 import { toggleAuthor } from './author.ts';
 import { PLUS_NAME, pressPlus } from './plus/panel.ts';
 import { plus } from './plus/pass.ts';
+import { PLUS_FREE } from './plus/config.ts';
 import { HELP, helpButton, setTourStarter, showGuide, showTour, type HelpId } from './help.ts';
 import { openVenueDialog } from './venue-dialog.ts';
 import type { VenueControl } from './source.ts';
@@ -866,7 +867,7 @@ export class Toolbar {
       // arrow that folds the bar away sits on that deck's bottom edge, taking no width: room kept for it at the bar's end wrapped this deck
       // onto a second row at 1,600 px, doubling the bar, and the top edge holds the title.
       // Install stands before the screenshot mark, so that the mark keeps its place whether the browser offers installing or not (Install comes in beside Author).
-      const tools = deck('tools', 'LiquidityMapperFast', [this.#plus, this.#guide], [this.#author, this.#install.root, this.#shot, ...(host ? [] : [this.#tab, this.#zone, this.#language, this.#theme, this.#status])]);
+      const tools = deck('tools', 'LiquidityMapperFast', [...(PLUS_FREE ? [] : [this.#plus]), this.#guide], [this.#author, this.#install.root, this.#shot, ...(host ? [] : [this.#tab, this.#zone, this.#language, this.#theme, this.#status])]);
       tools.append(this.#collapse);
       this.#deckBreaks = []; this.#fitted = null; this.#fittedOrder = '';
       this.#decks = [
@@ -1016,7 +1017,7 @@ export class Toolbar {
     this.#sheet = openSheet(t('Settings'), body => {
       this.#heatctl.replaceChildren();
       body.append(
-        section(t('Tools'), [el('div', { class: 'sheet-tiles' }, this.#plus, this.#tour, this.#range, this.#guide, this.#shot, this.#author, this.#install.root, ...(isPhone() ? [backup] : []))]),
+        section(t('Tools'), [el('div', { class: 'sheet-tiles' }, ...(PLUS_FREE ? [] : [this.#plus]), this.#tour, this.#range, this.#guide, this.#shot, this.#author, this.#install.root, ...(isPhone() ? [backup] : []))]),
         section(t('Panels'), [this.#toggles, el('p', { class: 'sheet-note', textContent: t('Depth, OI, Delta, L/S and Stats each add a tab to the bar under the map.') })]),
         // A phone arranges its panes by tab; a touch tablet that keeps the desktop's arrangement has the layouts here, its map's corner being clear of buttons.
         ...(isPhone() ? [] : [section(t('Layouts'), [el('div', { class: 'sheet-tiles' }, button(t('Layouts'), () => { this.#sheet?.close(); this.#openLayouts(this.#more); }, t('Layouts: choose a ready-made arrangement of the panels, or save your own')), backup)])]),

@@ -309,7 +309,7 @@ export const liqColumnShown = (state: AppState): boolean => { const l = state.li
  * 2026-11-19) widens it to two sub-columns where the plot the unsplit column leaves keeps the desktop's floor (`liqColumnWidth`), so it never
  * folds a side column; with less room the column stays one, and says so (`narrowNote`).
  */
-const liqColumnW = (state: AppState): number => liqColumnWidth({ shown: liqColumnShown(state), compact: COMPACT, strip: PROFILE_STRIP_W, column: PROFILE_W, split: !!liveSplit(state.liqLevels),
+const liqColumnW = (state: AppState): number => liqColumnWidth({ shown: liqColumnShown(state), compact: COMPACT, strip: PROFILE_STRIP_W, column: PROFILE_W, split: liqColumnShown(state) && !!liveSplit(state.liqLevels),
   plotUnsplit: PANE_W - (AXIS_W + PROFILE_W + profileColumnW(state) + (sideColumns(state).right.length + sideColumns(state).left.length) * TRADED_W), floor: MAP_PLOT_FLOOR });
 /** Whether the liquidation column is drawn split this frame (two sub-columns): a split chosen and drawn, and room for it. */
 export const liqSplitDrawn = (state: AppState): boolean => !COMPACT && liqColumnW(state) === SPLIT_COLUMN_W;

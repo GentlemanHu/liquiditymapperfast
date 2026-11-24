@@ -15,6 +15,7 @@ import { liqLevelsUrl, plusUrls } from './liq-url.ts';
 import { isRefusal, linkedWebFetch, type LiqFetch } from './liq-history.ts';
 import { FREE_VIEW, curveOf, ordersShown, takesBeside, viewKey, type LiqView } from './liq-view.ts';
 import { plus } from './plus/pass.ts';
+import { FREE_PASS, plusFree } from './plus/config.ts';
 import type { AppState, CandleRow } from './store.ts';
 import type { View } from './view.ts';
 
@@ -697,7 +698,7 @@ class SumLayer {
  * the pass it was sent (`Plus.refused`).
  */
 export interface LiqPlusAccess { pass(now: number): string | null; refused(pass: string): void }
-const MEMBER: LiqPlusAccess = { pass: now => plus().pass(now), refused: pass => plus().refused(pass) };
+const MEMBER: LiqPlusAccess = { pass: now => plusFree() ? FREE_PASS : plus().pass(now), refused: pass => { if (!plusFree()) plus().refused(pass); } };
 
 /** A Plus file the levels need beyond the free one (the groups', the stop and take-profit orders'), as read so far. */
 interface PlusPart<T> {

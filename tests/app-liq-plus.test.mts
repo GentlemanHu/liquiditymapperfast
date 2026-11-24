@@ -17,6 +17,17 @@ import { usd } from '../src/app/format.ts';
 import { DepthRangeSummary, depthHeldKey, type DepthPaneHeld } from '../src/app/range/depth-lines.ts';
 import { LiqPane } from '../src/app/panes/liq-pane.ts';
 import { plus } from '../src/app/plus/pass.ts';
+import { plusFree, setPlusFreeForTests } from '../src/app/plus/config.ts';
+import { plusOn } from '../src/app/liq-view.ts';
+
+// While Plus is free (2026-11-24) every visitor is a member; these tests are of the membership as it was sold, and come back with it.
+test('while Plus is free every visitor reads what Plus opens', () => {
+  setPlusFreeForTests(null);
+  assert.equal(plusFree(), true);
+  assert.equal(plusOn(), true);
+  setPlusFreeForTests(false);
+});
+setPlusFreeForTests(false);
 import type { InfoLine } from '../src/app/infobox.ts';
 import { BTC } from '../src/shared/coins.ts';
 import type { CandleRow } from '../src/app/store.ts';
