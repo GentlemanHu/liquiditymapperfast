@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createLocalServer } from '../src/server/http.mts';
 import { installV2 } from '../src/server/v2/api.mts';
 import { HistoryStore } from '../src/server/history.mts';
@@ -117,11 +120,18 @@ test('the live socket says it answers long/short questions, and answers each by 
     socket.send(JSON.stringify({ t: 'ls', id: 8, inst: 'bybit:BTCUSDT', metric: 'everyone', tf: '1h', from: now - 1, to: now }));
     socket.send(JSON.stringify({ t: 'ls', id: 9, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now, to: now - 1 }));
     socket.send(JSON.stringify({ t: 'ls', id: 'x', inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: 1, to: 2 }));
-    await until(() => texts.filter(m => m.t === 'ls').length >= 3);
+    // The period the pane names: a number of milliseconds or none.
+    socket.send(JSON.stringify({ t: 'ls', id: 10, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now - 1, to: now, period: '1h' }));
+    socket.send(JSON.stringify({ t: 'ls', id: 11, inst: 'bybit:BTCUSDT', metric: 'accounts', tf: '1h', from: now - 1, to: now, period: -3_600_000 }));
+    socket.send(JSON.stringify({ t: 'ls', id: 12, inst: 'hyperliquid:BTC-PERP', metric: 'accounts', tf: '1h', from: now - 86_400_000, to: now, budget: 1500, period: 3_600_000 }));
+    await until(() => texts.filter(m => m.t === 'ls').length >= 6);
     const answers = new Map(texts.filter(m => m.t === 'ls').map(m => [m.id, m]));
     assert.deepEqual((answers.get(7)!.series as { status: string; points: unknown[] }).status, 'unsupported');
     assert.match(String(answers.get(8)!.error), /metric must be one of/);
     assert.match(String(answers.get(9)!.error), /from and to/);
+    assert.match(String(answers.get(10)!.error), /period must be milliseconds/);
+    assert.match(String(answers.get(11)!.error), /period must be milliseconds/);
+    assert.equal((answers.get(12)!.series as { status: string }).status, 'unsupported', 'a good period goes to the cache with the question');
     await new Promise<void>(resolve => setTimeout(resolve, 100));
     assert.equal(answers.has('x'), false, 'a question with no id of its own is not answered');
   } finally {
@@ -226,5 +236,22 @@ test('a socket runs four tracker questions at once: the fifth, a reused id and a
   } finally {
     socket.terminate(); v2.close();
     app.server.closeAllConnections(); await new Promise<void>(resolve => app.server.close(() => resolve())); await app.close();
+  }
+});
+
+test('LS_TRACE names a file the server writes its long/short trace to, a line when it starts, written off the loop', async () => {
+  const file = path.join(os.tmpdir(), `ls-trace-${process.pid}-${Date.now()}.jsonl`);
+  process.env.LS_TRACE = file;
+  const app = createLocalServer({ history: new HistoryStore({ filePath: ':memory:' }), quota: new QuotaLedger({ filePath: ':memory:' }), persistFixture: false });
+  const v2 = installV2(app, { dataDir: '', persist: false, liveMs: 20 });
+  try {
+    for (let i = 0; i < 100 && !(fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes('\n')); i++) await new Promise<void>(resolve => setTimeout(resolve, 20));
+    const first = JSON.parse(fs.readFileSync(file, 'utf8').split('\n')[0]!) as { ev: string; pid: number; lagMaxMs: number | null };
+    assert.deepEqual([first.ev, first.pid], ['trace-start', process.pid]);
+    assert.ok(first.lagMaxMs === null || typeof first.lagMaxMs === 'number', 'the loop delay, or null with no sample yet');
+  } finally {
+    delete process.env.LS_TRACE;
+    v2.close(); await app.close();
+    fs.rmSync(file, { force: true });
   }
 });

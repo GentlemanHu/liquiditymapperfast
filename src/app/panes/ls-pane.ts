@@ -15,10 +15,10 @@ import { TimePane, setHtml } from './lower-panes.ts';
 import { PaneTable, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import type { Palette } from '../theme.ts';
 import { addTune } from '../pane-tune.ts';
-import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsFollowDelay, lsLanded, lsMessage, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
+import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsDrawnIn, lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { IdbLsShown } from '../browser/ls-store.ts';
-import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, lsWindowPeriod, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
+import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
 import { lsHeldKey, type LsPaneHeld } from '../range/ls-lines.ts';
 
 const HOUR = 3_600_000;
@@ -186,7 +186,9 @@ export class LsPane extends TimePane {
    */
   #load(state: AppState, ids: readonly string[], tfMs: number): void {
     const now = Date.now(), of = `${state.lsMetric}|${state.timeframe}`, ident = `${ids.join(',')}|${of}`;
-    const ask = lsWindow(this.#held, this.#loading, ident, this.view, tfMs, now, ids.map(id => id.slice(0, id.indexOf(':'))));
+    // Each market's period follows the zoom (`lsViewPeriod`), named in its questions: the window asked around the view never changes it.
+    const periods = lsPeriods(ids, tfMs, this.view);
+    const ask = lsWindow(this.#held, this.#loading, ident, this.view, tfMs, now, periods);
     if (!ask) return;
     const { from, to } = ask, generation = ++this.#generation, source = this.hub.source;
     // Another round (other markets, series or timeframe) cancels what the last one still waits for, its background warming included.
@@ -199,21 +201,23 @@ export class LsPane extends TimePane {
       this.#series = sameTimeframe ? this.#series.filter(s => s.population === lsPopulationOf(s.id.slice(0, s.id.indexOf(':')), state.lsMetric)) : [];
       this.#seriesOf = of;
     }
-    this.#held = { ident, from, to, at: now }; this.#loading = true;
+    this.#held = { ident, from, to, at: now, periods }; this.#loading = true;
     let over = false;
     const land = (final: boolean): void => {
       if (over || generation !== this.#generation) return;
-      this.#series = lsLanded(ids, this.#series, answers, final);
+      // Judged by the view as it is now (the zoom may have moved on while the round was read), a replay by what it draws.
+      this.#series = lsLanded(ids, this.#series, answers, final, { view: this.view, want: lsPeriods(ids, tfMs, this.view), asked: periods, cut: replaying() ? pageNow() : Infinity });
       if (final) {
         over = true; window.clearTimeout(deadline); round.abort(); this.#stopFollowing();
         if (this.#round === round) this.#round = null;
         this.#loading = false;
-        const at = Date.now(), pending = ids.some(id => answers.get(id)?.pending);
+        // A line still being read: its answer was, or the line was kept over an answer for a zoom since left (`lsLanded`).
+        const at = Date.now(), pending = ids.some(id => answers.get(id)?.pending || this.#series.some(s => s.id === id && s.pending));
         if (this.#held) { this.#held.at = at; if (pending) this.#held.soon = at + LS_SOON_MS; }
         // A venue still being read is asked again shortly, the pane drawn then (a chart standing still draws nothing on its own); the other
         // series are warmed once none is, so their reads do not queue before it at the venue.
         if (pending) this.#soon = window.setTimeout(() => { this.#soon = 0; this.invalidate(); }, LS_SOON_MS + 50);
-        else this.#warm(ids, state, from, to);
+        else this.#warm(ids, state, from, to, periods);
       }
       this.invalidate();
     };
@@ -222,8 +226,9 @@ export class LsPane extends TimePane {
     // The line drawn for a venue of this population (an answer, or what was kept), if any.
     const line = (id: string, population: LsPopulation): LsSeries | undefined => this.#series.find(s => s.id === id && s.points.length > 0 && s.population === population);
     const read = (id: string, attempt: number): void => {
-      void source.longShort(id, state.lsMetric, state.timeframe, from, to, round.signal, LS_BUDGET_MS)
-        .catch((): LsSeries => ({ id, population: null, periodMs: 0, points: [], status: 'failed' }))
+      void source.longShort(id, state.lsMetric, state.timeframe, from, to, round.signal, LS_BUDGET_MS, periods.get(id) || undefined)
+        // Failed in the period asked: a failure of a zoom since left leaves the line of this zoom as it is (`lsLanded`).
+        .catch((): LsSeries => ({ id, population: null, periodMs: periods.get(id) ?? 0, points: [], status: 'failed' }))
         .then(series => {
           if (over || generation !== this.#generation) return;
           answers.set(id, series);
@@ -259,7 +264,7 @@ export class LsPane extends TimePane {
     // Never over a final answer of this round (read, empty or failed: what it says stands), nor over a line that reaches as far (another
     // period's, drawn before this window).
     if (shown) for (const id of ids) {
-      const venue = id.slice(0, id.indexOf(':')), population = lsPopulationOf(venue, state.lsMetric), periodMs = lsWindowPeriod(venue, tfMs, from, to);
+      const venue = id.slice(0, id.indexOf(':')), population = lsPopulationOf(venue, state.lsMetric), periodMs = periods.get(id) ?? 0;
       if (!population || !periodMs || line(id, population)?.periodMs === periodMs) continue;
       void shown.get(`${id}|${population}|${periodMs}`).then(points => {
         const answer = answers.get(id);
@@ -267,7 +272,11 @@ export class LsPane extends TimePane {
         const inWindow = points.filter(p => p.t >= from - periodMs && p.t < to);
         if (!inWindow.length) return;
         const kept: LsSeries = { id, population, periodMs, points: inWindow, status: 'ok', pending: true }, current = line(id, population);
-        if (current && (current.periodMs === periodMs || lsReach(current) >= lsReach(kept))) return;
+        // Over a line of another period: a finer one where it has a step in view (a zoom back in), a coarser one only where it reaches further;
+        // never over the line of the period the view asks now (the zoom moved on while the store was read).
+        const wanted = lsPeriods([id], tfMs, this.view).get(id), cut = replaying() ? pageNow() : Infinity;
+        if (current && (current.periodMs === periodMs || (periodMs !== wanted && current.periodMs === wanted)
+          || (periodMs < current.periodMs ? !lsDrawnIn(kept, this.view, cut) : lsReach(current) >= lsReach(kept)))) return;
         this.#series = this.#series.some(s => s.id === id) ? this.#series.map(s => s.id === id ? kept : s) : [...this.#series, kept];
         this.invalidate();
       });
@@ -279,13 +288,13 @@ export class LsPane extends TimePane {
    * one draws at once instead of waiting for the venues' pages. Only Binance's, OKX's and Gate's change with the series; one read at a time,
    * nothing drawn.
    */
-  #warm(ids: readonly string[], state: AppState, from: number, to: number): void {
+  #warm(ids: readonly string[], state: AppState, from: number, to: number, periods: ReadonlyMap<string, number>): void {
     // Not for a pane that is off or a page that is away.
     if (this.root.hidden || !state.show.ls || document.hidden) return;
-    // Keyed by the period each venue's cache takes for this window (shared/long-short.ts `lsWindowPeriod`): a window that crosses into another
-    // is another series of the cache, warmed again; one whose end only moved on by minutes is the same.
-    const tfMs = TIMEFRAMES[state.timeframe] ?? HOUR, chosen = ids.filter(id => LS_CHOSEN_VENUES.includes(id.slice(0, id.indexOf(':'))));
-    const key = `${chosen.map(id => `${id}@${lsWindowPeriod(id.slice(0, id.indexOf(':')), tfMs, from, to)}`).join(',')}|${state.timeframe}|${Math.floor(from / HOUR)}`;
+    // Keyed by each venue's period asked (`lsViewPeriod`): a zoom into another is another series of the cache, warmed again; a window whose
+    // end only moved on by minutes is the same.
+    const chosen = ids.filter(id => LS_CHOSEN_VENUES.includes(id.slice(0, id.indexOf(':'))));
+    const key = `${chosen.map(id => `${id}@${periods.get(id) ?? 0}`).join(',')}|${state.timeframe}|${Math.floor(from / HOUR)}`;
     if (!chosen.length || this.#warming || this.#warmed === key) return;
     // Its own lifetime: cancelled with the pane's settings, and given up with the round's deadline, so it never holds a connection for good.
     const warming = this.#warming = new AbortController(), timer = window.setTimeout(() => warming.abort(), LS_ROUND_MS);
@@ -295,7 +304,7 @@ export class LsPane extends TimePane {
     // read: one cancelled (a new round, the pane's settings, the deadline), failed or still being read (`pending`) is warmed again with the next
     // round, by then from the source's cache (which keeps a failing venue to one question a minute). A source from before the budget waits for
     // the reads, as it always did.
-    void Promise.allSettled(chosen.flatMap(id => others.map(metric => source.longShort(id, metric, state.timeframe, from, to, warming.signal, 0))))
+    void Promise.allSettled(chosen.flatMap(id => others.map(metric => source.longShort(id, metric, state.timeframe, from, to, warming.signal, 0, periods.get(id) || undefined))))
       .then(results => { if (!warming.signal.aborted && results.every(r => r.status === 'fulfilled' && r.value.status !== 'failed' && !r.value.pending)) this.#warmed = key; })
       .finally(() => { window.clearTimeout(timer); if (this.#warming === warming) this.#warming = null; });
     // An abort settles the requests at once (their promises reject): the gate opens with it.

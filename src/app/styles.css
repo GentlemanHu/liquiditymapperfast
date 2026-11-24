@@ -1413,3 +1413,35 @@ html:is([data-layout^="phone"], [data-bar="compact"]) .pane.heat .map-draw-phone
 .pane-head .levels-btn { position: relative; max-width: 150px; padding: 1px 20px 1px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pane-head .levels-btn::after { content: ""; position: absolute; right: 6px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; background: currentColor; -webkit-mask: var(--mark-chevron) center / contain no-repeat; mask: var(--mark-chevron) center / contain no-repeat; }
 .pane-head .levels-btn[hidden] { display: none; }
+/* The Depth pane's lens (lower-panes.ts `#lensRoot`; Karl, 2026-11-23): its switch, kind and strength on the plot's top left, on a plate of the
+   page's ground so they read over the bands. With the lens off only the switch shows. */
+.pane .depth-lens { position: absolute; z-index: 4; display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 6px 1px 1px; font-size: 11px;
+  white-space: nowrap; border: 1px solid var(--line); border-radius: var(--radius); background: color-mix(in srgb, var(--bg) 90%, transparent); }
+.pane .depth-lens.off { padding-right: 1px; }
+.pane .depth-lens.off > :not(.lens-btn) { display: none; }
+/* As the header's selects (`.ctl select`): its own height from 1 px padding, so the text is never cut (a fixed 18 px under the page's 3 px padding was). */
+.pane .depth-lens select { height: auto; padding: 1px 6px; font-size: 11px; line-height: normal; }
+.pane .depth-lens input[type="range"] { width: 78px; margin: 0; accent-color: var(--bid); }
+.pane .depth-lens .lens-value { min-width: 2.3em; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* The switch: a magnifying glass in the muted ink while off; on, its rim and glass take the buy colour, a glint crosses the glass and a halo in
+   the colour itself glows around it (a coloured halo reads on a light ground, where a white one would vanish). A short flare as it comes on. */
+.pane .lens-btn { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px 0 4px; border: 0; border-radius: var(--radius);
+  background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.pane .lens-btn:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.pane .lens-btn svg { width: 15px; height: 15px; overflow: visible; transition: filter .25s ease; }
+.pane .lens-btn .lens-ring { fill: none; stroke: currentColor; stroke-width: 1.6; transition: stroke .25s ease; }
+.pane .lens-btn .lens-handle { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.pane .lens-btn .lens-glass { fill: transparent; transition: fill .25s ease; }
+.pane .lens-btn .lens-glint { fill: none; stroke: #fff; stroke-width: 1.2; stroke-linecap: round; opacity: 0; transition: opacity .25s ease; }
+.pane .lens-btn[data-state="on"] { color: var(--text); }
+.pane .lens-btn[data-state="on"] .lens-ring { stroke: var(--bid); }
+.pane .lens-btn[data-state="on"] .lens-glass { fill: color-mix(in srgb, var(--bid) 38%, transparent); }
+.pane .lens-btn[data-state="on"] .lens-glint { opacity: .95; }
+.pane .lens-btn[data-state="on"] svg { filter: drop-shadow(0 0 1.5px color-mix(in srgb, var(--bid) 85%, transparent)) drop-shadow(0 0 4px color-mix(in srgb, var(--bid) 50%, transparent));
+  animation: lens-flare .7s ease-out; }
+@keyframes lens-flare {
+  0% { filter: drop-shadow(0 0 0 transparent); }
+  35% { filter: drop-shadow(0 0 3px color-mix(in srgb, var(--bid) 95%, transparent)) drop-shadow(0 0 10px color-mix(in srgb, var(--bid) 70%, transparent)); }
+  100% { filter: drop-shadow(0 0 1.5px color-mix(in srgb, var(--bid) 85%, transparent)) drop-shadow(0 0 4px color-mix(in srgb, var(--bid) 50%, transparent)); }
+}
+@media (prefers-reduced-motion: reduce) { .pane .lens-btn[data-state="on"] svg { animation: none; } }

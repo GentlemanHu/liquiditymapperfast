@@ -279,7 +279,7 @@ export class BrowserSource implements DataSource, VenueControl {
    */
   /** Long/short readings, kept across reloads in their own database (app/browser/ls-store.ts) unless the session keeps nothing (`?persist=0`). */
   #longShort!: LongShortCache;
-  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, _signal?: AbortSignal, budgetMs?: number): Promise<LsSeries> { return this.#longShort.series(inst, metric, TIMEFRAMES[tf] ?? 3_600_000, from, to, budgetMs); }
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, _signal?: AbortSignal, budgetMs?: number, periodMs?: number): Promise<LsSeries> { return this.#longShort.series(inst, metric, TIMEFRAMES[tf] ?? 3_600_000, from, to, budgetMs, periodMs); }
   async oi(inst: string, tf: string, from: number, to: number, usd = false): Promise<OiBar[]> { return this.#call({ method: 'oi', inst, tfMs: TIMEFRAMES[tf] ?? 3_600_000, from, to, ...(usd ? { usd } : {}) }); }
   async prints(from: number, to: number, minUsd?: number): Promise<Print[]> { return this.#call({ method: 'prints', from, to, ...(minUsd !== undefined ? { minUsd } : {}) }); }
   async printSums(ids: string[], from: number, to: number, minUsd: number, stepMs: number): Promise<PrintSumsAnswer> {

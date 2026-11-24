@@ -3588,5 +3588,15 @@
  "in the middle": "en la media",
  "above {pct} %": "por encima del {pct} %",
  "below {pct} %": "por debajo del {pct} %",
- "bids {bids} · asks {asks}": "bids {bids} · asks {asks}"
+ "bids {bids} · asks {asks}": "bids {bids} · asks {asks}",
+ "Lens": "Lupa",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Lupa: las bandas cercanas al precio se dibujan más grandes que las lejanas, para que una banda interior fina tenga espacio. La tabla sigue mostrando el dinero.",
+ "Log curve": "Curva logarítmica",
+ "Per % of price": "Por % del precio",
+ "Even room": "Mismo espacio",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Curva logarítmica: alturas sobre una curva logarítmica del dinero, para que se vean las cantidades pequeñas; la escala sigue siendo el dinero. Por % del precio: el anillo de cada banda según su dinero por cada 1 % del precio, de modo que los anillos exteriores anchos se encogen. Mismo espacio: cada anillo tan alto como en su punto más lleno de la vista. Con estas dos el borde exterior no es el total: la escala conserva solo su cero y la cruz lee el momento bajo ella.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Cuánto amplía la lupa: 0 nada, 2 lo máximo.",
+ "Lens strength": "Intensidad de la lupa",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "La lupa (el cristal de aumento arriba a la izquierda del gráfico, activada por defecto; brilla mientras está activa) dibuja las bandas cercanas al precio más grandes que las lejanas. Curva logarítmica, la opción por defecto, dibuja las alturas sobre una curva logarítmica del dinero, así se ven las cantidades pequeñas y la escala sigue siendo el dinero; Por % del precio dibuja el anillo de cada banda según su dinero por cada 1 % del precio; Mismo espacio hace cada anillo tan alto como en su punto más lleno de la vista. Con estas dos el borde exterior ya no es el total, así que la escala conserva solo su cero y la cruz lee el momento bajo ella. El control deslizante fija cuánto amplía; la tabla y la cabecera siempre dicen el dinero.",
+ "The lens at the plot's top left, while on, bends the heights further.": "La lupa arriba a la izquierda del gráfico, mientras está activa, curva aún más las alturas."
 }

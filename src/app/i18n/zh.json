@@ -3346,5 +3346,15 @@
  "in the middle": "处于中间",
  "above {pct} %": "高于 {pct} %",
  "below {pct} %": "低于 {pct} %",
- "bids {bids} · asks {asks}": "买盘 {bids} · 卖盘 {asks}"
+ "bids {bids} · asks {asks}": "买盘 {bids} · 卖盘 {asks}",
+ "Lens": "放大镜",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "放大镜：靠近价格的区间画得比远处的大，让较薄的内层区间也有空间。表格仍显示金额。",
+ "Log curve": "对数曲线",
+ "Per % of price": "每 1% 价格",
+ "Even room": "等高",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "对数曲线：高度按金额的对数曲线绘制，小金额也能看见；刻度仍是金额。每 1% 价格：每个区间的环按其每 1% 价格的金额绘制，因此较宽的外环会缩小。等高：每个环在视图中最厚的时刻画成同样高。后两种方式下外缘不是总量：刻度只保留零，十字线读取其下方的时刻。",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "放大镜的放大强度：0 不放大，2 最强。",
+ "Lens strength": "放大镜强度",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "放大镜（图表左上角的放大镜图标，默认开启；开启时会发光）把靠近价格的区间画得比远处的大。默认的对数曲线按金额的对数曲线绘制高度，小金额也能看见，刻度仍是金额；每 1% 价格按每个区间的环在每 1% 价格上的金额绘制；等高让每个环在视图中最厚的时刻画成同样高。这两种方式下外缘不再是总量，因此刻度只保留零，十字线读取其下方的时刻。滑块设定放大强度；表格和标题始终显示金额。",
+ "The lens at the plot's top left, while on, bends the heights further.": "图表左上角的放大镜开启时，会进一步弯曲高度。"
 }

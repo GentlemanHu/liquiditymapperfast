@@ -3644,5 +3644,15 @@
  "in the middle": "середина діапазону",
  "above {pct} %": "вище {pct} %",
  "below {pct} %": "нижче {pct} %",
- "bids {bids} · asks {asks}": "біди {bids} · аски {asks}"
+ "bids {bids} · asks {asks}": "біди {bids} · аски {asks}",
+ "Lens": "Лупа",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Лупа: смуги поблизу ціни малюються більшими за далекі, щоб тонкій внутрішній смузі вистачило місця. Таблиця й далі показує гроші.",
+ "Log curve": "Лог-крива",
+ "Per % of price": "На 1 % ціни",
+ "Even room": "Рівне місце",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Лог-крива: висоти за логарифмічною кривою грошей, щоб було видно малі суми; шкала лишається в грошах. На 1 % ціни: кільце кожної смуги за її грошима на 1 % ціни, тож широкі зовнішні кільця стискаються. Рівне місце: кожне кільце однакової висоти в найповнішій точці у видимій області. В останніх двох зовнішній край — не сума: на шкалі лишається тільки нуль, а перехрестя читає момент під собою.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Наскільки сильно збільшує лупа: 0 — зовсім ні, 2 — найсильніше.",
+ "Lens strength": "Сила лупи",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "Лупа (збільшувальне скло в лівому верхньому куті графіка, увімкнена за замовчуванням; світиться, поки увімкнена) малює смуги поблизу ціни більшими за далекі. Лог-крива, варіант за замовчуванням, малює висоти за логарифмічною кривою грошей, тож малі суми видно, а шкала лишається в грошах; «На 1 % ціни» малює кільце кожної смуги за її грошима на 1 % ціни; «Рівне місце» робить кожне кільце однакової висоти в найповнішій точці у видимій області. У цих двох варіантах зовнішній край уже не сума, тому на шкалі лишається тільки нуль, а перехрестя читає момент під собою. Повзунок задає силу збільшення; таблиця й заголовок завжди показують гроші.",
+ "The lens at the plot's top left, while on, bends the heights further.": "Лупа в лівому верхньому куті графіка, поки увімкнена, додатково згинає висоти."
 }

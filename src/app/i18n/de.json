@@ -3527,5 +3527,15 @@
  "in the middle": "im Mittelfeld",
  "above {pct} %": "über {pct} %",
  "below {pct} %": "unter {pct} %",
- "bids {bids} · asks {asks}": "bids {bids} · asks {asks}"
+ "bids {bids} · asks {asks}": "bids {bids} · asks {asks}",
+ "Lens": "Lupe",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Lupe: die Bänder nahe am Preis größer gezeichnet als die fernen, damit ein dünnes inneres Band Platz hat. Die Tabelle zeigt weiter das Geld.",
+ "Log curve": "Log-Kurve",
+ "Per % of price": "Pro % des Preises",
+ "Even room": "Gleicher Platz",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Log-Kurve: Höhen auf einer logarithmischen Kurve des Geldes, damit kleine Beträge sichtbar werden; die Skala bleibt das Geld. Pro % des Preises: der Ring jedes Bandes nach seinem Geld je 1 % des Preises, sodass die breiten äußeren Ringe schrumpfen. Gleicher Platz: jeder Ring so hoch wie an seiner vollsten Stelle in der Ansicht. Bei den letzten beiden ist der äußere Rand nicht die Summe: Die Skala behält nur ihre Null, und das Fadenkreuz liest den Moment darunter.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Wie stark die Lupe vergrößert: 0 gar nicht, 2 am stärksten.",
+ "Lens strength": "Stärke der Lupe",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "Die Lupe (das Vergrößerungsglas oben links im Diagramm, standardmäßig an; sie leuchtet, solange sie an ist) zeichnet die Bänder nahe am Preis größer als die fernen. Log-Kurve, die Voreinstellung, zeichnet die Höhen auf einer logarithmischen Kurve des Geldes, sodass kleine Beträge sichtbar werden und die Skala das Geld bleibt; Pro % des Preises zeichnet den Ring jedes Bandes nach seinem Geld je 1 % des Preises; Gleicher Platz macht jeden Ring so hoch wie an seiner vollsten Stelle in der Ansicht. Bei diesen beiden ist der äußere Rand nicht mehr die Summe, daher behält die Skala nur ihre Null und das Fadenkreuz liest den Moment darunter. Der Regler bestimmt, wie stark sie vergrößert; Tabelle und Kopfzeile nennen immer das Geld.",
+ "The lens at the plot's top left, while on, bends the heights further.": "Die Lupe oben links im Diagramm biegt die Höhen, solange sie an ist, zusätzlich."
 }

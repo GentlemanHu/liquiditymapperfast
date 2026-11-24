@@ -3588,5 +3588,15 @@
  "in the middle": "dans la moyenne",
  "above {pct} %": "au-dessus de {pct} %",
  "below {pct} %": "en dessous de {pct} %",
- "bids {bids} · asks {asks}": "bids {bids} · asks {asks}"
+ "bids {bids} · asks {asks}": "bids {bids} · asks {asks}",
+ "Lens": "Loupe",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Loupe : les bandes proches du prix dessinées plus grandes que les lointaines, pour qu'une bande intérieure fine ait de la place. Le tableau garde l'argent.",
+ "Log curve": "Courbe log",
+ "Per % of price": "Par % du prix",
+ "Even room": "Même place",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Courbe log : hauteurs sur une courbe logarithmique de l'argent, pour que les petits montants se voient ; l'échelle reste l'argent. Par % du prix : l'anneau de chaque bande selon son argent par 1 % du prix, si bien que les larges anneaux extérieurs rétrécissent. Même place : chaque anneau aussi haut qu'à son point le plus plein dans la vue. Avec ces deux-là, le bord extérieur n'est pas le total : l'échelle ne garde que son zéro et le réticule lit le moment sous lui.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Force du grossissement de la loupe : 0 pas du tout, 2 au maximum.",
+ "Lens strength": "Force de la loupe",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "La loupe (le verre grossissant en haut à gauche du graphique, activée par défaut ; elle brille tant qu'elle est active) dessine les bandes proches du prix plus grandes que les lointaines. Courbe log, le réglage par défaut, dessine les hauteurs sur une courbe logarithmique de l'argent, de sorte que les petits montants se voient et que l'échelle reste l'argent ; Par % du prix dessine l'anneau de chaque bande selon son argent par 1 % du prix ; Même place rend chaque anneau aussi haut qu'à son point le plus plein dans la vue. Avec ces deux-là, le bord extérieur n'est plus le total : l'échelle ne garde que son zéro et le réticule lit le moment sous lui. Le curseur règle la force du grossissement ; le tableau et l'en-tête disent toujours l'argent.",
+ "The lens at the plot's top left, while on, bends the heights further.": "La loupe en haut à gauche du graphique, tant qu'elle est active, courbe encore les hauteurs."
 }

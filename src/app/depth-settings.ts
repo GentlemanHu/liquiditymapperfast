@@ -7,6 +7,15 @@
  * 25 venues (2026-11-05) the ±0.31 % band was about a third of the ±5 % one, so on a linear scale every layer has room; Detail (a square-root
  * scale) gives a thin inner band more where one venue alone, or a thin coin, leaves it a sliver.
  */
+/**
+ * The lens's kinds (Karl, 2026-11-23: Log curve at 0.1 by default): `log` heights on a logarithmic curve of the money, `width` each band's ring by
+ * its money per width of price, `even` each ring as tall at its busiest in view (panes/depth-lens.ts).
+ */
+export const LENS_KINDS = ['log', 'width', 'even'] as const;
+export type LensKind = (typeof LENS_KINDS)[number];
+/** The lens's strongest setting. */
+export const LENS_MAX = 2;
+
 export const DEPTH_PRESETS = ['near', 'balanced', 'wide', 'custom'] as const;
 export type DepthPreset = (typeof DEPTH_PRESETS)[number];
 export const PRESET_BANDS: Readonly<Record<Exclude<DepthPreset, 'custom'>, readonly number[]>> = {
@@ -27,11 +36,16 @@ export interface DepthSettings {
   units: 'usd' | 'coin';
   /** The table of the bands' figures at the right of the pane. */
   table: boolean;
+  /** The lens (panes/depth-lens.ts): the bands near the price drawn larger than the far ones; the figures stay the money. */
+  lens: boolean;
+  /** How the lens magnifies (`LENS_KINDS`), and how strongly, from 0 to `LENS_MAX`. */
+  lensKind: LensKind;
+  lensStrength: number;
   /** One band brought forward: drawn alone with the bands inside it, at its own scale, and the band Highlights judge. Null: all of them. */
   focus: number | null;
 }
 
-export const DEPTH_DEFAULT: DepthSettings = { preset: 'balanced', custom: [0.0025, 0.005, 0.01, 0.02, 0.05], scale: 'linear', units: 'usd', table: true, focus: null };
+export const DEPTH_DEFAULT: DepthSettings = { preset: 'balanced', custom: [0.0025, 0.005, 0.01, 0.02, 0.05], scale: 'linear', units: 'usd', table: true, lens: true, lensKind: 'log', lensStrength: 0.1, focus: null };
 
 /** What the Depth pane adds up: the order book's resting orders, or the liquidation levels of Hyperliquid's BTC positions (liq-history.ts). */
 export type DepthSource = 'book' | 'liq';
@@ -65,6 +79,9 @@ export function readDepthSettings(raw: unknown, fallback: DepthSettings = DEPTH_
     scale: o.scale === 'detail' ? 'detail' : 'linear',
     units: o.units === 'coin' ? 'coin' : 'usd',
     table: typeof o.table === 'boolean' ? o.table : fallback.table,
+    lens: typeof o.lens === 'boolean' ? o.lens : fallback.lens,
+    lensKind: (LENS_KINDS as readonly unknown[]).includes(o.lensKind) ? o.lensKind as LensKind : fallback.lensKind,
+    lensStrength: typeof o.lensStrength === 'number' && o.lensStrength >= 0 && o.lensStrength <= LENS_MAX ? o.lensStrength : fallback.lensStrength,
   };
 }
 

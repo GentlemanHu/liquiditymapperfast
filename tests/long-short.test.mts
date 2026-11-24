@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync } from 'node:zlib';
-import { ARCHIVE_DAYS, ArchiveMemo, LongShortCache, LsNoMarket, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsReading, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
+import { ARCHIVE_DAYS, ArchiveMemo, LS_WINDOW_READINGS, LongShortCache, type LsBacking, type LsChange, type LsTrace, LsNoMarket, VENUE_GAP_MS, VENUE_WAITING_MAX, fetchLongShort, lsPeriodAtLeast, lsPeriodOf, lsPopulationOf, lsQuestionPeriod, lsReading, lsViewPeriod, lsWindowPeriod, parseLsSeries, shareOfRatio, zipText } from '../src/shared/long-short.ts';
 import { lsAt, lsCardLines, lsIds, lsRange, stepEnd } from '../src/app/panes/ls-pane.ts';
 import { fetchOiHistory, webGet, type Fetcher } from '../src/shared/history.ts';
 import { LAYOUT_KEYS, readSettings, type CandleRow } from '../src/app/store.ts';
@@ -608,16 +608,16 @@ test('a refresh that fails after a good answer says so, with the readings held f
   assert.equal(parseLsSeries(after).status, 'stale', 'and the wire carries it');
 });
 
-test('a long window on a fine chart takes a coarser period: one question reaches across it and the series keeps all of it', async () => {
+test('a long window on a fine chart naming no period takes a coarser one: one question reaches across it and the series keeps all of it', async () => {
   const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1d' ? 24 * H : url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '30min' ? 30 * M : 5 * M;
     return { retCode: 0, result: { list: Array.from({ length: 500 }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / p) * p - (i + 1) * p) })) } }; };
   const get = fake({ 'https://api.bybit.com/': full });
   const cache = new LongShortCache(get, false, () => NOW);
   const month = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
-  assert.deepEqual([month.status, month.periodMs], ['ok', 24 * H], 'forty days use daily readings instead of 1,920 half-hourly readings');
-  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 24 * H && month.points.length >= 40 && month.points.length <= 42, 'the whole daily window, oldest included');
-  assert.equal(get.asked.length, 1, 'the history arrives in one page');
-  assert.ok(Number(new URL(get.asked[0]!).searchParams.get('limit')) <= 42, 'only the daily readings needed are requested');
+  assert.deepEqual([month.status, month.periodMs], ['ok', 30 * M], 'forty days of five-minute candles are read every half hour (2,000 readings a window at most)');
+  // The fake's pages each leave out the reading at their end: three of 1,920 are missing.
+  assert.ok(month.points[0]!.t <= NOW - 40 * 24 * H + 30 * M && month.points.length >= 1_910 && month.points.length <= 1_922, `the whole window, oldest included (${month.points.length})`);
+  assert.equal(get.asked.length, 4, 'four pages of 500');
   const asked = get.asked.length;
   await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 40 * 24 * H, NOW);
   assert.equal(get.asked.length, asked, 'asked again at once: nothing more to read');
@@ -902,13 +902,92 @@ test('Gate through the real fetcher: its 400 saying CONTRACT_NOT_FOUND is a mark
   } finally { globalThis.fetch = real; }
 });
 
-test('the period of a window is what the cache reads it in: the chart\'s own, coarser for a long window, daily from 30 days', () => {
+test('a question that names no period is read in the chart\'s own where the window fits, coarser for a long one, never daily for being a month', () => {
   const D = 24 * H;
   assert.equal(lsWindowPeriod('binance', H, NOW - 20 * D, NOW), H);
-  assert.equal(lsWindowPeriod('binance', H, NOW - 30 * D, NOW), D);
+  // Daily from 30 days (2026-10-18) turned every line daily on a zoom or a pan of a few pixels (2026-11-23).
+  assert.equal(lsWindowPeriod('binance', H, NOW - 30 * D, NOW), H);
+  assert.equal(lsWindowPeriod('binance', H, NOW - 84 * D, NOW), 2 * H, 'past 2,000 readings a window, the next period');
   assert.equal(lsWindowPeriod('gateio', 15 * M, NOW - 20 * D, NOW), 15 * M, 'Gate keeps 2,000 readings a window like Binance: 20 days fit fifteen-minutely');
   assert.equal(lsWindowPeriod('bitget', 15 * M, NOW - 20 * D, NOW), 2 * H, 'Bitget, with 288 a window, takes two-hourly readings');
   assert.equal(lsWindowPeriod('hyperliquid', H, NOW - D, NOW), 0);
+});
+
+test('the period of a view follows its length, the candle and the venue alone; a question is read in the period it names where the venue has it', () => {
+  const D = 24 * H;
+  assert.deepEqual(['binance', 'bybit', 'okx', 'bitget', 'gateio'].map(v => lsViewPeriod(v, H, 104 * D)), [H, H, H, H, H], 'an hourly chart is hourly to 104 days in view');
+  assert.deepEqual(['binance', 'bybit', 'okx', 'bitget', 'gateio'].map(v => lsViewPeriod(v, H, 105 * D)), [2 * H, 4 * H, D, 2 * H, 4 * H]);
+  assert.equal(lsViewPeriod('okx', 5 * M, 4 * D), 5 * M, 'OKX five-minutely while 2,500 of them fit the view');
+  assert.equal(lsViewPeriod('okx', 15 * M, D), 5 * M, 'and on 15-minute candles (OKX has none between five minutes and an hour)');
+  assert.equal(lsViewPeriod('binance', D, 400 * D), D);
+  assert.equal(lsViewPeriod('hyperliquid', H, D), 0);
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 60 * D, NOW, H), H, 'named: read in it, whatever the window');
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 20 * D, NOW, 2 * H), H, 'Bybit has no two-hourly readings: the window\'s own');
+  assert.equal(lsQuestionPeriod('bybit', H, NOW - 20 * D, NOW), H, 'none named (a page from before): the window\'s own');
+});
+
+test('a question naming its period is read in it over a window past 30 days, and one longer than LS_WINDOW_READINGS keeps its newest stretch, never a coarser period', async () => {
+  const D = 24 * H;
+  const full = (url: URL) => { const end = Number(url.searchParams.get('endTime')), p = url.searchParams.get('period') === '1h' ? H : url.searchParams.get('period') === '5min' ? 5 * M : D;
+    const limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / p) * p - i * p) })).filter(r => Number(r.timestamp) < NOW) } }; };
+  const get = fake({ 'https://api.bybit.com/': full });
+  const cache = new LongShortCache(get, false, () => NOW);
+  const hourly = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 46 * D, NOW, undefined, H);
+  assert.deepEqual([hourly.status, hourly.periodMs], ['ok', H], 'a 46-day window on an hourly chart, hourly');
+  assert.ok(hourly.points.length >= 46 * 24 && hourly.points[0]!.t <= NOW - 46 * D, `the whole window (${hourly.points.length})`);
+  assert.ok(get.asked.every(u => new URL(u).searchParams.get('period') === '1h'));
+  const long = await cache.series('bybit:BTCUSDT', 'accounts', 5 * M, NOW - 60 * D, NOW, undefined, 5 * M);
+  assert.equal(long.periodMs, 5 * M);
+  assert.ok(long.points.length <= LS_WINDOW_READINGS + 1 && long.points[0]!.t >= NOW - LS_WINDOW_READINGS * 5 * M - 5 * M, `the newest ${LS_WINDOW_READINGS} readings (${long.points.length})`);
+});
+
+test('a read that goes on by itself stays in the period named: after the backing loads, and after a read short of its window', async () => {
+  // Review 2026-11-23: both went on in the window's own period (four-hourly, daily), another series than the one asked.
+  const D = 24 * H;
+  const okxPage = (url: URL) => { const end = Number(url.searchParams.get('end')), p = url.searchParams.get('period') === '1H' ? H : D, limit = Number(url.searchParams.get('limit'));
+    return { code: '0', data: Array.from({ length: limit }, (_, i) => [String(Math.floor(end / p) * p - i * p), '1.5']).filter(r => Number(r[0]) < NOW && Number(r[0]) > NOW - 60 * D) }; };
+  const get = fake({ 'https://www.okx.com/': okxPage }), cache = new LongShortCache(get, false, () => NOW, undefined, undefined, undefined, {});
+  await cache.series('okx:BTC-USDT-SWAP', 'accounts', H, NOW - 60 * D, NOW, 0, H);
+  for (let i = 0; i < 100 && get.asked.length < 15; i++) await settle();
+  assert.ok(get.asked.length >= 15, `read on past its twelve pages (${get.asked.length})`);
+  assert.ok(get.asked.every(u => new URL(u).searchParams.get('period') === '1H'), 'hourly throughout');
+  const restoring: LsBacking = { load: async () => { await settle(); return null; }, save: () => undefined };
+  const bybitPage = (url: URL) => { const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return bybitRows(Array.from({ length: limit }, (_, i) => Math.floor(end / H) * H - i * H).filter(t => t < NOW)); };
+  const get2 = fake({ 'https://api.bybit.com/': bybitPage }), cold = new LongShortCache(get2, false, () => NOW, undefined, undefined, undefined, undefined, restoring);
+  assert.equal((await cold.series('bybit:BTCUSDT', 'accounts', H, NOW - 100 * D, NOW, 0, H)).pending, true);
+  for (let i = 0; i < 100 && !get2.asked.length; i++) await settle();
+  assert.ok(get2.asked.length > 0 && get2.asked.every(u => new URL(u).searchParams.get('period') === '1h'), 'the read after the backing loaded is hourly');
+});
+
+test('Bitget, which publishes only its newest readings, never loses what it gathered to a window it cannot read', async () => {
+  // Review 2026-11-23: a week of hourly readings gathered, then a month two months back: the series started again, empty, and saved so.
+  const D = 24 * H;
+  let now = NOW;
+  const get = fake({ 'https://api.bitget.com/': () => ({ code: '00000', data: Array.from({ length: 30 }, (_, i) => ({ ts: String(Math.floor(now / H) * H - (30 - i) * H), longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5' })) }) });
+  const saved: LsChange[] = [], backing: LsBacking = { load: async () => null, save: (_key, change) => { saved.push(change); } };
+  const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 }, backing);
+  for (let day = 0; day < 7; day++) { now = NOW + day * D; await cache.series('bitget:BTCUSDT', 'accounts', H, now - 2 * D, now, undefined, H); }
+  const gathered = (await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length;
+  assert.equal(gathered, 30 + 6 * 24, 'a week gathered, the newest 30 hours each day');
+  const asked = get.asked.length, back = await cache.series('bitget:BTCUSDT', 'accounts', H, now - 90 * D, now - 60 * D, undefined, H);
+  assert.deepEqual([back.status, back.points.length], ['empty', 0], 'nothing there');
+  assert.ok(get.asked.length <= asked + 1, 'one look at most');
+  await cache.series('bitget:BTCUSDT', 'accounts', H, now - 90 * D, now - 60 * D, undefined, H);
+  assert.ok(get.asked.length <= asked + 1, 'held as looked at: not asked again');
+  assert.ok(!saved.some(change => change.cleared && saved.indexOf(change) > 0), 'never written over');
+  assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H)).points.length, gathered, 'back at the live edge: all of it');
+  // Hidden for three weeks (past its reach of 13.5 days): the next read adds the newest readings to what it gathered.
+  now += 21 * D;
+  const after = await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 2 * D, now, undefined, H);
+  assert.equal(after.points.length, gathered + 30);
+});
+
+test('a page from before naming no period is never read coarser than an old server read it, and never daily for a 30-day window', () => {
+  const D = 24 * H;
+  for (const venue of ['okx', 'binance', 'bybit', 'gateio']) assert.equal(lsWindowPeriod(venue, H, NOW - 30 * D - 59 * M, NOW), H, venue);
+  assert.equal(lsWindowPeriod('okx', H, NOW - 960 * H - 59 * M, NOW), D, 'OKX past its 960-reading window (an old server read it daily from 30 days)');
 });
 
 /** A venue whose answers wait until the test lets them go: `release()` answers every request asked so far. */
@@ -988,4 +1067,65 @@ test('the lines follow the OI pane\'s markets under Spot too, Gate\'s perpetual 
   assert.deepEqual(both, ['binance:BTCUSDT', 'okx:BTC-USDT-SWAP', 'gateio:BTC_USDT']);
   assert.deepEqual(lsIds({ ...base, scope: 'spot' } as never, hub), both, 'Spot: the same lines, Gate\'s included');
   assert.deepEqual(lsIds({ ...base, scope: 'spot', disabledVenues: ['gateio'] } as never, hub), ['binance:BTCUSDT', 'okx:BTC-USDT-SWAP'], 'Gate switched off stays out');
+});
+
+test('a window trimmed to LS_WINDOW_READINGS still gets the reading before it from Gate\'s twelve pages of 500', async () => {
+  // Review 2026-11-23: trimmed to 6,000 five-minute periods, Gate's pages held the window and not the reading before it, whose step covers
+  // the window's first minutes.
+  const row = (t: number) => ({ time: t / 1000, lsr_account: 1.5, long_users: 600, short_users: 400 });
+  const get = fake({ 'https://api.gateio.ws/': url => { const from = Math.ceil(Number(url.searchParams.get('from')) * 1000 / (5 * M)) * 5 * M;
+    return Array.from({ length: 500 }, (_, i) => row(from + i * 5 * M)).filter(r => r.time * 1000 < NOW); } });
+  const from = NOW - 6_500 * 5 * M + 2 * M, s = await new LongShortCache(get, false, () => NOW).series('gateio:BTC_USDT', 'accounts', 5 * M, from, NOW, undefined, 5 * M);
+  const trimmed = NOW - LS_WINDOW_READINGS * 5 * M;
+  assert.equal(s.status, 'ok');
+  assert.ok(s.points[0]!.t < trimmed && s.points[0]!.t >= trimmed - 5 * M, `the reading before the newest ${LS_WINDOW_READINGS} periods (${(trimmed - s.points[0]!.t) / M} min before)`);
+});
+
+test('the newest readings Bitget publishes reach a line whose first window was narrower: a wider one takes them in', async () => {
+  // Found in the 2026-11-23 browser probe: with no older read for Bitget a first window of four hours kept its line at four readings of 30.
+  let now = NOW;
+  const get = fake({ 'https://api.bitget.com/': () => ({ code: '00000', data: Array.from({ length: 30 }, (_, i) => ({ ts: String(Math.floor(now / H) * H - (30 - i) * H), longRatio: '0.6', shortRatio: '0.4', longShortRatio: '1.5' })) }) });
+  const cache = new LongShortCache(get, false, () => now, undefined, undefined, undefined, { bitget: 0 });
+  assert.ok((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 4 * H, NOW, undefined, H)).points.length <= 5, 'the first window holds a few');
+  assert.equal((await cache.series('bitget:BTCUSDT', 'accounts', H, NOW - 10 * 24 * H, NOW, undefined, H)).points.length, 30);
+});
+
+test('OKX is asked at most five times every two seconds, as it allows an address (a wide hourly view is 15 pages)', () => {
+  assert.ok(VENUE_GAP_MS.okx! >= 400 && VENUE_GAP_MS.bitget! >= 1_000);
+});
+
+test('a failed read of one stretch never marks another window of the series stale: one held whole answers ok', async () => {
+  // 8787, 2026-11-23: after a failed read (a wide zoom's older stretch), every window of the series answered stale for a minute, held or
+  // not (the minute's pause came before the test of what is held), and after it until a read succeeded (an hour on for a held live window).
+  const D = 24 * H;
+  let now = NOW, failing = false;
+  const page = (url: URL) => { if (failing) throw new Error('HTTP 503'); const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / H) * H - i * H) })).filter(r => Number(r.timestamp) > NOW - 20 * D && Number(r.timestamp) < now) } }; };
+  const events: LsTrace[] = [];
+  const cache = new LongShortCache(fake({ 'https://api.bybit.com/': page }), false, () => now, undefined, undefined, undefined, {}, null, e => events.push(e));
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok');
+  failing = true; now += 30_000;
+  const wide = await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 40 * D, NOW, undefined, H);
+  assert.equal(wide.status, 'stale', 'the wide window was not read: stale, with what is held');
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok', 'the held window, within the minute');
+  now += 2 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW, undefined, H)).status, 'ok', 'and after it, no refresh due');
+  assert.ok(events.some(e => e.ev === 'read-failed' && e.kind === 'older' && /503/.test(e.error ?? '')), 'the trace names the failed read');
+  assert.ok(events.some(e => e.ev === 'answer-stale' && e.why === 'failed within the minute'), 'and why the wide window was not read');
+});
+
+test('a failed refresh of the live edge says stale for a window that needs it, and ok for a held window before it', async () => {
+  const D = 24 * H;
+  let now = NOW, failing = false;
+  const page = (url: URL) => { if (failing) throw new Error('HTTP 429'); const end = Number(url.searchParams.get('endTime')), limit = Number(url.searchParams.get('limit'));
+    return { retCode: 0, result: { list: Array.from({ length: limit }, (_, i) => ({ buyRatio: '0.6', sellRatio: '0.4', timestamp: String(Math.floor(end / H) * H - i * H) })).filter(r => Number(r.timestamp) > NOW - 20 * D && Number(r.timestamp) < now) } }; };
+  const cache = new LongShortCache(fake({ 'https://api.bybit.com/': page }), false, () => now, undefined, undefined, undefined, {});
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW + H, undefined, H)).status, 'ok');
+  now += 2 * H; failing = true;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'stale', 'the live window needs the refresh that failed');
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, NOW - 10 * D, NOW - 5 * D, undefined, H)).status, 'ok', 'a window before the edge is held whole');
+  now += 5 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'stale', 'still failing a few minutes on: still stale');
+  failing = false; now += 2 * 60_000;
+  assert.equal((await cache.series('bybit:BTCUSDT', 'accounts', H, now - 10 * D, now + H, undefined, H)).status, 'ok', 'read again once it answers');
 });

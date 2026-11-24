@@ -2,12 +2,13 @@ import type { IncomingMessage, ServerResponse, Server } from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { createLocalServer } from '../http.mts';
 import { MAX_CROSSED_BP, crossedByBp, valueBook, withFar, type ValuedBook } from './levels.mts';
 import { FAR_STALE_MS, FarPoller, farSource, freshFar, type FarBook } from '../../shared/far-book.ts';
 import { OiSampler, oiHistoryWriter } from './oi-sampler.mts';
-import { LS_METRICS, LongShortCache, type LsMetric } from '../../shared/long-short.ts';
+import { LS_METRICS, LongShortCache, type LsMetric, type LsTrace } from '../../shared/long-short.ts';
 import { SqliteLsStore } from './ls-store.mts';
 import { webGet, type Fetcher } from '../../shared/history.ts';
 import { PriceHistoryCache, PRICE_QUERY_BARS, priceListing, priceTimeframeMs } from '../../shared/price-history.ts';
@@ -123,6 +124,7 @@ function windowOf(url: URL, defaultTo: number, defaultSpan: number): { from: num
 const BAD_WINDOW = 'from and to must be milliseconds, from before to and neither negative';
 const BAD_CUTS = (floor: number): string => `cuts must be up to ${MAX_CUTS} sizes in USD, each from ${floor} to ${MAX_CUT_USD}`;
 const BAD_SERIES = 'inst and a supported tf are required';
+const BAD_LS_PERIOD = 'period must be milliseconds, more than 0';
 
 /** Attach the v2 data plane (depth recorder, live WebSocket, series endpoints) to a running local server. */
 export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, heartbeatMs = HEARTBEAT_MS, oiSampling = false, priceHistoryGet = webGet, fullDepthMake }: V2Options): V2Handle {
@@ -548,7 +550,33 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
   // A file that cannot be opened (locked, damaged) costs only the keeping: it is a cache, never a reason not to start.
   let lsStore: SqliteLsStore | null = null;
   if (persist) try { lsStore = new SqliteLsStore(path.join(dataDir, 'long-short.sqlite')); } catch (error) { fault('the long/short readings will not be kept across restarts:', error); }
-  const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore);
+  // `LS_TRACE=<file>`: each failed venue read (with how long it took) and each answer whose window could not be read, a JSON line each,
+  // with the event loop's delay since the line before (worst and 99th percentile, ms), so a read that timed out while the loop was held can
+  // be told from a slow or refusing venue (null with no sample since); one line when the server starts. Diagnostics, off by default. Written
+  // off the loop, a batch at a time, at most `LS_TRACE_QUEUE` lines waiting (more are counted and dropped): a synchronous append on a slow
+  // disk would hold the very loop it measures (review 2026-11-23).
+  const LS_TRACE_QUEUE = 1_000, lsTraceFile = process.env.LS_TRACE, lsLag = lsTraceFile ? monitorEventLoopDelay({ resolution: 20 }) : null;
+  lsLag?.enable();
+  let lsTraceLines: string[] = [], lsTraceWriting = false, lsTraceDropped = 0;
+  const lsTraceFlush = async (): Promise<void> => {
+    if (lsTraceWriting || !lsTraceFile) return;
+    lsTraceWriting = true;
+    try {
+      while (lsTraceLines.length) { const batch = lsTraceLines.join(''); lsTraceLines = []; await fs.promises.appendFile(lsTraceFile, batch).catch(() => undefined); }
+    } finally { lsTraceWriting = false; }
+  };
+  const lsTrace = lsTraceFile ? (event: LsTrace | { ev: 'trace-start'; pid: number }): void => {
+    try {
+      const sampled = lsLag && lsLag.count > 0, lag = { lagMaxMs: sampled ? Math.round(lsLag.max / 1e6) : null, lagP99Ms: sampled ? Math.round(lsLag.percentile(99) / 1e6) : null };
+      lsLag?.reset();
+      if (lsTraceLines.length >= LS_TRACE_QUEUE) { lsTraceDropped++; return; }
+      const dropped = lsTraceDropped; lsTraceDropped = 0;
+      lsTraceLines.push(`${JSON.stringify({ t: new Date().toISOString(), ...event, ...lag, ...(dropped ? { droppedBefore: dropped } : {}) })}\n`);
+      void lsTraceFlush();
+    } catch { /* a trace that cannot be written is none */ }
+  } : null;
+  lsTrace?.({ ev: 'trace-start', pid: process.pid });
+  const longShort = new LongShortCache(webGet, false, undefined, undefined, undefined, undefined, undefined, lsStore, lsTrace);
   const priceHistory = new PriceHistoryCache(priceHistoryGet);
   const priceHistoryRoute = (url: URL, res: ServerResponse) => {
     // The line's intervals (`PRICE_TIMEFRAMES`: weeks too, for a window of more than 2,000 days), bounded to 2,000 bars like each of them.
@@ -567,7 +595,10 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     // `budget` (ms): answer within it with what is held, `pending` while the venue is read on; a page from before sends none and waits for the read.
     const rawBudget = url.searchParams.get('budget'), budget = rawBudget === null ? undefined : Number(rawBudget);
     if (budget !== undefined && !(Number.isFinite(budget) && budget >= 0)) return sendJson(res, { error: 'budget must be milliseconds, not negative' }, 400);
-    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to, budget === undefined ? undefined : Math.min(budget, 30_000))
+    // `period` (ms): the period the pane reads the venue in for its view (`lsViewPeriod`); a page from before sends none.
+    const rawPeriod = url.searchParams.get('period'), period = rawPeriod === null ? undefined : Number(rawPeriod);
+    if (period !== undefined && !(Number.isSafeInteger(period) && period > 0)) return sendJson(res, { error: BAD_LS_PERIOD }, 400);
+    longShort.series(id, metric as LsMetric, tfMs, span.from, span.to, budget === undefined ? undefined : Math.min(budget, 30_000), period)
       .then(series => sendJson(res, series), () => sendJson(res, { error: 'long/short ratios could not be read' }, 502));
   };
   /**
@@ -581,16 +612,17 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     const id = m.id;
     if (typeof id !== 'number' || !Number.isSafeInteger(id)) return;
     const reply = (body: object): void => { if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ t: 'ls', id, ...body })); };
-    const { inst, metric, from, to, budget } = m, tfMs = timeframeMs(m.tf);
+    const { inst, metric, from, to, budget, period } = m, tfMs = timeframeMs(m.tf);
     if (typeof inst !== 'string' || !inst || inst.length > 120 || !tfMs) return reply({ error: BAD_SERIES });
     if (typeof metric !== 'string' || !(LS_METRICS as readonly string[]).includes(metric)) return reply({ error: `metric must be one of ${LS_METRICS.join(', ')}` });
     if (typeof from !== 'number' || typeof to !== 'number' || !Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || to <= from) return reply({ error: BAD_WINDOW });
     if (budget !== undefined && !(typeof budget === 'number' && Number.isFinite(budget) && budget >= 0)) return reply({ error: 'budget must be milliseconds, not negative' });
+    if (period !== undefined && !(typeof period === 'number' && Number.isSafeInteger(period) && period > 0)) return reply({ error: BAD_LS_PERIOD });
     const busy = lsBusy.get(client) ?? 0;
     if (busy >= LS_SOCKET_BUSY) return reply({ error: 'too many long/short questions at once' });
     lsBusy.set(client, busy + 1);
     // Never a whole read held on the socket's count: a question with no budget waits at most as long as one with the largest.
-    longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000))
+    longShort.series(inst, metric as LsMetric, tfMs, from, to, Math.min(budget ?? 30_000, 30_000), period as number | undefined)
       .then(series => reply({ series }), () => reply({ error: 'long/short ratios could not be read' }))
       .finally(() => lsBusy.set(client, Math.max(0, (lsBusy.get(client) ?? 1) - 1)));
   };
@@ -901,6 +933,7 @@ export function attachV2(app: App, { dataDir, liveMs = 250, persist = true, hear
     },
     close() {
       closed = true;
+      lsLag?.disable();
       clearInterval(loop); clearTimeout(absorptionWarm); clearTimeout(ltWarm); syncFar([]); fullDepth.close(); oiSampler?.close(); coins?.close(); (app.server as Server).off('upgrade', onUpgrade);
       for (const client of wss.clients) client.terminate();
       // Each part gets its turn even when one of them fails, so what can still be written is (the open minutes and the open orders are written here).

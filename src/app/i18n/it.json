@@ -3588,5 +3588,15 @@
  "in the middle": "nella media",
  "above {pct} %": "sopra {pct} %",
  "below {pct} %": "sotto {pct} %",
- "bids {bids} · asks {asks}": "bids {bids} · asks {asks}"
+ "bids {bids} · asks {asks}": "bids {bids} · asks {asks}",
+ "Lens": "Lente",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Lente: le bande vicine al prezzo disegnate più grandi di quelle lontane, così una banda interna sottile ha spazio. La tabella mostra sempre il denaro.",
+ "Log curve": "Curva log",
+ "Per % of price": "Per % del prezzo",
+ "Even room": "Stesso spazio",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Curva log: altezze su una curva logaritmica del denaro, così le piccole somme si vedono; la scala resta il denaro. Per % del prezzo: l'anello di ogni banda secondo il suo denaro per 1 % del prezzo, così gli ampi anelli esterni si restringono. Stesso spazio: ogni anello alto quanto nel suo punto più pieno della vista. Con queste due il bordo esterno non è il totale: la scala tiene solo lo zero e il mirino legge il momento sotto di sé.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Quanto ingrandisce la lente: 0 per niente, 2 al massimo.",
+ "Lens strength": "Intensità della lente",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "La lente (la lente d'ingrandimento in alto a sinistra del grafico, attiva per impostazione predefinita; si illumina mentre è attiva) disegna le bande vicine al prezzo più grandi di quelle lontane. Curva log, l'impostazione predefinita, disegna le altezze su una curva logaritmica del denaro, così le piccole somme si vedono e la scala resta il denaro; Per % del prezzo disegna l'anello di ogni banda secondo il suo denaro per 1 % del prezzo; Stesso spazio rende ogni anello alto quanto nel suo punto più pieno della vista. Con queste due il bordo esterno non è più il totale, quindi la scala tiene solo lo zero e il mirino legge il momento sotto di sé. Il cursore regola quanto ingrandisce; la tabella e l'intestazione dicono sempre il denaro.",
+ "The lens at the plot's top left, while on, bends the heights further.": "La lente in alto a sinistra del grafico, mentre è attiva, piega ulteriormente le altezze."
 }

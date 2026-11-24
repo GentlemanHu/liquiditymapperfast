@@ -3346,5 +3346,15 @@
  "in the middle": "中ほど",
  "above {pct} %": "{pct} %より上",
  "below {pct} %": "{pct} %より下",
- "bids {bids} · asks {asks}": "買い板 {bids} · 売り板 {asks}"
+ "bids {bids} · asks {asks}": "買い板 {bids} · 売り板 {asks}",
+ "Lens": "ルーペ",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "ルーペ: 価格に近いバンドを遠いバンドより大きく描き、薄い内側のバンドにも場所を与えます。表は金額のままです。",
+ "Log curve": "対数カーブ",
+ "Per % of price": "価格1%あたり",
+ "Even room": "均等な高さ",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "対数カーブ: 高さを金額の対数カーブで描くので、小さな金額も見えます。目盛りは金額のままです。価格1%あたり: 各バンドのリングを価格1%あたりの金額で描くので、幅の広い外側のリングは縮みます。均等な高さ: 各リングを表示範囲で最も厚い時点で同じ高さにします。後の二つでは外側の縁は合計ではありません。目盛りはゼロだけを残し、十字線はその下の時点を読みます。",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "ルーペの拡大の強さ: 0 はなし、2 が最大。",
+ "Lens strength": "ルーペの強さ",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "ルーペ(チャート左上の虫眼鏡。既定でオン、オンの間は光ります)は価格に近いバンドを遠いバンドより大きく描きます。既定の対数カーブは高さを金額の対数カーブで描くので、小さな金額も見え、目盛りは金額のままです。価格1%あたりは各バンドのリングを価格1%あたりの金額で描き、均等な高さは各リングを表示範囲で最も厚い時点で同じ高さにします。この二つでは外側の縁はもう合計ではないので、目盛りはゼロだけを残し、十字線はその下の時点を読みます。スライダーで拡大の強さを決めます。表とヘッダーは常に金額を示します。",
+ "The lens at the plot's top left, while on, bends the heights further.": "チャート左上のルーペがオンの間は、高さをさらに曲げます。"
 }

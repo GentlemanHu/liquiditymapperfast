@@ -112,9 +112,11 @@ export interface DataSource {
   /**
    * A venue's published long/short readings for one market (shared/long-short.ts): `metric` is the Binance series chosen. `signal` cancels the
    * request; a source whose requests are shared by every question (the browser engine's cache) may answer anyway. `budgetMs`: answer within
-   * about that long with what is held, `pending` while the venue is still being read (a server from before it waits for the read).
+   * about that long with what is held, `pending` while the venue is still being read (a server from before it waits for the read). `periodMs`:
+   * the period to read it in (the pane's for its view, shared/long-short.ts `lsViewPeriod`); the answer says the one it was read in (a server
+   * from before chooses its own).
    */
-  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number): Promise<LsSeries>;
+  longShort(inst: string, metric: LsMetric, tf: string, from: number, to: number, signal?: AbortSignal, budgetMs?: number, periodMs?: number): Promise<LsSeries>;
   /** Large trades in [from, to), oldest first. */
   /** Large market orders in [from, to) from `minUsd` (the recording's floor when absent), the largest few thousand of them. */
   prints(from: number, to: number, minUsd?: number): Promise<Print[]>;

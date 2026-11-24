@@ -106,9 +106,11 @@ test('long/short questions go on the live socket once its server says it answers
     socket.open();
     assert.equal(live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000, 1500), null, 'a server that has not said so: over HTTP');
     socket.receive(JSON.stringify({ t: 'hello', ls: true }));
-    const answered = live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0.4, 3_600_000.2, 1500)!;
-    const asked = JSON.parse(socket.sent.at(-1)!) as { id: number; from: number; to: number; budget: number };
-    assert.deepEqual([asked.from, asked.to, asked.budget], [0, 3_600_001, 1500]);
+    const answered = live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0.4, 3_600_000.2, 1500, undefined, 3_600_000)!;
+    const asked = JSON.parse(socket.sent.at(-1)!) as { id: number; from: number; to: number; budget: number; period: number };
+    assert.deepEqual([asked.from, asked.to, asked.budget, asked.period], [0, 3_600_001, 1500, 3_600_000], 'the period the pane reads its view in goes with the question');
+    void live.longShort('bybit:BTCUSDT', 'accounts', '1h', 0, 3_600_000, 1500)!.catch(() => undefined);
+    assert.equal('period' in (JSON.parse(socket.sent.at(-1)!) as object), false, 'none named, none sent');
     socket.receive(JSON.stringify({ t: 'ls', id: asked.id, series: { id: 'bybit:BTCUSDT', population: 'accounts', periodMs: 3_600_000, status: 'ok', pending: true, points: [{ t: 1_000, long: 0.6 }] } }));
     const failed = live.longShort('okx:BTC-USDT-SWAP', 'accounts', '1h', 0, 3_600_000)!;
     socket.receive(JSON.stringify({ t: 'ls', id: (JSON.parse(socket.sent.at(-1)!) as { id: number }).id, error: 'busy' }));

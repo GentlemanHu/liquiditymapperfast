@@ -3521,5 +3521,15 @@
  "in the middle": "ortalarda",
  "above {pct} %": "%{pct} üzerinde",
  "below {pct} %": "%{pct} altında",
- "bids {bids} · asks {asks}": "bids {bids} · asks {asks}"
+ "bids {bids} · asks {asks}": "bids {bids} · asks {asks}",
+ "Lens": "Büyüteç",
+ "Lens: the bands near the price drawn larger than the far ones, so a thin inner band has room. The table keeps the money.": "Büyüteç: fiyata yakın bantlar uzaktakilerden büyük çizilir, böylece ince bir iç bantın da yeri olur. Tablo parayı göstermeye devam eder.",
+ "Log curve": "Log eğrisi",
+ "Per % of price": "Fiyatın %1'i başına",
+ "Even room": "Eşit yer",
+ "Log curve: heights on a logarithmic curve of the money, so small amounts show; the scale stays the money. Per % of price: each band's ring by its money per 1 % of price, so the wide outer rings shrink. Even room: each ring as tall at its busiest in view. With the last two the outer edge is not the total: the scale keeps its zero and the crosshair reads the moment under it.": "Log eğrisi: yükseklikler paranın logaritmik eğrisine göre çizilir, böylece küçük tutarlar görünür; ölçek para olarak kalır. Fiyatın %1'i başına: her bantın halkası fiyatın %1'i başına düşen parasına göre çizilir, böylece geniş dış halkalar küçülür. Eşit yer: her halka görünümdeki en dolu anında aynı yükseklikte olur. Son ikisinde dış kenar toplam değildir: ölçek yalnızca sıfırını korur ve artı imleci altındaki anı okur.",
+ "How strongly the lens magnifies: 0 not at all, 2 the most.": "Büyütecin ne kadar büyüttüğü: 0 hiç, 2 en fazla.",
+ "Lens strength": "Büyüteç gücü",
+ "Lens (the magnifying glass at the plot's top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band's ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.": "Büyüteç (grafiğin sol üstündeki büyüteç camı; varsayılan olarak açık, açıkken parlar) fiyata yakın bantları uzaktakilerden büyük çizer. Varsayılan Log eğrisi, yükseklikleri paranın logaritmik eğrisine göre çizer; böylece küçük tutarlar görünür ve ölçek para olarak kalır. Fiyatın %1'i başına her bantın halkasını fiyatın %1'i başına düşen parasına göre çizer; Eşit yer her halkayı görünümdeki en dolu anında aynı yükseklikte yapar. Bu ikisinde dış kenar artık toplam değildir, bu yüzden ölçek yalnızca sıfırını korur ve artı imleci altındaki anı okur. Kaydırıcı ne kadar büyüteceğini belirler; tablo ve başlık her zaman parayı söyler.",
+ "The lens at the plot's top left, while on, bends the heights further.": "Grafiğin sol üstündeki büyüteç açıkken yükseklikleri ayrıca büker."
 }

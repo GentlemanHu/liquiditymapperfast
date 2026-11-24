@@ -106,18 +106,18 @@ export class ServerSource implements DataSource {
    * On the live socket where the server answers there: a page's HTTP requests to the server wait behind its history requests for one of the
    * browser's six connections, twenty seconds and more while it loads (2026-10-23). Over HTTP otherwise (a server from before, no socket).
    */
-  longShort: DataSource['longShort'] = async (inst, metric, tf, from, to, signal, budgetMs) => {
+  longShort: DataSource['longShort'] = async (inst, metric, tf, from, to, signal, budgetMs, periodMs) => {
     // While the socket connects (a page loading, even before it is opened) a question waits a little for it rather than join the HTTP queue.
     const started = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const live = this.#live ?? await Promise.race([this.#connected, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LS_SOCKET_WAIT_MS); })]);
     clearTimeout(timer);
-    const onSocket = live && await live.lsReadyWithin(Math.max(0, LS_SOCKET_WAIT_MS - (Date.now() - started))) ? live.longShort(inst, metric, tf, from, to, budgetMs, signal) : null;
-    if (!onSocket) return getLongShort(inst, metric, tf, from, to, signal, budgetMs);
+    const onSocket = live && await live.lsReadyWithin(Math.max(0, LS_SOCKET_WAIT_MS - (Date.now() - started))) ? live.longShort(inst, metric, tf, from, to, budgetMs, signal, periodMs) : null;
+    if (!onSocket) return getLongShort(inst, metric, tf, from, to, signal, budgetMs, periodMs);
     // A socket that closed under it, or a server that had too many at once: asked over HTTP instead. Given up by its asker: not asked again.
     return onSocket.catch((error: unknown) => {
       if (signal?.aborted || (error instanceof Error && error.message === 'cancelled')) throw error;
-      return getLongShort(inst, metric, tf, from, to, signal, budgetMs);
+      return getLongShort(inst, metric, tf, from, to, signal, budgetMs, periodMs);
     });
   };
   /** On the live socket where the server answers it there (a page's HTTP requests wait behind its history requests); otherwise it rejects, and the pane reads the columns. */
