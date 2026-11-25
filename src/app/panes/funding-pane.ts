@@ -344,16 +344,16 @@ export class FundingPane extends TimePane {
     // Each venue's settlements and the rate accruing now, without its premium candles (the costly read); a venue that fails costs its own line only.
     const shown = listed.map(x => { const data = this.#funding.view(x, coin.markets[x]!, tf, v.t0, v.t1, Date.now(), false); views.set(x, data); return { id: x, data, ...fundingShownAt(data, now, replaying()) }; });
     const need = medianNeeds(listed.length), venues = shown.map(s => ({ rows: s.rows, forming: s.forming })), median = this.#medianOf(venues, shown.map(x => x.data.rows), v.t0, v.t1, now, need);
-    const hover = state.hover, at = hover ? Math.min(hover.t, now) : now;
+    const hover = state.hover, at = hover ? Math.min(hover.t, now) : now, cut = this.#medianMemo?.clock ?? now;
     // Scale: zero, the base rate, and every venue's steps in view: its settlements, then its rate under way (`fundingTail`: the rate now, or in a replay the newest record carried to the clock), dashed.
     const top = 6, bottom = ph - 6;
     let lo = Math.min(0, BASE), hi = Math.max(0, BASE), any = false;
     const drawn = shown.map(s => {
       const steps: { x0: number; x1: number; per8h: number; forming: boolean; t0: number; t1: number }[] = [];
       for (let i = cutAt(s.rows, v.t0, false); i < s.rows.length; i++) { const r = s.rows[i]!, start = rowStart(s.rows, i); if (start > v.t1) break; steps.push({ x0: v.xOf(start, pw), x1: v.xOf(r.t, pw), per8h: r.per8h, forming: false, t0: start, t1: r.t }); }
-      // Drawn to now, where the median and the lines without a rate under way end too (to its settlement the exchanges' ran hours past them);
-      // a rate that has only just started is still a stub, so its mark stands at its level.
-      const tail = fundingTail(s.rows, s.forming, now), tailEnd = tail ? Math.max(tail.start, Math.min(tail.end, now)) : 0;
+      // Drawn to where the median ends (now, to the minute it was last worked out), as the lines without a rate under way do; to its
+      // settlement the exchanges' ran hours past them. One that starts after that (a clock behind the venue's) is drawn whole, as before.
+      const tail = fundingTail(s.rows, s.forming, now), tailEnd = tail ? (tail.start >= cut ? tail.end : Math.min(tail.end, cut)) : 0;
       if (tail && tail.end > tail.start && tailEnd >= v.t0 && tail.start <= v.t1) steps.push({ x0: v.xOf(tail.start, pw), x1: v.xOf(tailEnd, pw), per8h: tail.per8h, forming: true, t0: tail.start, t1: tailEnd });
       for (const st of steps) { lo = Math.min(lo, st.per8h); hi = Math.max(hi, st.per8h); any = true; }
       return { id: s.id, steps };
@@ -426,7 +426,7 @@ export class FundingPane extends TimePane {
    * every frame, up to 14 ms on a view of months (review round 3). The clip leaves out what lies outside the view. Keyed on the source's arrays
    * and the lengths shown of them: a replay's cut is a new slice every frame (round 2).
    */
-  #medianMemo: { key: unknown[]; w0: number; w1: number; steps: MedianStep[] } | null = null;
+  #medianMemo: { key: unknown[]; w0: number; w1: number; clock: number; steps: MedianStep[] } | null = null;
 
   /** A step line in the current stroke style (`stepRuns`): solid where settled, `dash` where a rate under way, joined where one step follows the next. */
   #strokeSteps(steps: readonly LineStep[], y: (value: number) => number, pw: number, dash: number[]): void {
@@ -443,7 +443,7 @@ export class FundingPane extends TimePane {
     const memo = this.#medianMemo, span = t1 - t0;
     if (memo && t0 >= memo.w0 && t1 <= memo.w1 && span * 8 >= memo.w1 - memo.w0 && memo.key.length === key.length && memo.key.every((k, i) => k === key[i])) return memo.steps;
     const w0 = t0 - span / 2, w1 = t1 + span / 2, steps = fundingMedian(venues, w0, w1, now, need);
-    this.#medianMemo = { key, w0, w1, steps };
+    this.#medianMemo = { key, w0, w1, clock: now, steps };
     return steps;
   }
 

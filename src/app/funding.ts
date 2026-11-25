@@ -134,9 +134,11 @@ export function stepRuns(steps: readonly LineStep[]): StepRun[] {
   for (const s of steps) {
     const joined: boolean = prev !== null && run !== null && Math.abs(s.t0 - prev.t1) <= JOIN_MS;
     let into: StepRun;
-    if (joined && run && run.forming === s.forming) { into = run; into.points.push({ t: s.t0, per8h: s.per8h }); }
+    // Joined, the riser stands where the step before ended: a start a few seconds off it moves there, never a slanted or backward stroke.
+    const at = joined && prev ? prev.t1 : s.t0;
+    if (joined && run && run.forming === s.forming) { into = run; into.points.push({ t: at, per8h: s.per8h }); }
     else {
-      into = { forming: s.forming, points: joined && prev ? [{ t: s.t0, per8h: prev.per8h }, { t: s.t0, per8h: s.per8h }] : [{ t: s.t0, per8h: s.per8h }] };
+      into = { forming: s.forming, points: joined && prev ? [{ t: at, per8h: prev.per8h }, { t: at, per8h: s.per8h }] : [{ t: at, per8h: s.per8h }] };
       runs.push(into);
     }
     into.points.push({ t: s.t1, per8h: s.per8h });

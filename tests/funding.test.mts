@@ -687,10 +687,18 @@ test('a step line joins every step to the next, a dashed riser where settled tur
   assert.deepEqual(pts(runs[1]!), [[16, 2], [16, 3], [24, 3]]);
   // A rate under way that starts within a minute of the settlement still joins; an hour's hole (a missing record) breaks the line, no riser.
   const near = stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 30_000 }]);
-  assert.deepEqual(near[1]!.points[0], { t: T + H + 30_000, per8h: 1 });
+  assert.deepEqual(near[1]!.points.slice(0, 2), [{ t: T + H, per8h: 1 }, { t: T + H, per8h: 2 }]);
   const hole = stepRuns([s(0, 1, 1), s(2, 3, 2, true)]);
   assert.deepEqual(hole.map(pts), [[[0, 1], [1, 1]], [[2, 2], [3, 2]]]);
   // A dashed median step back to settled (a venue's rate under way gone) joins the same way, solid; nothing is drawn for no steps.
   assert.deepEqual(stepRuns([s(0, 1, 1, true), s(1, 2, 2)]).map(pts), [[[0, 1], [1, 1]], [[1, 1], [1, 2], [2, 2]]]);
   assert.deepEqual(stepRuns([]), []);
+  // The riser stands where the step before ended, so a start 30 s late draws no slanted stroke; 60 s joins, 60.001 s breaks.
+  assert.deepEqual(stepRuns([s(0, 1, 1), { ...s(1, 2, 2), t0: T + H + 30_000 }]).map(pts), [[[0, 1], [1, 1], [1, 2], [2, 2]]]);
+  assert.equal(stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 60_000 }]).length, 2);
+  assert.equal(stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 60_001 }])[1]!.points.length, 2);
+  // A rate under way reaching back over the settlements (no settlement time given) overlaps them: no riser, its own stroke.
+  assert.deepEqual(stepRuns([s(0, 8, 1), s(8, 16, 2), s(12, 20, 3, true)]).map(pts), [[[0, 1], [8, 1], [8, 2], [16, 2]], [[12, 3], [20, 3]]]);
+  // Dashed to dashed (the median while a rate under way counts) joins in one dashed stroke.
+  assert.deepEqual(stepRuns([s(0, 1, 1, true), s(1, 2, 2, true)]).map(r => r.forming), [true]);
 });
