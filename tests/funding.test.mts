@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FundingSource, buyerShare, continuousFunding, cutAt, fundingBase, fundingIn, fundingMedian, fundingTail, fundingVenueOf, hasPremium, heldPremium, isFundingPick, isFundingVenue, medianIn, medianNeeds, showsEvery, readFunding, readFundingNow, readPremium, rowAt, type FundingRow } from '../src/app/funding.ts';
+import { FundingSource, buyerShare, continuousFunding, cutAt, fundingBase, fundingIn, fundingMedian, fundingTail, fundingVenueOf, hasPremium, heldPremium, isFundingPick, isFundingVenue, medianIn, medianNeeds, showsEvery, stepRuns, readFunding, readFundingNow, readPremium, rowAt, type FundingRow } from '../src/app/funding.ts';
 import { fundingAllCardLines, fundingCardLines, fundingShownAt, rateTicks, tagText, tickText } from '../src/app/panes/funding-pane.ts';
 import type { Fetcher } from '../src/shared/history.ts';
 
@@ -675,4 +675,22 @@ test('a reading now past its settlement stands until the record lands, within th
 
 test('the crosshair\'s value: three decimals, four on a tiny scale, and no sign on what rounds to zero', () => {
   assert.deepEqual([tagText(0.00012345, 0.001), tagText(-0.0000001, 0.001), tagText(0.0000123, 0.00002), tagText(-0.0000004, 0.00002)], ['+0.012%', '0.000%', '+0.0012%', '0.0000%']);
+});
+
+test('a step line joins every step to the next, a dashed riser where settled turns accruing; it breaks only at a hole', () => {
+  const s = (t0: number, t1: number, per8h: number, forming = false) => ({ t0: T + t0 * H, t1: T + t1 * H, per8h, forming });
+  const pts = (r: { points: { t: number; per8h: number }[] }) => r.points.map(q => [(q.t - T) / H, q.per8h]);
+  // Two settlements, then the rate under way from the second: one solid stroke with its riser, one dashed starting at the level the solid ended.
+  const runs = stepRuns([s(0, 8, 1), s(8, 16, 2), s(16, 24, 3, true)]);
+  assert.deepEqual(runs.map(r => r.forming), [false, true]);
+  assert.deepEqual(pts(runs[0]!), [[0, 1], [8, 1], [8, 2], [16, 2]]);
+  assert.deepEqual(pts(runs[1]!), [[16, 2], [16, 3], [24, 3]]);
+  // A rate under way that starts within a minute of the settlement still joins; an hour's hole (a missing record) breaks the line, no riser.
+  const near = stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 30_000 }]);
+  assert.deepEqual(near[1]!.points[0], { t: T + H + 30_000, per8h: 1 });
+  const hole = stepRuns([s(0, 1, 1), s(2, 3, 2, true)]);
+  assert.deepEqual(hole.map(pts), [[[0, 1], [1, 1]], [[2, 2], [3, 2]]]);
+  // A dashed median step back to settled (a venue's rate under way gone) joins the same way, solid; nothing is drawn for no steps.
+  assert.deepEqual(stepRuns([s(0, 1, 1, true), s(1, 2, 2)]).map(pts), [[[0, 1], [1, 1]], [[1, 1], [1, 2], [2, 2]]]);
+  assert.deepEqual(stepRuns([]), []);
 });

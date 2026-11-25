@@ -17,7 +17,7 @@ import { currentCoin } from '../coin.ts';
 import { VENUE_LINE, venueLabel } from '../venues.ts';
 import { drawVenueMark } from '../venue-marks.ts';
 import { instrumentIdFor } from '../../shared/coins.ts';
-import { FUNDING_VENUES, FundingSource, buyerShare, continuousFunding, cutAt, fundingAt, fundingBase, fundingIn, fundingMedian, fundingTail, fundingVenueOf, hasPremium, medianIn, medianNeeds, rowStart, showsEvery, type FundingNow, type FundingRow, type FundingVenue, type FundingView, type MedianStep, type PremiumRow, type VenueFunding } from '../funding.ts';
+import { FUNDING_VENUES, FundingSource, buyerShare, continuousFunding, cutAt, fundingAt, fundingBase, fundingIn, fundingMedian, fundingTail, fundingVenueOf, hasPremium, medianIn, medianNeeds, rowStart, showsEvery, stepRuns, type FundingNow, type LineStep, type FundingRow, type FundingVenue, type FundingView, type MedianStep, type PremiumRow, type VenueFunding } from '../funding.ts';
 import type { HourOpens, NlnsSource } from '../delta/nlns-source.ts';
 import { coinSize } from '../delta/nlns.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
@@ -351,8 +351,10 @@ export class FundingPane extends TimePane {
     const drawn = shown.map(s => {
       const steps: { x0: number; x1: number; per8h: number; forming: boolean; t0: number; t1: number }[] = [];
       for (let i = cutAt(s.rows, v.t0, false); i < s.rows.length; i++) { const r = s.rows[i]!, start = rowStart(s.rows, i); if (start > v.t1) break; steps.push({ x0: v.xOf(start, pw), x1: v.xOf(r.t, pw), per8h: r.per8h, forming: false, t0: start, t1: r.t }); }
-      const tail = fundingTail(s.rows, s.forming, now);
-      if (tail && tail.end > tail.start && tail.end >= v.t0 && tail.start <= v.t1) steps.push({ x0: v.xOf(tail.start, pw), x1: v.xOf(tail.end, pw), per8h: tail.per8h, forming: true, t0: tail.start, t1: tail.end });
+      // Drawn to now, where the median and the lines without a rate under way end too (to its settlement the exchanges' ran hours past them);
+      // a rate that has only just started is still a stub, so its mark stands at its level.
+      const tail = fundingTail(s.rows, s.forming, now), tailEnd = tail ? Math.max(tail.start, Math.min(tail.end, now)) : 0;
+      if (tail && tail.end > tail.start && tailEnd >= v.t0 && tail.start <= v.t1) steps.push({ x0: v.xOf(tail.start, pw), x1: v.xOf(tailEnd, pw), per8h: tail.per8h, forming: true, t0: tail.start, t1: tailEnd });
       for (const st of steps) { lo = Math.min(lo, st.per8h); hi = Math.max(hi, st.per8h); any = true; }
       return { id: s.id, steps };
     });
@@ -378,26 +380,16 @@ export class FundingPane extends TimePane {
     for (const d of drawn) {
       if (!d.steps.length) continue;
       ctx.strokeStyle = VENUE_LINE[d.id] ?? p.muted; ctx.lineWidth = 1.25; ctx.globalAlpha = 0.85;
-      for (const forming of [false, true]) {
-        ctx.setLineDash(forming ? [4, 3] : []); ctx.beginPath();
-        let lastT = NaN;
-        for (const st of d.steps) { if (st.forming !== forming) continue; const yy = y(st.per8h); if (st.t0 === lastT) ctx.lineTo(st.x0, yy); else ctx.moveTo(st.x0, yy); ctx.lineTo(st.x1, yy); lastT = st.t1; }
-        ctx.stroke();
-      }
-      ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
+      this.#strokeSteps(d.steps, y, pw, [4, 3]);
+      ctx.globalAlpha = 1; ctx.lineWidth = 1;
       const last = d.steps[d.steps.length - 1]!;
       // In a replay a carried line ends at the moment shown, and right of it the mask covers the plot: the mark stays left of it (review round 2).
       if (last.x1 > -8) ends.push({ id: d.id, x: Math.min(pw - 8, last.x1 + 8, replaying() ? v.xOf(now, pw) - 8 : Infinity), y: y(last.per8h) });
     }
     // The median, thick in the text colour over them: joined where one step follows the next, dashed where a rate under way counts.
     ctx.strokeStyle = p.text; ctx.lineWidth = 2.5;
-    for (const forming of [false, true]) {
-      ctx.setLineDash(forming ? [5, 3] : []); ctx.beginPath();
-      let lastT = NaN;
-      median.forEach((s, i) => { if (s.forming !== forming) return; const m = medianSteps[i]!, yy = y(s.per8h); if (s.t0 === lastT) ctx.lineTo(m.x0, yy); else ctx.moveTo(m.x0, yy); ctx.lineTo(m.x1, yy); lastT = s.t1; });
-      ctx.stroke();
-    }
-    ctx.setLineDash([]); ctx.lineWidth = 1;
+    this.#strokeSteps(median, y, pw, [5, 3]);
+    ctx.lineWidth = 1;
     ends.sort((a, b) => a.y - b.y);
     const near = (a: { x: number }, b: { x: number }): boolean => Math.abs(a.x - b.x) < 14;
     // Down, then pushed past the bottom pulled back up from it, so the marks do not pile on one row there; again until nothing moves ("near" is
@@ -435,6 +427,17 @@ export class FundingPane extends TimePane {
    * and the lengths shown of them: a replay's cut is a new slice every frame (round 2).
    */
   #medianMemo: { key: unknown[]; w0: number; w1: number; steps: MedianStep[] } | null = null;
+
+  /** A step line in the current stroke style (`stepRuns`): solid where settled, `dash` where a rate under way, joined where one step follows the next. */
+  #strokeSteps(steps: readonly LineStep[], y: (value: number) => number, pw: number, dash: number[]): void {
+    const { ctx, view: v } = this;
+    for (const run of stepRuns(steps)) {
+      ctx.setLineDash(run.forming ? dash : []); ctx.beginPath();
+      run.points.forEach((q, i) => { const x = v.xOf(q.t, pw), yy = y(q.per8h); if (i) ctx.lineTo(x, yy); else ctx.moveTo(x, yy); });
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
   #medianOf(venues: readonly VenueFunding[], sources: readonly (readonly FundingRow[])[], t0: number, t1: number, now: number, need: number): MedianStep[] {
     const key: unknown[] = [need, Math.floor(now / 60_000), ...venues.flatMap((x, i) => [sources[i], x.rows.length, x.forming])];
     const memo = this.#medianMemo, span = t1 - t0;
@@ -513,18 +516,16 @@ export class FundingPane extends TimePane {
       ctx.stroke(); ctx.lineWidth = 1;
     }
     // Funding as steps: each settlement over the interval it paid for, joined where one follows the other; the one accruing now dashed.
-    ctx.strokeStyle = p.text; ctx.lineWidth = 2; ctx.beginPath();
-    let last: FundingRow | null = null;
-    for (const i of visIdx) {
-      const r = rows[i]!, start = rowStart(rows, i), x0 = v.xOf(start, pw), x1 = v.xOf(r.t, pw), yy = y(r.per8h);
-      if (last && last.t === start) ctx.lineTo(x0, yy); else ctx.moveTo(x0, yy);
-      ctx.lineTo(x1, yy); last = r;
+    // The dashed step joins the last settled one where it starts at that settlement (it is drawn to its own settlement: one line, nothing ends at now beside it).
+    const line: LineStep[] = visIdx.map(i => ({ t0: rowStart(rows, i), t1: rows[i]!.t, per8h: rows[i]!.per8h, forming: false }));
+    if (forming && formShown) line.push({ t0: formStart, t1: formEnd, per8h: forming.per8h, forming: true });
+    ctx.strokeStyle = p.text; ctx.lineWidth = 2;
+    for (const run of stepRuns(line)) {
+      ctx.setLineDash(run.forming ? [4, 3] : []); ctx.globalAlpha = run.forming ? 0.8 : 1; ctx.beginPath();
+      run.points.forEach((q, i) => { const x = v.xOf(q.t, pw), yy = y(q.per8h); if (i) ctx.lineTo(x, yy); else ctx.moveTo(x, yy); });
+      ctx.stroke();
     }
-    ctx.stroke();
-    if (forming && formShown) {
-      ctx.setLineDash([4, 3]); ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.moveTo(v.xOf(formStart, pw), y(forming.per8h)); ctx.lineTo(v.xOf(formEnd, pw), y(forming.per8h)); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
-    }
-    ctx.lineWidth = 1;
+    ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.lineWidth = 1;
     // Where the cursor's time meets the funding and the premium.
     const { row: shownRow, forming: isForming } = fundingAt(rows, forming, at, now);
     // The premium under way is the venue's own now, where it says it (the last candle's is up to a candle old).
