@@ -65,4 +65,6 @@ Found a bug or have an idea? [Open an issue](https://github.com/Karlheinzniebuhr
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+The code is MIT, see [LICENSE](LICENSE). The data the page's own servers record and serve (the history, the liquidation levels, the stop
+and take-profit levels) is not part of that licence: a site, app or copy of the code that uses it must show the credit
+**Data: liquiditymapper.com**, linked to the site, where the data appears. See the [terms](https://liquiditymapper.com/terms/#data-credit).
