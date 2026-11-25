@@ -11,10 +11,11 @@ import { BTC, instrumentIdFor, type Coin } from '../shared/coins.ts';
 import { webGet, type Fetcher } from '../shared/history.ts';
 import { KeyLevelHistory, type HistoryTarget } from './keylevels/history.ts';
 import { MAX_LEAD_MS, ON_TIME_MS, clockSetBack, nextAskAt, pageHidden, placeSnapshot } from './liq-schedule.ts';
-import { liqLevelsUrl, plusUrls } from './liq-url.ts';
+import { LIVE_ASK_MS, isLive, liqLevelsUrl, plusUrls } from './liq-url.ts';
 import { isRefusal, linkedWebFetch, type LiqFetch } from './liq-history.ts';
 import { FREE_VIEW, curveOf, ordersShown, takesBeside, viewKey, type LiqView } from './liq-view.ts';
 import { plus } from './plus/pass.ts';
+import { FREE_PASS, plusFree } from './plus/config.ts';
 import type { AppState, CandleRow } from './store.ts';
 import type { View } from './view.ts';
 
@@ -697,7 +698,7 @@ class SumLayer {
  * the pass it was sent (`Plus.refused`).
  */
 export interface LiqPlusAccess { pass(now: number): string | null; refused(pass: string): void }
-const MEMBER: LiqPlusAccess = { pass: now => plus().pass(now), refused: pass => plus().refused(pass) };
+const MEMBER: LiqPlusAccess = { pass: now => plusFree() ? FREE_PASS : plus().pass(now), refused: pass => { if (!plusFree()) plus().refused(pass); } };
 
 /** A Plus file the levels need beyond the free one (the groups', the stop and take-profit orders'), as read so far. */
 interface PlusPart<T> {
@@ -882,6 +883,8 @@ export class LiqLevelsSource implements LiqSet {
   }
   /** When the positions of the liquidations drawn stood, and the stop and take-profit orders (null: not part of the view or not held). */
   asOfs(): { liq: number | null; orders: number | null } { return this.#asOfsOf(this.#view); }
+  /** Whose data the levels held are, as the file says (`LIVE_ATTRIBUTION` for the live levels), or empty. */
+  attribution(): string { return this.#free?.levels.attribution ?? ''; }
   #asOfsOf(v: LiqView): { liq: number | null; orders: number | null } {
     const orders = ordersShown(v) ? this.#orders(v)?.data.asOf ?? null : null;
     return { liq: v.liq ? this.#liqLayer(v)?.levels.asOf ?? null : null, orders };
@@ -969,10 +972,13 @@ export class LiqLevelsSource implements LiqSet {
         if (!held || levels.asOf > held.asOf || (levels.asOf === held.asOf && levels.fetchedAt > held.fetchedAt)) {
           this.#free = new Layer(levels); this.version++;
           // Seen appear between this ask and the one before: placed by when it was published, not by the page's clock against HyperTracker's.
-          ({ created: this.#created, lead: this.#lead, offset: this.#offset } = placeSnapshot(levels.createdAt, levels.fetchedAt, this.#askedAt, askedAt, this.#lead, this.#offset, onTime));
+          // A live file has no HyperTracker schedule to learn from.
+          if (!isLive(levels)) ({ created: this.#created, lead: this.#lead, offset: this.#offset } = placeSnapshot(levels.createdAt, levels.fetchedAt, this.#askedAt, askedAt, this.#lead, this.#offset, onTime));
         }
         this.#askedAt = askedAt;
-        this.#nextAt = nextAskAt(this.#created, this.now(), this.#lead);
+        // A live file held: asked again each minute; else when HyperTracker's next snapshot can be there.
+        const live = this.#free !== null && isLive(this.#free.levels);
+        this.#nextAt = live ? this.now() + LIVE_ASK_MS : nextAskAt(this.#created, this.now(), this.#lead);
         this.#settle();
         // A Plus file the view needs follows the snapshot the free file brought (it is asked for at once, not on the next frame).
         this.#askPlus(onChange);

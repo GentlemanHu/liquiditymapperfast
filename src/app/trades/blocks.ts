@@ -1,5 +1,8 @@
 import { STRIDE } from '../tape/ring.ts';
+import type { Liquidation } from '../../shared/liquidations.ts';
 import type { SecondTally, TallyRing } from './tally.ts';
+import type { TapeMode } from './settings.ts';
+import { liqSideMatches, lowerBoundLiq, summarizeLiqsIn } from './liquidations.ts';
 
 /**
  * Trades grouped by time: a block is `B` whole seconds of every market the view counts, clock-aligned (it starts at a multiple of `B`
@@ -59,11 +62,13 @@ export interface Block {
   unrecorded: boolean;
   /** The block's time has not all passed yet, or it ended less than `SETTLE_MS` ago (a late order may still land in it). */
   forming: boolean; settling: boolean;
+  /** Liquidations inside this block (shorts liquidated = forced buys, longs liquidated = forced sells, count): never added into trade totals in Both mode. */
+  liqBuy: number; liqSell: number; liqN: number;
 }
 export const SETTLE_MS = 2_000;
 
 export function emptyBlock(venues: number): Block {
-  return { s: 0, B: 1, buy: 0, sell: 0, vBuy: new Float64Array(venues), vSell: new Float64Array(venues), n: 0, topBuy: noOrder(), topSell: noOrder(), refPx: NaN, refPrev: NaN, from: 0, partial: false, gap: false, unknown: true, unrecorded: false, forming: false, settling: false };
+  return { s: 0, B: 1, buy: 0, sell: 0, vBuy: new Float64Array(venues), vSell: new Float64Array(venues), n: 0, topBuy: noOrder(), topSell: noOrder(), refPx: NaN, refPrev: NaN, from: 0, partial: false, gap: false, unknown: true, unrecorded: false, forming: false, settling: false, liqBuy: 0, liqSell: 0, liqN: 0 };
 }
 
 /**
@@ -126,6 +131,14 @@ export class BlockReader {
   knownKey = '';
   /** The size filter's dollars (the coin's), 0 any size. */
   minUsd = 0;
+  /** What the blocks read: trades only, liquidations only, or trades annotated with liquidations. */
+  mode: TapeMode = 'trades';
+  /** The liquidation size filter's dollars (the coin's), liquidations oldest-first, their book version, coverage start (ms) and venue filter. */
+  liqMinUsd = 1_000;
+  liqItems: readonly Liquidation[] = [];
+  liqVersion = 0;
+  liqSince = Infinity;
+  liqShown: (id: string) => boolean = () => true;
   side: 'both' | 'buy' | 'sell' = 'both';
   #slotOfId = new Map<string, number>();
   #slotOfIndex: number[] = [];
@@ -152,7 +165,7 @@ export class BlockReader {
   /** Bumped whenever a source the blocks read may have changed (`forget`, `setVenues`): what is worked out from blocks keys on it. */
   version = 0;
   /** What every block is read from and under, as a key (the tally's start, the size, the side, the reference, the markets, the flow's loads, the gaps, the recording's start). */
-  dataKey(): string { return `${this.tally?.resets ?? 0}|${this.minUsd}|${this.side}|${this.ref}|${this.markets.length}|${this.flowVersion()}|${this.#gapsKey}|${this.knownKey}`; }
+  dataKey(): string { return `${this.mode}|${this.tally?.resets ?? 0}|${this.minUsd}|${this.liqMinUsd}|${this.liqVersion}|${this.liqSince}|${this.side}|${this.ref}|${this.markets.length}|${this.flowVersion()}|${this.#gapsKey}|${this.knownKey}`; }
   /** Forget every kept block (a source changed). */
   forget(): void { this.#kept.clear(); this.#recent.clear(); this.version++; }
   /** The tally's revisions of seconds [from, to) added up (each held second one more): any order counted into them changes it. */
@@ -167,6 +180,11 @@ export class BlockReader {
   coveredSec(): number { const c = this.tally?.coveredFrom() ?? Infinity; return Number.isFinite(c) ? Math.ceil(c / 1000) : Infinity; }
   /** The oldest second any source knows for the current size (the list ends there). */
   oldestSec(): number {
+    if (this.mode === 'liquidations') {
+      const first = this.liqItems.length ? this.liqItems[0]!.t : Infinity;
+      const since = Math.min(this.liqSince, first);
+      return Number.isFinite(since) ? Math.floor(since / 1000) : Infinity;
+    }
     let oldest = this.coveredSec();
     if (this.minUsd > 0 && (!this.recorded || this.minUsd < this.recorded.minUsd)) return oldest;
     if (this.minUsd > 0) return Math.min(oldest, Math.ceil(this.recorded!.from / 1000));
@@ -213,6 +231,8 @@ export class BlockReader {
     const end = s + B, tally = this.tally, ring = tally?.ring ?? null;
     out.s = s; out.B = B; out.buy = 0; out.sell = 0; out.vBuy.fill(0); out.vSell.fill(0); out.n = 0; out.from = 0; out.partial = false; out.gap = false; out.unknown = false; out.unrecorded = false;
     out.topBuy.has = false; out.topSell.has = false; out.refPx = NaN; out.refPrev = NaN;
+    out.liqBuy = 0; out.liqSell = 0; out.liqN = 0;
+    if (this.mode === 'liquidations') { this.#computeLiquidations(s, end, out); return; }
     const cov = this.coveredSec(), tapeFrom = Math.max(s, cov);
     // The part before the tape's covered start: the flow (any size) or the recording (from its own floor), else unknown.
     let before = false;
@@ -229,6 +249,38 @@ export class BlockReader {
     if (out.unrecorded && ((out.from & FROM.tape) !== 0 || out.buy !== 0 || out.sell !== 0)) { out.unrecorded = false; out.partial = true; }
     // The reference market's VWAP before the block: its last second that traded, at most max(2 s, B) back.
     out.refPrev = this.#refBefore(s, Math.max(2, B));
+    // In Both mode, summarize liquidations alongside trade totals without double-counting them into buy/sell bars.
+    if (this.mode === 'both' && !out.unknown && this.liqItems.length) {
+      const liq = summarizeLiqsIn(this.liqItems, s * 1000, end * 1000, { minUsd: this.liqMinUsd, side: this.side, shown: this.liqShown });
+      out.liqBuy = liq.buy; out.liqSell = liq.sell; out.liqN = liq.n;
+    }
+  }
+
+  /** Liquidations-only block: shorts liquidated as forced buys, longs liquidated as forced sells, reference price from the flow book. */
+  #computeLiquidations(s: number, end: number, out: Block): void {
+    const oldest = this.oldestSec();
+    if (!Number.isFinite(oldest) || end <= oldest) { out.unknown = true; out.n = -1; return; }
+    const t0 = s * 1000, t1 = end * 1000;
+    out.from = FROM.prints;
+    if (s < oldest) out.partial = true;
+    for (let i = lowerBoundLiq(this.liqItems, t0); i < this.liqItems.length; i++) {
+      const l = this.liqItems[i]!;
+      if (l.t >= t1) break;
+      if (l.usd < this.liqMinUsd || !liqSideMatches(l.side, this.side) || !this.liqShown(l.id)) continue;
+      const forcedBuy = l.side === 'short', slot = this.#slot(l.id);
+      out.n++;
+      if (forcedBuy) { out.buy += l.usd; if (slot >= 0) out.vBuy[slot]! += l.usd; }
+      else { out.sell += l.usd; if (slot >= 0) out.vSell[slot]! += l.usd; }
+      const named = forcedBuy ? out.topBuy : out.topSell;
+      if (!named.has || l.usd > named.usd) setNamed(named, l.usd, l.t, l.id, l.price, l.price, l.price, true);
+    }
+    out.liqBuy = out.buy; out.liqSell = out.sell; out.liqN = out.n;
+    const flow = this.flowOf?.(this.ref);
+    if (flow?.span) {
+      const z = Math.min(end - 1, flow.span.last), a = Math.max(s, flow.span.first);
+      for (let sec = z; sec >= a; sec--) { const p = flow.ownPrice(sec); if (p > 0) { out.refPx = p; break; } }
+    }
+    out.refPrev = this.#refBefore(s, Math.max(2, end - s));
   }
 
   /** The reference market's index in the ring (-1: not met yet), looked up once per ring size. */
@@ -343,6 +395,28 @@ export class BlockReader {
    * VWAP in the block against its last before it, no older than max(2 s, B)), largest first. Read on demand (a block shown in full).
    */
   marketRows(s: number, B: number): MarketRow[] {
+    if (this.mode === 'liquidations') {
+      const end = s + B, t0 = s * 1000, t1 = end * 1000, by = new Map<string, [number, number]>();
+      for (let i = lowerBoundLiq(this.liqItems, t0); i < this.liqItems.length; i++) {
+        const l = this.liqItems[i]!;
+        if (l.t >= t1) break;
+        if (l.usd < this.liqMinUsd || !liqSideMatches(l.side, this.side) || !this.liqShown(l.id)) continue;
+        const e = by.get(l.id) ?? [0, 0];
+        if (l.side === 'short') e[0] += l.usd; else e[1] += l.usd;
+        by.set(l.id, e);
+      }
+      const rows: MarketRow[] = [];
+      for (const [id, [buy, sell]] of by) {
+        const f = this.flowOf?.(id);
+        let last = 0, before = 0;
+        if (f?.span) {
+          for (let sec = Math.min(end - 1, f.span.last); sec >= Math.max(s, f.span.first) && !last; sec--) last = f.ownPrice(sec);
+          for (let sec = s - 1; sec >= s - Math.max(2, B) && !before; sec--) before = f.ownPrice(sec);
+        }
+        rows.push({ id, buy, sell, move: last > 0 && before > 0 ? 1e4 * Math.log(last / before) : NaN });
+      }
+      return rows.sort((a, b) => (b.buy + b.sell) - (a.buy + a.sell));
+    }
     const end = s + B, tally = this.tally, ring = tally?.ring ?? null, cov = this.coveredSec(), rows: MarketRow[] = [], split = Math.min(end, Math.max(s, cov));
     // Under a size floor the part before the tape is the recording's orders, counted per market as the block's own totals count them.
     const recorded = new Map<string, [number, number]>(), rec = this.recorded;
@@ -396,6 +470,7 @@ export function copyBlock(a: Block, b: Block): void {
   b.s = a.s; b.B = a.B; b.buy = a.buy; b.sell = a.sell; b.vBuy.set(a.vBuy); b.vSell.set(a.vSell); b.n = a.n;
   Object.assign(b.topBuy, a.topBuy); Object.assign(b.topSell, a.topSell);
   b.refPx = a.refPx; b.refPrev = a.refPrev; b.from = a.from; b.partial = a.partial; b.gap = a.gap; b.unknown = a.unknown; b.unrecorded = a.unrecorded; b.forming = a.forming; b.settling = a.settling;
+  b.liqBuy = a.liqBuy; b.liqSell = a.liqSell; b.liqN = a.liqN;
 }
 
 // ---- the inspector's notes: facts observed in a block's orders, never who or why ------------------------------------------------------

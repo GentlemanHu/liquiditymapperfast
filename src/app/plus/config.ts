@@ -25,6 +25,19 @@ export interface PlusPrice { readonly id: string; readonly usd: number }
 export const PADDLE: { readonly environment: 'sandbox' | 'production'; readonly token: string; readonly portal: string; readonly monthly: PlusPrice; readonly yearly: PlusPrice } = {
   environment: 'sandbox', token: '', portal: '', monthly: { id: '', usd: 10 }, yearly: { id: '', usd: 0 },
 };
+/**
+ * Plus is free (owner's decision, 2026-11-24, after Paddle refused the account for good): every visitor reads what Plus opens (stops, take
+ * profits, the whole history, the trader groups) from the levels service without a pass (its `plus_free` gate serves them publicly), and the
+ * Plus button is not shown. Set it back to false, with the server's gate, when a seller is in place: everything Plus was is still here.
+ */
+export const PLUS_FREE: boolean = true;
+/** What the page sends as the pass while Plus is free: none (an empty pass sends no `Authorization` header and asks for no data link). */
+export const FREE_PASS = '';
+let freeOverride: boolean | null = null;
+/** Whether Plus is free now: `PLUS_FREE`, unless a test of Plus as it was sold says otherwise (`setPlusFreeForTests`). */
+export const plusFree = (): boolean => freeOverride ?? PLUS_FREE;
+/** For tests of the membership: false runs the page as when Plus was sold, null goes back to `PLUS_FREE`. */
+export function setPlusFreeForTests(free: boolean | null): void { freeOverride = free; }
 export const plusOnSale = (): boolean => PADDLE.token !== '' && PADDLE.monthly.id !== '';
 /**
  * Whether the receipt form (the email and the invoice number bring Plus back) is offered while the checkout is closed. Set it to true when the

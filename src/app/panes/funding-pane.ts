@@ -181,7 +181,7 @@ export class FundingPane extends TimePane {
   readonly #tableBox = document.createElement('input');
   /** The venues the table's rows were drawn for. */
   #tableVenues: readonly FundingVenue[] = [];
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() }, row => { const venue = this.#tableVenues[row]; if (venue) this.store.set({ fundingVenue: venue }); });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) }, row => { const venue = this.#tableVenues[row]; if (venue) this.store.set({ fundingVenue: venue }); });
 
   /** `nlns`: the NL/NS model the OI and Delta panes read too (delta/nlns-source.ts). */
   constructor(host: HTMLElement, store: Store, view: View, private readonly nlns: NlnsSource) {
@@ -357,11 +357,12 @@ export class FundingPane extends TimePane {
       return { id: s.id, steps };
     });
     if (!any) {
-      if (state.fundingTable && this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianIn(venues, at, now, need) })?.plate) { setHtml(readout, ''); return; }
+      const placed = state.fundingTable ? this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianIn(venues, at, now, need) }) : null;
+      if (placed?.plate && placed.left < 80) { setHtml(readout, ''); return; }
       ctx.fillStyle = p.muted; ctx.textAlign = 'left';
       const failed = shown.filter(s => s.data.failed).map(s => venueLabel(s.id));
       const said = shown.some(s => s.data.loading) ? t('Reading funding…') : failed.length === shown.length ? t('{venue} did not answer: asked again in a minute.', { venue: failed.join(', ') }) : t('No funding in view.');
-      ctx.fillText(fitText(text => ctx.measureText(text).width, said, pw - 24), 12, ph / 2); setHtml(readout, '');
+      ctx.fillText(fitText(text => ctx.measureText(text).width, said, Math.max(40, (placed ? Math.min(pw, placed.left - 8) : pw) - 24)), 12, ph / 2); setHtml(readout, '');
       return;
     }
     // A floor under the scale's span: a view of tiny rates (Deribit's) would otherwise ask for more decimals than the ticks are given.
@@ -418,7 +419,7 @@ export class FundingPane extends TimePane {
     // beside one that lost a column, the card stays. The left tag stays unless the table is on a plate there.
     const card = fundingAllCardLines({ time: at, median: medianNow, need, venues: shown.map(s => { const r = fundingIn(s.rows, s.forming, at, now); return { id: s.id, name: venueLabel(s.id), per8h: r?.per8h ?? null, forming: r?.forming ?? false }; }) });
     const placed = state.fundingTable ? this.#drawTable(null, null, tf, at, now, !!hover, { views, venues, median: medianNow }, tableLines(card)) : null;
-    this.leftTag = placed?.plate !== true;
+    this.leftTag = !(placed?.plate && placed.left < 64);
     if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
     setHtml(readout, medianNow
@@ -463,8 +464,9 @@ export class FundingPane extends TimePane {
     const visRows = visIdx.map(i => rows[i]!), visPremium = premium.slice(cutAt(premium, v.t0 - data.premiumMs, false), cutAt(premium, v.t1));
     const hover = state.hover, at = hover ? Math.min(hover.t, now) : now;
     if (!visRows.length && !visPremium.length && !formShown) {
-      // The other venues stay in reach: a click on a row that does not answer is no way to lose the table. On a plate the table stands where the words would.
-      if (state.fundingTable && this.#drawTable(venue, data, tf, at, now, !!hover)?.plate) { setHtml(readout, ''); return; }
+      // The other venues stay in reach: a click on a row that does not answer is no way to lose the table. Only a plate reaching the left end hides the words.
+      const placed = state.fundingTable ? this.#drawTable(venue, data, tf, at, now, !!hover) : null;
+      if (placed?.plate && placed.left < 80) { setHtml(readout, ''); return; }
       say(data.failed ? t('{venue} did not answer: asked again in a minute.', { venue: name }) : data.loading ? t('Reading funding…') : t('No funding in view.'));
       return;
     }
@@ -574,7 +576,7 @@ export class FundingPane extends TimePane {
     // unless the table is on a plate there.
     const card = fundingCardLines({ time: at, venue: name, row: shownRow, forming: isForming, premium: premiumAt, opens: hourOpens, coin: coin.coin, continuous: continuousFunding(venue), band: hasPremium(venue) });
     const placed = state.fundingTable ? this.#drawTable(venue, data, tf, at, now, !!hover, undefined, headed(name, tableLines(card))) : null;
-    this.leftTag = placed?.plate !== true;
+    this.leftTag = !(placed?.plate && placed.left < 64);
     if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const tone = (x: number): string => x > 0 ? 'bid' : x < 0 ? 'ask' : '';
     const parts: string[] = [];

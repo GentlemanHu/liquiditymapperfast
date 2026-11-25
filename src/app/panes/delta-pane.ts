@@ -75,7 +75,7 @@ export class DeltaPane extends TimePane {
   #marketsPanel: Panel | null = null;
   readonly #tableBox = document.createElement('input');
   /** Each market's part of the candle read, on the pane (pane-table.ts): who bought and who sold at market in the delta the candles add up. */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
   /** The markets in the table's order (most traded over the candles in view first), kept while the markets and the candles in view are the same: rows never move under the pointer. */
   #rank: { key: string; order: number[] } | null = null;
   /** The candles drawn last. */

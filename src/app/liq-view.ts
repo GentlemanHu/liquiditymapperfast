@@ -12,6 +12,7 @@
  */
 import { t } from './i18n.ts';
 import { plus } from './plus/pass.ts';
+import { plusFree } from './plus/config.ts';
 import { splitFor, type LiqGroup, type LiqLevelSettings, type LiqSplit } from './liq-url.ts';
 
 export interface LiqView { liq: boolean; stops: boolean; takes: boolean; group: LiqGroup }
@@ -129,6 +130,7 @@ plus().subscribe(() => { plusOnHeld = null; });
  * too much for every frame). A pass that runs out unannounced is told within a minute (`Plus.tick`).
  */
 export function plusOn(): boolean {
+  if (plusFree()) return true;
   plusOnHeld ??= plus().on;
   return plusOnHeld;
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { BTC, COIN_VENUES, OPTIONAL_VENUES, instrumentIdFor, parseCatalogue, type Coin } from '../src/shared/coins.ts';
-import { BinancePerpConnector, BinancePerpTrades, BinanceSpotBook, DeribitConnector, HyperliquidConnector, MexcConnector, OkxConnector, browserVenues, BROWSER_VENUES } from '../src/shared/venues.ts';
+import { BinancePerpConnector, BinancePerpTrades, BinanceSpotBook, CoinbaseConnector, DeribitConnector, HyperliquidConnector, MexcConnector, OkxConnector, browserVenues, BROWSER_VENUES } from '../src/shared/venues.ts';
 import { buildMexcSubscription } from '../src/adapters/mexc.mts';
 import { FlowSources } from '../src/server/v2/flow-sources.mts';
 import type { BookConnector, Market, TradeEvent } from '../src/shared/connector.ts';
@@ -40,7 +40,7 @@ test('BTC is read exactly as before: the same instruments, addresses and subscri
   assert.deepEqual(sent.bitget, [{ op: 'subscribe', args: [{ instType: 'USDT-FUTURES', channel: 'books', instId: 'BTCUSDT' }, { instType: 'USDT-FUTURES', channel: 'trade', instId: 'BTCUSDT' }] }]);
   assert.deepEqual(sent.hyperliquid, [{ method: 'subscribe', subscription: { type: 'l2Book', coin: 'BTC', nSigFigs: 3 } }, { method: 'subscribe', subscription: { type: 'trades', coin: 'BTC' } }]);
   assert.deepEqual(sent.deribit, [{ jsonrpc: '2.0', id: 1, method: 'public/subscribe', params: { channels: ['book.BTC-PERPETUAL.100ms', 'trades.BTC-PERPETUAL.100ms'] } }]);
-  assert.deepEqual(sent.coinbase, [{ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['level2_batch', 'matches'] }]);
+  assert.deepEqual(sent.coinbase, [{ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['level2_batch', 'matches', 'heartbeat'] }]);
   assert.deepEqual(sent.okxspot, [{ op: 'subscribe', args: [{ channel: 'books', instId: 'BTC-USDT' }, { channel: 'trades', instId: 'BTC-USDT' }] }]);
   assert.equal((made[2]!.book as OkxConnector).contract, 0.01);
   assert.equal(inside(made[5]!.book).usdOf(80_000, 10), 10, 'Deribit BTC is sized in USD');
@@ -326,4 +326,19 @@ test('a price is written with as many decimals as its step needs, up to twelve, 
   assert.equal(fmtPrice(2_570.25, 0.25), '2,570.25');
   assert.equal(fmtPrice(0.000004065, 1e-11), '0.00000406500');
   assert.equal(fmtPrice(83_545, 25), '83,545'); assert.equal(fmtPrice(83_545.5, 0.5), '83,545.5'); assert.equal(fmtPrice(83_545, 10), '83,545');
+});
+
+test('Coinbase connector keeps live quiet books fresh via heartbeat and surfaces subscription errors', () => {
+  const cb = new CoinbaseConnector();
+  cb.state = 'connecting';
+  cb.onMessage(msg({ type: 'heartbeat', product_id: 'BTC-USD', sequence: 1 }));
+  assert.equal(cb.state, 'connecting', 'heartbeat before snapshot does not mark book live');
+  cb.onMessage(msg({ type: 'snapshot', product_id: 'BTC-USD', bids: [['70000', '2']], asks: [['70010', '3']] }));
+  assert.equal(cb.state, 'live');
+  cb.lastUpdate = 1_000;
+  cb.onMessage(msg({ type: 'heartbeat', product_id: 'BTC-USD', sequence: 2 }));
+  assert.ok(cb.lastUpdate > 1_000, 'heartbeat keeps a live quiet book alive');
+  cb.onMessage(msg({ type: 'error', message: 'Failed to subscribe', reason: 'BTC-USD is not available' }));
+  assert.equal(cb.state, 'error');
+  assert.match(cb.lastError ?? '', /BTC-USD is not available/);
 });

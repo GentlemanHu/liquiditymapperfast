@@ -465,14 +465,16 @@ export class BitgetSpotConnector extends BitgetBook {
 
 // ---- Coinbase -----------------------------------------------------------------------------------------------------------------------
 
-/** Coinbase Exchange (BTC-USD and the like): level2_batch (snapshot then l2update changes) and matches. The match side is the maker's, so the taker is the other one. */
+/** Coinbase Exchange (BTC-USD and the like): level2_batch (snapshot then l2update changes), matches and heartbeat (keeps quiet markets alive). The match side is the maker's, so the taker is the other one. */
 export class CoinbaseConnector extends MarketBook {
   readonly id = 'coinbase'; readonly name = 'Coinbase'; readonly quote = 'USD'; readonly marketType = 'spot' as const;
   constructor(market: Market = btc('coinbase')) { super(market); }
   protected url() { return 'wss://ws-feed.exchange.coinbase.com'; }
-  protected open(send: (p: unknown) => void) { send({ type: 'subscribe', product_ids: [this.symbol], channels: ['level2_batch', 'matches'] }); }
+  protected open(send: (p: unknown) => void) { send({ type: 'subscribe', product_ids: [this.symbol], channels: ['level2_batch', 'matches', 'heartbeat'] }); }
   onMessage(text: string) {
     const m = this.record(JSON.parse(text)); if (!m) return;
+    if (m.type === 'error') { this.fail(String(m.reason || m.message || 'subscription error').slice(0, 160)); return; }
+    if (m.type === 'heartbeat') { if (this.state === 'live') this.alive(); return; }
     if (m.type === 'snapshot') { this.replace(this.bids, this.rows(m.bids)); this.replace(this.asks, this.rows(m.asks)); this.touch(); return; }
     if (m.type === 'l2update') {
       for (const change of Array.isArray(m.changes) ? m.changes : []) {

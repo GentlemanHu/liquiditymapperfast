@@ -65,7 +65,7 @@ export class SizeHistoryPane extends TimePane {
   #bars = document.createElement('select');
   readonly #tableBox = document.createElement('input');
   /** Every row at the candle read, on the pane (pane-table.ts), and under them what the card of the row pointed at says that its row does not. */
-  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate() });
+  readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
   /** What the rows were worked out from last, and the result: a pointer move draws them again without working them out. */
   #held: { key: unknown[]; times: number[]; model: HistoryModel } | null = null;
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;

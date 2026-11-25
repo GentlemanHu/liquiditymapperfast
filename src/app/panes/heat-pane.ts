@@ -51,7 +51,7 @@ import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, typ
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, fitPrices, focusWindow, followPrice, holdPixel, limitFactor, liveEdgeShown, priceAtEdge, priceHeldAfter, priceRef, regionAt, wheelZoom, zoomedView } from './heat-zoom.ts';
 import { t, tn } from '../i18n.ts';
 import { el } from '../dom.ts';
-import { FREE_DAYS } from '../plus/config.ts';
+import { FREE_DAYS, plusFree } from '../plus/config.ts';
 import { openMenu, type MenuItem } from '../menu.ts';
 import { blockMsOf, editScope, withEdits } from '../tpo/settings.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
@@ -309,7 +309,7 @@ export const liqColumnShown = (state: AppState): boolean => { const l = state.li
  * 2026-11-19) widens it to two sub-columns where the plot the unsplit column leaves keeps the desktop's floor (`liqColumnWidth`), so it never
  * folds a side column; with less room the column stays one, and says so (`narrowNote`).
  */
-const liqColumnW = (state: AppState): number => liqColumnWidth({ shown: liqColumnShown(state), compact: COMPACT, strip: PROFILE_STRIP_W, column: PROFILE_W, split: !!liveSplit(state.liqLevels),
+const liqColumnW = (state: AppState): number => liqColumnWidth({ shown: liqColumnShown(state), compact: COMPACT, strip: PROFILE_STRIP_W, column: PROFILE_W, split: liqColumnShown(state) && !!liveSplit(state.liqLevels),
   plotUnsplit: PANE_W - (AXIS_W + PROFILE_W + profileColumnW(state) + (sideColumns(state).right.length + sideColumns(state).left.length) * TRADED_W), floor: MAP_PLOT_FLOOR });
 /** Whether the liquidation column is drawn split this frame (two sub-columns): a split chosen and drawn, and room for it. */
 export const liqSplitDrawn = (state: AppState): boolean => !COMPACT && liqColumnW(state) === SPLIT_COLUMN_W;
@@ -553,7 +553,7 @@ export class HeatPane {
    * the levels show (liquidations, stops, take profits), and is out of sight while that is what the pane shows. A page element over the drawing, placed
    * where the column is drawn (`#paintLiqColumn`); the heading's band is as tall as what it holds (`#liqHeadH`), History included.
    */
-  readonly #liqHistory = el('button', { class: 'liq-history', type: 'button', hidden: true, tip: t('How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane. The last {n} days are free; older history is part of Plus.', { n: FREE_DAYS }) }, t('History'));
+  readonly #liqHistory = el('button', { class: 'liq-history', type: 'button', hidden: true, tip: plusFree() ? t('How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.') : t('How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane. The last {n} days are free; older history is part of Plus.', { n: FREE_DAYS }) }, t('History'));
   #liqHeadH = liqHeading(undefined, 2, false).band;
   /**
    * What the levels show, and the way to choose it (Plus, 2026-11-17): a button in the wide column's heading named for what is drawn, which

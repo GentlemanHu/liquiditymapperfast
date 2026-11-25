@@ -9,6 +9,7 @@ import type { LevelsKind, LiqLevelsSource, LiqSet } from './liq-levels.ts';
 import type { LiqFamily } from './liq-history.ts';
 import { curveOf, groupName, groupTitle, kindName, kindTitle, takesBeside, type LiqPair, type LiqView } from './liq-view.ts';
 import type { LiqSplit } from './liq-url.ts';
+import { LIVE_ATTRIBUTION } from './liq-url.ts';
 import type { HeadLine } from './map-top.ts';
 import { BALANCED_RATIO, ratioText } from './mirror.ts';
 
@@ -163,17 +164,19 @@ export const ofGroup = (who: string, what: string): string => t('{who}: {what}',
  * stood, the take profits' state (beside the curve), and whose data it is. `who` names whose orders an "as of" is (`ofGroup`), where
  * another group's lane stands beside these (everyone beside the profitable traders); without it the note is as it always was.
  */
-export function liqNote(src: Pick<LiqLevelsSource, 'view' | 'takesState' | 'asOfs' | 'ordersOld' | 'ordersAbsent'> & { liqOld?: () => boolean; ordersOutOfDate?: () => boolean }, view: LiqView, at: number, who?: string): string {
+export function liqNote(src: Pick<LiqLevelsSource, 'view' | 'takesState' | 'asOfs' | 'ordersOld' | 'ordersAbsent'> & { liqOld?: () => boolean; ordersOutOfDate?: () => boolean; attribution?: () => string }, view: LiqView, at: number, who?: string): string {
   const named = (part: string): string => who ? ofGroup(who, part) : part;
   const time = clock(at), group = view.group, curve = curveOf(view), beside = takesBeside(view);
   const mine = group === 'profitable';
-  const head = curve === 'takes' ? mine ? t('+PnL traders\' take-profit orders at {time} · Powered by HyperTracker', { time }) : t('Hyperliquid take-profit orders at {time} · Powered by HyperTracker', { time })
+  const said = curve === 'takes' ? mine ? t('+PnL traders\' take-profit orders at {time} · Powered by HyperTracker', { time }) : t('Hyperliquid take-profit orders at {time} · Powered by HyperTracker', { time })
     : curve === 'stops' ? mine ? t('+PnL traders\' stop orders at {time} · Powered by HyperTracker', { time }) : t('Hyperliquid stop orders at {time} · Powered by HyperTracker', { time })
     : curve === 'both'
       ? mine ? t('+PnL traders\' liquidations and stops at {time} · Powered by HyperTracker', { time })
         : t('Hyperliquid liquidations and stops at {time} · Powered by HyperTracker', { time })
       : group === 'profitable' ? t('+PnL traders\' liquidation levels at {time} · Powered by HyperTracker', { time })
         : t('Hyperliquid liquidation levels at {time} · Powered by HyperTracker', { time });
+  // The live levels name both sources; "Powered by HyperTracker" stands untranslated in every language, so it is replaced as it is.
+  const head = src.attribution?.() === LIVE_ATTRIBUTION ? said.replace('Powered by HyperTracker', LIVE_ATTRIBUTION) : said;
   const parts = [head], orders = src.asOfs().orders, absent = src.ordersAbsent();
   // Liquidations older than OLD_MS are drawn still: said so, right after when they stood.
   const stale = staleWords({ view, liqOld: () => !!src.liqOld?.(), ordersOutOfDate: () => !!src.ordersOutOfDate?.() });

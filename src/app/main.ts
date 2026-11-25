@@ -259,6 +259,8 @@ async function main(): Promise<void> {
   cvd.trades.holes = (ids, from, to) => hub.recordingHoles(ids, from, to);
   cvd.trades.flowHeldFrom = id => hub.flow.heldFrom(id);
   cvd.trades.flowLoads = () => hub.flow.loads;
+  cvd.trades.liquidations = () => hub.liquidations;
+  cvd.trades.ensureLiquidations = (from, to, minUsd) => hub.ensureLiquidations({ t0: from, t1: to, p0: 0, p1: 0 }, minUsd);
   // A desktop folds its side columns to their edge tabs when the map would be left too little plot (layouts/dock-model.ts `chooseFold`).
   arrange.plotAt = paneW => paneW - gutterAt(paneW, store.state);
   // A pane of the map's column maximized over it (TradingView's, Karl 2026-11-17): a double click on the pane, its button, the map's button in
@@ -370,7 +372,7 @@ async function main(): Promise<void> {
   hub.onWhaleChanged = () => toolbar.refreshOpenPanel();
   toolbar.onSelectMarket = id => store.set({ marketId: id });
   toolbar.onVenuesApplied = () => { void hub.refreshMarkets(); window.setTimeout(() => void hub.refreshMarkets(), 15_000); };
-  const sounds = new Sounds(store); toolbar.attachSounds(sounds); sounds.start();
+  const sounds = new Sounds(store); toolbar.attachSounds(sounds); sounds.start(); cvd.trades.sounds = sounds;
   // Sounds the panels may make about what happens in them (flow bursts, walls, the balance, the depth, candle closes); the bursts are also marked on the flow column.
   // The depth sound's baseline (hours of minute columns, read as the page opens) waits for the map's first columns, or 15 s where the map draws
   // none (a phone's Tape): read beside them, its hours held the server and the page's connections and the map came seconds later.
@@ -447,7 +449,8 @@ async function main(): Promise<void> {
   applyMaterial();
   // Trades recovered from a venue's history (the browser engine): no flow burst is sounded over them.
   hub.onRecovered = (id, _from, to) => { alerts.recovered.set(id, Math.max(alerts.recovered.get(id) ?? 0, to)); };
-  hub.onLiquidationsChanged = () => { heat.invalidate(); range.refreshHeld(); };
+  hub.onLiveLiquidations = fresh => { if (replaying()) return; sounds.feedLiquidations(fresh); };
+  hub.onLiquidationsChanged = () => { heat.invalidate(); range.refreshHeld(); cvd.trades.liquidationsChanged(); };
   // Candles that came after the first frame (an exchange blocked here, the reference market read once known) are framed, unless the map was moved.
   // A refill frames the map only while nobody has moved it since it was last framed: not under a hand, a drawing being placed or a zoom of one's own.
   hub.onSeriesRefilled = () => { if (store.state.followLive && heat.untouched) heat.fit(); lower(); };
@@ -648,7 +651,7 @@ async function main(): Promise<void> {
     if (changed.has('phoneTape')) { candle.setShown(candleShown()); cvd.viewChanged(); hub.setTape(tapeWanted()); syncTapeTab(); }
     // A venue switched on or off filters the list as its own settings do: drawn again from the top.
     // Trades' own settings and the venues make its rows again; the whale size, a replay and the clock only redraw them.
-    if (changed.has('trades') || changed.has('disabledVenues')) cvd.trades.refresh();
+    if (changed.has('trades') || changed.has('disabledVenues') || changed.has('scope') || changed.has('heatmapSource') || changed.has('markets')) cvd.trades.refresh();
     else if (changed.has('sounds') || changed.has('replay') || changed.has('timeZone')) cvd.trades.redraw();
     if (changed.has('status') || changed.has('connected') || changed.has('mark')) showStatus();
     if (changed.has('show') || changed.has('liqLevels')) layout(); else if (changed.has('traded')) { gutters(); arrange.refit(); }

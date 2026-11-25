@@ -1,31 +1,35 @@
 import type { Store } from '../store.ts';
 import type { Print } from '../prints.ts';
+import type { Liquidation } from '../liquidations.ts';
 import { anomalies } from '../anomaly.ts';
 import { kindOf } from '../scope.ts';
 import { instrumentShown } from '../cvd/ids.ts';
 import { SoundEngine } from './engine.ts';
-import { Coalescer, chimeNotes, notesFor, tierOf, type SoundEvent } from './rules.ts';
+import { Coalescer, LiqCoalescer, chimeNotes, liqNotesFor, notesFor, tierOf, type LiqSoundEvent, type SoundEvent } from './rules.ts';
 import { TIMEFRAMES } from '../../shared/series.ts';
 import { BAR_FRESH_MS } from './alerts.ts';
 import { scaledUsd, sizeScale } from '../coin.ts';
 import { replaying } from '../replay/clock.ts';
 
 /** What was decided for one event: kept for the test harness and for the panel's "last sounds" line. */
-export interface SoundLogEntry { at: number; kind: 'trade' | 'candle' | 'test'; side?: 'buy' | 'sell'; tier?: string; usd?: number; venues?: number; n?: number; audible: boolean }
+export interface SoundLogEntry { at: number; kind: 'trade' | 'liquidation' | 'candle' | 'test'; side?: 'buy' | 'sell'; liqSide?: 'long' | 'short'; tier?: string; usd?: number; venues?: number; n?: number; audible: boolean }
 
 /** Prints older than this when they reach us (a throttled background tab catching up) are history, not news: a burst of old sounds is worse than silence. */
 const MAX_AGE_MS = 2_500;
+/** Liquidations can arrive slightly later from some venues, but older ones (history imports, late OKX reports, wake-ups) never sound. */
+const LIQ_MAX_AGE_MS = 4_000;
 /** A sweep that waited longer than this to be sounded was held up (a throttled tab): it is history by now, and sounding it late is worse than silence. */
 const MAX_QUEUE_MS = 1_000;
 
 /**
- * Turns the live stream of large prints into sounds. A sweep that fills on several venues within a quarter of a second is one event;
- * its size picks a tier; the tier decides whether it sounds and how. Everything decided is recorded in `log`, audible or not.
+ * Turns the live stream of large prints and liquidations into sounds. A sweep or liquidation burst across venues within the coalescing
+ * window is one event; its size picks a tier; the tier decides whether it sounds and how. Everything decided is recorded in `log`, audible or not.
  */
 export class Sounds {
   readonly engine = new SoundEngine();
   readonly log: SoundLogEntry[] = [];
   readonly #coalescer = new Coalescer(250);
+  readonly #liqCoalescer = new LiqCoalescer(300);
   #timer: number | undefined;
   #lastBar = 0; #barKey = '';
 
@@ -43,8 +47,11 @@ export class Sounds {
       if (changed.has('sounds')) {
         this.engine.setVolume(state.sounds.volume);
         // Switched off: what was waiting to sound is not played when the timer next comes round.
-        if (!state.sounds.on) this.#coalescer.clear();
-        else if (this.engine.state !== 'running') void this.engine.unlock().then(() => this.store.set({ soundState: this.engine.state }));
+        if (!state.sounds.on) { this.#coalescer.clear(); this.#liqCoalescer.clear(); }
+        else {
+          if (!state.sounds.liquidations.on) this.#liqCoalescer.clear();
+          if (this.engine.state !== 'running') void this.engine.unlock().then(() => this.store.set({ soundState: this.engine.state }));
+        }
       }
       if (changed.has('candles')) this.#onCandles();
     });
@@ -56,20 +63,37 @@ export class Sounds {
   feed(prints: readonly Print[]): void {
     const s = this.store.state;
     if (!s.sounds.on || replaying()) return;
-    const nowMs = this.clock(), at = this.now(), shown = instrumentShown(s);
+    const nowMs = this.clock(), at = this.now(), shown = instrumentShown(s), wantSide = s.sounds.tradeSide;
     for (const p of prints) {
       if (nowMs - p.t > MAX_AGE_MS) continue;
+      if (wantSide !== 'both' && p.side !== wantSide) continue;
       if (!shown(p.id)) continue;
       if (s.sounds.scope !== 'all' && kindOf(s.markets, p.id) !== (s.sounds.scope === 'spot' ? 'spot' : 'perp')) continue;
       this.#coalescer.add(p, at);
     }
   }
 
+  /** New liquidations from the live stream (never history loads). */
+  feedLiquidations(items: readonly Liquidation[]): void {
+    const s = this.store.state;
+    if (!s.sounds.on || !s.sounds.liquidations.on || replaying()) return;
+    const nowMs = this.clock(), at = this.now(), shown = instrumentShown(s), wantSide = s.sounds.liquidations.side;
+    for (const l of items) {
+      if (nowMs - l.t > LIQ_MAX_AGE_MS) continue;
+      if (wantSide !== 'both' && l.side !== wantSide) continue;
+      if (!shown(l.id)) continue;
+      this.#liqCoalescer.add(l, at);
+    }
+  }
+
   #drain(force = false): void {
-    const s = this.store.state, now = this.now(), events = this.#coalescer.drain(now, force);
+    const s = this.store.state, now = this.now();
+    const events = this.#coalescer.drain(now, force);
+    const liqEvents = this.#liqCoalescer.drain(now, force);
     // Asked again here, not only when a print came in: sounds may have been switched off since, and a timer that was throttled may have come late.
     if (!s.sounds.on) return;
     for (const event of events) if (now - event.queuedAt <= MAX_QUEUE_MS) this.#play(event, s.sounds.tiers, s.sounds.volume, 'trade');
+    if (s.sounds.liquidations.on) for (const event of liqEvents) if (now - event.queuedAt <= MAX_QUEUE_MS) this.#playLiq(event, s.sounds.liquidations.tiers, s.sounds.volume);
   }
   /** Decide and play one event (exposed for the harness through `drainNow`). */
   #play(event: SoundEvent, tiers = this.store.state.sounds.tiers, volume = this.store.state.sounds.volume, kind: SoundLogEntry['kind'] = 'trade'): void {
@@ -78,6 +102,12 @@ export class Sounds {
     if (!hit || !hit.tier.on) return;
     const audible = this.engine.play(notesFor(event.side, hit.index, usd, hit.tier.usd, volume));
     this.#record({ at: this.clock(), kind, side: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible });
+  }
+  #playLiq(event: LiqSoundEvent, tiers = this.store.state.sounds.liquidations.tiers, volume = this.store.state.sounds.volume): void {
+    const usd = event.usd / sizeScale(), hit = tierOf(usd, tiers);
+    if (!hit || !hit.tier.on) return;
+    const audible = this.engine.play(liqNotesFor(event.side, hit.index, usd, hit.tier.usd, volume));
+    this.#record({ at: this.clock(), kind: 'liquidation', side: event.side === 'short' ? 'buy' : 'sell', liqSide: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible });
   }
   /** Close every open window now (the harness and the Test buttons do not want to wait a quarter of a second). */
   drainNow(): void { this.#drain(true); }
@@ -90,6 +120,18 @@ export class Sounds {
     void this.engine.unlock().then(() => {
       const audible = this.engine.play(notesFor(side, index, usd, tier.usd, this.store.state.sounds.volume), true);
       this.#record({ at: this.clock(), kind: 'test', side, tier: tier.id, usd: scaledUsd(usd), audible });
+      this.store.set({ soundState: this.engine.state });
+    });
+  }
+
+  /** Play a sample of a liquidation tier from the panel; works even when sounds are switched off. */
+  testLiquidation(tierId: string, side: 'long' | 'short'): void {
+    const tiers = this.store.state.sounds.liquidations.tiers, index = tiers.findIndex(t => t.id === tierId);
+    if (index < 0) return;
+    const tier = tiers[index]!, usd = tier.usd * 1.2;
+    void this.engine.unlock().then(() => {
+      const audible = this.engine.play(liqNotesFor(side, index, usd, tier.usd, this.store.state.sounds.volume), true);
+      this.#record({ at: this.clock(), kind: 'test', side: side === 'short' ? 'buy' : 'sell', liqSide: side, tier: tier.id, usd: scaledUsd(usd), audible });
       this.store.set({ soundState: this.engine.state });
     });
   }

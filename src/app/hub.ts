@@ -2,7 +2,7 @@ import { PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS } from './traded/anchor.
 import { connectionStatus } from './net.ts';
 import type { BootstrapState, DataSource, FootprintResponse, TickMessage } from './source.ts';
 import { PrintBook, fromWire, type Print } from './prints.ts';
-import { LiquidationBook, fromWire as liquidationFromWire } from './liquidations.ts';
+import { LiquidationBook, fromWire as liquidationFromWire, type Liquidation } from './liquidations.ts';
 import { LIQUIDATIONS_PER_ANSWER } from '../shared/liquidations.ts';
 import { FlowBook } from './flow-book.ts';
 import type { AppState, Store, CandleRow, OiBar } from './store.ts';
@@ -486,6 +486,8 @@ export class Hub {
   /** A live span's last rows, by the span without its minute: what stands while the next minute's read is out (`spanRead`). */
   readonly #spanLast = new Map<string, CandleRow[]>();
   onLiquidationsChanged: () => void = () => {};
+  /** Genuinely new live liquidations from the stream (never history loads): what liquidation sounds listen to. */
+  onLiveLiquidations: (fresh: Liquidation[]) => void = () => {};
   /** A series whose answer came back empty has candles now (the reference market's, read once it was known, or a later reload): the page frames them. */
   onSeriesRefilled: () => void = () => {};
   /** 'unavailable': the source has no liquidations (a server from before them); asked again a minute later. */
@@ -715,7 +717,7 @@ export class Hub {
       },
       onLiquidations: items => {
         const fresh = this.liquidations.add(items.flatMap(row => { const l = liquidationFromWire(row); return l ? [l] : []; }));
-        if (fresh.length) this.onLiquidationsChanged();
+        if (fresh.length) { this.onLiveLiquidations(fresh); this.onLiquidationsChanged(); }
       },
       // Open interest is pushed the moment the source has a reading: the pane follows the exchanges, not the clock.
       onOiPush: items => this.#oiPush(items),

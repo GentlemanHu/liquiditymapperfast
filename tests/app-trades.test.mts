@@ -6,6 +6,8 @@ import type { TapeBatch } from '../src/shared/tape.ts';
 import { TradeIndex, readRecord } from '../src/app/trades/index.ts';
 import { ORDER_TINT, ROW_GAP, ROW_MARK, ROW_PAD, TIERS, amountText, clockForm, orderBarFull, priceWidth, rowGeom, rowInk, tierOf } from '../src/app/trades/style.ts';
 import { TRADES_DEFAULTS, readTrades } from '../src/app/trades/settings.ts';
+import { LIQ_TINT, buildLiqRows, liqBarFull, liqBlockFullScale, liqRowsInRange, liqSideMatches, summarizeLiqsIn } from '../src/app/trades/liquidations.ts';
+import type { Liquidation } from '../src/shared/liquidations.ts';
 import { BUF_S, Conveyor, REST_PX } from '../src/app/trades/conveyor.ts';
 import { PALETTES, contrastRatio } from '../src/app/theme.ts';
 import { price } from '../src/app/format.ts';
@@ -272,11 +274,43 @@ test('sizes, clocks and settings as the list writes and reads them', () => {
   assert.equal(TRADES_DEFAULTS.minUsd, 0, 'any size at first: every trade');
   assert.equal(TRADES_DEFAULTS.unit, 0, 'each order at first (Karl, 2026-11-14)');
   assert.equal(TRADES_DEFAULTS.group, true, 'a burst one row at first (Karl, 2026-11-14)');
-  assert.deepEqual(readTrades({ minUsd: 5_000, side: 'buy', group: true }), { unit: 0, minUsd: 5_000, side: 'buy', group: true });
-  assert.deepEqual(readTrades({ unit: 1, group: false }), { unit: 1, minUsd: 0, side: 'both', group: false }, 'a choice of a second, grouping off, is read as it is');
-  assert.deepEqual(readTrades({ minUsd: -1, side: 'x', group: 1 }), TRADES_DEFAULTS);
+  assert.deepEqual(readTrades({ minUsd: 5_000, side: 'buy', group: true }), { unit: 0, mode: 'trades', minUsd: 5_000, liqMinUsd: 1_000, side: 'buy', group: true, pinLiq: false });
+  assert.deepEqual(readTrades({ unit: 1, group: false }), { unit: 1, mode: 'trades', minUsd: 0, liqMinUsd: 1_000, side: 'both', group: false, pinLiq: false }, 'a choice of a second, grouping off, is read as it is');
+  assert.deepEqual(readTrades({ mode: 'liquidations', liqMinUsd: 10_000, pinLiq: true }), { unit: 0, mode: 'liquidations', minUsd: 0, liqMinUsd: 10_000, side: 'both', group: true, pinLiq: true });
+  assert.deepEqual(readTrades({ minUsd: -1, liqMinUsd: -5, mode: 'nope', side: 'x', group: 1, pinLiq: 'yes' }), TRADES_DEFAULTS);
   assert.ok((LAYOUT_KEYS as readonly string[]).includes('trades'));
   assert.equal(readSettings({ flowView: 'all' }).flowView, 'trades');
+});
+
+test('liquidation tape rows: fixed-slice cascade grouping, side mapping, range lookup and dedicated bar scales', () => {
+  const mk = (t: number, side: 'long' | 'short', usd: number, id = 'binance:BTCUSDT', price = 70_000): Liquidation => ({ t, id, side, price, usd, reported: price, kind: 'fill' });
+  const items: Liquidation[] = [
+    mk(1_000, 'long', 5_000, 'binance:BTCUSDT', 70_000),
+    mk(1_100, 'long', 15_000, 'binance:BTCUSDT', 69_900), // same 250ms slice + venue + side -> groups with 1_000
+    mk(1_150, 'short', 8_000, 'bybit:BTCUSDT', 70_100),
+    mk(1_300, 'long', 2_000, 'binance:BTCUSDT', 69_800), // next 250ms slice (floor(1300/250)=5 vs 4)
+    mk(1_400, 'long', 500, 'binance:BTCUSDT', 69_700), // below floor
+  ];
+  assert.equal(liqSideMatches('short', 'buy'), true);
+  assert.equal(liqSideMatches('long', 'buy'), false);
+  assert.equal(liqSideMatches('long', 'sell'), true);
+  const grouped = buildLiqRows(items, { minUsd: 1_000, side: 'both', shown: () => true }, true);
+  assert.equal(grouped.length, 3, 'newest first, two same-slice longs grouped, sub-floor dropped');
+  assert.equal(grouped[0]!.t, 1_300);
+  assert.equal(grouped[1]!.side, 'short'); assert.equal(grouped[1]!.signedUsd, 8_000);
+  assert.equal(grouped[2]!.count, 2); assert.equal(grouped[2]!.usd, 20_000); assert.equal(grouped[2]!.signedUsd, -20_000);
+  assert.equal(grouped[2]!.rep.usd, 15_000, 'largest liquidation in the burst is representative');
+  assert.deepEqual([grouped[2]!.lo, grouped[2]!.hi], [69_900, 70_000]);
+  const ungrouped = buildLiqRows(items, { minUsd: 1_000, side: 'sell', shown: () => true }, false);
+  assert.equal(ungrouped.length, 3, 'sell filter keeps longs liquidated only');
+  assert.deepEqual(liqRowsInRange(grouped, 1_050, 1_200).map(r => r.t), [1_150, 1_100]);
+  const sum = summarizeLiqsIn(items, 1_000, 1_350, { minUsd: 1_000, side: 'both', shown: () => true });
+  assert.deepEqual(sum, { buy: 8_000, sell: 22_000, n: 4 });
+  assert.ok(liqBarFull(1_000) < orderBarFull(1_000), 'liquidation bar scale is tighter than trade scale');
+  assert.ok(liqBlockFullScale(60) > liqBlockFullScale(1) && liqBlockFullScale(300) > liqBlockFullScale(60));
+  for (const p of Object.values(PALETTES)) {
+    for (const buy of [true, false]) assert.ok(contrastRatio(rowInk(p, buy, LIQ_TINT).text, rowInk(p, buy, LIQ_TINT).bg) >= 4.5);
+  }
 });
 
 test('the view takes the tape only while it shows, and asks no source', () => {

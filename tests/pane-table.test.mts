@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PaneTable, REST_HOLD_MS, REST_STAND_MS, restLift, headed, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
+import { PLATE_REST_PLOT, PLATE_REST_SHARE, PaneTable, REST_HOLD_MS, REST_STAND_MS, restLift, headed, paintTable, placeTable, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, type TableCell, type TableRoom, type TableSpec } from '../src/app/panes/pane-table.ts';
 import { fundingAt, type FundingNow, type FundingRow } from '../src/app/funding.ts';
 import { fundingAllCardLines, fundingAllNow, fundingCardLines, fundingTableRows } from '../src/app/panes/funding-pane.ts';
 import { lsCardLines, lsTableRows } from '../src/app/panes/ls-pane.ts';
@@ -25,15 +25,17 @@ const room = (over: Partial<TableRoom> = {}): TableRoom => ({ w: 700, h: 140, pl
 const cells = (...texts: string[]): TableCell[] => texts.map(text => ({ text }));
 const spec = (rows = 5, minCols = 3): Pick<TableSpec, 'heads' | 'rows' | 'minCols'> => ({ heads: ['', 'Longs', 'Shorts', 'Diff'], minCols, rows: Array.from({ length: rows }, () => cells('name', '123', '456', '+789')) });
 
-test('a table goes beside the plot where it has the room, the last columns going first, and on a plate only under a pointer', () => {
+test('a table goes beside the plot where it has the room, the last columns going first, and on a right-aligned plate otherwise (hover-only on narrow plots, always visible on desktop)', () => {
   // Widths 20 + 25 + 30 + 20 = 95, three gaps of 7, two pads of 5: 126 for all four, 99 without the last.
   const four = placeTable(measure, room({ w: 400 + 60 + 130 }), spec())!;
   assert.deepEqual([four.cols, four.left, four.plate, four.width], [4, 404, false, 126]);
   const three = placeTable(measure, room({ w: 400 + 60 + 110 }), spec())!;
   assert.deepEqual([three.cols, three.left, three.plate, three.width], [3, 404, false, 99]);
-  assert.equal(placeTable(measure, room({ w: 400 + 60 + 90 }), spec()), null, 'no room beside the plot and no pointer: nothing covers the chart at rest');
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 90 }), spec()), null, 'narrow plot (< PLATE_REST_PLOT) and no pointer: nothing covers the chart at rest');
   const plate = placeTable(measure, room({ w: 400 + 60 + 90, pointing: true }), spec())!;
-  assert.deepEqual([plate.cols, plate.left, plate.plate, plate.width], [4, 6, true, 126], 'under a pointer it goes over the left end, with every column');
+  assert.deepEqual([plate.cols, plate.left, plate.plate, plate.width], [4, 360, true, 126], 'under a pointer it goes right-aligned against the price axis, with every column');
+  const desk = placeTable(measure, room({ w: 600 + 60 + 90, plotW: 600 }), spec())!;
+  assert.deepEqual([desk.cols, desk.left, desk.plate, desk.width], [4, 560, true, 126], 'on a desktop plot it stays visible at rest, right-aligned against the price axis');
   assert.equal(placeTable(measure, room({ w: 150 + 60, plotW: 150, pointing: true }), spec()), null, 'wider than 60 % of the plot: no plate');
   // Columns may go down to `minCols` and no further.
   assert.equal(placeTable(measure, room({ w: 400 + 60 + 72 }), spec(5, 2))!.cols, 2);
@@ -320,8 +322,8 @@ test('a Delta row: a side that traded nothing is 0, not the residue of live seco
 });
 
 test('a plate keeps every column unless the table lets its last ones go (plateMin), and then only down to that', () => {
-  // All four 126 wide, three 99: a plot of 200 takes 120 on a plate.
-  const narrow = room({ w: 200 + 60 + 20, plotW: 200, pointing: true });
+  // All four 126 wide, three 99: a plot of 200 with no right strip takes 120 on a plate.
+  const narrow = room({ w: 200 + 60, plotW: 200, pointing: true });
   assert.equal(placeTable(measure, narrow, spec()), null, 'by default a plate is the whole table or none (the card says it)');
   const plate = placeTable(measure, narrow, { ...spec(), plateMin: 3 })!;
   assert.deepEqual([plate.plate, plate.cols, plate.width], [true, 3, 99], 'the × tables let their last column go');
@@ -351,15 +353,19 @@ function placedBefore(measure: (text: string) => number, room: TableRoom, spec: 
   if (!rowH) return null;
   const widths = spec.heads.map((head, c) => Math.max(measure(head), ...spec.rows.map(row => measure(row[c]?.text ?? ''))));
   const width = (cols: number): number => widths.slice(0, cols).reduce((a, b) => a + b, 0) + GAP * (cols - 1) + PAD * 2;
-  const free = room.w - room.axisW - room.plotW;
+  const free = room.w - room.axisW - room.plotW, rightEdge = room.w - room.axisW - 4, strip = Math.max(0, free - 4);
   let cols = n, left = room.plotW + 4, plate = false;
-  while (cols >= spec.minCols && width(cols) > free - 4) cols--;
+  while (cols >= spec.minCols && width(cols) > strip) cols--;
+  const maxPlateW = Math.min(rightEdge - 6, strip + room.plotW * 0.6);
   if (cols < spec.minCols) {
-    left = 6; plate = true;
-    if (!room.pointing) return null;
+    plate = true;
     const least = Math.min(n, Math.max(spec.minCols, spec.plateMin ?? n));
-    for (cols = n; cols > least && width(cols) > room.plotW * 0.6;) cols--;
-    if (width(cols) > room.plotW * 0.6) return null;
+    for (cols = n; cols > least && width(cols) > maxPlateW;) cols--;
+    const plateW = width(cols);
+    if (plateW > maxPlateW) return null;
+    const restOk = room.plotW >= PLATE_REST_PLOT && Math.max(0, plateW - strip) <= room.plotW * PLATE_REST_SHARE;
+    if (!room.pointing && !restOk) return null;
+    left = Math.max(6, rightEdge - plateW);
   }
   const height = (k + (titles ? 1 : 0) + (foot ? 1 : 0)) * rowH, y0 = Math.round(room.h / 2 - height / 2), first = y0 + (titles ? rowH : 0);
   const rights: number[] = [];
@@ -418,7 +424,8 @@ test('the rows go where they went before the card\'s lines but for their height,
     assert.ok(got!.titles && got!.foot, tag);
     if (lines.length) {
       assert.ok(got!.summary.length > 0 && got!.y0 + got!.height + got!.summaryH <= r.h - 2, tag);
-      assert.ok(got!.summaryW >= got!.width && got!.summaryW <= (got!.plate ? r.plotW * 0.6 : r.w - r.axisW - r.plotW - 4), tag);
+      const strip = Math.max(0, r.w - r.axisW - r.plotW - 4), maxPlateW = Math.min(r.w - r.axisW - 10, strip + r.plotW * 0.6);
+      assert.ok(got!.summaryW >= got!.width && got!.summaryW <= (got!.plate ? maxPlateW : strip), tag);
       assert.ok(got!.summary.every(row => (row.label !== undefined ? measure(row.label) + (row.text ? 14 + measure(row.text) : 0) : measure(row.text)) <= got!.summaryW - 10), tag);
     }
   }
@@ -721,12 +728,12 @@ test('the card\'s lines may be wider than the rows: the columns keep their place
   assert.equal(label.summaryW, 30 * 5 + 10);
 });
 
-test('on a plate the card\'s lines hang under the rows where 60 % of the plot and the pane leave room, and there is no plate without a pointer', () => {
+test('on a plate the card\'s lines hang under the rows where the strip plus 60 % of the plot and the pane leave room, and on a narrow plot there is no plate without a pointer', () => {
   const plate = placeTable(measure, room({ w: 400 + 60 + 90, h: 300, pointing: true }), { ...spec(), lines: OI_LINES })!;
-  assert.deepEqual([plate.plate, plate.left, plate.complete, plate.summary.length], [true, 6, true, 4]);
+  assert.deepEqual([plate.plate, plate.left, plate.complete, plate.summary.length], [true, 360, true, 4]);
   const rows = placeTable(measure, room({ w: 400 + 60 + 90, h: 120, pointing: true }), { ...spec(), lines: OI_LINES })!;
   assert.deepEqual([rows.plate, rows.cols, rows.complete, rows.summary.length], [true, 4, false, 0], 'too short for the lines: the rows alone, and the card is needed');
-  assert.equal(placeTable(measure, room({ w: 400 + 60 + 90, h: 300 }), { ...spec(), lines: OI_LINES }), null, 'no pointer: nothing over the chart');
+  assert.equal(placeTable(measure, room({ w: 400 + 60 + 90, h: 300 }), { ...spec(), lines: OI_LINES }), null, 'narrow plot (< PLATE_REST_PLOT) and no pointer: nothing over the chart');
   // The rows beside the plot stay there when the pointer comes: the table never jumps to a plate for its lines.
   const beside = placeTable(measure, room({ w: 400 + 60 + 110, h: 300, pointing: true }), { ...spec(), lines: OI_LINES })!;
   assert.deepEqual([beside.plate, beside.cols, beside.complete], [false, 3, false]);
@@ -775,11 +782,13 @@ test('painting the card\'s lines: the foot under the rows where it always was, a
   assert.equal(ctx.font, '11px sans', 'the font is the pane\'s again');
   const last = text('+239 BTC')[3] as number;
   assert.ok((text('Open interest')[3] as number) > at.y0 + at.height && last <= at.y0 + at.height + at.summaryH, 'the lines under the foot, inside their height');
-  // On a plate, the plate goes under the lines too.
+  // On a right-aligned plate, the plate widens leftward under wider lines so its right edge stays clear of the price axis.
   calls.length = 0;
   const plate = placeTable(measure, room({ w: 400 + 60 + 20, h: 300, pointing: true }), s)!;
   paintTable(ctx as unknown as CanvasRenderingContext2D, p, plate, s, -1);
-  assert.deepEqual(calls[0], ['rect', plate.left, plate.y0 - 2, Math.max(plate.width, plate.summaryW), plate.height + plate.summaryH + 4]);
+  const wide = Math.max(plate.width, plate.summaryW), boxLeft = plate.left + plate.width - wide;
+  assert.deepEqual(calls[0], ['rect', boxLeft, plate.y0 - 2, wide, plate.height + plate.summaryH + 4]);
+  assert.equal(boxLeft + wide, 400 + 20 - 4, 'right edge stays flush against the price axis');
 });
 
 const CANDLE = { longOpened: 239, shortOpened: 484, longClosed: 628, shortClosed: 527, unassigned: 0, unknown: 0, fine: 4, counted: 4, byPrice: false } as NlnsCandle;
@@ -894,4 +903,58 @@ test('a table that says no lines at rest keeps room for the largest a pointer wo
   const alone180 = draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 })!.y0;
   assert.ok(draw(new PaneTable(host, null, () => 0), [], { rest: true, h: 180 }, { restLines: [two] })!.y0 < alone180, 'a short card that fits keeps its room');
   assert.equal(draw(short, [], { rest: true, h: 180 }, { restLines: [two, long] })!.y0, alone180, 'with a longer one that does not, none');
+});
+
+test('Liquidity Tracker with a 128 px right strip stays visible at rest on the right on desktop, and stays hover-only on narrow/phone plots', () => {
+  const ltRows = ltTableRows([
+    { name: 'Bitget spot', bid: 1_820_000, ask: 2_740_000, share: 0.30 },
+    { name: 'Binance spot', bid: 1_380_000, ask: 1_560_000, share: 0.19 },
+    { name: 'Kraken', bid: 827_000, ask: 860_000, share: 0.10 },
+    { name: '6 others', bid: 1_060_000, ask: 1_340_000, share: 0.16 },
+  ], PALETTE);
+  const ltSpec: TableSpec = {
+    heads: ['', 'Bid', 'Ask', 'imb', 'Share', '×'],
+    rows: ltRows, minCols: 3, plateMin: 5, cardCols: 1, focus: -1, foot: 'newest 08:40',
+    lines: headed('Total', tableLines(ltCardLines({ time: 0, bid: 7_100_000, ask: 8_300_000, halfLifeBp: 2, venues: 13 }))),
+  };
+  // Desktop with only the 128 px book profile column right of the plot (Karl, 2026-11-24): visible at rest, right-aligned against the price axis.
+  const desktopRoom: TableRoom = { w: 1927, h: 320, plotW: 1735, axisW: 64, pointing: false, rest: true };
+  const atRest = placeWith(desktopRoom, ltSpec, ltSpec.lines!)!;
+  assert.ok(atRest, 'visible at rest even when mouse is outside the pane');
+  assert.equal(atRest.plate, true);
+  assert.equal(atRest.cols, 6, 'keeps every column on the right-aligned plate');
+  assert.equal(atRest.left + atRest.width, desktopRoom.w - desktopRoom.axisW - 4, 'right-aligned against the price axis');
+  assert.equal(atRest.complete, true);
+  // Same place when hovering back in.
+  const hovered = placeTable(measure, { ...desktopRoom, pointing: true }, ltSpec)!;
+  assert.deepEqual([hovered.left, hovered.width, hovered.cols], [atRest.left, atRest.width, atRest.cols]);
+  // Phone / narrow plot (< PLATE_REST_PLOT): stays hover-only at rest, appears right-aligned when pointing.
+  const phoneRoom: TableRoom = { w: 390, h: 320, plotW: 248, axisW: 58, pointing: false, rest: true };
+  assert.equal(placeTable(measure, phoneRoom, ltSpec), null, 'phone stays clear at rest');
+  const phoneHover = placeTable(measure, { ...phoneRoom, pointing: true }, ltSpec)!;
+  assert.ok(phoneHover && phoneHover.plate && phoneHover.left + phoneHover.width === phoneRoom.w - phoneRoom.axisW - 4);
+  // Desktop plot where a wide plate with no strip would cover > PLATE_REST_SHARE of the plot: stays hover-only at rest.
+  const tightDesk: TableRoom = { w: 430 + 64, h: 320, plotW: 430, axisW: 64, pointing: false, rest: true };
+  assert.equal(placeTable(measure, tightDesk, ltSpec), null, 'excessive overlap stays hover-only at rest');
+  assert.ok(placeTable(measure, { ...tightDesk, pointing: true }, ltSpec)!.plate);
+});
+
+test('plateTopX pushes a plate down only when it reaches a top-left control, and host.defer delays painting without delaying hit testing', () => {
+  // Wide desktop plate on the right does not touch a top-left lens box at x < 240.
+  const wide = placeTable(measure, { w: 1000, h: 180, plotW: 850, axisW: 60, pointing: false, plateTop: 60, plateTopX: 240 }, spec())!;
+  assert.ok(wide.plate && wide.left > 240 && wide.y0 < 60, 'clear of top-left control: stays centred');
+  // Narrow plate reaching left of plateTopX starts under plateTop.
+  const tight = placeTable(measure, { w: 300, h: 180, plotW: 240, axisW: 60, pointing: true, plateTop: 60, plateTopX: 240 }, spec())!;
+  assert.ok(tight.plate && tight.left < 240 && tight.y0 === 60, 'reaches top-left control: pushed under plateTop');
+  // host.defer delays paintTable until invoked, while draw() still returns TablePlace and owns() works immediately.
+  let painted = 0; let deferred: (() => void) | null = null;
+  const canvas = { addEventListener: () => undefined, getBoundingClientRect: () => ({ left: 0, top: 0 }), style: { cursor: '' } };
+  const host = { canvas: canvas as unknown as HTMLCanvasElement, left: () => 0, rangeGesture: () => false, invalidate: () => undefined, defer: (fn: () => void) => { deferred = fn; } };
+  const ctx = { font: '11px sans', measureText: (t: string) => ({ width: measure(t) }), fillText: () => { painted++; }, fillRect: () => undefined, strokeRect: () => undefined } as unknown as CanvasRenderingContext2D;
+  const table = new PaneTable(host);
+  const at = table.draw(ctx, { panel: 'P', line: 'L', text: 'T', muted: 'M' }, room({ w: 590 }), { ...spec(), foot: 'then', focus: -1 })!;
+  assert.equal(painted, 0, 'painting deferred');
+  assert.equal(table.owns(at.left + 3, { y: at.first + 2 }), true, 'hit testing ready synchronously');
+  deferred!();
+  assert.ok(painted > 0, 'painted when deferred callback runs');
 });

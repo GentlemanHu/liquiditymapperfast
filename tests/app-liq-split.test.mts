@@ -11,6 +11,10 @@ import { FREE_VIEW, curveOf, depthView, effectiveSplit, effectiveView, narrowVie
 import { narrowNote, pairDescription, pairSummary, splitChoiceName, splitName, subNames, takesOf } from '../src/app/liq-words.ts';
 import { createLevelsControl, keptSplitNote, pressSplit, shownSplit, type LevelsModel } from '../src/app/levels-control.ts';
 import { Store, initialState, type AppState } from '../src/app/store.ts';
+import { setPlusFreeForTests } from '../src/app/plus/config.ts';
+
+// Tests of the split as Plus was sold (2026-11-24: Plus is free for now).
+setPlusFreeForTests(false);
 import { gutter, gutterAt, leftGutter, liqSplitDrawn, setCompactGutters } from '../src/app/panes/heat-pane.ts';
 import { plus } from '../src/app/plus/pass.ts';
 import type { LiqLevelSettings } from '../src/app/liq-url.ts';

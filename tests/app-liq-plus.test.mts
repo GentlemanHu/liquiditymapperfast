@@ -17,6 +17,17 @@ import { usd } from '../src/app/format.ts';
 import { DepthRangeSummary, depthHeldKey, type DepthPaneHeld } from '../src/app/range/depth-lines.ts';
 import { LiqPane } from '../src/app/panes/liq-pane.ts';
 import { plus } from '../src/app/plus/pass.ts';
+import { FREE_PASS, plusFree, setPlusFreeForTests } from '../src/app/plus/config.ts';
+import { plusOn } from '../src/app/liq-view.ts';
+
+// While Plus is free (2026-11-24) every visitor is a member; these tests are of the membership as it was sold, and come back with it.
+test('while Plus is free every visitor reads what Plus opens', () => {
+  setPlusFreeForTests(null);
+  assert.equal(plusFree(), true);
+  assert.equal(plusOn(), true);
+  setPlusFreeForTests(false);
+});
+setPlusFreeForTests(false);
 import type { InfoLine } from '../src/app/infobox.ts';
 import { BTC } from '../src/shared/coins.ts';
 import type { CandleRow } from '../src/app/store.ts';
@@ -1707,4 +1718,27 @@ test('a finger dragged down the phone\'s halves, at three heights, in both split
       assert.ok(steps > height / 8, `${split} at ${height} px: ${steps} steps`);
     } finally { t.done(); }
   }
+});
+
+test('while Plus is free the Plus files and the old days are asked for with no pass: no Authorization header, no data link (Sol, 2026-11-24)', async () => {
+  const day = Date.UTC(2026, 10, 15), real = globalThis.fetch, seen: { url: string; auth: string | null }[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    seen.push({ url, auth: new Headers(init?.headers).get('authorization') });
+    const body = /liquidation-history\.json$/.test(url) ? { edges: EDGES, first: day - 30 * DAY_MS, last: day + 12 * 3_600_000 } : null;
+    return new Response(body === null ? 'not there' : JSON.stringify(body), { status: body === null ? 404 : 200 });
+  }) as typeof fetch;
+  try {
+    const stops = view({ stops: true });
+    const src = new LiqLevelsSource(async url => url.includes('hyperliquid') ? [] : free(FAM.all.liq), () => AS_OF + 45 * MIN, () => LEVELS_URL, undefined, { pass: () => FREE_PASS, refused: () => {} });
+    for (let i = 0; i < 3; i++) { src.ensure(BTC, () => {}, stops); await tick(); await tick(); }
+    assert.ok(seen.some(s => s.url === U.triggers), 'the stops are asked for');
+    const h = new LiqHistory(undefined, { freeFrom: () => day - 7 * DAY_MS, pass: () => FREE_PASS, refused: () => {} });
+    for (let i = 0; i < 4; i++) { h.ensure(day - 20 * DAY_MS, day + 12 * 3_600_000, day + 12 * 3_600_000, () => {}, stops); await tick(); await tick(); await tick(); }
+    const old = `https://levels.liquiditymapper.com/v1/btc/liquidation-history/${dayText(day - 15 * DAY_MS)}.json`;
+    assert.ok(seen.some(s => s.url === old), 'a day older than the free seven is asked for');
+    assert.ok(seen.some(s => s.url.includes('/v1/plus/btc/trigger-history/')), 'the stops\' days are asked for');
+    assert.deepEqual(seen.filter(s => s.auth !== null).map(s => s.url), [], 'no request carries a pass');
+    assert.ok(!seen.some(s => s.url.includes('/v1/k/') || s.url.endsWith('/link')), 'no data link is asked for or used');
+  } finally { globalThis.fetch = real; }
 });

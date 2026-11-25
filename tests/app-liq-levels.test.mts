@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiqLevelsSource, OLD_MS, STALE_MS, TAKE_DASH, binsPerRow, captionPlace, dashPhase, heatScale, liqCurves, liqProfile, liqRows, onTheWay, liqStanding, parseLiqLevels, seamStats, spearman, standingBelow, stripeLanes, takenByCandles, paintLiqStripe, type LiqLevels, type LiqRow } from '../src/app/liq-levels.ts';
 import { View } from '../src/app/view.ts';
-import { LIQ_LEVELS_URL, liqLevelsUrl, readLiqLevels } from '../src/app/liq-url.ts';
+import { LIQ_LEVELS_URL, LIVE_ASK_MS, LIVE_ATTRIBUTION, isLive, liqLevelsUrl, readLiqLevels } from '../src/app/liq-url.ts';
+import { liqNote } from '../src/app/liq-words.ts';
+import { FREE_VIEW } from '../src/app/liq-view.ts';
 import { FIRST_LEAD_MS, LATE_EVERY_MS, SNAPSHOT_DUE_MS, SNAPSHOT_LATE_MS, createdOnPageClock, nextAskAt } from '../src/app/liq-schedule.ts';
 import { BTC, type Coin } from '../src/shared/coins.ts';
 import type { CandleRow } from '../src/app/store.ts';
@@ -491,4 +493,36 @@ test('the take profits\' caption sits inside its lane where it fits, else ends a
   const narrow = stripeLanes(1000, 1040, true).takes!;
   assert.deepEqual(captionPlace(narrow, 90), { x: narrow.x1 - 2 - 90, w: 90 }, 'ends at the lane\'s right edge, its sample over the lane');
   assert.equal(captionPlace(stripeLanes(0, 30, true).takes!, 90).x, 2);
+});
+
+test('a live file (MarketLens every 5 minutes, 2026-11-24) is asked for again each minute and names both sources; HyperTracker files keep their schedule', async () => {
+  let now = NOW, asked = 0;
+  // Live: asOf is createdAt, a minute before the read.
+  const live = (at: number, attribution = LIVE_ATTRIBUTION): Record<string, unknown> => doc(SAMPLE, { attribution, snapshot: { id: 'ml1', asOf: at, createdAt: at, completedAt: at, fetchedAt: at + 30_000 } });
+  let answer: unknown = live(NOW - MIN);
+  const get = async (url: string): Promise<unknown> => { if (url.includes('hyperliquid')) return []; asked++; return answer; };
+  const src = new LiqLevelsSource(get, () => now, () => 'http://127.0.0.1:8790/v1/btc/liquidations.json');
+  src.ensure(BTC, () => {}); await tick();
+  assert.equal(src.state, 'ready'); assert.equal(asked, 1);
+  assert.ok(isLive(src.levels!));
+  assert.equal(src.attribution(), LIVE_ATTRIBUTION);
+  now += LIVE_ASK_MS - 1_000; src.ensure(BTC, () => {}); await tick();
+  assert.equal(asked, 1, 'not before the minute');
+  now += 2_000; src.ensure(BTC, () => {}); await tick();
+  assert.equal(asked, 2, 'each minute');
+  const note = liqNote(src, FREE_VIEW, src.levels!.asOf);
+  assert.ok(note.includes('Powered by MarketLens and HyperTracker') && !note.includes('Powered by HyperTracker'), note);
+  // A HyperTracker file with newer data: its schedule again, and its own attribution.
+  const ht = NOW + 10 * MIN;
+  answer = doc(SAMPLE, { snapshot: { id: 'a52ae475', asOf: ht, createdAt: ht + 35 * MIN, completedAt: ht + 40 * MIN, fetchedAt: ht + 41 * MIN } });
+  now += LIVE_ASK_MS + 1_000; src.ensure(BTC, () => {}); await tick();
+  assert.equal(asked, 3); assert.equal(src.levels!.asOf, ht); assert.ok(!isLive(src.levels!));
+  now += 2 * LIVE_ASK_MS; src.ensure(BTC, () => {}); await tick();
+  assert.equal(asked, 3, 'a HyperTracker file is not asked for each minute');
+  assert.ok(liqNote(src, FREE_VIEW, src.levels!.asOf).includes('Powered by HyperTracker'));
+  // A live file saying anything else is credited as HyperTracker, never with the text it carries.
+  const other = new LiqLevelsSource(async url => url.includes('hyperliquid') ? [] : live(NOW - MIN, 'Buy now'), () => NOW, () => 'http://127.0.0.1:8790/v1/btc/liquidations.json');
+  other.ensure(BTC, () => {}); await tick();
+  const said = liqNote(other, FREE_VIEW, other.levels!.asOf);
+  assert.ok(said.includes('Powered by HyperTracker') && !said.includes('Buy now'), said);
 });

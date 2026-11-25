@@ -5,7 +5,7 @@ import { instrumentShown, mapVenues } from '../cvd/ids.ts';
 import { setText } from './lower-panes.ts';
 import { scaledUsd, unscaledUsd } from '../coin.ts';
 import { SIZE_MAX_USD } from '../sizes.ts';
-import { numberRow, selectRow, sizeRow, switchRow, togglePanel, type Panel } from '../ui.ts';
+import { heading, note, numberRow, selectRow, sizeRow, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { isPhone } from '../device.ts';
 import { openSheet } from '../sheet.ts';
 import { markOf } from '../venue-marks.ts';
@@ -14,12 +14,19 @@ import { PALETTES, type Palette } from '../theme.ts';
 import { STRIDE, BOUNDARY, type TapeRing } from '../tape/ring.ts';
 import { SecondTally, tallySeconds, FILL_STEP } from '../trades/tally.ts';
 import { OrderScan, coincidences, copyBlock, emptyBlock, fullScale, olderFor, type Block, type FlowLike, type OlderPrints, type PrintLike, type RecordedPrints } from '../trades/blocks.ts';
-import { TRADES_MINIMUMS, TRADE_UNITS, UNIT_MAX_S, readUnit, type TradesSettings } from '../trades/settings.ts';
+import { TRADES_LIQ_MINIMUMS, TRADES_MINIMUMS, TRADE_UNITS, UNIT_MAX_S, readUnit, type TapeMode, type TradesSettings } from '../trades/settings.ts';
+import { liqBlockFullScale, liqSideMatches, lowerBoundLiq } from '../trades/liquidations.ts';
 import { SEAM_SLACK_MS, TNS_FLOOR_USD, TnsBook } from '../tns/model.ts';
 import { recordedDue, recordedSeam } from '../trades/asks.ts';
 import { BlockList, LIST_W, wideEnough } from './trades-blocks.ts';
 import { OrderList } from './trades-orders.ts';
-import { inspectorModel, renderInspector } from './trades-inspector.ts';
+import { LiqStrip } from './trades-liq-strip.ts';
+import { inspectorModel, renderInspector, type BlockLiquidations } from './trades-inspector.ts';
+import { coverageLines, coverageOf, type LiquidationBook } from '../liquidations.ts';
+import { LIQUIDATION_FLOOR_USD } from '../../shared/liquidations.ts';
+import { liqSoundRows } from '../sound/panel.ts';
+import { readSounds } from '../sound/rules.ts';
+import type { Sounds } from '../sound/sounds.ts';
 import type { Print } from '../prints.ts';
 import type { Store } from '../store.ts';
 
@@ -59,11 +66,14 @@ export function unitLabel(unit: number): string {
 export class TradesView {
   readonly root = el('div', { class: 'trades', hidden: true });
   #bar = el('div', { class: 'trades-bar' });
+  #mode = el('select', { class: 'trades-mode', ariaLabel: t('Show') });
   #unit = el('select', { class: 'trades-unit', ariaLabel: t('Group by') });
   #floor = el('select', { class: 'trades-floor', ariaLabel: t('Smallest order') });
+  #pinBtn = el('button', { type: 'button', class: 'trades-pin', textContent: '◆', ariaLabel: t('Pin recent liquidations'), tip: t('Pin recent liquidations above the Tape') });
   #status = el('span', { class: 'trades-status' });
   #body = el('div', { class: 'trades-body' });
   #inspector = el('div', { class: 'trades-inspector', hidden: true, role: 'region', ariaLabel: t('Block details') });
+  readonly liqStrip: LiqStrip;
   readonly blocks = new BlockList();
   readonly orders: OrderList;
   #tally = new SecondTally(tallySeconds(isPhone()));
@@ -109,12 +119,20 @@ export class TradesView {
   flowHeldFrom: (id: string) => number = () => Infinity;
   /** How many times the page's per-second flow was loaded (set by the page: the flow book's loads): the blocks before the tape read it. */
   flowLoads: () => number = () => 0;
+  /** The liquidation book (set by the page: `hub.liquidations`). */
+  liquidations: () => LiquidationBook | null = () => null;
+  /** Ask the page to load recorded liquidations over [from, to) from `minUsd` (independent of Map liquidation diamonds). */
+  ensureLiquidations: ((from: number, to: number, minUsd: number) => void) | null = null;
+  /** The page's Sounds controller (for Test buttons and unlock inside Tape settings and the pinned strip). */
+  sounds: Sounds | null = null;
+  #panelBody: HTMLElement | null = null;
 
   constructor(private store: Store) {
     this.orders = new OrderList(store);
-    this.#bar.append(this.#unit, this.#floor, this.#status);
+    this.liqStrip = new LiqStrip(store);
+    this.#bar.append(this.#mode, this.#unit, this.#floor, this.#pinBtn, this.#status);
     this.#body.append(this.blocks.root, this.orders.root, this.#inspector);
-    this.root.append(this.#bar, this.#body);
+    this.root.append(this.#bar, this.liqStrip.root, this.#body);
     // A mouse over the list or the details beside it holds the blocks; leaving both lets them go (a finger's hold is the sheet's or the key's).
     this.#body.addEventListener('pointerenter', e => { if (e.pointerType !== 'touch') this.blocks.pointerWithin(true); });
     this.#body.addEventListener('pointerleave', e => { if (e.pointerType !== 'touch') this.blocks.pointerWithin(false); });
@@ -126,16 +144,37 @@ export class TradesView {
       const at = `${e.clientX},${e.clientY}`;
       if (at !== moved) { moved = at; this.blocks.pointerWithin(true); }
     });
+    this.#mode.onchange = () => {
+      const v = this.#mode.value;
+      const mode: TapeMode = v === 'both' || v === 'liquidations' ? v : 'trades';
+      if (mode !== this.store.state.trades.mode) this.#set({ mode });
+    };
     this.#unit.onchange = () => {
       const v = this.#unit.value;
       if (v === 'custom') { this.#syncMenus(); this.openSettings(this.#unit); return; }
       const unit = readUnit(Number(v), this.store.state.trades.unit);
       if (unit !== this.store.state.trades.unit) this.#set({ unit });
     };
-    this.#floor.onchange = () => { const v = Number(this.#floor.value); if (Number.isFinite(v) && v >= 0) this.#set({ minUsd: v === 0 ? 0 : unscaledUsd(v) }); };
+    this.#floor.onchange = () => {
+      const v = Number(this.#floor.value);
+      if (!Number.isFinite(v) || v < 0) return;
+      if (this.store.state.trades.mode === 'liquidations') this.#set({ liqMinUsd: Math.max(LIQUIDATION_FLOOR_USD, unscaledUsd(v)) });
+      else this.#set({ minUsd: v === 0 ? 0 : unscaledUsd(v) });
+    };
+    this.#pinBtn.onclick = () => this.#set({ pinLiq: !this.store.state.trades.pinLiq });
     this.orders.ring = () => this.ring();
+    this.orders.liquidations = () => this.liquidations();
     this.orders.onGoTo = (at, price) => this.onGoTo(at, at, price, price);
     this.orders.onSince = () => this.#syncStatus();
+    this.liqStrip.liquidations = () => this.liquidations();
+    this.liqStrip.onGoTo = (at, price) => this.onGoTo(at, at, price, price);
+    this.liqStrip.onOpenLiqMode = () => this.#set({ mode: 'liquidations' });
+    this.liqStrip.onToggleSound = () => {
+      const cur = this.store.state.sounds, nextOn = !(cur.on && cur.liquidations.on);
+      this.store.set({ sounds: readSounds({ ...cur, on: nextOn ? true : cur.on, liquidations: { ...cur.liquidations, on: nextOn } }) });
+      if (nextOn && this.sounds) void this.sounds.engine.unlock().then(() => this.store.set({ soundState: this.sounds!.engine.state }));
+    };
+    this.liqStrip.onClose = () => this.#set({ pinLiq: false });
     this.blocks.onGoTo = (t0, t1, p0, p1) => this.onGoTo(t0, t1, p0, p1);
     this.blocks.onHold = () => this.#syncStatus();
     this.blocks.onInspect = () => this.#inspect();
@@ -152,7 +191,7 @@ export class TradesView {
     this.#syncMenus();
   }
 
-  dispose(): void { window.clearTimeout(this.#jobTimer); window.clearTimeout(this.#fillTimer); window.clearInterval(this.#tick); this.orders.dispose(); }
+  dispose(): void { window.clearTimeout(this.#jobTimer); window.clearTimeout(this.#fillTimer); window.clearInterval(this.#tick); this.orders.dispose(); this.liqStrip.dispose(); }
   #unitNow(): number { return this.store.state.trades.unit; }
   #set(change: Partial<TradesSettings>): void { this.store.set({ trades: { ...this.store.state.trades, ...change } }); }
 
@@ -160,13 +199,14 @@ export class TradesView {
     if (shown === this.#shown) return;
     this.#shown = shown; this.root.hidden = !shown;
     window.clearInterval(this.#tick); this.#tick = 0;
-    if (!shown) { this.#panel?.close(); this.blocks.setShown(false); this.orders.setShown(false); window.clearTimeout(this.#fillTimer); this.#dropJob(); return; }
+    if (!shown) { this.#panel?.close(); this.liqStrip.setShown(false); this.blocks.setShown(false); this.orders.setShown(false); window.clearTimeout(this.#fillTimer); this.#dropJob(); return; }
     // The held block's figures can still change (a late order): its inspector is read again once a second while the view shows. The markets
     // come in after the view opens (the source's list, a venue's first book): they and the per-second history they need are checked too.
     this.#tick = window.setInterval(() => {
       if (document.hidden) return;
       // Each order too: its recorded hour waits for the ring's first order, and follows the ring's start as it wraps.
       this.#askRecorded();
+      this.#askLiquidations();
       if (this.#unitNow() === 0) return;
       this.#syncMarkets(); if (this.#olderWant) this.#askOlder(this.#olderWant[0], this.#olderWant[1]);
       this.#inspect(); this.#syncStatus();
@@ -182,18 +222,34 @@ export class TradesView {
     // calls only this one then (the rows would keep the old zone's times, the old whale's sizes).
     this.blocks.whale = this.#whale(); this.orders.redraw(); this.blocks.redrawAll(); this.#inspected = '';
     this.#syncMenus();
-    const unit = this.#unitNow(), blocksOn = unit > 0;
+    const s = this.store.state.trades, unit = s.unit, blocksOn = unit > 0;
+    this.liqStrip.setShown(this.#shown && s.pinLiq && s.mode !== 'liquidations');
     this.blocks.root.hidden = !blocksOn; this.orders.root.hidden = blocksOn;
     this.blocks.setShown(this.#shown && blocksOn); this.orders.setShown(this.#shown && !blocksOn);
     if (!this.#shown) return;
+    this.#syncLiquidations();
     // The tally does not depend on the unit: it starts over only when what it counts changed (`#syncSources` checks).
     if (blocksOn) { this.blocks.unit = unit; this.blocks.release(false); this.#syncSources(false); }
     else { this.orders.refresh(); this.#syncHistory(); }
     this.#askRecorded();
+    this.#askLiquidations();
     this.#layout(); this.#syncStatus(); this.invalidate();
   }
   /** Something the rows are drawn with changed (the whale size, the time zone, a replay): drawn again as they stand. */
-  redraw(): void { this.#syncMenus(); this.blocks.whale = this.#whale(); this.orders.redraw(); this.blocks.redrawAll(); this.#inspected = ''; this.#inspect(); }
+  redraw(): void { this.#syncMenus(); this.blocks.whale = this.#whale(); this.orders.redraw(); this.blocks.redrawAll(); this.liqStrip.refresh(true); this.#inspected = ''; this.#inspect(); }
+
+  /** New liquidations arrived or finished loading: refresh blocks, order list, pinned strip and inspector. */
+  liquidationsChanged(): void {
+    if (!this.#shown) return;
+    const s = this.store.state.trades;
+    if (s.mode === 'trades' && !s.pinLiq) return;
+    this.#syncLiquidations();
+    this.liqStrip.refresh();
+    if (s.mode !== 'trades') {
+      if (this.#unitNow() === 0) this.orders.liquidationsChanged();
+      else { this.blocks.invalidate(); this.#inspect(); }
+    }
+  }
 
   /** A batch reached the ring: the tally takes it (the blocks), or the order list does. */
   tapeArrived(): void {
@@ -217,19 +273,30 @@ export class TradesView {
   // ---- the menus and the settings panel -------------------------------------------------------------------------------------------
 
   #syncMenus(): void {
-    const s = this.store.state.trades, units = [...TRADE_UNITS];
+    const s = this.store.state.trades, lang = document.documentElement.lang, liqMode = s.mode === 'liquidations';
+    if (this.#mode.dataset.lang !== lang) {
+      this.#mode.dataset.lang = lang;
+      this.#mode.replaceChildren(new Option(t('Trades'), 'trades'), new Option(t('Trades + Liq'), 'both'), new Option(t('Liquidations'), 'liquidations'));
+    }
+    this.#mode.value = s.mode;
+    this.#pinBtn.hidden = liqMode;
+    this.#pinBtn.classList.toggle('active', s.pinLiq);
+    this.#pinBtn.setAttribute('aria-pressed', String(s.pinLiq));
+    const units = [...TRADE_UNITS];
     if (!units.includes(s.unit)) units.push(s.unit);
     units.sort((a, b) => a - b);
-    const ukey = `${units.join(',')}|${document.documentElement.lang}`;
+    const ukey = `${units.join(',')}|${lang}`;
     if (this.#unit.dataset.units !== ukey) {
       this.#unit.dataset.units = ukey;
       this.#unit.replaceChildren(...units.map(u => new Option(unitLabel(u), String(u))), new Option(t('Custom…'), 'custom'));
     }
     this.#unit.value = String(s.unit);
-    const chosen = s.minUsd === 0 ? 0 : scaledUsd(s.minUsd), sizes = [0, ...TRADES_MINIMUMS.map(scaledUsd)];
+    this.#floor.setAttribute('aria-label', liqMode ? t('Smallest liquidation') : t('Smallest order'));
+    const chosen = liqMode ? scaledUsd(s.liqMinUsd) : s.minUsd === 0 ? 0 : scaledUsd(s.minUsd);
+    const sizes = liqMode ? TRADES_LIQ_MINIMUMS.map(scaledUsd) : [0, ...TRADES_MINIMUMS.map(scaledUsd)];
     if (!sizes.some(v => Math.abs(v - chosen) <= 1e-6 * Math.max(1, chosen))) sizes.push(chosen);
     sizes.sort((a, b) => a - b);
-    const key = `${sizes.join(',')}|${document.documentElement.lang}`;
+    const key = `${liqMode ? 'L' : 'T'}|${sizes.join(',')}|${lang}`;
     if (this.#floor.dataset.sizes !== key) {
       this.#floor.dataset.sizes = key;
       this.#floor.replaceChildren(...sizes.map(v => new Option(v === 0 ? t('Any size') : `≥ $${fmtUsd(v)}`, String(v))));
@@ -239,11 +306,21 @@ export class TradesView {
 
   /** The settings panel (the column's settings key opens it in this view, and Custom… in the Group by menu). */
   openSettings(anchor: HTMLElement): void {
-    this.#panel = togglePanel(anchor, { title: t('Tape'), width: 360, align: 'left', onClose: () => { this.#panel = null; } }, (_tools, body) => this.#build(body));
+    this.#panel = togglePanel(anchor, { title: t('Tape'), width: 380, align: 'left', onClose: () => { this.#panel = null; this.#panelBody = null; } }, (_tools, body) => { this.#panelBody = body; this.#build(body); });
   }
+  #rebuildPanel(): void { if (this.#panelBody) { this.#panelBody.replaceChildren(); this.#build(this.#panelBody); } }
   #build(body: HTMLElement): void {
-    const s = this.store.state.trades, scaled = (v: number): number => v === 0 ? 0 : scaledUsd(v);
+    const s = this.store.state.trades, scaled = (v: number): number => v === 0 ? 0 : scaledUsd(v), liqMode = s.mode === 'liquidations';
+    const shown = instrumentShown(this.store.state);
+    const activeMarkets = this.store.state.markets
+      .filter(m => shown(m.instrumentId ?? m.id ?? ''))
+      .map(m => ({ venue: m.venue ?? (m.instrumentId ?? m.id ?? '').split(':')[0] ?? '', spot: m.marketType === 'spot' }));
+    const sideChoices: [string, string][] = liqMode
+      ? [['both', t('Both')], ['buy', t('Shorts liquidated')], ['sell', t('Longs liquidated')]]
+      : [['both', t('Both')], ['buy', t('Buys only')], ['sell', t('Sells only')]];
     body.append(
+      selectRow(t('Show'), t('Market orders only, forced liquidations only, or both together (liquidations are never double-counted into trade block totals).'),
+        [['trades', t('Trades')], ['both', t('Trades + Liq')], ['liquidations', t('Liquidations')]], s.mode, v => { this.#set({ mode: v === 'both' || v === 'liquidations' ? v : 'trades' }); this.#rebuildPanel(); }),
       selectRow(t('Group by'), t('One row per order, or a block of time per row: its dollars bought and sold, the markets they came from and its largest orders. A block of time can be read live; each order can only be read held.'),
         [...TRADE_UNITS.map(u => [String(u), unitLabel(u)] as [string, string]), ...(TRADE_UNITS.includes(s.unit) ? [] : [[String(s.unit), unitLabel(s.unit)] as [string, string]])], String(s.unit), v => this.#set({ unit: readUnit(Number(v), s.unit) })),
       numberRow(t('Custom length (seconds)'), t('A block of this many seconds, from 1 to 900 (15 minutes).'), { min: 1, step: 1, max: UNIT_MAX_S, value: s.unit || 1 },
@@ -251,8 +328,15 @@ export class TradesView {
       sizeRow(t('Smallest order'), t('Orders under this are left out, before they are added up into blocks. Any size counts every market order; time before this page listened is counted from the page\'s per-second record at any size, and from the recording from $25,000.'),
         { sign: '≥', value: scaled(s.minUsd), presets: TRADES_MINIMUMS.map(scaledUsd), min: scaledUsd(TRADES_MINIMUMS[0]!), max: scaledUsd(SIZE_MAX_USD), none: t('Any size') },
         v => this.#set({ minUsd: v === 0 ? 0 : unscaledUsd(v) })),
-      selectRow(t('Side'), t('Both sides, or only the market buys or only the market sells.'), [['both', t('Both')], ['buy', t('Buys only')], ['sell', t('Sells only')]], s.side, v => this.#set({ side: v === 'buy' || v === 'sell' ? v : 'both' })),
+      sizeRow(t('Smallest liquidation'), t('Liquidations under this are left out of the Liquidations tape, the interleaved rows in Both mode, and the pinned strip (every liquidation from $100 is recorded).'),
+        { sign: '≥', value: scaledUsd(s.liqMinUsd), presets: TRADES_LIQ_MINIMUMS.map(scaledUsd), min: scaledUsd(LIQUIDATION_FLOOR_USD), max: scaledUsd(SIZE_MAX_USD) },
+        v => this.#set({ liqMinUsd: Math.max(LIQUIDATION_FLOOR_USD, unscaledUsd(v)) })),
+      selectRow(t('Side'), t('Both sides, or only the market buys or only the market sells.'), sideChoices, s.side, v => this.#set({ side: v === 'buy' || v === 'sell' ? v : 'both' })),
       switchRow(t('Group bursts'), t('Each order only: orders of one market and side in the same tenth of a second are one row, their sizes added up and their price weighted by size; ×5 says how many orders.'), s.group, group => this.#set({ group })),
+      switchRow(t('Pin recent liquidations'), t('Keep the latest liquidations docked at the top while viewing Trades or Trades + Liq so cascades stay in view even on a busy tape.'), s.pinLiq, pinLiq => this.#set({ pinLiq })),
+      heading(t('Liquidation sounds')),
+      ...liqSoundRows(this.store, this.sounds, () => this.#rebuildPanel()),
+      ...coverageLines(activeMarkets).map(line => note(line.text)),
     );
   }
 
@@ -287,6 +371,7 @@ export class TradesView {
     }
     this.#tally.update();
     reader.markets = markets; reader.minUsd = s.minUsd === 0 ? 0 : scaledUsd(s.minUsd); reader.side = s.side;
+    this.#syncLiquidations();
     reader.ref = [...markets].sort((a, b) => refRank(a) - refRank(b))[0] ?? '';
     // Venue slots: one per exchange (spot and perpetual share it), the most traded first.
     const families = [...new Set(markets.map(id => markOf(id).family))].sort((a, b) => venueRank(a) - venueRank(b));
@@ -297,8 +382,34 @@ export class TradesView {
     this.blocks.venueIds = this.#venueIds; this.blocks.whale = this.#whale();
     this.#scratch = emptyBlock(families.length);
     // Any size reaches back through the page's per-second flow: ask for it (a local read the Flow lines make anyway).
-    if (s.minUsd === 0 && markets.length) this.ensureFlow(markets, Date.now() - FLOW_REACH_MS);
+    if ((s.minUsd === 0 || s.mode === 'liquidations') && markets.length) this.ensureFlow(markets, Date.now() - FLOW_REACH_MS);
     this.#syncLate();
+  }
+  /** Sync liquidation source, filter and empty-state coverage into BlockReader and OrderList. */
+  #syncLiquidations(): void {
+    const s = this.store.state, tr = s.trades, book = this.liquidations(), shown = instrumentShown(s);
+    const r = this.blocks.reader;
+    r.mode = tr.mode;
+    r.liqMinUsd = scaledUsd(tr.liqMinUsd);
+    r.liqItems = book ? book.items : [];
+    r.liqVersion = book ? book.version : 0;
+    r.liqSince = book && book.items.length ? book.items[0]!.t : Infinity;
+    r.liqShown = shown;
+    // Check whether any active venue in the current scope reports liquidations.
+    const hasReporting = s.markets.some(m => {
+      const id = m.instrumentId ?? m.id ?? '';
+      return id && shown(id) && m.marketType !== 'spot' && coverageOf(m.venue ?? id.split(':')[0] ?? '') !== 'none';
+    });
+    const empty = s.markets.length > 0 && !hasReporting ? t('No enabled venues report liquidations') : '';
+    this.orders.emptyText = empty;
+    this.blocks.emptyText = empty;
+  }
+  /** Ensure the last 24 h of recorded liquidations are loaded whenever a liquidation view or pinned strip is active. */
+  #askLiquidations(): void {
+    const s = this.store.state.trades;
+    if (!this.#shown || !this.ensureLiquidations || (s.mode === 'trades' && !s.pinLiq)) return;
+    const now = Date.now();
+    this.ensureLiquidations(now - FLOW_REACH_MS, now, scaledUsd(LIQUIDATION_FLOOR_USD));
   }
   /** The markets counted changed (they come in after the view opens): the reader and venues follow; any size asks for their history (a no-op once held). */
   #syncMarkets(): void {
@@ -435,11 +546,11 @@ export class TradesView {
     if (wide) this.#inspect();
   }
   #syncStatus(): void {
-    const unit = this.#unitNow();
+    const unit = this.#unitNow(), s = this.store.state.trades, liqMode = s.mode === 'liquidations';
     if (unit === 0) { setText(this.#status, this.orders.since); return; }
     // Held, the count is on the list's key (which brings it back), as Each order's; the status keeps the scale.
-    this.blocks.showHeld(this.blocks.held ? this.#tally.newSinceHold : 0);
-    const full = fmtUsd(scaledUsd(fullScale(unit)));
+    this.blocks.showHeld(this.blocks.held && !liqMode ? this.#tally.newSinceHold : 0);
+    const full = fmtUsd(scaledUsd(liqMode ? liqBlockFullScale(unit) : fullScale(unit)));
     // The bar's width from the last layout (the resize observer's), not measured here: this runs every second, and a measure forces a layout.
     setText(this.#status, this.#barW < 320 ? `√ $${full}` : t('√ size, full ${usd}', { usd: full }));
     const tip = t('Each bar\'s length is the square root of its dollars, full at ${usd} a side: a side ten times larger draws about three times longer. The pieces in a bar are the exchanges\' shares of that side.', { usd: full });
@@ -457,6 +568,7 @@ export class TradesView {
     const cov = this.blocks.reader.coveredSec(), s = this.store.state.trades;
     if (!Number.isFinite(oldest)) return '';
     const at = this.#unitNow() >= 60 ? clock(oldest * 1000) : clockSeconds(oldest * 1000);
+    if (s.mode === 'liquidations') return t('Recorded liquidations start at {time}', { time: at });
     if (s.minUsd > 0 && oldest >= cov) return t('Blocks from ${usd} start at {time}, when this page began listening', { usd: fmtUsd(scaledUsd(s.minUsd)), time: at });
     if (s.minUsd > 0) return t('Recorded orders start at {time}', { time: at });
     return t('The page\'s per-second record starts at {time}', { time: at });
@@ -518,25 +630,40 @@ export class TradesView {
     if (read.unknown) { if (keyed) this.#inspected = ''; return null; }
     const unit = read.B, t0 = read.s * 1000, t1 = (read.s + unit) * 1000;
     if (keyed) {
-      const key = `${state}|${read.s}|${unit}|${this.#tally.resets}|${this.#revs(read.s, unit)}|${reader.version}|${this.flowLoads()}|${reader.minUsd}|${reader.side}|${isPhone()}|${document.documentElement.lang}|${read.partial}`;
+      const key = `${state}|${read.s}|${unit}|${reader.mode}|${reader.liqMinUsd}|${reader.liqVersion}|${this.#tally.resets}|${this.#revs(read.s, unit)}|${reader.version}|${this.flowLoads()}|${reader.minUsd}|${reader.side}|${isPhone()}|${document.documentElement.lang}|${read.partial}`;
       if (key === this.#inspected) return null;
       this.#inspected = key;
     }
     const block = emptyBlock(reader.venues); copyBlock(read, block);
-    const floor = reader.minUsd, big = Math.max(scaledUsd(100_000), floor), scan = keyed ? this.#scan : this.#sheetScan;
+    const floor = reader.mode === 'liquidations' ? reader.liqMinUsd : reader.minUsd;
+    const big = Math.max(scaledUsd(100_000), floor), scan = keyed ? this.#scan : this.#sheetScan;
     scan.reset(isPhone() ? 4 : 9, floor, big);
     return { block, state, unit, t0, t1, floor, big, scan, epoch: this.ring()?.epoch ?? -1, steps: this.#scanSteps(scan, t0, t1) };
   }
   /** The model once the pass is over. */
   #finish(plan: Plan): ReturnType<typeof inspectorModel> {
     const { block, state, unit, t0, t1, floor, big, scan } = plan, reader = this.blocks.reader;
+    const liqMode = reader.mode === 'liquidations';
     const largest = scan.largest;
     const time = unit >= 60 ? `${clock(t0)}–${clock(t1)}` : unit === 1 ? clockSeconds(t0) : `${clockSeconds(t0)}–${clockSeconds(t1)}`;
     // The stretches of the block before the tape that nobody recorded (any size: the flow's zeros there are not quiet seconds).
-    const cut = Math.min(t1, this.#tally.coveredFrom()), unrecorded = floor === 0 ? reader.holes.filter(([a, b]) => a < cut && b > t0).map(([a, b]) => [Math.max(a, t0), Math.min(b, cut)] as [number, number]) : [];
+    const cut = Math.min(t1, this.#tally.coveredFrom()), unrecorded = !liqMode && floor === 0 ? reader.holes.filter(([a, b]) => a < cut && b > t0).map(([a, b]) => [Math.max(a, t0), Math.min(b, cut)] as [number, number]) : [];
+    let blockLiqs: BlockLiquidations | null = null;
+    if (reader.mode === 'both' && block.liqN > 0) {
+      const items = reader.liqItems, picked: BlockLiquidations['largest'] = [];
+      for (let i = lowerBoundLiq(items, t0); i < items.length; i++) {
+        const l = items[i]!;
+        if (l.t >= t1) break;
+        if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
+        picked.push({ id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price });
+      }
+      picked.sort((a, b) => b.usd - a.usd);
+      blockLiqs = { buy: block.liqBuy, sell: block.liqSell, n: block.liqN, largest: picked.slice(0, isPhone() ? 4 : 6) };
+    }
     return inspectorModel({
       block, state, time, marketCount: reader.markets.length, ref: reader.ref, minUsd: floor, recordedFloor: scaledUsd(TNS_FLOOR_USD),
-      rows: reader.marketRows(block.s, unit), coincidences: coincidences(scan.big, big), repeats: scan.repeats(), largest, unrecorded,
+      rows: reader.marketRows(block.s, unit), coincidences: liqMode ? [] : coincidences(scan.big, big), repeats: liqMode ? [] : scan.repeats(), largest, unrecorded,
+      liqMode, liquidations: blockLiqs,
     });
   }
   /** A market's group for the scan (one per id, whatever source names it). */
@@ -547,9 +674,19 @@ export class TradesView {
    * floor skips most of them; the caller decides when to go on).
    */
   *#scanSteps(scan: OrderScan, t0: number, t1: number): Generator<void, void, void> {
+    const reader = this.blocks.reader;
+    if (reader.mode === 'liquidations') {
+      for (let i = lowerBoundLiq(reader.liqItems, t0); i < reader.liqItems.length; i++) {
+        const l = reader.liqItems[i]!;
+        if (l.t >= t1) break;
+        if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
+        scan.add(this.#group(l.id), l.id, l.t, l.side === 'short' ? l.usd : -l.usd, l.price, l.price, l.price);
+      }
+      return;
+    }
     const ring = this.ring(), shown = instrumentShown(this.store.state), cov = this.#tally.coveredFrom();
     // The block's own filter: its side and its smallest order (the notes and the largest orders describe what the block counts).
-    const reader = this.blocks.reader, side = reader.side, floor = reader.minUsd;
+    const side = reader.side, floor = reader.minUsd;
     const passes = (usd: number): boolean => !((side === 'buy' && usd < 0) || (side === 'sell' && usd > 0) || (floor > 0 && Math.abs(usd) < floor));
     if (ring && ring === this.#tally.ring && t1 > cov) {
       if (this.#ringGroupsFor !== ring) { this.#ringGroupsFor = ring; this.#ringGroups = []; }

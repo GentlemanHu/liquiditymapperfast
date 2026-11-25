@@ -10,6 +10,15 @@
  * profits are drawn beside it, or, on alone, as a curve of their own. Everything but liquidations of all traders is Plus.
  */
 export type LiqPart = 'liq' | 'stops' | 'takes';
+
+/**
+ * The service's live levels (2026-11-24): MarketLens's stream read every 5 minutes, with HyperTracker's groups and margin modes. A live file's
+ * `asOf` is its `createdAt` (HyperTracker's lies 35 minutes before it), it says it is powered by both, and it is asked for again each minute
+ * (a 304 while unchanged) instead of when HyperTracker's next snapshot can be there (`liq-schedule.ts`).
+ */
+export const LIVE_ATTRIBUTION = 'Powered by MarketLens and HyperTracker';
+export const LIVE_ASK_MS = 60_000;
+export const isLive = (l: { asOf: number; createdAt: number }): boolean => l.asOf === l.createdAt;
 export type LiqGroup = 'all' | 'profitable';
 /**
  * The liquidation column split in two (Plus, 2026-11-19): not at all; liquidations beside stops (`kinds`, on one dollar scale); or everyone's
