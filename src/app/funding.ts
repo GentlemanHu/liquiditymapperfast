@@ -132,7 +132,7 @@ export function stepRuns(steps: readonly LineStep[]): StepRun[] {
   const runs: StepRun[] = [];
   let prev: LineStep | null = null, run: StepRun | null = null;
   for (const s of steps) {
-    const joined: boolean = prev !== null && run !== null && Math.abs(s.t0 - prev.t1) <= JOIN_MS;
+    const joined: boolean = prev !== null && run !== null && Math.abs(s.t0 - prev.t1) <= JOIN_MS && s.t1 >= prev.t1;
     let into: StepRun;
     // Joined, the riser stands where the step before ended: a start a few seconds off it moves there, never a slanted or backward stroke.
     const at = joined && prev ? prev.t1 : s.t0;

@@ -403,7 +403,8 @@ export class FundingPane extends TimePane {
     for (const e of ends) drawVenueMark(ctx, e.id, e.x, Math.max(top + 6, Math.min(bottom - 6, e.y)), 12);
     // The median at the time read, from the venues there (not from the line drawn for the view, which ends where the view does).
     const medianNow = medianIn(venues, at, now, need);
-    if (hover && this.pointer && medianNow) this.#dot(v.xOf(at, pw), y(medianNow.per8h), p.text);
+    // On the line: at now it ends at the minute the median was worked out (`cut`).
+    if (hover && this.pointer && medianNow) this.#dot(v.xOf(Math.min(at, cut), pw), y(medianNow.per8h), p.text);
     ctx.restore();
     labels();
     if (hover && this.pointer && hover.t > at) this.cursorT = at;

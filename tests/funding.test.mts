@@ -695,7 +695,9 @@ test('a step line joins every step to the next, a dashed riser where settled tur
   assert.deepEqual(stepRuns([]), []);
   // The riser stands where the step before ended, so a start 30 s late draws no slanted stroke; 60 s joins, 60.001 s breaks.
   assert.deepEqual(stepRuns([s(0, 1, 1), { ...s(1, 2, 2), t0: T + H + 30_000 }]).map(pts), [[[0, 1], [1, 1], [1, 2], [2, 2]]]);
-  assert.equal(stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 60_000 }]).length, 2);
+  assert.equal(stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 60_000 }])[1]!.points.length, 3);
+  // A step that ends before the one before it did (inside the minute) is not joined: no stroke runs backward.
+  assert.equal(stepRuns([s(0, 1, 1), { t0: T + H - 30_000, t1: T + H - 20_000, per8h: 2, forming: true }])[1]!.points.length, 2);
   assert.equal(stepRuns([s(0, 1, 1), { ...s(1, 2, 2, true), t0: T + H + 60_001 }])[1]!.points.length, 2);
   // A rate under way reaching back over the settlements (no settlement time given) overlaps them: no riser, its own stroke.
   assert.deepEqual(stepRuns([s(0, 8, 1), s(8, 16, 2), s(12, 20, 3, true)]).map(pts), [[[0, 1], [8, 1], [8, 2], [16, 2]], [[12, 3], [20, 3]]]);
