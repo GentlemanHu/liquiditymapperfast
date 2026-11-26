@@ -8,7 +8,8 @@ import { button, checkRow, note, selectRow, switchRow, togglePanel, type Panel }
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, textOn, paletteOf } from '../theme.ts';
 import { niceStep } from '../view.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, figure, inCoins, signedFigure, unitFloor, unitName } from '../units.ts';
 import { LADDER_CURVES, type Store, type AppState } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import { RANK_MS } from '../cvd/settings.ts';
@@ -54,7 +55,6 @@ const pieceWidths = new Map<string, number>();
 const CHANGE_HOVER_MS = 120_000;
 /** A window as the popup says it: "15 s", "1 min". */
 const windowText = (s: number): string => s < 60 ? t('{n} s', { n: s }) : t('{n} min', { n: s / 60 });
-const signedUsd = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}${usd(Math.abs(v))}`;
 /** Dragging the price column zooms; this is the width of that column's hit area, and how far to drag per zoom step. */
 const AXIS_W = PRICE_W + 6, AXIS_DRAG_PX = 26;
 const BOOK_MIN_W = 250;
@@ -72,6 +72,12 @@ const NO_BARS: readonly number[] = [];
 const ORDER_HOLD_MS = 300_000;
 /** The venue a book belongs to, as a popup names it: "Binance BTCUSDT". */
 const bookName = (id: string): string => `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`;
+/** The pull/stack's changes (it keeps dollars) in the page's units: in coins each row's change over the price in the row's middle, as the rows are (units.ts). */
+function pullInUnits(rows: PullRows, g: Pick<Grouped, 'bin0' | 'step'>): PullRows {
+  if (!inCoins()) return rows;
+  const toCoins = (side: Float64Array): Float64Array => side.map((v, i) => v / ((g.bin0 + i + 0.5) * g.step));
+  return { bid: toCoins(rows.bid), ask: toCoins(rows.ask), touched: rows.touched };
+}
 
 
 export { venueLabel };
@@ -538,7 +544,7 @@ export class LadderPane {
     // The same distance on the other side of the mark too, so what compares the two sides at a distance (the highlight, Mirror) has both.
     // Scrolled further than one grouping holds, the view alone, and no running totals: they would start at its edge.
     const span = groupSpan(p0, p1, mark, step), withMark = span !== null;
-    const g = groupLevels(this.kernels, frame, ids, step, span?.lo ?? p0, span?.hi ?? p1);
+    const g = groupLevels(this.kernels, frame, ids, step, span?.lo ?? p0, span?.hi ?? p1, inCoins());
     const markBin = Math.floor(mark / step) - g.bin0;
     this.#cues.begin({ top: centerBin + Math.floor(rows / 2), rows, head, rowH: ROW_H, step, perVenue: state.ladderMode === 'single' });
     if (state.ladderMode === 'single') {
@@ -566,7 +572,7 @@ export class LadderPane {
   #own(g: Grouped, index: number): Grouped {
     let list = this.#owns.get(g);
     if (!list) { list = []; this.#owns.set(g, list); }
-    return list[index] ??= { ...g, totalBid: g.bid[index]!, totalAsk: g.ask[index]! };
+    return list[index] ??= { ...g, totalBid: g.bid[index]!, totalAsk: g.ask[index]!, ...(g.coins ? { coins: this.#own(g.coins, index) } : {}) };
   }
 
   /**
@@ -593,7 +599,7 @@ export class LadderPane {
     const drawn = venues.filter(v => !v.shallow), colors = curveColors(this.#palette, drawn.length);
     return drawn.flatMap((venue, k) => {
       const index = g.ids.indexOf(venue.id); if (index < 0) return [];
-      return [{ venue, index, cum: venueCumulative(g, index, markBin), cover: coverage(frame.books.find(b => b.id === venue.id), state.mark.price), color: colors[k]! }];
+      return [{ venue, index, cum: venueCumulative(g.coins ?? g, index, markBin), cover: coverage(frame.books.find(b => b.id === venue.id), state.mark.price), color: colors[k]! }];
     });
   }
 
@@ -634,7 +640,7 @@ export class LadderPane {
       // A piece wide enough starts with its venue's mark, and says what fits after it.
       const marked = piece.id !== null && w >= 15, MARK = 11, after = marked ? MARK + 4 : 0;
       if (marked) drawVenueMark(ctx, piece.id!, piece.x + 2 + MARK / 2, y + ROW_H / 2, MARK);
-      const label = piece.id ? pieceLabel(piece.id, usd(piece.usd), w - after, measure) : piece.merged.length > 1 && measure(`+${piece.merged.length}`) + 8 <= w ? `+${piece.merged.length}` : null;
+      const label = piece.id ? pieceLabel(piece.id, figure(piece.usd), w - after, measure) : piece.merged.length > 1 && measure(`+${piece.merged.length}`) + 8 <= w ? `+${piece.merged.length}` : null;
       if (label) { ctx.fillStyle = textOn(color, alpha, p); ctx.fillText(label, piece.x + (marked ? 2 + after : 4), y + ROW_H / 2 + 0.5); }
     }
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -709,6 +715,7 @@ export class LadderPane {
    * The latest changes the cues saw at a price row, newest first: each of the books' `ids` own (the last two minutes), named as a popup names a book.
    * Each is the row's change as the light made it (`rowEvents` over the events of the newest publication that touched the row: shared over the row
    * and added up), so the figure the pointer reads is the one the cell was lit with, and a row of several bins that changed together says their sum.
+   * The cues keep dollars; a change is said in the page's units (units.ts), in coins over the price in the row's middle.
    */
   #changesAt(ids: readonly string[], ask: boolean, lo: number, hi: number, g: Grouped, bin: number): ChangeFact[] {
     // The grouping's own step, never `hi - lo` (the difference of two products is not the step at a decimal one: 0.10000000000582077 for 0.1).
@@ -720,7 +727,7 @@ export class LadderPane {
       const r = events.length ? latestRowChange(byPublication(events), g.bin0 + bin, step, scale) : null;
       if (!r || now - r.wall > CHANGE_HOVER_MS) continue;
       const traded = this.#tradedMeanwhile(id, ask, lo, hi, r.prevWall, r.wall);
-      out.push({ name: bookName(id), id, usd: r.usd, ageMs: Math.max(0, now - r.wall), removed: r.removed && held(id) === 0, pair: r.pair, ...(traded !== null ? { traded } : {}) });
+      out.push({ name: bookName(id), id, usd: inCoins() ? r.usd / ((g.bin0 + bin + 0.5) * step) : r.usd, ageMs: Math.max(0, now - r.wall), removed: r.removed && held(id) === 0, pair: r.pair, ...(traded !== null ? { traded } : {}) });
     }
     return out.sort((a, b) => a.ageMs - b.ageMs);
   }
@@ -729,10 +736,10 @@ export class LadderPane {
   #traded = new Map<string, { at: number; usd: number | null }>();
   #tradedMeanwhile(id: string, ask: boolean, lo: number, hi: number, prevWall: number, wall: number): number | null {
     const ring = this.hub?.tape; if (!ring) return null;
-    const key = `${id}|${ask ? 1 : 0}|${lo}|${hi}|${prevWall}|${wall}`, now = performance.now(), held = this.#traded.get(key);
+    const coins = inCoins(), key = `${id}|${ask ? 1 : 0}|${lo}|${hi}|${prevWall}|${wall}|${coins ? 'coins' : 'usd'}`, now = performance.now(), held = this.#traded.get(key);
     if (held && now - held.at < 1_000) return held.usd;
     if (this.#traded.size > 64) this.#traded.clear();
-    const usd = tradedInRow(ring, { id, ask, lo, hi, ...meanwhile(prevWall, wall), now: Date.now() });
+    const usd = tradedInRow(ring, { id, ask, lo, hi, ...meanwhile(prevWall, wall), now: Date.now(), coins });
     this.#traded.set(key, { at: now, usd });
     return usd;
   }
@@ -742,10 +749,10 @@ export class LadderPane {
     o: { x: number; w: number; head: number; centerBin: number; markBin: number; mark: number; step: number }, rows: number): void {
     const hv = this.#hover, p = this.#palette; if (!hv) return;
     const window = rankText(state.cvd.rank), name = bookName(c.venue.id), bounds = { x0: o.x, y0: o.head, x1: o.x + o.w, y1: o.head + rows * ROW_H };
-    const touch = this.#pinned !== null;
+    const touch = this.#pinned !== null, volume = this.#volumeShown(c, state);
     if (bin === null) {
       const lines: InfoLine[] = [{ text: name, bold: true, mark: c.venue.id },
-        c.venue.volume !== null ? { label: t('Traded, last {window}', { window }), text: `$${usd(c.venue.volume)} · #${c.venue.rank}` } : { text: t('No trades held for this book: placed by its liquidity in view.'), color: 'muted', wrap: true }];
+        volume !== null ? { label: t('Traded, last {window}', { window }), text: `${amount(volume)} · #${c.venue.rank}` } : { text: t('No trades held for this book: placed by its liquidity in view.'), color: 'muted', wrap: true }];
       if (c.cover) lines.push({ label: t('Its book reaches'), text: reachText(c.cover, o.mark) });
       lines.push({ text: t('Dashed: past the end of its published book, the total it reached. What rests beyond is not known.'), color: 'muted', wrap: true });
       const out = this.#curvesLeftOut;
@@ -759,8 +766,18 @@ export class LadderPane {
     ctx.save(); ctx.fillStyle = c.color; ctx.strokeStyle = p.bg; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
     const reach = scale.carried(c, bin) && c.cover ? (ask ? c.cover.hi : c.cover.lo) : null;
     const lines = curveLines({ id: c.venue.id, name, rank: c.venue.rank, low: (g.bin0 + bin) * o.step, step: o.step, ask, mark: o.mark,
-      venueCum: ask ? c.cum.ask[bin]! : c.cum.bid[bin]!, totalCum: ask ? cum.ask[bin]! : cum.bid[bin]!, venueLevel: (ask ? g.ask[c.index] : g.bid[c.index])?.[bin] ?? 0, volume: c.venue.volume, window, full: scale.full, reach });
+      venueCum: ask ? c.cum.ask[bin]! : c.cum.bid[bin]!, totalCum: ask ? cum.ask[bin]! : cum.bid[bin]!, venueLevel: (ask ? g.ask[c.index] : g.bid[c.index])?.[bin] ?? 0, volume, window, full: scale.full, reach });
     paintInfoBox(ctx, lines, hv.x, touch ? hv.y - 18 : hv.y, bounds, p, { placement: touch ? 'up' : 'center' });
+  }
+
+  /**
+   * A venue line's traded volume as it is written: the ranking's dollars, or in coins the coins traded over the same window, each second's
+   * dollars over its own price (units.ts; the ranking itself stays on the dollars).
+   */
+  #volumeShown(c: Curve, state: AppState): number | null {
+    if (c.venue.volume === null || !inCoins()) return c.venue.volume;
+    const now = Math.floor(Date.now() / 1000), from = now - Math.round(RANK_MS[state.cvd.rank] / 1000) + 1, coins = this.hub?.flow.coinsOf(c.venue.id);
+    return coins && !coins.empty ? coins.gross(from, now) : null;
   }
 
   /** Box what is under the pointer and say what it is. */
@@ -790,7 +807,7 @@ export class LadderPane {
     this.mirror = stats;
     const bandTop = head + rowOf(Math.max(hb, mb)) * ROW_H, bandBottom = head + (rowOf(Math.min(hb, mb)) + 1) * ROW_H, pct = percentText(stats);
     dimOutside(ctx, o.x, o.w, head, head + rows * ROW_H, bandTop, bandBottom, p.bg, 0.55);
-    paintBand(ctx, p, o.x, o.w, { y: bandTop, color: p.ask, label: `${usd(stats.aboveUsd)} · ${pct}` }, { y: bandBottom, color: p.bid, label: `${usd(stats.belowUsd)} · ${pct}` }, { y0: head, y1: head + rows * ROW_H });
+    paintBand(ctx, p, o.x, o.w, { y: bandTop, color: p.ask, label: `${figure(stats.aboveUsd)} · ${pct}` }, { y: bandBottom, color: p.bid, label: `${figure(stats.belowUsd)} · ${pct}` }, { y0: head, y1: head + rows * ROW_H });
     // Directly over a cell or a block the popup says what that is, and the comparison's own box would only cover it.
     if (!cellUnder) paintMirrorBox(ctx, mirrorLines(stats, o.title || undefined), hv.x, hv.y, { x0: o.x, y0: head, x1: o.x + o.w, y1: head + rows * ROW_H }, p,
       c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'muted' ? p.muted : p.text, stats.hoveredSide === 'above' ? 'down' : 'up');
@@ -856,7 +873,7 @@ export class LadderPane {
     // Full width is the largest measured total: a carried row holds the total at its reach, so it never raises it.
     let full = 0;
     for (const c of curves) for (let bin = top - o.rows + 1; bin <= top; bin++) { const v = value(c, bin); if (v !== null && v > full) full = v; }
-    full = Math.max(full, 1);
+    full = Math.max(full, unitFloor((g.bin0 + o.markBin + 0.5) * o.step));
     return { x: (c, bin) => { const v = value(c, bin); return v === null ? null : barX + lineFraction(v, full) * barW; }, carried, capped, full };
   }
 
@@ -979,11 +996,15 @@ export class LadderPane {
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
   }
 
-  #drawBook(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, state: AppState, g: Grouped,
+  #drawBook(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, state: AppState, usdRows: Grouped,
     o: { x: number; w: number; title: string; markId?: string; pullIds: string[]; cells: string[] | null; order: string[] | null; curves?: Curve[] | null; cellW: number; head: number; balanceH: number; cover: Cover | null; totals: boolean; centerBin: number; rows: number; markBin: number; mark: number; step: number }): void {
     const p = this.#palette, { x: x0, w, rows, markBin, step, centerBin } = o;
-    const cum = cumulative(g, o.mark);
-    const dominance = state.highlight.on ? imbalanceByDistance(g, cum, markBin) : null;
+    // The figures, bars and boxes are drawn from the rows in the page's units (`g`; units.ts). The cues size their lights by the dollars, and
+    // Highlights weighs the dollars, in either units.
+    const g = usdRows.coins ?? usdRows;
+    const cum = cumulative(g, o.mark), cumUsd = g === usdRows ? cum : cumulative(usdRows, o.mark);
+    const dominance = state.highlight.on ? imbalanceByDistance(usdRows, cumUsd, markBin) : null;
+    const usdAt = (i: number, ask: boolean, bin: number): number => (ask ? usdRows.ask[i] : usdRows.bid[i])?.[bin] ?? 0;
     const weight = (bin: number, bidSide: boolean): number => dominance ? dominanceWeight(dominance[bin]!, bidSide) : 1;
     // `head` is where the rows start; the labels sit above the balance bar, which takes the last `balanceH` of it.
     // The pull/stack column sits after LEVEL USD, so everything right of it moves along by its width.
@@ -1005,7 +1026,7 @@ export class LadderPane {
     }
     else {
       const line = head - HEAD_H / 2;
-      ctx.fillText(t('PRICE'), x0 + 6, line); ctx.textAlign = 'right'; ctx.fillText(t('LEVEL USD'), x0 + priceW + USD_W, line);
+      ctx.fillText(t('PRICE'), x0 + 6, line); ctx.textAlign = 'right'; ctx.fillText(inCoins() ? t('LEVEL {unit}', { unit: unitName() }) : t('LEVEL USD'), x0 + priceW + USD_W, line);
       if (pull) {
         ctx.fillText(pull.kind === 'filling' ? `Δ ${t('{n} s', { n: pull.waitS })}…` : pull.kind === 'fine' ? 'Δ –' : `Δ ${windowText(state.pullStack)}`, x0 + priceW + usdW, line);
       }
@@ -1028,15 +1049,16 @@ export class LadderPane {
       if (why) ctx.fillText(why, barX, line);
       else if (!o.curves?.length) ctx.fillText(state.ladderShow === 'levels' ? t('DEPTH') : t('DEPTH + CUM'), barX, line);
     }
-    let maxLevel = 1;
+    // Floors of a dollar (in coins, a dollar's worth), so a nearly empty view draws the same bars in either units.
+    let maxLevel = unitFloor(o.mark);
     const orderIdx = o.order ? o.order.map(id => g.ids.indexOf(id)) : null;
     const shownHi = Math.min(g.nBins - 1, centerBin + Math.floor(rows / 2) - g.bin0), shownLo = Math.max(0, shownHi - rows + 1);
     // The running totals' full width is the largest on the rows on screen (each still counted from the mark).
-    let maxCum = 1;
+    let maxCum = unitFloor(o.mark);
     for (let i = shownLo; i <= shownHi; i++) { maxLevel = Math.max(maxLevel, g.totalBid[i]!, g.totalAsk[i]!); maxCum = Math.max(maxCum, cum.bid[i]!, cum.ask[i]!); }
     // The largest change the price did not reach, so the numbers fade with their size.
-    const pullRows = pull?.kind === 'rows' ? pull.rows : null;
-    let maxPull = 1;
+    const pullRows = pull?.kind === 'rows' ? pullInUnits(pull.rows, g) : null;
+    let maxPull = unitFloor(o.mark);
     if (pullRows) for (let i = shownLo; i <= shownHi; i++) if (!pullRows.touched[i]) for (const v of [pullRows.bid[i]!, pullRows.ask[i]!]) if (v === v) maxPull = Math.max(maxPull, Math.abs(v));
     // The venue lines' scale, and round values on it as faint gridlines behind the bars (it is not the bars' scale, so it needs its own).
     const curves = o.curves ?? [], scale = curves.length ? this.#curveX(g, curves, o, barX, barW) : null, xAt = scale?.x ?? null;
@@ -1054,7 +1076,7 @@ export class LadderPane {
       for (const tick of ticks) { mat.beginPath(); mat.moveTo(tick.x, o.head); mat.lineTo(tick.x, o.head + rows * ROW_H); mat.stroke(); }
       mat.restore();
     }
-    if (o.balanceH > 0) this.#paintBalance(ctx, g, cum, o, x0, w);
+    if (o.balanceH > 0) this.#paintBalance(ctx, usdRows, cumUsd, o, x0, w);
     // Each venue's part of a row is placed for the cues (where it is, so a cue can light it) and gets its heat strip.
     const cues = this.#cues, heatKind = state.ladderCues.heat, tone = heatKind === 'off' ? '' : heatTone(p), wall = Date.now();
     const share = (h: { fresh: number; activity: number }): number => heatKind === 'added' ? h.fresh : h.activity;
@@ -1082,12 +1104,12 @@ export class LadderPane {
       if (ends && value > 0 && state.ladderShow !== 'cumulative') ends[r] = barX + Math.max(1, value / maxLevel * barW);
       if (bin === markBin) { mat.fillStyle = p.line; mat.fillRect(x0, y, w, ROW_H); }
       ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(fmtPrice((g.bin0 + bin) * step, step), x0 + 6, mid);
-      ctx.fillStyle = value > 0 ? p.text : p.muted; ctx.textAlign = 'right'; ctx.fillText(value > 0 ? usd(value) : '', x0 + priceW + USD_W, mid);
+      ctx.fillStyle = value > 0 ? p.text : p.muted; ctx.textAlign = 'right'; ctx.fillText(value > 0 ? figure(value) : '', x0 + priceW + USD_W, mid);
       if (pullRows) {
         const change = isAsk ? pullRows.ask[bin]! : pullRows.bid[bin]!, touched = pullRows.touched[bin] === 1;
-        if (change === change && Math.abs(change) >= 1) {
+        if (change === change && Math.abs(change) >= unitFloor(o.mark)) {
           ctx.fillStyle = touched ? p.muted : color; ctx.globalAlpha = touched ? 0.85 : Math.min(1, 0.45 + 0.55 * Math.sqrt(Math.abs(change) / maxPull));
-          ctx.fillText(signedUsd(change), x0 + priceW + usdW, mid); ctx.globalAlpha = 1;
+          ctx.fillText(signedFigure(change), x0 + priceW + usdW, mid); ctx.globalAlpha = 1;
         }
       }
       if (cellIds) cellIds.forEach((id, k) => {
@@ -1095,7 +1117,7 @@ export class LadderPane {
         if (vv > 0) {
           const cx = x0 + priceW + usdW + 8 + k * cw, cwid = Math.max(2, cw - 2);
           mat.globalAlpha = Math.min(1, (0.18 + 0.82 * Math.sqrt(vv / maxLevel)) * f); mat.fillStyle = color; mat.fillRect(cx, y + 3, cwid, ROW_H - 6); mat.globalAlpha = 1;
-          place(id, r, isAsk, { x: cx, y: y + 3, w: cwid, h: ROW_H - 6, usd: vv }, rowLo);
+          place(id, r, isAsk, { x: cx, y: y + 3, w: cwid, h: ROW_H - 6, usd: usdAt(k, isAsk, bin) }, rowLo);
         }
       });
       if (state.ladderShow !== 'cumulative' && value > 0) {
@@ -1103,7 +1125,7 @@ export class LadderPane {
           const pieces = barPieces(o.order, orderIdx.map(i => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0), maxLevel, barX, barW, PIECE_MIN_PX);
           this.#paintPieces(mat, ctx, pieces, y, color, f);
           for (const piece of pieces) {
-            const rect: Cell = { x: piece.x, y: y + 2, w: Math.max(1, piece.w - (piece.w >= 3 ? 1 : 0)), h: ROW_H - 4, usd: piece.usd };
+            const rect: Cell = { x: piece.x, y: y + 2, w: Math.max(1, piece.w - (piece.w >= 3 ? 1 : 0)), h: ROW_H - 4, usd: piece.id ? usdAt(g.ids.indexOf(piece.id), isAsk, bin) : piece.usd };
             if (piece.id) { place(piece.id, r, isAsk, rect, rowLo); continue; }
             // The smaller venues' piece is one block of material that none of them owns: a change of one of them lights nothing there (it leaves its
             // mark and its hover), and the piece's strip is theirs added up (by size).
@@ -1125,7 +1147,7 @@ export class LadderPane {
         } else {
           const len = Math.max(1, value / maxLevel * barW);
           mat.globalAlpha = Math.min(1, 0.75 * f); mat.fillStyle = color; mat.fillRect(barX, y + 2, len, ROW_H - 4); mat.globalAlpha = 1;
-          place(o.markId ?? o.pullIds[0] ?? '', r, isAsk, { x: barX, y: y + 2, w: len, h: ROW_H - 4, usd: value }, rowLo);
+          place(o.markId ?? o.pullIds[0] ?? '', r, isAsk, { x: barX, y: y + 2, w: len, h: ROW_H - 4, usd: isAsk ? usdRows.totalAsk[bin]! : usdRows.totalBid[bin]! }, rowLo);
         }
       }
       // The price row's line in the colour of the map's price line (the candle under way rising or falling).
@@ -1157,7 +1179,7 @@ export class LadderPane {
       const ly = o.head + rows * ROW_H - ROW_H / 2;
       // A label that would overlap the one before it (a narrow column) is left out; its gridline stays.
       let right = -Infinity;
-      for (const tick of ticks) { const text = `$${usd(tick.v)}`, tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
+      for (const tick of ticks) { const text = amount(tick.v), tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
       ctx.restore();
       // The key again over the faded lines' entries, so the one under the pointer stands out there too.
       if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve, dashesAlone || runsPast(curves[this.hoveredCurve]!)); }
@@ -1169,6 +1191,6 @@ export class LadderPane {
     if (cell) this.#paintCell(ctx, cell, o, rows);
     if (curveHit && hv && scale) this.#paintCurveInfo(ctx, state, g, cum, curves[curveHit.k]!, curveHit.bin, scale, o, rows);
     // The scale label shares the header row with the DEPTH label (or the lines' key), so it only appears when the bar column is wide enough for both.
-    if (maxShown) { ctx.fillStyle = p.muted; ctx.textAlign = 'right'; ctx.fillText(t('MAX {value}', { value: usd(maxLevel) }), x0 + w - 6, keyLine); }
+    if (maxShown) { ctx.fillStyle = p.muted; ctx.textAlign = 'right'; ctx.fillText(t('MAX {value}', { value: figure(maxLevel) }), x0 + w - 6, keyLine); }
   }
 }

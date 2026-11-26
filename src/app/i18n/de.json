@@ -3578,5 +3578,8 @@
  "Unusual candle volume": "Ungewöhnliches Kerzenvolumen",
  "Trade side": "Trade-Seite",
  "Both sides, or only large market buys or only large market sells.": "Beide Seiten, oder nur große Market-Käufe oder nur große Market-Verkäufe.",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Wie sich die hier gezeigten Niveaus im Zeitverlauf verändert haben, welche Arten die Schaltfläche oben an der Spalte auch zeigt (Liquidationen, Stops, Take-Profits): öffnet sie im Tiefe-Bereich."
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Wie sich die hier gezeigten Niveaus im Zeitverlauf verändert haben, welche Arten die Schaltfläche oben an der Spalte auch zeigt (Liquidationen, Stops, Take-Profits): öffnet sie im Tiefe-Bereich.",
+ "Sizes are shown in {coin}: each amount over the price it was valued at. Click to show them in dollars.": "Größen werden in {coin} angezeigt: jeder Betrag geteilt durch den Preis, zu dem er bewertet wurde. Klicken, um sie in Dollar anzuzeigen.",
+ "Sizes are shown in dollars. Click to show them in {coin}: each amount over the price it was valued at.": "Größen werden in Dollar angezeigt. Klicken, um sie in {coin} anzuzeigen: jeder Betrag geteilt durch den Preis, zu dem er bewertet wurde.",
+ "LEVEL {unit}": "NIVEAU {unit}"
 }

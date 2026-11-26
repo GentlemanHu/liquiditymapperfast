@@ -3394,5 +3394,8 @@
  "Unusual candle volume": "異常なローソク出来高",
  "Trade side": "約定サイド",
  "Both sides, or only large market buys or only large market sells.": "両サイド、大口成行買いのみ、または大口成行売りのみ。",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "ここに表示されているレベルが時間とともにどう変わったか（列の上部のボタンで選んだ種類のとおり：清算、ストップ、利益確定）。それらをデプスパネルで開きます。"
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "ここに表示されているレベルが時間とともにどう変わったか（列の上部のボタンで選んだ種類のとおり：清算、ストップ、利益確定）。それらをデプスパネルで開きます。",
+ "Sizes are shown in {coin}: each amount over the price it was valued at. Click to show them in dollars.": "サイズは{coin}で表示中です。各金額を、その金額が評価された価格で割った値です。クリックするとドルで表示します。",
+ "Sizes are shown in dollars. Click to show them in {coin}: each amount over the price it was valued at.": "サイズはドルで表示中です。クリックすると{coin}で表示します。各金額を、その金額が評価された価格で割った値です。",
+ "LEVEL {unit}": "レベル {unit}"
 }

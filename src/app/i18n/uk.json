@@ -3697,5 +3697,8 @@
  "Unusual candle volume": "Незвичний обсяг свічки",
  "Trade side": "Сторона угод",
  "Both sides, or only large market buys or only large market sells.": "Обидві сторони, лише великі ринкові купівлі або лише великі ринкові продажі.",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Як показані тут рівні змінювалися з часом, які б види не показувала кнопка вгорі колонки (ліквідації, стопи, тейк-профіти): відкриває їх у панелі глибини."
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Як показані тут рівні змінювалися з часом, які б види не показувала кнопка вгорі колонки (ліквідації, стопи, тейк-профіти): відкриває їх у панелі глибини.",
+ "Sizes are shown in {coin}: each amount over the price it was valued at. Click to show them in dollars.": "Розміри показано в {coin}: кожна сума, поділена на ціну, за якою її оцінено. Натисніть, щоб показати їх у доларах.",
+ "Sizes are shown in dollars. Click to show them in {coin}: each amount over the price it was valued at.": "Розміри показано в доларах. Натисніть, щоб показати їх у {coin}: кожна сума, поділена на ціну, за якою її оцінено.",
+ "LEVEL {unit}": "РІВЕНЬ {unit}"
 }

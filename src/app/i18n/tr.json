@@ -3572,5 +3572,8 @@
  "Unusual candle volume": "Olağandışı mum hacmi",
  "Trade side": "İşlem yönü",
  "Both sides, or only large market buys or only large market sells.": "Her iki yön, yalnızca büyük piyasa alışları veya yalnızca büyük piyasa satışları.",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Burada gösterilen seviyelerin zaman içinde nasıl değiştiği; sütunun üstündeki düğme hangi türleri gösteriyorsa (tasfiyeler, stoplar, kâr al): bunları Derinlik panelinde açar."
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Burada gösterilen seviyelerin zaman içinde nasıl değiştiği; sütunun üstündeki düğme hangi türleri gösteriyorsa (tasfiyeler, stoplar, kâr al): bunları Derinlik panelinde açar.",
+ "Sizes are shown in {coin}: each amount over the price it was valued at. Click to show them in dollars.": "Büyüklükler {coin} cinsinden gösteriliyor: her tutar, değerlendiği fiyata bölünür. Dolar olarak göstermek için tıklayın.",
+ "Sizes are shown in dollars. Click to show them in {coin}: each amount over the price it was valued at.": "Büyüklükler dolar olarak gösteriliyor. {coin} cinsinden göstermek için tıklayın: her tutar, değerlendiği fiyata bölünür.",
+ "LEVEL {unit}": "SEVİYE {unit}"
 }

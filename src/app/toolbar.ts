@@ -7,6 +7,7 @@ import { AVAILABLE_LAYERS, autoTheme, flippedTheme, prefersDark, themeChange, ty
 import { VPN_HINT, VenueNotice, blockedVenues, idleText, idleVenues } from './venue-notice.ts';
 import type { VenueEntry } from './source.ts';
 import { clock, usd, zoneName } from './format.ts';
+import { coinText } from './units.ts';
 import { venueLabel } from './panes/ladder-pane.ts';
 import { el } from './dom.ts';
 import { BAR_ZOOM_FLOOR, arrangeBar, type BarFit } from './bar-fit.ts';
@@ -320,6 +321,11 @@ export class Toolbar {
   #zoneLocal = el('button', { type: 'button', textContent: t('Local') });
   #zoneUtc = el('button', { type: 'button', textContent: 'UTC' });
   #zoneSeg = el('div', { class: 'seg zone-seg', role: 'group', ariaLabel: t('Time zone') }, this.#zoneLocal, this.#zoneUtc);
+  /** What sizes are written in, dollars or the coin (units.ts): beside the clock, one button naming the units in use; both side by side in a phone's Settings. */
+  #units = el('button', { type: 'button', class: 'units-btn', ariaLabel: t('Units') });
+  #unitsUsd = el('button', { type: 'button', textContent: 'USD' });
+  #unitsCoin = el('button', { type: 'button', textContent: currentCoin().coin });
+  #unitsSeg = el('div', { class: 'seg zone-seg', role: 'group', ariaLabel: t('Units') }, this.#unitsUsd, this.#unitsCoin);
   /** A phone's Settings: how much recorded history it reads when the page opens (app/history-window.ts). */
   #historyChoices = new Map<Exclude<PhoneHistory, 'auto'>, HTMLButtonElement>([['recent', el('button', { type: 'button', textContent: t('3 h') })], ['day', el('button', { type: 'button', textContent: t('Day') })], ['off', el('button', { type: 'button', textContent: t('Off') })]]);
   #historySeg = el('div', { class: 'seg zone-seg', role: 'group', ariaLabel: t('History'), tip: t('How much recorded history this device downloads when the page opens: the last 3 hours (a few MB), the whole day (tens of MB) or none. It applies the next time the page opens.') }, ...this.#historyChoices.values());
@@ -582,6 +588,9 @@ export class Toolbar {
     this.#zone.onclick = () => this.store.set({ timeZone: this.store.state.timeZone === 'utc' ? 'local' : 'utc' });
     this.#zoneLocal.onclick = () => this.store.set({ timeZone: 'local' });
     this.#zoneUtc.onclick = () => this.store.set({ timeZone: 'utc' });
+    this.#units.onclick = () => this.store.set({ units: this.store.state.units === 'coin' ? 'usd' : 'coin' });
+    this.#unitsUsd.onclick = () => this.store.set({ units: 'usd' });
+    this.#unitsCoin.onclick = () => this.store.set({ units: 'coin' });
     for (const [choice, b] of this.#historyChoices) b.onclick = () => this.store.set({ phoneHistory: choice });
     this.#flip.onclick = () => { const s = this.store.state; this.store.set(themeChange(s, flippedTheme(s), true)); };
     this.#recenter.onclick = () => this.onRecenter();
@@ -857,7 +866,7 @@ export class Toolbar {
       if (inCorner) { this.#mapTools.replaceChildren(this.#layoutCorner, this.#goto, this.#rangeCorner, ...(this.#drawCorner ? [this.#drawCorner] : []), this.#recenter, this.#mapMax); this.#mapHost!.prepend(this.#mapTools); }
       const host = this.#statusHost;
       // With a status bar the connection state and the language and theme buttons live there.
-      host?.replaceChildren(this.#keys, this.#tab, this.#zone, this.#language, this.#theme);
+      host?.replaceChildren(this.#keys, this.#tab, this.#zone, this.#units, this.#language, this.#theme);
       // A console of decks, each a framed group of what belongs together, at most two rows tall, wrapping as whole decks (Karl,
       // 2026-10-16: one wrapping row read as a jumble). The venues are switched from the Venues button, not listed as chips.
       setTip(this.#venuesButton!, t('Venues: switch each exchange on or off for the map, the book and the flow column, or choose which ones feed the page'));
@@ -867,7 +876,7 @@ export class Toolbar {
       // arrow that folds the bar away sits on that deck's bottom edge, taking no width: room kept for it at the bar's end wrapped this deck
       // onto a second row at 1,600 px, doubling the bar, and the top edge holds the title.
       // Install stands before the screenshot mark, so that the mark keeps its place whether the browser offers installing or not (Install comes in beside Author).
-      const tools = deck('tools', 'LiquidityMapperFast', [...(PLUS_FREE ? [] : [this.#plus]), this.#guide], [this.#author, this.#install.root, this.#shot, ...(host ? [] : [this.#tab, this.#zone, this.#language, this.#theme, this.#status])]);
+      const tools = deck('tools', 'LiquidityMapperFast', [...(PLUS_FREE ? [] : [this.#plus]), this.#guide], [this.#author, this.#install.root, this.#shot, ...(host ? [] : [this.#tab, this.#zone, this.#units, this.#language, this.#theme, this.#status])]);
       tools.append(this.#collapse);
       this.#deckBreaks = []; this.#fitted = null; this.#fittedOrder = '';
       this.#decks = [
@@ -1031,7 +1040,7 @@ export class Toolbar {
         section(t('Alerts'), [el('div', { class: 'sheet-tiles' }, this.#alertSplits!.highlights, this.#alertSplits!.sound),
           field(t('Waves'), el('label', { class: 'switch', tip: t('Waves: the bars and panels around the chart turn to glass; large orders and large flow changes light it and send waves across the screen') }, this.#glassSwitch, el('i'))),
           field(t('Wave strength'), el('span', { class: 'wave-strength', tip: WAVE_STRENGTH_TIP }, this.#waveStrength, this.#waveStrengthOut))]),
-        section(t('Appearance'), [field(t('Language'), this.#language), field(t('Theme'), this.#theme), field(t('Time zone'), this.#zoneSeg),
+        section(t('Appearance'), [field(t('Language'), this.#language), field(t('Theme'), this.#theme), field(t('Time zone'), this.#zoneSeg), field(t('Units'), this.#unitsSeg),
           ...(wakeLockSupported() ? [field(t('Keep screen on'), el('label', { class: 'switch', tip: t('Stops the screen turning off while this page is open. A screen that sleeps stops the recording, and the map then has a gap where it was.') }, this.#awake, el('i')))] : []),
           field(t('Price in the title'), el('label', { class: 'switch', tip: t('The tab\'s title starts with the price and which way the candle under way is going.') }, this.#tabPrice, el('i'))),
           field(t('Candle as the icon'), el('label', { class: 'switch', tip: t('The tab\'s icon is the candle under way, so a pinned tab, which shows no title, still shows where the price is going. Safari keeps the page\'s own icon.') }, this.#tabIcon, el('i'))),
@@ -1043,7 +1052,8 @@ export class Toolbar {
   }
 
   /** Update controls from state; `window` is the USD range currently mapped onto the colour ramp. Only touches DOM that changed, so open dropdowns and clicks survive 4 Hz data frames. */
-  sync(state: AppState, window: { lo: number; hi: number }): void {
+  /** `window`: the heatmap's colour window, in coins when `coins` says so (the raster it was taken from was; units.ts). */
+  sync(state: AppState, window: { lo: number; hi: number; coins?: boolean }): void {
     const instruments = state.markets.filter(m => m.instrumentId);
     const marketKey = instruments.map(m => m.instrumentId).join(',');
     if (this.#market.dataset.key !== marketKey) {
@@ -1088,11 +1098,12 @@ export class Toolbar {
     setValue(this.#heat.style, state.heat.style); setValue(this.#heat.contrast, String(state.heat.contrast));
     const legendKey = `${state.heat.style}|${themeKey(state.theme)}`;
     if (this.#heat.legend.dataset.key !== legendKey) { this.#heat.legend.dataset.key = legendKey; this.#heat.legend.style.background = legendBackground(state.heat.style, paletteOf(state.theme)); }
-    const lo = usd(window.lo), hi = usd(window.hi);
+    const lo = window.coins ? coinText(window.lo) : usd(window.lo), hi = window.coins ? coinText(window.hi) : usd(window.hi);
     if (this.#heat.lo.textContent !== lo) this.#heat.lo.textContent = lo;
     if (this.#heat.hi.textContent !== hi) this.#heat.hi.textContent = hi;
     this.#showTheme(state.theme);
     this.#showZone(state.timeZone);
+    this.#showUnits(state.units);
     this.#showFlip(state.theme);
     const soundState = !state.sounds.on ? 'off' : state.soundState !== 'running' ? 'locked' : 'on';
     if (this.#soundButton.dataset.state !== soundState) {
@@ -1216,6 +1227,17 @@ export class Toolbar {
     setTip(this.#zone, zone === 'utc'
       ? t('Times are shown in UTC. Click to show them in your computer\'s time ({zone}).', { zone: zoneName('local') })
       : t('Times are shown in your computer\'s time ({zone}). Click to show them in UTC.', { zone: zoneName('local') }));
+  }
+  /** The units button names what sizes are written in, and says what a click does. */
+  #showUnits(units: AppState['units']): void {
+    this.#unitsUsd.classList.toggle('on', units !== 'coin'); this.#unitsCoin.classList.toggle('on', units === 'coin');
+    if (this.#units.dataset.units === units) return;
+    const coin = currentCoin().coin;
+    this.#units.dataset.units = units;
+    this.#units.textContent = units === 'coin' ? coin : 'USD';
+    setTip(this.#units, units === 'coin'
+      ? t('Sizes are shown in {coin}: each amount over the price it was valued at. Click to show them in dollars.', { coin })
+      : t('Sizes are shown in dollars. Click to show them in {coin}: each amount over the price it was valued at.', { coin }));
   }
   /** Choose the page's language, or let the browser's preference decide. The page is then built again in it. */
   #openLanguages(): void {

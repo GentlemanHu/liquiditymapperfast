@@ -1,5 +1,6 @@
 import type { InfoLine } from '../infobox.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, signedAmount } from '../units.ts';
 import { t, tn } from '../i18n.ts';
 import { rowEventAt, type CueEvent, type RowEvent } from './book-cues.ts';
 
@@ -29,15 +30,15 @@ export interface LevelFacts {
   mark: number;
   /** An ask (a seller waiting above the price) or a bid (a buyer waiting below). */
   ask: boolean;
-  /** Everything resting at this level, USD. */
+  /** Everything resting at this level, in the page's units (units.ts). */
   size: number;
-  /** The running total from the mark out to and including this level, USD. */
+  /** The running total from the mark out to and including this level, in the page's units. */
   cumulative: number;
   /** Each venue's part of the level, any order (venues with nothing there left out); `id`, the book's instrument, gives its line the venue's mark. */
   venues: readonly { name: string; usd: number; id?: string }[];
   /** A book that belongs to one venue says which. */
   title?: string;
-  /** What the level gained (+) or lost (−) over the pull/stack window, and whether the price traded there meanwhile. */
+  /** What the level gained (+) or lost (−) over the pull/stack window (in the page's units), and whether the price traded there meanwhile. */
   pull?: { usd: number; touched: boolean; window: string };
   /** The venues' latest observed changes here (newest first), what the cues lit: `ChangeFact`. */
   changes?: readonly ChangeFact[];
@@ -46,14 +47,14 @@ export interface LevelFacts {
 }
 
 /**
- * One venue's latest observed change of its displayed depth at a level: its size (signed USD), how long ago, and how it read; `traded` is the USD of
- * market orders that reached the row on that venue around the same time (`tradedInRow`), absent when the tape does not say.
+ * One venue's latest observed change of its displayed depth at a level: its size (signed, in the page's units), how long ago, and how it read;
+ * `traded` is what market orders that reached the row on that venue around the same time came to (`tradedInRow`, in the page's units), absent
+ * when the tape does not say.
  */
 export interface ChangeFact { name: string; id?: string; usd: number; ageMs: number; removed: boolean; pair: boolean; traded?: number }
 /** The shares (0 to 1) of a cell the heat strip is drawn from; `kind` says which one it shows. */
 export interface HeatFact { kind: 'added' | 'activity'; fresh: number; unknown: number; activity: number }
 
-const signedUsd = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 /** How long ago, as a person reads it: "just now", "4 s ago", "2 min ago". */
 export function agoText(ms: number): string {
   return ms < 1_000 ? t('just now') : ms < 60_000 ? t('{n} s ago', { n: Math.round(ms / 1_000) }) : t('{n} min ago', { n: Math.round(ms / 60_000) });
@@ -67,8 +68,8 @@ export function agoText(ms: number): string {
 export function cueLines(f: Pick<LevelFacts, 'ask' | 'changes' | 'heat'>, limit = 3): InfoLine[] {
   const lines: InfoLine[] = [];
   const changes = (f.changes ?? []).slice(0, limit);
-  const tradedText = (c: ChangeFact): string => c.traded === undefined ? '' : ` · ${c.traded > 0 ? t('{usd} traded', { usd: `$${usd(c.traded)}` }) : t('none traded')}`;
-  changes.forEach((c, i) => lines.push({ label: i === 0 ? t('Last change') : '', text: `${signedUsd(c.usd)}${c.removed ? ` · ${t('emptied')}` : ''} · ${agoText(c.ageMs)}${tradedText(c)}`, color: f.ask ? 'above' : 'below', rule: i === 0, ...(c.id ? { mark: c.id } : {}) }));
+  const tradedText = (c: ChangeFact): string => c.traded === undefined ? '' : ` · ${c.traded > 0 ? t('{usd} traded', { usd: amount(c.traded) }) : t('none traded')}`;
+  changes.forEach((c, i) => lines.push({ label: i === 0 ? t('Last change') : '', text: `${signedAmount(c.usd)}${c.removed ? ` · ${t('emptied')}` : ''} · ${agoText(c.ageMs)}${tradedText(c)}`, color: f.ask ? 'above' : 'below', rule: i === 0, ...(c.id ? { mark: c.id } : {}) }));
   // Two opposite changes of about one size next to each other are said as that: nothing in the book says whether it is one order moving, a row's edge crossed, or two.
   if (changes.some(c => c.pair)) lines.push({ text: t('A change nearby went the other way, by about the same size.'), color: 'muted', wrap: true });
   if (f.heat && f.heat.fresh + f.heat.unknown + f.heat.activity > 0) {
@@ -100,18 +101,18 @@ export function levelLines(f: LevelFacts, limit = 4): InfoLine[] {
     { text: f.title ?? t('Order book level'), bold: true },
     { label: t('Price'), text: span(f) },
     side(f),
-    { label: t('Size'), text: `$${usd(f.size)}`, bold: true },
-    { label: t('From the mark'), text: `$${usd(f.cumulative)}` },
+    { label: t('Size'), text: amount(f.size), bold: true },
+    { label: t('From the mark'), text: amount(f.cumulative) },
     { label: t('Distance'), text: distanceText(f.low + f.step / 2, f.mark) },
   ];
   if (f.pull) {
     const v = f.pull.usd;
-    lines.push({ label: t('Pull/stack, {window}', { window: f.pull.window }), text: `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`, color: f.pull.touched ? 'muted' : f.ask ? 'above' : 'below' });
+    lines.push({ label: t('Pull/stack, {window}', { window: f.pull.window }), text: signedAmount(v), color: f.pull.touched ? 'muted' : f.ask ? 'above' : 'below' });
     if (f.pull.touched) lines.push({ text: t('The price traded here in the window: a fill takes liquidity away just as a pull does.'), color: 'muted' });
   }
   if (f.venues.length > 1) {
     const sorted = [...f.venues].sort((a, b) => b.usd - a.usd), total = sorted.reduce((sum, v) => sum + v.usd, 0);
-    sorted.slice(0, limit).forEach((v, i) => lines.push({ label: v.name, text: `$${usd(v.usd)} · ${total > 0 ? Math.round(v.usd / total * 100) : 0}%`, rule: i === 0, ...(v.id ? { mark: v.id } : {}) }));
+    sorted.slice(0, limit).forEach((v, i) => lines.push({ label: v.name, text: `${amount(v.usd)} · ${total > 0 ? Math.round(v.usd / total * 100) : 0}%`, rule: i === 0, ...(v.id ? { mark: v.id } : {}) }));
     if (sorted.length > limit) lines.push({ text: t('+{n} more venues', { n: sorted.length - limit }), color: 'muted' });
   }
   lines.push(...cueLines(f));
@@ -133,13 +134,13 @@ export function venueCellLines(f: LevelFacts, venue: { name: string; usd: number
     { text: venue.name, bold: true, ...(venue.id ? { mark: venue.id } : {}) },
     { label: t('Price'), text: span(f) },
     side(f),
-    { label: t('Size'), text: `$${usd(venue.usd)}`, bold: true },
+    { label: t('Size'), text: amount(venue.usd), bold: true },
     { label: t('Share of level'), text: `${f.size > 0 ? Math.round(venue.usd / f.size * 100) : 0}%` },
   ];
   if (f.venues.length > 1) lines.push({ label: t('Rank at this price'), text: t('{rank} of {total}', { rank, total: f.venues.length }) });
   lines.push({ label: t('Distance'), text: distanceText(f.low + f.step / 2, f.mark) });
   lines.push(...cueLines(f));
-  lines.push({ label: t('All venues here'), text: `$${usd(f.size)}`, rule: true });
+  lines.push({ label: t('All venues here'), text: amount(f.size), rule: true });
   return lines;
 }
 
@@ -153,10 +154,10 @@ export function smallerVenuesLines(f: LevelFacts, venues: readonly { name: strin
     { text: tn(venues.length, '{n} smaller venue', '{n} smaller venues'), bold: true },
     { label: t('Price'), text: span(f) },
     side(f),
-    { label: t('Size'), text: `$${usd(usdSum)}`, bold: true },
+    { label: t('Size'), text: amount(usdSum), bold: true },
     { label: t('Share of level'), text: `${f.size > 0 ? Math.round(usdSum / f.size * 100) : 0}%` },
   ];
-  venues.slice(0, 10).forEach((v, i) => lines.push({ label: v.name, text: `$${usd(v.usd)} · ${f.size > 0 ? Math.round(v.usd / f.size * 100) : 0}%`, rule: i === 0, ...(v.id ? { mark: v.id } : {}) }));
+  venues.slice(0, 10).forEach((v, i) => lines.push({ label: v.name, text: `${amount(v.usd)} · ${f.size > 0 ? Math.round(v.usd / f.size * 100) : 0}%`, rule: i === 0, ...(v.id ? { mark: v.id } : {}) }));
   if (venues.length > 10) lines.push({ text: t('+{n} more venues', { n: venues.length - 10 }), color: 'muted' });
   lines.push(...cueLines(f));
   return lines;

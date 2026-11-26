@@ -11,6 +11,11 @@ export interface Grouped {
   ask: Float32Array[];
   totalBid: Float32Array;
   totalAsk: Float32Array;
+  /**
+   * The same rows in coins, each row's dollars over the price in the row's middle (units.ts): present on a grouping asked for in coins. The
+   * dollars stay the grouping's own, so what judges or compares (the cues, Highlights, the venues' order) reads them in either units.
+   */
+  coins?: Grouped;
 }
 
 /** The most bins one grouping holds (more is cut off at the top). */
@@ -33,19 +38,35 @@ function concat(sides: SideArrays[]): { lo: Float64Array; hi: Float64Array; usd:
 const grouped = new WeakMap<LevelsFrame, Map<string, Grouped>>();
 const GROUP_MEMO = 8;
 
-/** Group the selected instruments' live levels onto a display grid covering [p0, p1]. */
-export function groupLevels(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, p0: number, p1: number): Grouped {
+/**
+ * Group the selected instruments' live levels onto a display grid covering [p0, p1]; with `coins`, the grouping carries its rows in coins too
+ * (`Grouped.coins`), made from the dollars' grouping of the same frame and kept beside it.
+ */
+export function groupLevels(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, p0: number, p1: number, coins = false): Grouped {
   const bin0 = Math.floor(p0 / step);
   const nBins = Math.max(1, Math.min(MAX_BINS, Math.ceil(p1 / step) - bin0 + 1));
-  const key = `${ids.join('\u0001')}\u0002${step}\u0002${bin0}\u0002${nBins}`;
-  let memo = grouped.get(frame);
-  const hit = memo?.get(key);
+  const key = `${ids.join('\u0001')}\u0002${step}\u0002${bin0}\u0002${nBins}${coins ? '\u0002coins' : ''}`;
+  const hit = grouped.get(frame)?.get(key);
   if (hit) return hit;
-  const made = groupFresh(kernels, frame, ids, step, bin0, nBins);
+  const made = coins ? withCoins(groupLevels(kernels, frame, ids, step, p0, p1)) : groupFresh(kernels, frame, ids, step, bin0, nBins);
+  let memo = grouped.get(frame);
   if (!memo) { memo = new Map(); grouped.set(frame, memo); }
   if (memo.size >= GROUP_MEMO) memo.delete(memo.keys().next().value!);
   memo.set(key, made);
   return made;
+}
+
+/**
+ * A grouping with its rows in coins beside its dollars: each row's dollars over the price in the middle of the row (a level sits somewhere in
+ * its row, so this is the level's own price to within half a row). The totals are the venues' coins added up.
+ */
+function withCoins(g: Grouped): Grouped {
+  const toCoins = (rows: Float32Array): Float32Array => {
+    const out = new Float32Array(rows.length);
+    for (let i = 0; i < rows.length; i++) { const price = (g.bin0 + i + 0.5) * g.step; out[i] = price > 0 ? rows[i]! / price : 0; }
+    return out;
+  };
+  return { ...g, coins: { ids: g.ids, step: g.step, bin0: g.bin0, nBins: g.nBins, bid: g.bid.map(toCoins), ask: g.ask.map(toCoins), totalBid: toCoins(g.totalBid), totalAsk: toCoins(g.totalAsk) } };
 }
 
 function groupFresh(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, bin0: number, nBins: number): Grouped {

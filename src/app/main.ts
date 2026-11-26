@@ -25,6 +25,7 @@ import { el } from './dom.ts';
 import { HeatCanvas } from './heatmap/canvas.ts';
 import { FpsMeter } from './fps/meter.ts';
 import { anchorDate, clock, clockYear, setTimeZone, zoneName } from './format.ts';
+import { setUnits } from './units.ts';
 import { installTips } from './tip.ts';
 import { installClassicSelects, installTouchSelects } from './touch-select.ts';
 import { lazy, preload } from './lazy.ts';
@@ -119,6 +120,7 @@ async function main(): Promise<void> {
   const store = new Store(forCoin(initialState(), choice.coin, choice.from));
   useMarkets(() => store.state.markets);
   setTimeZone(store.state.timeZone);
+  setUnits(store.state.units);
   applyTheme(store.state.theme);
   // A theme never picked follows the device's light or dark setting as it changes (a phone at dusk; `autoTheme`).
   if (typeof matchMedia === 'function') matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
@@ -132,6 +134,8 @@ async function main(): Promise<void> {
   keepCoinRecordings();
   const source = await chooseSource(params, choice, store.state.phoneHistory);
   const hub = new Hub(store, source, { paced: true });
+  // The flow keeps its coins beside its dollars while the page writes sizes in coins (units.ts).
+  hub.flow.setCoins(store.state.units === 'coin');
   const wake = new ScreenWake(); wake.set(store.state.keepAwake);
   // The browser tab says the price: in its title, and its icon is the candle under way (GitHub issue #7).
   new TabTitle(store);
@@ -642,6 +646,9 @@ async function main(): Promise<void> {
     if (changed.has('keepAwake')) wake.set(state.keepAwake);
     // Every time on the page is written from the one setting: say it changed, and have what shows times draw again.
     if (changed.has('timeZone')) { setTimeZone(state.timeZone); heat.invalidate(); lower(); cvd.invalidate(); showStatus(); }
+    // Every size on the page is written in the one setting's units (units.ts): say they changed, and have whatever writes sizes draw again
+    // (the map asks for its raster in the new units; the Range reads what it holds again).
+    if (changed.has('units')) { setUnits(state.units); hub.flow.setCoins(state.units === 'coin'); heat.invalidate(); ladder.invalidate(); lower(); cvd.invalidate(); cvd.trades.redraw(); candle.invalidate(); liq.invalidate(); range.refreshHeld(); }
     if (changed.has('theme')) { glass.setPalette(applyTheme(state.theme)); for (const p of themed) p.setPalette(state.theme); }
     if (changed.has('material')) { applyMaterial(); hub.setTape(tapeWanted()); }
     // The page's glass draws its next frame with the new strength; the Tape's reads it with each frame it draws.
@@ -748,7 +755,7 @@ async function main(): Promise<void> {
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();
     if (['show', 'candles', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'traded', 'timeZone', 'range', 'oi', 'oiInstrument', 'oiParts', 'oiFine'].some(k => changed.has(k as never))) delta.invalidate();
-    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'tpo', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
+    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'units', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'tpo', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
   });
 
   // Plus coming or going changes what the liquidation column can be (a split is Plus's, and widens it): the columns are laid out again.
