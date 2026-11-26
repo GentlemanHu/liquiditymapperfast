@@ -390,7 +390,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'depth', title: 'Depth',
     blocks: [
-      { t: 'p', text: 'For every moment, **Depth** adds up the bids and the asks within several distances of the price and draws them as nested rings: asks up in the sell colour, bids down in the buy colour, the narrowest band strongest at the centre and the widest lightest. Each band holds the ones inside it. **Bands** chooses the distances (Balanced doubles from ±0.31% to ±5%; Near, Wide or your own); *Detail* draws the square root of the money so a thin inner band shows, and *Units* counts the coin instead of dollars.' },
+      { t: 'p', text: 'For every moment, **Depth** adds up the bids and the asks within several distances of the price and draws them as nested rings: asks up in the sell colour, bids down in the buy colour, the narrowest band strongest at the centre and the widest lightest. Each band holds the ones inside it. **Bands** chooses the distances (Balanced doubles from ±0.31% to ±5%; Near, Wide or your own); *Detail* draws the square root of the money so a thin inner band shows; it counts dollars or the coin as the whole page does (see “Dollars or coins”).' },
       { t: 'p', text: 'The **lens** (the magnifying glass at the plot\'s top left, on by default; it glows while on) draws the bands near the price larger, so a thin inner band has room. *Log curve* bends the heights on a logarithmic curve of the money; *Per % of price* and *Even room* weigh each band\'s ring instead, and then the outer edge is no longer the total. The slider sets how strongly; the table always says the money.' },
       { t: 'p', text: '**Venues** chooses whose order books it adds up: the exchanges switched on inside the Spot / Perp filter (the default), the chart market\'s own book, or markets you tick, whatever the chips and the filter say. The Depth pane and the Liquidity Tracker share the choice, and their sounds count the same books.' },
       { t: 'p', text: 'Click a row of the table to bring that band forward at its own scale. When one side of it is unusually larger than the other over a candle (see “What stands out”), that side\'s edge is drawn thick across the candle: is there more resting liquidity above or below, and is that changing? Its **Source** can also be the liquidation levels, which adds up the same bands for Hyperliquid\'s BTC positions.' },
@@ -513,6 +513,18 @@ export const SECTIONS: readonly Section[] = [
         '**Not every coin has recorded history.** The recorder keeps Bitcoin\'s books and what was traded on twenty more coins. The others start empty and record in your browser while the page is open (see “Where the map\'s history comes from”).',
         '**Liquidation levels** are Bitcoin only.',
         'A market that does not list the coin shows as such in the **Venues** picker and cannot be ticked.',
+      ] },
+    ],
+  },
+  {
+    id: 'units', title: 'Dollars or coins',
+    blocks: [
+      { t: 'p', text: 'Every size on the page can be read in **dollars** or in the **coin** itself (BTC on Bitcoin). The button beside the clock (**Local** or **UTC**) says which one the page is in, and a click switches it; on a phone it is in Settings, under Appearance (**Units**). This browser remembers the choice.' },
+      { t: 'list', items: [
+        '**Each amount over its own price.** A level of the book is its dollars over its own price, an order over the price it filled at, a second of flow over that second\'s price, a liquidation over the price it was valued at. A total adds up those coins: a day\'s volume is the coins traded that day, not the day\'s dollars over today\'s price.',
+        '**Where only a coarser price is known, that one is used**: a minute\'s last price for flow older than what the page holds second by second, a candle\'s price for sizes kept without prices (the Flow history\'s bands, the Liquidity Tracker), a bar\'s average price for the order sizes in Bar stats.',
+        '**Bars and the map look the same.** Bars are laid out as before and the map\'s colours come from the coins at each price, so switching changes the numbers. Lines and bands drawn over time (the flow column, Delta, Depth, the Liquidity Tracker) are drawn in coins, and can bend a little differently where the price moved a lot.',
+        '**What you set stays in dollars**: the smallest bubble, the Tape\'s sizes, the whale size, sounds and every other size setting, and what Highlights judges.',
       ] },
     ],
   },
