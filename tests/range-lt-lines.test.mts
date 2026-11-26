@@ -175,11 +175,11 @@ test('coins (issue 9): the key holds the timeframe whose candles priced the wind
     assert.equal(text(later, 'lt-none'), 'Liquidity tracker is collecting…');
     // Every closed window without a price: that is the reason given, not an empty selection.
     const none: LtPaneHeld = { ...h, coins: { bid: Float32Array.from([NaN, NaN]), ask: Float32Array.from([NaN, NaN]), coin: 'BTC' } };
-    assert.equal(text(new LtRangeSummary().lines(sel(0, 2), none, true, hourly, NOW), 'lt-empty'), 'No chart candle prices this selection\'s windows, so they have no coin figure.');
+    assert.equal(text(new LtRangeSummary().lines(sel(0, 2), none, true, hourly, NOW), 'lt-empty'), 'No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.');
     // One window lacking a venue and the other, holding both, without a price: not "no window holds every venue".
     const mixed: LtPaneHeld = { ...held({ bid: [100, 200], ask: [50, 100], missing: [[1, 0]] }), key: hourly, coins: { bid: Float32Array.from([1, NaN]), ask: Float32Array.from([0.5, NaN]), coin: 'BTC' } };
     const both = new LtRangeSummary().lines(sel(0, 2), mixed, true, hourly, NOW);
-    assert.equal(text(both, 'lt-empty'), 'No chart candle prices this selection\'s windows, so they have no coin figure.');
+    assert.equal(text(both, 'lt-empty'), 'No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.');
     assert.match(text(both, 'lt-cover') ?? '', /missing a venue: 1 min \(bybit\) · no candle to price it in coins: 1 min/, 'each part said in the cover note');
   } finally { setUnits('usd'); }
   assert.equal(text(new LtRangeSummary().lines(sel(5, 7), usd, true, KEY, NOW), 'lt-empty'), 'No closed window of the tracker lies in this selection.', 'with no window in it, as before');

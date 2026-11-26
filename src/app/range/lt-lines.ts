@@ -222,7 +222,7 @@ export class LtRangeSummary {
     } else if (!s.bid || !s.ask) {
       // In coins the closed windows holding every venue may all be ones no candle prices: that is the reason, not an empty selection, and it
       // comes first, as some window does hold every venue then (the cover note below says what lacked a venue too).
-      lines.push(note('lt-empty', s.unpriced > 0 ? t('No chart candle prices this selection\'s windows, so they have no coin figure.')
+      lines.push(note('lt-empty', s.unpriced > 0 ? t('No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.')
         : s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
     } else {
       // In the units the pane drew in (the key holds them): in coins each window's own figures.

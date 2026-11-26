@@ -887,7 +887,10 @@ export class HeatPane {
    * switch never takes a new window, and a first raster in the new units that holds nothing leaves no baseline in the units the page left.
    */
   #baselineNow(): Baseline | null {
-    const v = this.view, held = heldInUnits({ baseline: this.#baseline, outgoing: this.#outgoing }, inCoins(), (v.p0 + v.p1) / 2);
+    const b = this.#baseline;
+    // Held in the page's units (in dollars always): as it is, with no work (review 4).
+    if (!b || (b.coins === true) === inCoins()) return b;
+    const v = this.view, held = heldInUnits({ baseline: b, outgoing: this.#outgoing }, inCoins(), (v.p0 + v.p1) / 2);
     this.#baseline = held.baseline; this.#outgoing = held.outgoing;
     return this.#baseline;
   }
@@ -897,8 +900,12 @@ export class HeatPane {
    * raster in the new units comes: the baseline it had then (`#outgoing`), so the picture neither flashes nor drifts as the map pans meanwhile.
    */
   #windowIn(coins: boolean): { lo: number; hi: number; coins: boolean } {
-    const v = this.view, held = this.#baselineNow(), b = baselineFor({ baseline: held, outgoing: this.#outgoing }, coins, (v.p0 + v.p1) / 2);
-    return { ...colourWindow(b, this.store.state.heat.contrast, b?.floor ?? rasterFloor(coins, v.p0, v.p1)), coins: b ? b.coins === true : coins };
+    const v = this.view, held = this.#baselineNow();
+    const b = !held || (held.coins === true) === coins ? held : baselineFor({ baseline: held, outgoing: this.#outgoing }, coins, (v.p0 + v.p1) / 2);
+    // The window `colourWindow` makes, told which units it is in (one object, as before the units).
+    const w = colourWindow(b, this.store.state.heat.contrast, b?.floor ?? rasterFloor(coins, v.p0, v.p1)) as { lo: number; hi: number; coins: boolean };
+    w.coins = b ? b.coins === true : coins;
+    return w;
   }
 
   /** The colour window after a raster in coins (`coins`) or dollars, with a dollar in its units `floor` (heatmap/coins.ts). */

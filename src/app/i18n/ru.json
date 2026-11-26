@@ -3725,5 +3725,5 @@
  "Both columns on one scale": "Обе колонки на одной шкале",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Каждый ордер считается один раз, в минуту своего первого исполнения, со своими долларами в {coin} по средней цене свечи: они могут немного отличаться от столбика.",
  "no candle to price it in coins: {time}": "нет свечи для пересчёта в монеты: {time}",
- "No chart candle prices this selection's windows, so they have no coin figure.": "Ни одна свеча графика не даёт цены окнам этого выделения, поэтому у них нет значения в монетах."
+ "No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.": "Ни у одного окна этого выделения, где есть все запрошенные биржи, нет свечи графика, дающей ему цену, поэтому ни у одного нет значения в монетах."
 }

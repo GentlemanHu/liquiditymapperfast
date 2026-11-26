@@ -1995,19 +1995,22 @@ export class LtPane extends TimePane {
 /**
  * One line of the Liquidity Tracker on the path begun: through the windows of the first `n` in view (a window either side of it too, so the line
  * runs off the edges), starting afresh after a gap of more than two and a half windows and after a window with no figure (NaN: in coins one no
- * chart candle prices, lt.ts `ltPrices`), so it never joins across either.
+ * chart candle prices, lt.ts `ltPrices`), so it never joins across either. A window with a figure alone between windows without one is a short
+ * dash a window wide, so it does not vanish (a lone window beside a gap of time alone draws nothing, as it always did).
  */
 export function ltLinePath(ctx: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo'>, times: ArrayLike<number>, data: ArrayLike<number>, n: number, step: number, view: { t0: number; t1: number },
   x: (t: number) => number, y: (value: number) => number): void {
   const gap = step * 2.5;
-  let prev = -Infinity;
+  let prev = -Infinity, afterNaN = false, lone: { t: number; px: number; py: number; nan: boolean } | null = null;
+  const dash = (l: { t: number; px: number; py: number }): void => { const half = Math.max(1.5, Math.abs(x(l.t + step) - x(l.t)) / 2); ctx.moveTo(l.px - half, l.py); ctx.lineTo(l.px + half, l.py); };
   for (let i = 0; i < n; i++) {
     const t = times[i]!; if (t + step < view.t0 - step || t > view.t1 + step) continue;
-    if (data[i] !== data[i]) { prev = -Infinity; continue; }
+    if (data[i] !== data[i]) { if (lone) dash(lone); lone = null; prev = -Infinity; afterNaN = true; continue; }
     const px = x(t), py = y(data[i]!);
-    if (t - prev > gap) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-    prev = t;
+    if (t - prev > gap) { if (lone?.nan) dash(lone); ctx.moveTo(px, py); lone = { t, px, py, nan: afterNaN }; } else { ctx.lineTo(px, py); lone = null; }
+    afterNaN = false; prev = t;
   }
+  if (lone?.nan) dash(lone);
 }
 
 /** A row of the Liquidity Tracker's table: a market (or the rest added up), its weighted bids and asks at the window read, and its share of the lines' total (null in the Per level mode). */

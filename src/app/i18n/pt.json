@@ -3673,5 +3673,5 @@
  "Both columns on one scale": "As duas colunas em uma única escala",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Cada ordem conta uma vez, no minuto da sua primeira execução, com os seus próprios dólares em {coin} ao preço médio da vela: podem diferir um pouco dos da barra.",
  "no candle to price it in coins: {time}": "nenhuma vela para avaliá-lo em moedas: {time}",
- "No chart candle prices this selection's windows, so they have no coin figure.": "Nenhuma vela do gráfico dá preço às janelas desta seleção, por isso elas não têm valor em moedas."
+ "No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.": "Nenhuma janela desta seleção que contenha todas as exchanges pedidas tem uma vela do gráfico que lhe dê preço, por isso nenhuma tem valor em moedas."
 }

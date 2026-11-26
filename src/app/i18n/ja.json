@@ -3427,5 +3427,5 @@
  "Both columns on one scale": "2 列とも 1 つの目盛り",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "各注文は最初の約定の分に、注文自身のドル額をローソク足の平均価格で {coin} に換算して1回数えます。バーの値とは少し異なることがあります。",
  "no candle to price it in coins: {time}": "コイン換算に使うローソク足なし：{time}",
- "No chart candle prices this selection's windows, so they have no coin figure.": "この選択のウィンドウに価格を与えるチャートのローソク足がないため、コイン換算の数値はありません。"
+ "No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.": "この選択のうち、要求されたすべての取引所を含むウィンドウには価格を与えるチャートのローソク足がないため、どれにもコイン換算の数値はありません。"
 }

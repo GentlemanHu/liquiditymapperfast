@@ -178,3 +178,13 @@ test('coins (issue 9): a line starts afresh after a window with no figure (one n
   ltLinePath(ctx, times, Float32Array.from([1, 1, 1, 1, 1, 1, 1]), times.length, MIN, view, x, y);
   assert.deepEqual(calls, ['M0', 'L1', 'L2', 'L3', 'L4', 'M8', 'L9'], 'with every figure (dollars) the path is as before: broken at the gap alone');
 });
+
+test('coins (issue 9): a window with a figure alone between windows without one is a dash a window wide, not nothing (review 4)', () => {
+  const calls: string[] = [], ctx = { moveTo: (x: number) => { calls.push(`M${x}`); }, lineTo: (x: number) => { calls.push(`L${x}`); } };
+  const view = { t0: 0, t1: 10 * MIN }, x = (t: number) => t / MIN, y = (v: number) => v;
+  ltLinePath(ctx, Float64Array.from([0, 1, 2, 3].map(m => m * MIN)), Float32Array.from([2, NaN, 1, 1]), 4, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'M-1.5', 'L1.5', 'M2', 'L3'], 'the first window alone: a dash (at least 3 px); the last two: a line');
+  calls.length = 0;
+  ltLinePath(ctx, Float64Array.from([0, 5].map(m => m * MIN)), Float32Array.from([1, 1]), 2, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'M5'], 'a lone window beside a gap of time alone draws nothing, as it always did');
+});
