@@ -5,7 +5,7 @@ import { TIMEFRAMES, type DepthAnswer, type Hub } from '../hub.ts';
 import { DEPTH_PRESETS, LENS_KINDS, LENS_MAX, bandEditText, bandText, bandsOf, parseBands, type DepthPreset, type DepthSettings, type LensKind } from '../depth-settings.ts';
 import { DEFAULT_BAR_STATS, type Store, type AppState, type OiBar, type CandleRow } from '../store.ts';
 import { chainedOi, heldOiAt, oiChangeByTime, oiDeltas, oiPartsUntil, oiSumOf, oiUsdChangeByTime, oiVenuesAt, type OiPart, type OiVenue } from '../oi-change.ts';
-import { anomalies, type HighlightOptions } from '../anomaly.ts';
+import { anomalies, type Anomalies, type HighlightOptions } from '../anomaly.ts';
 import { venueLabel } from '../venues.ts';
 import { kindOf } from '../scope.ts';
 import { bookCountOutOf, bookEmptyMessage, bookIds, bookMarketIds } from '../book-markets.ts';
@@ -2031,6 +2031,9 @@ export function bookNames(ids: readonly string[], markets: AppState['markets']):
 }
 
 /** Strip under the chart with the enabled per-candle statistics, aligned to the candle slots (footprint on); its settings key chooses, orders and configures them. */
+/** What a Bar stats row draws that a pointer move does not change (`BarStatsPane.#rowPaint`): its scale, its unusual candles, and per slot its cell's strength (0 to 1) and fill. */
+interface RowPaint { scale: { lo: number; hi: number } | null; found: Anomalies | null; strength: Float64Array; fill: (string | null)[] }
+
 export class BarStatsPane extends TimePane {
   /** A table: the pointer's height is a row, not a value, so it takes no horizontal line. */
   protected override crossY = false;
@@ -2169,6 +2172,13 @@ export class BarStatsPane extends TimePane {
   #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; inputs: StatInput[]; cover: (Bar | null)[]; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
   /** Where the View column is (plot coordinates), while it is drawn: the pointer there reads it, not a candle. */
   #viewSpan: [number, number] | null = null;
+  /**
+   * What each row draws that a pointer move does not change (`RowPaint`), kept for the table, the candles in view, the cells, the Highlights and
+   * the palette it was worked out for. 2026-11-25: zoomed out over two days of 5m candles with every statistic shown, a pointer move cost about
+   * 110 ms, most of it each row's Highlights baseline (`anomalies`, a pass over its length before every candle), its scale's sort and the colour
+   * of every cell, all worked out again at every move.
+   */
+  #rowPaint: { key: string; table: object; palette: Palette; rows: Map<number, RowPaint> } | null = null;
   /** The bands as last drawn, top to bottom (what a click on a header folds). */
   #layout: { band: TableBand; y: number; h: number }[] = [];
   protected override ownsPoint(x: number): boolean { return !!this.#viewSpan && x >= this.#viewSpan[0] && x <= this.#viewSpan[1]; }
@@ -2315,6 +2325,37 @@ export class BarStatsPane extends TimePane {
     const toneColor = (tone: StatTone | null): string => tone === 'buy' ? p.candleUp : tone === 'sell' ? p.candleDown : p.muted;
     const toneOf = (def: StatDef, value: number): StatTone => def.scale === 'category' ? def.tone?.(value) ?? 'text' : def.scale === 'diverging' ? (value - (def.center ?? 0) >= 0 ? 'buy' : 'sell') : 'text';
     const shown = (def: StatDef, value: number | null | undefined): string => value === null || value === undefined ? '–' : def.format(value) || (def.id === 'cover' ? '100%' : '—');
+    // Each row's scale, unusual candles and cell colours, worked out once for this table, these candles in view, these cells and Highlights and
+    // this palette (a pointer move draws from them).
+    const paintKey = `${visible[0]}|${visible[visible.length - 1]}|${visible.length}|${cells}|${state.highlight.on}|${state.highlight.mult}|${state.highlight.length}`;
+    if (!this.#rowPaint || this.#rowPaint.table !== table || this.#rowPaint.key !== paintKey || this.#rowPaint.palette !== p) this.#rowPaint = { key: paintKey, table, palette: p, rows: new Map() };
+    const rowPaints = this.#rowPaint.rows;
+    const paintOf = (def: StatDef, rowIndex: number, values: readonly (number | null)[], ranked: boolean): RowPaint => {
+      const held = rowPaints.get(rowIndex);
+      if (held) return held;
+      const scale = ranked ? rowScale(def, visible.map(i => values[i])) : null;
+      // Each row's own baseline (the Highlights' window and multiple): its unusual candles are outlined while Highlights is on, and Unusual shades by it.
+      const found = ranked && (state.highlight.on || cells === 'unusual') ? anomalies(Float64Array.from(values, value => value === null || value === undefined ? NaN : deviation(def, value)), state.highlight) : null;
+      const strengths = new Float64Array(values.length).fill(NaN), fill = new Array<string | null>(values.length).fill(null);
+      if (def.scale !== 'category') for (const i of visible) {
+        const value = values[i];
+        if (value === null || value === undefined) continue;
+        // Unusual: how far above its own recent candles, from 0 to 3σ (none while the baseline warms up); else its size among the candles in view.
+        // A value flagged against a flat baseline (no spread, so no σ) is as unusual as a value can be.
+        const sigma = found?.sigma[i];
+        const k = cells === 'unusual' ? (found?.flag[i] && !(sigma! > 0) ? 1 : sigma !== undefined && Number.isFinite(sigma) ? Math.min(1, Math.max(0, sigma) / 3) : 0) : strength(def, value, scale);
+        const tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown;
+        // A filled cell takes its colours from the theme (the page's own colour toward its accent, or toward the side's colour) and its figures
+        // from textOn: a fixed light ramp made a row of pale bars on every dark theme.
+        strengths[i] = k;
+        fill[i] = def.scale === 'sequential' ? mixHex(p.panel, p.ui, 0.12 + 0.76 * k) : def.scale === 'diverging' ? mixHex(mixHex(p.panel, tone, 0.18), tone, k) : p.panel;
+      }
+      const made: RowPaint = { scale, found, strength: strengths, fill };
+      rowPaints.set(rowIndex, made);
+      return made;
+    };
+    // A mark's tint by the side it stands for (three at most, worked out once a draw).
+    const markFill = { buy: mixHex(p.panel, p.candleUp, 0.32), sell: mixHex(p.panel, p.candleDown, 0.32), text: mixHex(p.panel, p.muted, 0.32) };
     ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     layout.forEach(({ band, y, h }, bandIndex) => {
       if (band.kind === 'head') {
@@ -2325,9 +2366,8 @@ export class BarStatsPane extends TimePane {
         ctx.restore();
         return;
       }
-      const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category', scale = ranked ? rowScale(def, visible.map(i => values[i])) : null;
-      // Each row's own baseline (the Highlights' window and multiple): its unusual candles are outlined while Highlights is on, and Unusual shades by it.
-      const found = ranked && (state.highlight.on || cells === 'unusual') ? anomalies(Float64Array.from(values, value => value === null || value === undefined ? NaN : deviation(def, value)), state.highlight) : null;
+      const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category';
+      const paint = paintOf(def, rowIndex, values, ranked), found = paint.found;
       const unusual = state.highlight.on ? found?.flag ?? null : null;
       const mine = hoverIdx >= 0 && bandIndex === hoverBand ? values[hoverIdx] : undefined;
       if (hoverIdx >= 0 && bandIndex === hoverBand && mine !== null && mine !== undefined) {
@@ -2354,20 +2394,15 @@ export class BarStatsPane extends TimePane {
         }
         if (def.scale === 'category') {
           // A mark per candle: tinted by the side it stands for, empty where there is nothing to mark.
-          const mark = def.format(value), tone = mark ? def.tone?.(value) ?? null : null, fill = tone ? mixHex(p.panel, toneColor(tone), 0.32) : p.panel;
+          const mark = def.format(value), tone = mark ? def.tone?.(value) ?? null : null, fill = tone ? markFill[tone] : p.panel;
           ctx.globalAlpha = fade;
           if (filled || cells === 'line') { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h - 1); }
           if (mark && ctx.measureText(mark).width <= w - 2) { ctx.fillStyle = (filled || cells === 'line') && tone ? textOn(fill, 1, p) : toneColor(tone); ctx.fillText(mark, x + w / 2, y + (h - 1) / 2); }
           ctx.globalAlpha = 1;
           continue;
         }
-        // Unusual: how far above its own recent candles, from 0 to 3σ (none while the baseline warms up); else its size among the candles in view.
-        const sigma = found?.sigma[i];
-        // A value flagged against a flat baseline (no spread, so no σ) is as unusual as a value can be.
-        const t = cells === 'unusual' ? (found?.flag[i] && !(sigma! > 0) ? 1 : sigma !== undefined && Number.isFinite(sigma) ? Math.min(1, Math.max(0, sigma) / 3) : 0) : strength(def, value, scale), tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown;
-        // A filled cell takes its colours from the theme (the page's own colour toward its accent, or toward the side's colour) and its figures
-        // from textOn: a fixed light ramp made a row of pale bars on every dark theme.
-        const fill = def.scale === 'sequential' ? mixHex(p.panel, p.ui, 0.12 + 0.76 * t) : def.scale === 'diverging' ? mixHex(mixHex(p.panel, tone, 0.18), tone, t) : p.panel;
+        // The cell's strength and fill as worked out for the row (`paintOf`).
+        const t = paint.strength[i]!, tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown, fill = paint.fill[i] ?? p.panel;
         if (filled) {
           ctx.globalAlpha = fade; ctx.fillStyle = fill;
           ctx.fillRect(x, y, w, h - 1);
