@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gridInCoins, gridRowPrice, rasterFloor } from '../src/app/heatmap/coins.ts';
-import { baselineInUnits, colourWindow, nextBaseline } from '../src/app/heatmap/window.ts';
+import { baselineFor, baselineInUnits, colourWindow, heldInUnits, nextBaseline, type Baseline } from '../src/app/heatmap/window.ts';
 import { cellColours } from '../src/app/heatmap/canvas.ts';
 import type { HeatStyle } from '../src/app/heatmap/gl.ts';
 import { buildLut } from '../src/app/heatmap/lut.ts';
@@ -63,6 +63,22 @@ test('a switch of the units puts the colour window held into the new units at th
   assert.equal(baselineInUnits(settled, true, 0), settled, 'no price to put it at: left for the next raster to replace');
   // Held through the switch, Auto off: a raster in the new units changes nothing, as one in the old units would not have.
   assert.equal(nextBaseline(coins, { p15: 0.1, p96: 0.9 }, { auto: false, force: false, spanP: 1_000, now: 40_000, coins: true, floor: 1 / price }), coins);
+});
+
+test('across a switch the grid still drawn in the units left keeps the window it had, however the map pans until the new raster comes', () => {
+  const usd: Baseline = { lo: 100, hi: 400, at: 1_000, since: 500, spanP: 2_000, coins: false, floor: 1 };
+  // Switched to coins at a $50,000 view middle: the page's window is 0.002 BTC, the outgoing one kept as it was.
+  const switched = heldInUnits({ baseline: usd, outgoing: null }, true, 50_000);
+  assert.deepEqual([switched.baseline?.lo, switched.baseline?.coins, switched.outgoing], [0.002, true, usd]);
+  assert.equal(heldInUnits(switched, true, 55_000), switched, 'read again in the same units: nothing changes');
+  // Panned to a $55,000 middle while the dollar raster is still drawn: it is coloured by its own $100, not 0.002 BTC back at $55,000 ($110).
+  assert.equal(baselineFor(switched, false, 55_000), usd);
+  assert.equal(baselineFor(switched, true, 55_000), switched.baseline, 'a grid in the new units: the page\'s');
+  // Switched back before the coin raster came: the dollars' own window again, exactly.
+  assert.deepEqual(heldInUnits(switched, false, 55_000), { baseline: usd, outgoing: null });
+  // Once the new units' raster came the page lets the outgoing one go; a grid in other units then (none is drawn) would take the held one put there.
+  assert.ok(Math.abs(baselineFor({ baseline: switched.baseline, outgoing: null }, false, 55_000)!.lo - 110) < 1e-9);
+  assert.deepEqual(heldInUnits({ baseline: null, outgoing: null }, true, 50_000), { baseline: null, outgoing: null }, 'no window yet: nothing to carry');
 });
 
 /** A grid with cells of every size from a hundredth of a dollar's worth to ten billion. */

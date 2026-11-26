@@ -50,6 +50,36 @@ export function baselineInUnits(b: Baseline, coins: boolean, price: number): Bas
 }
 
 /**
+ * The colour window held across a switch of the units: the baseline in the page's units, and the one it was in the units the page has just
+ * left (`outgoing`), kept until a raster in the new units comes (the page then lets it go), for the grid still drawn in those units.
+ */
+export interface HeldWindow { baseline: Baseline | null; outgoing: Baseline | null }
+
+/**
+ * The held window once the page's units are `coins` (or dollars): as it is in the same units; put into the new ones at `price`, the view's
+ * middle, with the baseline it was kept as `outgoing`; or, switched back before the new units' raster came, the outgoing baseline itself again,
+ * exactly as it was, however the view moved meanwhile.
+ */
+export function heldInUnits(h: HeldWindow, coins: boolean, price: number): HeldWindow {
+  const b = h.baseline;
+  if (!b || (b.coins === true) === coins) return h;
+  if (h.outgoing && (h.outgoing.coins === true) === coins) return { baseline: h.outgoing, outgoing: null };
+  const put = baselineInUnits(b, coins, price);
+  return put === b ? h : { baseline: put, outgoing: b };
+}
+
+/**
+ * The baseline a grid in `coins` (or dollars) is coloured by: the held one where the grid is in its units; for a grid still in the units the
+ * page has just left, the baseline it had then (`outgoing`), never the new one put back at a view that has moved since (a $100 window put into
+ * coins at a $50,000 middle and back at $55,000 would be $110); the held one put there at `price` only where no outgoing one is held.
+ */
+export function baselineFor(h: HeldWindow, coins: boolean, price: number): Baseline | null {
+  const b = h.baseline;
+  if (!b || (b.coins === true) === coins) return b;
+  return h.outgoing && (h.outgoing.coins === true) === coins ? h.outgoing : baselineInUnits(b, coins, price);
+}
+
+/**
  * The baseline after a raster with percentiles `s`. A new view (`force`: recentred, another market, venues or size; or a price span 2x off
  * the baseline's) takes a new one, with Auto off too: a cell holds every price of its row, so cell sizes follow the zoom, and a window kept
  * from another view saturates everything or nothing. It follows the cells for `SETTLE_MS` after that, while the view's history loads (the

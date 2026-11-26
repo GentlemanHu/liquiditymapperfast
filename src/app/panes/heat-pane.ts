@@ -1,7 +1,7 @@
 import type { HeatRenderer, HeatStyle } from '../heatmap/gl.ts';
 import { heatRenderer } from '../heatmap/canvas.ts';
 import { buildLut } from '../heatmap/lut.ts';
-import { baselineInUnits, colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
+import { baselineFor, colourWindow, heldInUnits, nextBaseline, type Baseline } from '../heatmap/window.ts';
 import { gridRowPrice, rasterFloor } from '../heatmap/coins.ts';
 import { amount, figure, inCoins, inUnits, unitFloor } from '../units.ts';
 import { isCoarse, isPhone } from '../device.ts';
@@ -596,6 +596,11 @@ export class HeatPane {
   #radius = 3;
   /** Colour window from the raster's percentiles (nextBaseline): new for a new view, then held, or blended toward the cells every 10 s in Auto. */
   #baseline: Baseline | null = null;
+  /**
+   * The baseline as it was in the units the page has just left (app/units.ts), kept from a switch until a raster in the new units comes: the
+   * grid still drawn in the old units is coloured by it exactly, never by the new one put back at a view that has moved since.
+   */
+  #outgoing: Baseline | null = null;
   #forceBaseline = true;
   /** The venues and size the colour window was taken for. */
   #baselineKey = '';
@@ -882,17 +887,17 @@ export class HeatPane {
    * switch never takes a new window, and a first raster in the new units that holds nothing leaves no baseline in the units the page left.
    */
   #baselineNow(): Baseline | null {
-    const b = this.#baseline, coins = inCoins(), v = this.view;
-    if (b && (b.coins === true) !== coins) this.#baseline = baselineInUnits(b, coins, (v.p0 + v.p1) / 2);
+    const v = this.view, held = heldInUnits({ baseline: this.#baseline, outgoing: this.#outgoing }, inCoins(), (v.p0 + v.p1) / 2);
+    this.#baseline = held.baseline; this.#outgoing = held.outgoing;
     return this.#baseline;
   }
 
   /**
    * The colour window in coins (`coins`) or dollars: the page's, or that of a grid still drawn in the units the page has just left, until its
-   * raster in the new units comes (the baseline put back into its units for drawing only), so the picture does not flash in between.
+   * raster in the new units comes: the baseline it had then (`#outgoing`), so the picture neither flashes nor drifts as the map pans meanwhile.
    */
   #windowIn(coins: boolean): { lo: number; hi: number; coins: boolean } {
-    const v = this.view, held = this.#baselineNow(), b = held && (held.coins === true) !== coins ? baselineInUnits(held, coins, (v.p0 + v.p1) / 2) : held;
+    const v = this.view, held = this.#baselineNow(), b = baselineFor({ baseline: held, outgoing: this.#outgoing }, coins, (v.p0 + v.p1) / 2);
     return { ...colourWindow(b, this.store.state.heat.contrast, b?.floor ?? rasterFloor(coins, v.p0, v.p1)), coins: b ? b.coins === true : coins };
   }
 
@@ -1170,6 +1175,8 @@ export class HeatPane {
     this.stats = result.stats;
     const floor = rasterFloor(result.coins, result.bounds.p0, result.bounds.p1);
     this.#updateBaseline(result.coins, floor);
+    // The grid drawn is in the page's units from now on: the window it had in the units left goes.
+    this.#outgoing = null;
     this.#grid = { data: result.data, w: result.w, h: result.h, bounds: result.bounds, coins: result.coins, floor };
     this.gl.upload(result.data, result.w, result.h, result.bounds);
     this.#wasLoaded = true;
