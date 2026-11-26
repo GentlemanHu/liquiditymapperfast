@@ -46,18 +46,19 @@ export function alertText(e: AlertEntry): string {
 
 /**
  * What the flow of `series` bought less sold over whole seconds [from, to], in coins: each second's delta over its own volume-weighted price, or
- * for a second without one the last price before it (`priceAt`), added up over the seconds the series holds (those its dollars count). NaN
+ * for a second without one the last price before it within reach (`coinPriceAt`: the coin twin's own rule, a price the ring let go included),
+ * added up over the seconds the series holds (those its dollars count). NaN
  * where a second that moved has no price. From the dollars' series alone (no coin series is kept in dollars), so an alert takes its coins
  * when it fires, in either units.
  */
-export function windowCoinDelta(series: Pick<FlowSeries, 'span' | 'delta' | 'gross' | 'ownPrice' | 'priceAt'>, from: number, to: number): number {
+export function windowCoinDelta(series: Pick<FlowSeries, 'span' | 'delta' | 'gross' | 'coinPriceAt'>, from: number, to: number): number {
   const span = series.span;
   if (!span || !(series.gross(from, to) > 0)) return 0;
   let sum = 0;
   for (let s = Math.max(from, span.first), end = Math.min(to, span.last); s <= end; s++) {
     const d = series.delta(s, s);
     if (d === 0) continue;
-    const own = series.ownPrice(s), price = own > 0 ? own : series.priceAt(s);
+    const price = series.coinPriceAt(s);
     if (!(price > 0)) return Number.NaN;
     sum += d / price;
   }

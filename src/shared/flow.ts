@@ -297,6 +297,8 @@ export class FlowSeries {
 
   /** The series in coins (`keepCoins`), undefined while it is not kept. Read only. */
   get coins(): FlowSeries | undefined { return this.#coins ?? undefined; }
+  /** The price second `sec`'s coins are worked out at, the twin's rule (`#coinPrice`), for coins taken without a twin (an alert); 0 for none. */
+  coinPriceAt(sec: number): number { return this.empty || sec < this.#first || sec > this.#last ? 0 : this.#coinPrice(sec); }
   /** Keep the series in coins beside the dollars from now on (worked out at once from the seconds held), or let it go. */
   keepCoins(on: boolean): void {
     if (!on) { this.#coins = null; return; }

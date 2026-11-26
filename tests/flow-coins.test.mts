@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FlowMinutes, FlowSeries } from '../src/shared/flow.ts';
+import { windowCoinDelta } from '../src/app/sound/alerts.ts';
 
 const close = (a: number, b: number, msg?: string): void => assert.ok(Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(b)), `${msg ?? ''} ${a} vs ${b}`);
 
@@ -76,6 +77,18 @@ test('a price that rolls off the ring stays the price of the unpriced seconds af
   const live = s.coins!.delta(1, 1);
   s.keepCoins(false); s.keepCoins(true);
   close(live, 1); close(s.coins!.delta(1, 1), live);
+});
+
+test('coins taken without a twin (an alert) price a second by the twin\'s rule, the price the ring let go included (review 3)', () => {
+  const s = new FlowSeries();
+  s.set(0, 100, 0, 100);       // priced
+  s.set(1, 200, 0, 0);         // no price: 100's, 2 coins
+  s.set(131_072, 1, 0, 1);     // second 0 rolls off
+  assert.equal(s.coinPriceAt(1), 100, 'the price kept from the second that rolled off');
+  close(windowCoinDelta(s, 1, 1), 2);
+  s.keepCoins(true);
+  close(s.coins!.delta(1, 1), windowCoinDelta(s, 1, 1), 'the same as the twin worked out then');
+  assert.equal(s.coinPriceAt(131_071), 0, 'a second with no price within reach (two hours back): none');
 });
 
 test('the coins stay one object across a load, and are let go with keepCoins(false) (review 1)', () => {
