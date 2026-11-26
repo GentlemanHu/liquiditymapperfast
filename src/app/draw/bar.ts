@@ -9,6 +9,7 @@ import { MAGNET_MODES, type MagnetMode } from './magnet.ts';
 import { handlesOf, noteBox, type Projection, type Pt } from './geometry.ts';
 import type { DrawController } from './controller.ts';
 import type { DrawSettings } from './settings.ts';
+import { alertEnded, canAlert } from './alerts.ts';
 import { colorOf } from './paint.ts';
 import type { Palette } from '../theme.ts';
 
@@ -386,7 +387,14 @@ export class DrawBar {
     text.onkeydown = e => { if (e.key === 'Enter') { keep(); text.blur(); } else if (e.key === 'Escape') { text.value = d.get(id)?.text ?? ''; text.blur(); } e.stopPropagation(); };
     this.#syncEdit.push(x => { if (document.activeElement !== text) text.value = x.text; text.disabled = x.locked || d.readOnly; });
     controls.push(text);
-    if (first.kind === 'level') controls.push(toggle('bell', t('Alert'), t('Sound when the price reaches this level (through Sound, which must be on)'), x => x.alert, (_x, on) => ({ alert: on })));
+    // A bell goes off once when it is switched on (Notify's list can make it go off every time). A zone or a trend line that has already ended
+    // runs on to the right as its bell comes on, or it could never go off.
+    if (canAlert(first.kind)) {
+      const tip = first.kind === 'zone' ? t('Alert when the price enters this zone, once: a sound (Sounds) and a message (Notify). A zone that has ended runs on to the right so it can.')
+        : first.kind === 'trend' ? t('Alert when the price crosses this line, once: a sound (Sounds) and a message (Notify). A line that has ended runs on to the right so it can.')
+          : t('Alert when the price reaches this level, once: a sound (Sounds) and a message (Notify). In Notify it can go off every time.');
+      controls.push(toggle('bell', t('Alert'), tip, x => x.alert, (x, on) => on ? { alert: true, alertOnce: true, ...(alertEnded(x, Date.now()) ? { extendRight: true } : {}) } : { alert: false }));
+    }
     if (first.kind === 'level' || first.kind === 'zone') {
       const inspect = iconButton('inspect', t('Inspect'), first.kind === 'zone' ? t('Inspect: add up what traded in this zone (the Range tool)') : t('Inspect: add up what traded at this level\'s row over the time on the map (the Range tool)'));
       inspect.onclick = () => d.inspect(id);

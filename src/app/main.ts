@@ -12,7 +12,7 @@ import { withProfileAnchor } from './traded/settings.ts';
 import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, anchorAt } from './traded/anchor.ts';
 import type { DataSource } from './source.ts';
 import { loadKernels } from './kernels.ts';
-import { Store, autoTheme, initialState, slotsFor, themeChange } from './store.ts';
+import { Store, autoTheme, initialState, slotsFor, themeChange, type AppState } from './store.ts';
 import { applyTheme, paletteOf, resolveThemeId } from './theme.ts';
 import { CUSTOM_THEMES_KEY, loadCustomThemes, registerCustomThemes } from './custom-themes.ts';
 import { RESTORED_KEY, restoreResult } from './backup.ts';
@@ -59,6 +59,8 @@ import { foldPatch, matchShortcut, togglePatch } from './shortcuts.ts';
 import { ReplayBar } from './replay/bar.ts';
 import { pageNow, replaying } from './replay/clock.ts';
 import { DrawController } from './draw/controller.ts';
+import type { PriceLook } from './draw/alerts.ts';
+import { Notify } from './notify/notify.ts';
 import { DrawBar } from './draw/bar.ts';
 import { browserStore } from './draw/storage.ts';
 import { openedSheet } from './sheet.ts';
@@ -92,6 +94,20 @@ async function serverAnswers(): Promise<boolean> {
     return response.ok && (response.headers.get('content-type') ?? '').includes('json');
   } catch { return false; }
 }
+/**
+ * The price as the bells judge it (draw/alerts.ts): the chart market's, read now, with the candle under way where the chart's candles are that
+ * market's own (a borrowed series says nothing of it). The candle before it is named too, so a reloaded history is not taken for a wick.
+ */
+function priceLook(state: Pick<AppState, 'marketId' | 'seriesInstrument' | 'candles' | 'candlesTimeframe' | 'timeframe' | 'mark'>, at: number): PriceLook {
+  const market = state.marketId, candles = state.candles, n = candles.length;
+  const own = n >= 2 && (!state.seriesInstrument || state.seriesInstrument === market);
+  const last = own ? candles[n - 1]! : null, before = own ? candles[n - 2]! : null;
+  return {
+    market, price: state.mark.price, at,
+    candle: last && before ? { key: `${market}|${state.candlesTimeframe ?? state.timeframe}|${last[0]}`, high: last[2], low: last[3], before: `${before[0]}|${before[1]}|${before[2]}|${before[3]}|${before[4]}` } : null,
+  };
+}
+
 /** A host that only serves files (GitHub Pages, Cloudflare Pages): no server answers there, so it is not asked (a round trip of every start, ~0.2 s). */
 const fileHost = (): boolean => /(?:\.github\.io|\.pages\.dev|(?:^|\.)liquiditymapper\.com)$/.test(location.hostname);
 
@@ -383,6 +399,9 @@ async function main(): Promise<void> {
   const mapFirst = Promise.race([hub.columnsArrived, new Promise<void>(resolve => setTimeout(resolve, 15_000))]);
   const alerts = new Alerts(store, hub.flow, sounds.engine, Date.now, (ids, from) => { void hub.ensureFlow(ids, from); }, (ids, from, to) => mapFirst.then(() => hub.source.columns(ids, from, to, 60_000)));
   toolbar.attachAlerts(alerts); alerts.start();
+  // Notify (notify/): the alerts as a pop-up on this computer and as messages to a phone, sent by this tab while it holds the coin's role.
+  const notify = new Notify(currentCoin().coin, () => store.state.mark.price);
+  alerts.out = notify;
   // A script's alerts sound through the same Sounds switch, cap and list as the panels'.
   script.onAlert = a => alerts.script(Date.now(), a.text, a.sound, a.key);
   alerts.onChange = () => cvd.invalidate(); cvd.events = alerts.bursts;
@@ -400,6 +419,9 @@ async function main(): Promise<void> {
     redraw: () => heat.invalidate(),
   }, browserStore());
   heat.draw = draw;
+  toolbar.attachNotify(notify, draw);
+  /** The chart market's book's newest time seen: the bells' heartbeat moves on only when it does (`draw.alive`). */
+  let bookStamp = 0;
   const drawBar = new DrawBar(draw, {
     settings: () => store.state.draw, setSettings: patch => store.set({ draw: { ...store.state.draw, ...patch } }),
     palette: () => paletteOf(store.state.theme), mark: () => store.state.mark.price, restingAt: price => heat.restingAt(price), replaying, redraw: () => heat.invalidate(),
@@ -705,7 +727,17 @@ async function main(): Promise<void> {
     if (changed.has('draw') || changed.has('theme') || changed.has('replay')) { heat.invalidate(); drawBar.sync(); }
     // A drawing half placed belongs to the chart it was begun on; a level with an alert is watched as the price moves.
     if (changed.has('timeframe') || changed.has('marketId') || changed.has('chartType') || changed.has('replay')) draw.contextChanged();
-    if (changed.has('mark')) draw.markMoved(state.mark.price);
+    // The bells' price: another market or a replay starts it afresh; data that comes while the price stays put keeps the last reading current
+    // (a quiet market); a replay hands the sending of the coin's alerts to another open tab of it.
+    if (changed.has('marketId') || changed.has('replay')) draw.forgetPrice();
+    if (changed.has('replay')) notify.sender.pause(replaying());
+    if (changed.has('mark')) draw.markMoved(priceLook(state, pageNow()));
+    else if (changed.has('levels')) {
+      // Alive only on the chart market's own book: other venues' books or a reloaded history say nothing of its feed, and a crossing in its
+      // outage must start afresh, not come late.
+      const book = state.levels?.books.find(b => b.id === state.marketId);
+      if (book && book.timestamp !== bookStamp) { bookStamp = book.timestamp; draw.alive(pageNow()); }
+    }
     if (changed.has('chartType')) heat.invalidate();
     // The candles' own colours: the map, the book's price row and the Tape view's mark are drawn in them (Sol: nothing else asked for a frame).
     if (changed.has('candleColors')) { heat.invalidate(); ladder.invalidate(); candle.invalidate(); }
@@ -785,7 +817,7 @@ async function main(): Promise<void> {
     const offer = (): void => { if (!toolbar.inviteToTour() && ++asked < 12) window.setTimeout(offer, 5_000); };
     window.setTimeout(offer, 2500);
   }
-  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update };
+  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update, notify, draw };
 }
 
 main().catch(error => {

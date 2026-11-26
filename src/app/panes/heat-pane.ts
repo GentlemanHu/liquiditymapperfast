@@ -20,7 +20,7 @@ import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, cautionInk, rgb, textOn, type Palette, paletteOf } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
-import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, timeZone, usd, zoneName } from '../format.ts';
+import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, priceDecimals, startOfDay, timeZone, usd, zoneName } from '../format.ts';
 import { timeAxis } from '../time-axis.ts';
 export { timeTicks } from '../time-axis.ts';
 import type { Store, AppState, CandleRow } from '../store.ts';
@@ -56,6 +56,7 @@ import { language, t, tn } from '../i18n.ts';
 import { el } from '../dom.ts';
 import { FREE_DAYS, plusFree } from '../plus/config.ts';
 import { openMenu, type MenuItem } from '../menu.ts';
+import { toast } from '../toast.ts';
 import { blockMsOf, editScope, withEdits } from '../tpo/settings.ts';
 import { currentCoin, scaledUsd } from '../coin.ts';
 import { liqLevelsUrl } from '../liq-url.ts';
@@ -462,6 +463,20 @@ export class HeatPane {
    * of their own above the map (left out of a screenshot), and the pointer goes to them first.
    */
   draw: DrawController | null = null;
+  /** Where the right-click menu opens (`#alertMenu`): one invisible point, moved to the pointer each time. */
+  #menuAnchor: HTMLElement | null = null;
+
+  /** The right-click menu: a bell at `price` (rounded as the price scale writes it), added as a level the drawing bar then shows selected. */
+  #alertMenu(clientX: number, clientY: number, price: number): void {
+    const draw = this.draw;
+    if (!draw || !(price > 0) || !Number.isFinite(price)) return;
+    const p = Number(price.toFixed(priceDecimals(price)));
+    const anchor = this.#menuAnchor ??= document.body.appendChild(el('div', { class: 'alert-anchor' }));
+    Object.assign(anchor.style, { position: 'fixed', left: `${clientX}px`, top: `${clientY}px`, width: '1px', height: '1px', pointerEvents: 'none' });
+    const items: MenuItem[] = [{ id: 'bell', label: t('Alert at {price}', { price: fmtPrice(p) }), tip: t('A level with its bell on at this price: a sound (Sounds) and a message (Notify) when the price gets there') }];
+    // A bell that cannot be added (the drawings locked, the coin's hundred reached) says why: the menu has closed, and the drawing bar may be away.
+    openMenu(anchor, items, '', { onPreview: () => {}, onSelect: () => { if (!draw.addAlertLevel(p) && draw.message) toast(draw.message.text); } }, 'left');
+  }
   /** Each frame, where the drawing tools' controls go: the plot's left edge in the pane, its projection and the legend's foot (set by the page). */
   onDrawFrame: ((f: { left: number; pr: Projection; legendBottom: number }) => void) | null = null;
   /**
@@ -5602,6 +5617,16 @@ export class HeatPane {
         if (hit) {
           this.view.set(zd.view); this.#zoomDrag = null; if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
           this.#tpoMenu(hit, e.clientX, e.clientY); this.invalidate();
+          return;
+        }
+      }
+      // Any other right click that did not travel, on the chart or its price scale: a bell at the price under it (Notify), the quickest way to
+      // an alert. On the release, as the TPO menu, so a right drag (a zoom) never opens it on any system.
+      if (zd && e.button === 2 && this.draw && !replaying()) {
+        const at = local(e);
+        if (Math.hypot(at.x - zd.x, at.y - zd.y) < DRAG_MIN_PX && zd.y >= 0 && zd.y <= this.plotH && zd.x >= 0 && zd.x <= this.plotW + AXIS_W) {
+          this.view.set(zd.view); this.#zoomDrag = null; if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+          this.#alertMenu(e.clientX, e.clientY, new View(zd.view).pOf(zd.y, this.plotH)); this.invalidate();
           return;
         }
       }

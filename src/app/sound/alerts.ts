@@ -32,10 +32,22 @@ export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi'
  */
 export interface AlertSize { usd: number; coins: number; signed: boolean; words: (size: string) => string }
 /**
- * What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted.
- * `text` is the sentence as it fired, in dollars; `size` what it names, for writing it again in coins (`alertText`).
+ * What was decided for one alert: kept for the panel's "recent" list and for the harness. `audible` is false when a sound was due and the
+ * engine was locked or muted (true when none was due); `sent` is how many channels Notify queued it on. `text` is the sentence as it fired,
+ * in dollars; `size` what it names, for writing it again in coins (`alertText`).
  */
-export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean; size?: AlertSize }
+export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean; sent: number; size?: AlertSize }
+/**
+ * Where alerts go besides a sound (notify/notify.ts). `wants`: Notify sends alerts of this panel (in whichever tab sends); `sends`: and this
+ * tab is the one that sends them; `deliver`: queue one, answering how many channels took it and whether any of them sent it, or null.
+ */
+export interface AlertOut {
+  wants(panel: AlertPanel): boolean;
+  sends(panel: AlertPanel): boolean;
+  deliver(panel: AlertPanel, text: string, key: string, at: number): { channels: number; done: Promise<boolean> } | null;
+}
+/** What became of one alert here: heard (a sound played), and what Notify did with it. */
+interface Fired { heard: boolean; sent: { channels: number; done: Promise<boolean> } | null }
 
 /** An alert's words as the Recent list writes them: as it fired in dollars; in coins its sentence again with the coins it kept ('–' for none). */
 export function alertText(e: AlertEntry): string {
@@ -152,18 +164,35 @@ export class Alerts {
 
   get #s(): AppState { return this.host.state; }
 
-  /** `size`: what the words name (`AlertSize`), worked out only for an alert that is listed (its coins can take a pass over a candle's seconds). */
-  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume), size?: () => AlertSize): void {
-    const sounds = this.#s.sounds;
-    if (!sounds.on) return;
-    if (!this.#cool.take(key, now, cooldownMs) || !this.#cap.allow(now)) return;
-    // An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
-    const audible = notes.length ? this.player.play(notes) : true;
-    const entry: AlertEntry = { at: now, panel, kind, side, text, audible };
-    if (size) entry.size = size();
+  /** Where alerts are sent besides a sound (Notify; main.ts sets it). Without it, or with Notify off, every alert is a sound as before. */
+  out: AlertOut | null = null;
+  /** Whether this tab sends an alert of this panel through Notify: then it is looked for even while Sounds is off. */
+  #sends(panel: AlertPanel): boolean { return this.out?.sends(panel) === true; }
+
+  /** `size`: what the words name (`AlertSize`), worked out only for an alert that is listed or handed to Notify (its coins can take a pass over a candle's seconds). */
+  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume), size?: () => AlertSize): Fired {
+    const none: Fired = { heard: false, sent: null };
+    const hear = this.#s.sounds.on, send = this.#sends(panel);
+    if (!hear && !send) return none;
+    if (!this.#cool.take(key, now, cooldownMs)) return none;
+    // The cap is the ear's: four sounds in ten seconds at most. A message has limits of its own (notify/delivery.ts), so a burst of sounds never
+    // keeps a bell's message from going out. An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
+    const heard = hear && this.#cap.allow(now) ? (notes.length ? this.player.play(notes) : true) : null;
+    // What the words name, worked out only for an alert that is listed or handed to Notify: a message says its size in the page's units, as
+    // the Recent list does (`alertText`; in dollars that is `text`). A message is never written again, so where the coins were not known when
+    // it fired (a second that moved without a price) it says the dollars it fired with, not the list's dash.
+    const entry: AlertEntry = { at: now, panel, kind, side, text, audible: heard ?? true, sent: 0 };
+    if (size && (heard !== null || send)) entry.size = size();
+    const said = entry.size && !Number.isFinite(entry.size.coins) ? text : alertText(entry);
+    const sent = send ? this.out!.deliver(panel, said, key, now) : null;
+    // Nothing played and nothing sent. A bell's cool-down is given back, so its next crossing is not silenced for one that told nobody; a
+    // panel's stays taken, as it always was (it is looked for again every second, and would sound late).
+    if (heard === null && !sent) { if (panel === 'drawing') this.#cool.release(key, now); return none; }
+    entry.sent = sent?.channels ?? 0;
     this.log.push(entry);
     if (this.log.length > 100) this.log.splice(0, this.log.length - 100);
     this.onChange();
+    return { heard: heard === true, sent };
   }
 
   // ---- Flow ----------------------------------------------------------------------------------------------------------------------
@@ -290,8 +319,9 @@ export class Alerts {
    */
   #depthPane(now: number): void {
     const s = this.#s, rule = s.sounds.panels.depthPane;
-    // The sound is the order book's: while the Depth pane shows liquidation levels it is quiet (the switch keeps its setting).
-    if (!s.sounds.on || !rule.extreme || !this.columns || s.depthSource === 'liq') {
+    // The sound is the order book's: while the Depth pane shows liquidation levels it is quiet (the switch keeps its setting). It reads the
+    // recording only while it can be heard or Notify would send it.
+    if (!(s.sounds.on || this.#sends('depthPane')) || !rule.extreme || !this.columns || s.depthSource === 'liq') {
       if (this.#depthKey) { this.#depth.reset(); this.#depthKey = ''; this.depthState = null; }
       return;
     }
@@ -363,9 +393,19 @@ export class Alerts {
   }
 
   /** A level drawn on the map with its alert on was reached (draw/controller.ts): the chime, under the same Sounds switch, cap and list. */
-  drawing(now: number, text: string, key: string): void {
-    if (replaying()) return;
-    this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
+  /**
+   * Whether it reached the person: heard here, or sent on a channel by this tab. While Notify sends bells, only the tab that sends them answers
+   * yes (when a channel sent it, or it was heard there): another tab that only heard it leaves the bell on, or the phone could miss it when
+   * that tab switched it off first (draw/controller.ts `markMoved`).
+   */
+  drawing(now: number, text: string, key: string): Promise<boolean> {
+    if (replaying()) return Promise.resolve(false);
+    const fired = this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
+    if (this.out?.wants('drawing') && !this.out.sends('drawing')) return Promise.resolve(false);
+    if (fired.heard) return Promise.resolve(true);
+    if (!fired.sent) return Promise.resolve(false);
+    // Every channel failed and nothing was heard: the cool-down is given back, so the next crossing tries again.
+    return fired.sent.done.then(ok => { if (!ok) this.#cool.release(`drawing:${key}`, now); return ok; });
   }
 
   /** An alert's words as the Recent list writes them now (`alertText`: the sizes it kept when it fired, in the page's units). */

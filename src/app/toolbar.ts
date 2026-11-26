@@ -71,6 +71,9 @@ import { buildTradedPanel } from './traded/panel.ts';
 import type { ProfileRoom } from './traded/arrange.ts';
 import { venueMark } from './venue-marks.ts';
 import { readWaveStrength } from './glass/waves.ts';
+import type { Notify } from './notify/notify.ts';
+import { buildNotifyPanel } from './notify/panel.ts';
+import type { DrawController } from './draw/controller.ts';
 import { gridStepFor } from '../shared/grid.ts';
 
 /** How a timeframe is said in a tooltip. */
@@ -193,6 +196,18 @@ export class Toolbar {
   #venueMenu: Panel | null = null;
   #alerts: Alerts | null = null;
   /**
+   * Notify (notify/): the alerts as a pop-up here and messages to a phone. In the top bar it is one bell beside Highlights, a glyph the size of
+   * a settings key: a labelled split button there pushed the bar onto two rows at common widths in most languages (measured 2026-11-26 over 12
+   * languages, 4 frames and 7 widths: 11 more two-row cases; the bell, none). It opens the panel, where the switch is, and is lit while this tab
+   * sends, amber while Notify is on with nowhere to send or another tab of the coin sends. A phone's or tablet's Settings, which has room for
+   * words, keeps the labelled split button (lamp and key).
+   */
+  #notifyBell = el('button', { type: 'button', class: 'notify-key', ariaLabel: t('Notify'), tip: t('Alerts as a pop-up on this computer and as messages to your phone (Telegram, ntfy or Discord), sent by this tab') });
+  #notifyButton = el('button', { class: 'led-btn notify-btn', textContent: t('Notify'), tip: t('Alerts as a pop-up on this computer and as messages to your phone (Telegram, ntfy or Discord), sent by this tab') });
+  #notifyPanel: Panel | null = null;
+  #notify: Notify | null = null;
+  #draw: DrawController | null = null;
+  /**
    * The features that are switched on and set in a panel: one button each, whose lamp (`.led-btn`) is lit while the feature is on. The Chart
    * and Alerts decks' are split buttons (`splitButton`: the button switches, its key opens the panel). Trades
    * and Absorption mark market orders on the map, Highlights and Sound point out what is unusual, so they stand in those pairs.
@@ -204,9 +219,9 @@ export class Toolbar {
     liquidations: settingsKey(t('Liquidations')), liqLevels: settingsKey(t('Liquidation levels')), traded: settingsKey(t('Volume profile')), absorption: settingsKey(t('Absorption')),
     tpo: settingsKey(t('TPO')),
   };
-  /** The Alerts deck's settings keys: Highlights, Sound and Waves are switched and set the same way. */
-  #alertKeys = { highlights: settingsKey(t('Highlights')), sound: settingsKey(t('Sounds')), waves: settingsKey(t('Waves')) };
-  #alertSplits: { highlights: HTMLElement; sound: HTMLElement; waves: HTMLElement } | null = null;
+  /** The Alerts deck's settings keys: Highlights, Notify, Sound and Waves are switched and set the same way. */
+  #alertKeys = { highlights: settingsKey(t('Highlights')), notify: settingsKey(t('Notify')), sound: settingsKey(t('Sounds')), waves: settingsKey(t('Waves')) };
+  #alertSplits: { highlights: HTMLElement; notify: HTMLElement; sound: HTMLElement; waves: HTMLElement } | null = null;
   /** The split buttons themselves (the button and its key), built once the buttons and keys exist. */
   #splits: Record<Exclude<Feature, 'highlights'>, HTMLElement> | null = null;
   #absorption = el('button', { class: 'led-btn', textContent: t('Absorption'), tip: HELP.absorption.tip });
@@ -529,7 +544,15 @@ export class Toolbar {
       this.#liqLevelPanel = this.#track(togglePanel(this.#settingsKeys.liqLevels, { title: t('Liquidation levels'), width: 400, align: 'left', onClose: () => { this.#liqLevelPanel = null; releaseLiqLevelPanel(); } }, build), build);
     };
     this.#liqLevels.onclick = () => this.store.set(togglePatch(this.store.state, 'liqLevels'));
-    this.#alertSplits = { highlights: splitButton(this.#highlights, this.#alertKeys.highlights), sound: splitButton(this.#soundButton, this.#alertKeys.sound), waves: splitButton(this.#glass, this.#alertKeys.waves) };
+    this.#alertSplits = { highlights: splitButton(this.#highlights, this.#alertKeys.highlights), notify: splitButton(this.#notifyButton, this.#alertKeys.notify), sound: splitButton(this.#soundButton, this.#alertKeys.sound), waves: splitButton(this.#glass, this.#alertKeys.waves) };
+    this.#alertKeys.notify.onclick = () => this.#openNotify(this.#alertKeys.notify);
+    this.#notifyBell.onclick = () => this.#openNotify(this.#notifyBell);
+    // The lamp switches Notify; with nowhere to send yet it opens the panel instead, where a pop-up or a phone channel is set up.
+    this.#notifyButton.onclick = () => {
+      const notify = this.#notify; if (!notify) return;
+      if (!notify.settings.on && !notify.channels().length) { notify.set({ on: true }); this.#openNotify(this.#alertKeys.notify); return; }
+      notify.set({ on: !notify.settings.on });
+    };
     const k = this.#settingsKeys;
     this.#splits = {
       trades: splitButton(this.#trades, k.trades), footprint: splitButton(this.#footprint, k.footprint), vwap: splitButton(this.#vwap, k.vwap),
@@ -888,7 +911,7 @@ export class Toolbar {
         deck('chart', t('Chart'), [sp.footprint, sp.trades, sp.liquidations, ...(liqLevelsUrl() ? [sp.liqLevels] : []), sp.absorption], [sp.traded, sp.tpo, sp.keyLevels, sp.vwap, this.#scriptsSplit, ...(inCorner ? [] : [this.#range])]),
         // Waves beside Sounds (Karl, 2026-10-30, from the status bar's corner): with Highlights, the three ways the page says that something large
         // happened, marked, heard and seen across the screen.
-        deck('alerts', t('Alerts'), [this.#alertSplits!.highlights], [this.#alertSplits!.sound, this.#alertSplits!.waves]),
+        deck('alerts', t('Alerts'), [this.#alertSplits!.highlights, this.#notifyBell], [this.#alertSplits!.sound, this.#alertSplits!.waves]),
         tools];
       // The update notice is a line of the status bar, where it covers nothing (under the bar it would lie over the map's own buttons);
       // without a status bar it waits under the bar with the others.
@@ -1037,7 +1060,7 @@ export class Toolbar {
           ...(LAYER_CHOICE ? [field(t('Layer'), this.#layer)] : []), field(t('Source'), this.#source), field(t('Colours'), this.#heat.style),
           field(t('Contrast'), this.#heatScale, true), field(t('Colour range'), this.#heat.auto), field(t('Smoothing'), this.#heat.smooth)], helpButton('heatmap')),
         section(t('Venues'), [field(t('Market'), this.#market, true), field(t('Markets'), this.#scope, true), el('div', { class: 'sheet-chips' }, this.#chips, this.#blocked)], this.#venuesButton!),
-        section(t('Alerts'), [el('div', { class: 'sheet-tiles' }, this.#alertSplits!.highlights, this.#alertSplits!.sound),
+        section(t('Alerts'), [el('div', { class: 'sheet-tiles' }, this.#alertSplits!.highlights, this.#alertSplits!.sound, this.#alertSplits!.notify),
           field(t('Waves'), el('label', { class: 'switch', tip: t('Waves: the bars and panels around the chart turn to glass; large orders and large flow changes light it and send waves across the screen') }, this.#glassSwitch, el('i'))),
           field(t('Wave strength'), el('span', { class: 'wave-strength', tip: WAVE_STRENGTH_TIP }, this.#waveStrength, this.#waveStrengthOut))]),
         section(t('Appearance'), [field(t('Language'), this.#language), field(t('Theme'), this.#theme), field(t('Time zone'), this.#zoneSeg), field(t('Units'), this.#unitsSeg),
@@ -1197,6 +1220,35 @@ export class Toolbar {
   /** The sound engine the Sounds panel controls. */
   attachSounds(sounds: Sounds): void { this.#sounds = sounds; }
   attachAlerts(alerts: Alerts): void { this.#alerts = alerts; }
+  /** Notify and the drawings whose bells its panel lists: its lamp follows it, and its open panel is redrawn when it changes. */
+  attachNotify(notify: Notify, draw: DrawController): void {
+    this.#notify = notify; this.#draw = draw;
+    const refresh = (): void => { if (this.#notifyPanel && openedPanel() === this.#notifyPanel) this.refreshOpenPanel(); };
+    notify.subscribe(() => { this.#syncNotify(); refresh(); });
+    // The panel lists the bells: one put on, switched off or gone off redraws it while it is open.
+    draw.onDrawings = refresh;
+    this.#syncNotify();
+  }
+
+  /** The Notify panel, placed by what opened it (the top bar's bell, or the Settings tile's key). */
+  #openNotify(anchor: HTMLElement): void {
+    const notify = this.#notify, draw = this.#draw; if (!notify || !draw) return;
+    const build = (tools: HTMLElement, body: HTMLElement): void => { tools.append(helpButton('notify')); buildNotifyPanel(notify, draw, this.store, () => this.#notifyPanel?.render(build), tools, body); };
+    this.#notifyPanel = this.#track(togglePanel(anchor, { title: t('Notify'), width: 430, align: 'left', onClose: () => { this.#notifyPanel = null; } }, build), build);
+  }
+
+  /** The Notify lamp: off, lit while this tab sends, amber while it is on with nowhere to send or another tab of the coin sends. */
+  #syncNotify(): void {
+    const notify = this.#notify; if (!notify) return;
+    const s = notify.settings, where = notify.channels().length;
+    const state = !s.on ? 'off' : where && notify.sender.holder ? 'on' : 'locked';
+    const tip = state === 'off' ? t('Notify: off. Alerts as a pop-up on this computer and as messages to your phone, sent by this tab') : state === 'on' ? t('Notify: on, sending from this tab') : !where ? t('Notify is on with nowhere to send: set up a pop-up or a phone channel in its panel') : t('Notify is on; another tab of this coin sends, and this one takes over when it closes');
+    // Said again whenever the words change, not only the state: amber is two cases (nowhere to send, another tab sends).
+    if (this.#notifyBell.dataset.tip === tip) return;
+    this.#notifyBell.dataset.tip = tip;
+    for (const b of [this.#notifyBell, this.#notifyButton]) { b.dataset.state = state; setTip(b, tip); }
+    this.#notifyPanel?.reposition();
+  }
 
   /** Redraw the parts of the toolbar that depend on the palette (the legend ramp) for a previewed theme. */
   previewTheme(id: string): void {

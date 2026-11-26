@@ -12,7 +12,7 @@ import { FREE_DAYS } from './plus/config.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes' | 'notify';
 
 export interface HelpTopic {
   title: string;
@@ -203,6 +203,11 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   sounds: {
     title: t('Sounds'), guide: 'sounds',
     tip: t('Sounds for large market orders by size tier, a chime on unusual volume, and one rare event per pane if you choose it. Browsers play sound only after a click on the page.'),
+    body: [],
+  },
+  notify: {
+    title: t('Notify'), guide: 'notify',
+    tip: t('Alerts as a pop-up on this computer and as messages to your phone, through your own Telegram bot, an ntfy topic or a Discord webhook. This tab sends them while it is open: no server watches your alerts.'),
     body: [],
   },
   range: {

@@ -2,10 +2,11 @@ import { t, tn } from '../i18n.ts';
 import { price as fmtPrice } from '../format.ts';
 import type { View } from '../view.ts';
 import { isCoarse } from '../device.ts';
-import { ANCHORS, MAX_PER_COIN, MAX_TOTAL, capReached, versionOf, duplicate as copyOf, exportText, fits, flipped, importInto, moved, newDrawing, positionFromClicks, totalOf, type Anchor, type DrawDoc, type DrawKind, type Drawing } from './model.ts';
+import { ANCHORS, MAX_PER_COIN, MAX_TOTAL, bellsIn, capReached, shapeOf, versionOf, withoutBells, duplicate as copyOf, exportText, fits, flipped, importInto, moved, newDrawing, positionFromClicks, totalOf, type Anchor, type DrawDoc, type DrawKind, type Drawing } from './model.ts';
 import { axisOf, deltaOf, edgeMinFor, handlesOf, hitDrawing, sameHit, withHandleAt, type Handle, type HandleAxis, type Hit, type Projection, type Pt } from './geometry.ts';
 import { candleTargets, snapPoint, snapTime, wallTargets, type CandleUnder, type SnapTarget } from './magnet.ts';
 import { History } from './history.ts';
+import { LOOK_GAP_MS, bellShape, canAlert, reached, type PriceLook, type Reached } from './alerts.ts';
 import type { DrawStore } from './storage.ts';
 import type { DrawSettings } from './settings.ts';
 
@@ -43,8 +44,11 @@ export interface DrawHost {
   focus(box: { t0: number; t1: number; p0: number; p1: number }): void;
   /** Add up what happened in a box with the Range tool (Inspect). */
   inspect(box: { t0: number; t1: number; p0: number; p1: number }): void;
-  /** A level with an alert was reached (`key`: the level's own, for its cool-down). */
-  alert(text: string, key: string): void;
+  /**
+   * A drawing with its bell on was reached (`key`: the drawing's own, for its cool-down): whether the alert reached the person, heard in this
+   * tab or sent by the tab that sends the coin's alerts (sound/alerts.ts `drawing`). A bell that goes off once switches itself off only then.
+   */
+  alert(text: string, key: string): Promise<boolean>;
   redraw(): void;
 }
 
@@ -79,7 +83,21 @@ export class DrawController {
   #held: SnapTarget | null = null;
   /** Whether the last pointer was a finger (before any pointer: whether the device is touch first): its handles are further apart (`edgeMinFor`), here and where they are painted. */
   #touch = isCoarse();
-  #lastMark = 0;
+  /** The price read last (draw/alerts.ts), which the next is judged against; forgotten with the coin, the market and a replay. */
+  #lastLook: PriceLook | null = null;
+  /** Each bell's shape at the last reading (`bellShape`): only a bell that stood unchanged since then is judged. */
+  #seen = new Map<string, string>();
+  /**
+   * The document this tab last read from storage or kept there, bells included (`shapeOf`), null while a newer page's holds it: what is kept
+   * now differs from it only when another tab saved since (a bell switched there too). Never what this tab holds unsaved: with storage full
+   * or switched off, that is all there is.
+   */
+  #keptShape: string | null = null;
+  /**
+   * How many times each bell of this coin was switched on here (`update`): a bell that went off is switched off afterwards only if it was not
+   * switched on again meanwhile (the person's new choice), whatever else changed of it.
+   */
+  readonly #armed = new Map<string, number>();
   tool: DrawKind | null = null;
   /** The points placed so far of a drawing that takes more than one: the map waits rather than following the market while there is one (and while one is dragged). */
   draft: Draft | null = null;
@@ -92,12 +110,15 @@ export class DrawController {
   message: { text: string; warn: boolean } | null = null;
   /** The bar redraws (set by the bar). */
   onChange: () => void = () => {};
+  /** The drawings changed (a bell put on, switched off, gone off): the Notify panel's list follows (set by the toolbar). */
+  onDrawings: () => void = () => {};
   /** A note's text box as the painter measures it (set by the painter). */
   noteSize: (d: Drawing) => { w: number; h: number } = () => ({ w: 80, h: 18 });
 
   constructor(private host: DrawHost, private store: DrawStore) {
     const doc = store.load();
     this.#newer = doc === null; this.#doc = doc ?? { version: 1, coins: {} };
+    this.#keptShape = doc ? shapeOf(doc, true) : null;
     if (this.#newer) this.message = { text: t('These drawings were saved by a newer version of the page: reload it to see and change them.'), warn: true };
     store.onOtherTab(() => this.#reload());
   }
@@ -128,12 +149,11 @@ export class DrawController {
   #sync(): void {
     const coin = this.host.coin();
     if (coin === this.#coin) return;
-    this.#coin = coin; this.draft = null; this.cursor = null; this.selected = null; this.hover = null; this.#drag = null; this.#held = null; this.#lastMark = 0;
+    this.#coin = coin; this.draft = null; this.cursor = null; this.selected = null; this.hover = null; this.#drag = null; this.#held = null; this.#lastLook = null; this.#seen = new Map();
   }
 
   /** The timeframe, the market or the chart type changed: a drawing half placed is dropped (its points stay what they are on any chart). */
   contextChanged(): void {
-    this.#lastMark = 0;
     if (this.#drag) this.#abortDrag();
     if (this.draft) { this.draft = null; this.cursor = null; this.#dropPositionWarning(); this.#changed(); }
   }
@@ -153,7 +173,7 @@ export class DrawController {
   #changed(): void {
     if (this.selected && !this.shown().some(d => d.id === this.selected)) this.selected = null;
     if (this.hover && !this.shown().some(d => d.id === this.hover!.id)) this.hover = null;
-    this.onChange(); this.host.redraw();
+    this.onChange(); this.onDrawings(); this.host.redraw();
   }
 
   /** Write this coin's list, as a step Undo can take back (`step`) or as part of one still under way (a drag), and keep it. */
@@ -167,10 +187,19 @@ export class DrawController {
     this.#save();
   }
 
-  #save(): void {
+  #save(doc: DrawDoc = this.#doc): void {
     if (this.#newer) return;
-    if (!this.store.save(this.#doc)) this.message = { text: t('The drawings could not be kept: this browser\'s storage is full or switched off.'), warn: true };
-    else if (this.message?.warn) this.message = null;
+    if (!this.store.save(doc)) this.message = { text: t('The drawings could not be kept: this browser\'s storage is full or switched off.'), warn: true };
+    else { this.#keptShape = shapeOf(doc, true); if (this.message?.warn) this.message = null; }
+  }
+
+  /** The document as it is kept, a drag under way left out (its list is kept only when the drag ends). */
+  #committedDoc(): DrawDoc {
+    const drag = this.#drag;
+    if (!drag) return this.#doc;
+    const coins = { ...this.#doc.coins };
+    if (drag.before.length) coins[this.#coin] = [...drag.before]; else delete coins[this.#coin];
+    return { version: versionOf(coins), coins };
   }
 
   /** Another tab kept its drawings: they are read again, and what was in hand here is let go (its steps no longer fit what is kept). */
@@ -183,6 +212,19 @@ export class DrawController {
       this.#changed(); return;
     }
     if (this.#newer) { this.#newer = false; if (this.message?.warn) this.message = null; }
+    this.#keptShape = shapeOf(doc, true);
+    // Bells alone changed (one went off in the tab that sends, or was switched there): taken as they are, and what is in hand here (the steps,
+    // a drawing half placed, a drag) is kept with them written in, never let go for that.
+    if (withoutBells(doc) === withoutBells(this.#committedDoc())) {
+      const bells = bellsIn(doc);
+      const apply = (list: readonly Drawing[]): readonly Drawing[] => list.map(d => { const b = bells.get(d.id); return b && (b.alert !== d.alert || b.alertOnce !== d.alertOnce) ? { ...d, ...b } : d; });
+      const coins = Object.fromEntries(Object.entries(this.#doc.coins).map(([coin, list]) => [coin, [...apply(list)]]));
+      this.#doc = { version: versionOf(coins), coins };
+      for (const h of this.#histories.values()) h.rewrite(apply);
+      const drag = this.#drag;
+      if (drag) this.#drag = { ...drag, before: apply(drag.before), original: apply([drag.original])[0]! };
+      this.#changed(); return;
+    }
     this.#doc = doc; this.#histories.clear(); this.draft = null; this.cursor = null; this.#drag = null; this.#dropPositionWarning();
     if (this.selected && !this.get(this.selected)) this.selected = null;
     this.#changed();
@@ -400,6 +442,7 @@ export class DrawController {
     const before = this.list(), d = before.find(x => x.id === id); if (!d) return;
     if (d.locked && Object.keys(patch).some(k => k !== 'locked' && k !== 'hidden')) return;
     if (!fits({ ...d, ...patch })) return;
+    if (patch.alert === true) this.#armed.set(id, (this.#armed.get(id) ?? 0) + 1);
     this.#write(before.map(x => x.id === id ? { ...x, ...patch } : x), { before });
     // A drawing hidden is let go: nothing unseen stays selected (Delete would remove it with nothing on screen).
     if (patch.hidden === true) { if (this.selected === id) this.selected = null; if (this.hover?.id === id) this.hover = null; }
@@ -536,19 +579,135 @@ export class DrawController {
 
   // ---- alerts ---------------------------------------------------------------------------------------------------------------
 
-  /** The price moved: a level with its alert on that the price crossed or reached sounds (through the page's alerts). */
-  markMoved(price: number): void {
-    const before = this.#lastMark;
+  /**
+   * A price was read (the chart market's): every bell it reached goes off through the page's alerts (draw/alerts.ts `reached`). Every tab
+   * judges, so each sounds as it always did. A bell that goes off once switches itself off only when the alert reached the person (heard here,
+   * or sent by the tab that sends the coin's alerts: `DrawHost.alert`); one that reached nobody stays on for the next time.
+   *
+   * A bell is judged only once it has stood unchanged since the reading before (`#steady`): one put, moved, typed, or brought back by Undo or
+   * Redo onto the price is a drawing put there, not the price moving through it.
+   */
+  markMoved(look: PriceLook): void {
     this.list();
-    this.#lastMark = price;
-    if (!(before > 0) || !(price > 0) || before === price || this.host.replaying()) return;
-    for (const d of this.list()) {
-      if (d.kind !== 'level' || !d.alert || d.hidden) continue;
-      const p = d.points[0]!.p;
-      if ((before < p && price >= p) || (before > p && price <= p)) {
-        const at = fmtPrice(p);
-        this.host.alert(d.text ? t('Price reached {price}: {label}', { price: at, label: d.text }) : t('Price reached your level at {price}', { price: at }), `level:${d.id}`);
-      }
+    const before = this.#lastLook, list = this.list(), steady = this.#steady(list);
+    this.#lastLook = look;
+    if (this.#newer || this.host.replaying()) return;
+    for (const hit of reached(before, look, steady)) {
+      const d = list.find(x => x.id === hit.id);
+      if (!d) continue;
+      const reachedThem = this.host.alert(alertText(d, hit), `level:${d.id}`), armed = this.#armed.get(d.id) ?? 0;
+      // Switched off only if it is still the bell that went off: one the person switched off and on again, set to every time or moved meanwhile
+      // is a new choice of theirs, and stays as they left it (a new label, or another tab's save, is no such choice).
+      if (d.alertOnce) void reachedThem.then(ok => {
+        const cur = this.get(d.id);
+        if (ok && cur && cur.alert && cur.alertOnce && bellShape(cur) === bellShape(d) && (this.#armed.get(d.id) ?? 0) === armed) this.#disarm(new Set([d.id]));
+      });
     }
   }
+
+  /** The bells that stood unchanged since the last reading, and each bell's shape now for the next (`bellShape`). */
+  #steady(list: readonly Drawing[]): Drawing[] {
+    const seen = this.#seen, now = new Map<string, string>(), out: Drawing[] = [];
+    for (const d of list) {
+      if (!d.alert || !canAlert(d.kind)) continue;
+      const shape = bellShape(d);
+      now.set(d.id, shape);
+      if (seen.get(d.id) === shape) out.push(d);
+    }
+    this.#seen = now;
+    return out;
+  }
+
+  /**
+   * Data came while the price stayed where it was (a quiet market reads no new price while nothing trades or moves): the last reading still
+   * stands, so its time moves on with the data, and the price after a long lull is judged against it, not taken for one after a gap. When no
+   * data comes at all (the feed gone, the tab asleep), the time stops, and a reading over a minute later starts afresh (`LOOK_GAP_MS`).
+   */
+  alive(at: number): void {
+    const last = this.#lastLook;
+    if (last && at > last.at && at - last.at <= LOOK_GAP_MS) this.#lastLook = { ...last, at };
+  }
+
+  /** Another market, or a replay begun or ended: the next price starts afresh (another market's price is no move from the last one's). */
+  forgetPrice(): void { this.#lastLook = null; this.#seen = new Map(); }
+
+  /**
+   * Switch off bells that went off once. Kept at once (another tab reads it from storage, and only the bells change there), into what is kept
+   * now: a save another tab made since this one last read is read first, so nothing of it is written over. Written into every step Undo holds,
+   * a drag under way included (kept as it was before the drag: the drag's own list is kept only when it ends), so no Undo or Redo switches them
+   * back on; it is no step of its own. A locked drawing too: the lock keeps the person's own hands off it, and going off once is what they
+   * asked of its bell.
+   */
+  #disarm(ids: ReadonlySet<string>): void {
+    if (this.#newer) return;
+    // Another tab's save not read here yet is read first (a newer page's: nothing is written over it). Only a save another tab made: what is
+    // kept is compared with what this tab last read or kept, never with what it holds, which storage full or switched off may not have.
+    const kept = this.store.load();
+    if (kept === null || shapeOf(kept, true) !== this.#keptShape) this.#reload();
+    if (this.#newer) return;
+    const off = (list: readonly Drawing[]): readonly Drawing[] => list.some(d => ids.has(d.id) && d.alert) ? list.map(d => ids.has(d.id) ? { ...d, alert: false } : d) : list;
+    this.#write(off(this.list()), null);
+    this.#history().rewrite(off);
+    const drag = this.#drag;
+    if (drag) this.#drag = { ...drag, before: off(drag.before), original: ids.has(drag.original.id) ? { ...drag.original, alert: false } : drag.original };
+    this.#save(this.#committedDoc());
+    this.#changed();
+  }
+
+  // ---- bells, for the Notify panel ------------------------------------------------------------------------------------------------
+
+  /** Every drawing with its bell on, of every coin (the panel lists them all; only this coin's are judged here). */
+  bells(): { coin: string; drawing: Drawing }[] {
+    this.#sync();
+    const out: { coin: string; drawing: Drawing }[] = [];
+    for (const [coin, list] of Object.entries(this.#doc.coins)) for (const drawing of list) if (drawing.alert && canAlert(drawing.kind)) out.push({ coin, drawing });
+    return out;
+  }
+
+  /**
+   * Change a bell from the Notify panel: how often it goes off, or switch it off. This coin's as a step Undo can take back (as from the bar);
+   * another coin's is written at once, since that coin's steps are not held on this page.
+   */
+  setBell(coin: string, id: string, patch: Pick<Partial<Drawing>, 'alert' | 'alertOnce'>): void {
+    if (this.#newer || this.host.settings().locked) return;
+    this.#sync();
+    if (coin === this.#coin) { this.update(id, patch); return; }
+    const list = this.#doc.coins[coin], d = list?.find(x => x.id === id);
+    if (!list || !d || d.locked) return;
+    const coins = { ...this.#doc.coins, [coin]: list.map(x => x.id === id ? { ...x, ...patch } : x) };
+    this.#doc = { version: versionOf(coins), coins };
+    this.#save();
+    this.#changed();
+  }
+
+  /**
+   * A level with its bell on at a price of this coin (the map's menu, the Notify panel), as one step. False where none can be added, with the
+   * reason in `message` where there is one to say.
+   */
+  addAlertLevel(price: number): boolean {
+    if (this.host.replaying()) { this.message = { text: t('Drawings are added on the live chart, not during a replay.'), warn: false }; this.onChange(); return false; }
+    if (this.host.settings().locked) { this.message = { text: t('The drawings are locked: unlock them in Drawings to add one.'), warn: false }; this.onChange(); return false; }
+    if (this.#newer || !(price > 0) || !Number.isFinite(price)) return false;
+    this.#sync();
+    if (capReached(this.#doc, this.#coin)) { this.message = { text: t('This coin has as many drawings as it can keep (100): delete one to add another.'), warn: true }; this.onChange(); return false; }
+    const before = this.list(), d = { ...newDrawing('level', [{ t: this.host.now(), p: price }], Date.now()), alert: true, alertOnce: true };
+    if (!fits(d)) return false;
+    if (!this.host.settings().shown) this.host.reveal();
+    this.#write([...before, d], { before });
+    this.selected = d.id;
+    this.#changed();
+    return true;
+  }
+}
+
+/** What a bell says when it goes off: the price it names and the drawing's label when it has one. */
+export function alertText(d: Drawing, hit: Reached): string {
+  const label = d.text.trim();
+  if (hit.kind === 'zone') {
+    const low = fmtPrice(Math.min(d.points[0]!.p, d.points[1]!.p)), high = fmtPrice(Math.max(d.points[0]!.p, d.points[1]!.p));
+    return label ? t('Price entered {low} to {high}: {label}', { low, high, label }) : t('Price entered your zone {low} to {high}', { low, high });
+  }
+  const price = fmtPrice(hit.price);
+  if (hit.kind === 'trend') return label ? t('Price crossed your trend line at {price}: {label}', { price, label }) : t('Price crossed your trend line at {price}', { price });
+  return label ? t('Price reached {price}: {label}', { price, label }) : t('Price reached your level at {price}', { price });
 }

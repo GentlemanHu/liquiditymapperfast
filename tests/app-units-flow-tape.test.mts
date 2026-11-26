@@ -254,9 +254,9 @@ test('the phone Tape keeps no coins: a row\'s are its bins\' dollars each over t
 
 test('an alert keeps its coins from when it fired, written when the Recent list shows: in dollars as it fired, in coins its coins', () => {
   const words = (size: string): string => `Bid wall appeared: ${size}`;
-  const wall: AlertEntry = { at: 0, panel: 'book', kind: 'wall-appeared', side: 'buy', text: words('$4.5M'), audible: true, size: { usd: 4_500_000, coins: 50, signed: false, words } };
+  const wall: AlertEntry = { at: 0, panel: 'book', kind: 'wall-appeared', side: 'buy', text: words('$4.5M'), audible: true, sent: 0, size: { usd: 4_500_000, coins: 50, signed: false, words } };
   const delta = (d: string): string => `1h candle closed with ${d} of net taker flow`;
-  const bar: AlertEntry = { at: 0, panel: 'bars', kind: 'bar-delta', side: 'sell', text: delta('−$2.1M'), audible: true, size: { usd: -2_100_000, coins: -23.5, signed: true, words: delta } };
+  const bar: AlertEntry = { at: 0, panel: 'bars', kind: 'bar-delta', side: 'sell', text: delta('−$2.1M'), audible: true, sent: 0, size: { usd: -2_100_000, coins: -23.5, signed: true, words: delta } };
   assert.equal(alertText(wall), 'Bid wall appeared: $4.5M'); assert.equal(alertText(bar), bar.text);
   inCoinMode(() => {
     assert.equal(alertText(wall), 'Bid wall appeared: 50 BTC');
