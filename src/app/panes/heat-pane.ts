@@ -1655,8 +1655,9 @@ export class HeatPane {
     // bands, the note under it, the corner tools and the drawing tools are placed by its foot, and the overlay was drawn by the old one (in a
     // whole frame as well: without a band, the levels' note stood a frame under the new row), so the map is drawn again under it.
     if (this.#legendBox.bottom !== legendBottom || this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate();
-    // Under the legend, whose last row can be the one saying where the recorded depth begins: a young recording's first load has both.
-    if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, Math.max(50, this.#legendBox.bottom + 8)); }
+    // Under the legend, whose last row can be the one saying where the recorded depth begins, and under the levels' note, which stands under
+    // the legend too and says "Liquidation levels are loading." at the same first load: a young recording's first load has all three.
+    if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, Math.max(50, this.#legendBox.bottom + 8, state.liqLevels.on && this.#liqNoteBox ? this.#liqNoteBox.bottom + 8 : 0)); }
     const emptyScope = heatmapSourceOf(state) === 'aggregated' ? emptyScopeMessage(state) : null;
     if (emptyScope) { // the filter selected nothing: say so instead of drawing a blank map
       ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif'; const width = ctx.measureText(emptyScope).width + 28;

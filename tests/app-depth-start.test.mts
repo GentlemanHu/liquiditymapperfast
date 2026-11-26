@@ -38,7 +38,7 @@ test('a start on another day carries its date: away from the line nothing else s
 });
 
 test('one day on the page\'s clock across a clock change: no date on a spring-forward or fall-back morning, a date on the next day', () => {
-  const zone = process.env.TZ;
+  const zone = process.env.TZ, machine = Intl.DateTimeFormat().resolvedOptions().timeZone;
   process.env.TZ = 'Europe/Madrid';
   setTimeZone('local');
   try {
@@ -57,23 +57,26 @@ test('one day on the page\'s clock across a clock change: no date on a spring-fo
     assert.deepEqual(depthStartLines(wide, Date.UTC(2027, 5, 10, 7), Date.UTC(2027, 5, 10, 16), 400), ['Depth recorded from 09:00']);
     assert.deepEqual(depthStartLines(wide, Date.UTC(2027, 5, 10, 21, 30), Date.UTC(2027, 5, 10, 22, 30), 400), ['Depth recorded from Jun 10 23:30']);
   } finally {
-    if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
+    // Deleting TZ does not take Node on Windows back to the machine's zone (it stays on the last one set), so the zone it had is named again.
+    process.env.TZ = zone ?? machine;
     setTimeZone('utc');
   }
 });
 
-test('where the sentence does not fit it takes two lines, broken before the moment where both parts fit, else between words, never cut short', () => {
+test('where the sentence does not fit it takes two lines, broken before the moment where both parts fit, else between words, the moment kept', () => {
   assert.deepEqual(depthStartLines(wide, since, since + DAY, 150), ['Depth recorded from', 'Nov 26 14:55']);
   assert.deepEqual(depthStartLines(wide, since, now, 150), ['Depth recorded from 14:55'], 'one line where it fits');
   // The words' room (`#depthRow`): a 390 px phone's 300 px plot gives them 218 px, left of its Draw key; a 320 px phone's, and a desktop
-  // legend beside the corner tools at its least, 148 px (at 6 px a letter, 24 letters). Today's time and an earlier day's date, both.
+  // legend beside the corner tools at its least, 148 px (at 6 px a letter, 24 letters). Today's time and an earlier day's date, both. A 320 px
+  // phone's map beside the profile column (a coin without the levels' column) leaves 96 px and a little more, where two lines cannot hold the
+  // sentence in several languages: words are cut short there, never the moment.
   for (const { code } of LANGUAGES) {
     setLanguage(code, pack(code));
-    for (const room of [218, 148]) for (const at of [now, since + DAY]) {
+    for (const room of [218, 148, 110, 96]) for (const at of [now, since + DAY]) {
       const lines = depthStartLines(wide, since, at, room), said = `${code} in ${room} px: ${JSON.stringify(lines)}`;
       assert.ok(lines.length >= 1 && lines.length <= 2, said);
       assert.ok(lines.every(line => wide(line) <= room), `${said}: every line fits`);
-      assert.ok(lines.every(line => !line.includes('…')), `${said}: no word cut short`);
+      if (room >= 148) assert.ok(lines.every(line => !line.includes('…')), `${said}: no word cut short`);
       assert.ok(lines.some(line => line.includes('14:55')), `${said}: the moment kept`);
     }
   }
@@ -83,6 +86,12 @@ test('where the sentence does not fit it takes two lines, broken before the mome
   assert.deepEqual(depthStartLines(wide, since, since + DAY, 148), ['Profondeur enregistrée', 'depuis 26 nov. 14:55']);
   setLanguage('tr', pack('tr'));
   assert.deepEqual(depthStartLines(wide, since, since + DAY, 148), ['Derinlik 26 Kas 14:55', 'itibarıyla kaydedildi']);
+  // In 96 px two wrapped lines ended "from Nov 26 14:…" (English) and "enregistrée dep…" (French): the words before the moment are cut short
+  // instead, the moment on a line of its own.
+  setLanguage('en');
+  assert.deepEqual(depthStartLines(wide, since, since + DAY, 96), ['Depth recorded…', 'Nov 26 14:55']);
+  setLanguage('fr', pack('fr'));
+  assert.deepEqual(depthStartLines(wide, since, now, 96), ['Profondeur enre…', '14:55']);
 });
 
 test('the map prints the words as the legend\'s last row, never beside the line, and draws again what stands under a legend that grew', () => {
@@ -103,8 +112,9 @@ test('the map prints the words as the legend\'s last row, never beside the line,
   const need = legend.slice(legend.indexOf('this.#legendNeed ='), legend.indexOf('\n', legend.indexOf('this.#legendNeed =')));
   assert.doesNotMatch(need, /depth/i, 'the corner tools never change their look as the row comes or goes');
   const hover = body('#paintHoverLayer');
-  // A young recording's first load has the row and "Collecting depth history…" at once: that line stands under the legend, never over the row.
-  assert.match(hover, /fillText\(t\('Collecting depth history…'\), 12, Math\.max\(50, this\.#legendBox\.bottom \+ 8\)\)/);
+  // A young recording's first load has the row, the levels' note ("Liquidation levels are loading.") and "Collecting depth history…" at once:
+  // that line stands under the legend and under the note while the levels are on (their box is kept from an earlier frame when they are off).
+  assert.match(hover, /fillText\(t\('Collecting depth history…'\), 12, Math\.max\(50, this\.#legendBox\.bottom \+ 8, state\.liqLevels\.on && this\.#liqNoteBox \? this\.#liqNoteBox\.bottom \+ 8 : 0\)\)/);
   // The overlay is drawn by the legend's last foot: where this one differs, the map is drawn again, in a whole frame too (a whole frame used to
   // check only a band, so without one the levels' note stood a frame under the new row).
   assert.match(hover, /if \(this\.#legendBox\.bottom !== legendBottom \|\| this\.#bands\.misplaced\(this\.#legendBox\.bottom\)\) this\.invalidate\(\);/);
