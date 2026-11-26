@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { amount, coinText, coinsAt, figure, inCoins, inUnits, readUnits, setUnits, signedAmount, signedFigure, unitFloor, unitName } from '../src/app/units.ts';
+import { amount, coinText, coinsAt, figure, inCoins, inUnits, readUnits, setUnits, signedAmount, signedFigure, unitFloor, unitHead, unitName } from '../src/app/units.ts';
 
 const intl = new Intl.NumberFormat('en-US', { notation: 'compact', maximumSignificantDigits: 3 });
 
@@ -40,6 +40,14 @@ test('the page units: dollars as the page always wrote them, coins with the tick
   assert.equal(signedFigure(13.2), '+13.2'); assert.equal(signedFigure(-0.0125), '−0.0125');
   assert.equal(inUnits(9000, 90_000), 0.1); assert.equal(unitFloor(100_000), 1e-5);
   assert.ok(Number.isNaN(coinsAt(100, 0)));
+  setUnits('usd');
+});
+
+test('a heading that names the units is written whole while it fits, else as the units alone (a long ticker)', () => {
+  const measure = (text: string): number => text.length * 6;
+  setUnits('coin');
+  assert.equal(unitHead('LEVEL BTC', 54, measure), 'LEVEL BTC', 'nine letters in 54 px: whole');
+  assert.equal(unitHead('LEVEL BTC', 53, measure), 'BTC', 'a pixel short: the ticker alone');
   setUnits('usd');
 });
 

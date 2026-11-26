@@ -9,7 +9,7 @@ import type { Kernels } from '../kernels.ts';
 import { PALETTES, textOn, paletteOf } from '../theme.ts';
 import { niceStep } from '../view.ts';
 import { price as fmtPrice } from '../format.ts';
-import { amount, figure, inCoins, signedFigure, unitFloor, unitName } from '../units.ts';
+import { amount, figure, inCoins, signedFigure, unitFloor, unitHead, unitName } from '../units.ts';
 import { LADDER_CURVES, type Store, type AppState } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import { RANK_MS } from '../cvd/settings.ts';
@@ -1037,7 +1037,10 @@ export class LadderPane {
     }
     else {
       const line = head - HEAD_H / 2;
-      ctx.fillText(t('PRICE'), x0 + 6, line); ctx.textAlign = 'right'; ctx.fillText(inCoins() ? t('LEVEL {unit}', { unit: unitName() }) : t('LEVEL USD'), x0 + priceW + USD_W, line);
+      // In coins the heading names the coin, and only the coin where LEVEL and a long ticker (VIRTUAL) would run into PRICE (units.ts `unitHead`).
+      const priceHead = t('PRICE'), measure = (s: string): number => ctx.measureText(s).width;
+      ctx.fillText(priceHead, x0 + 6, line); ctx.textAlign = 'right';
+      ctx.fillText(inCoins() ? unitHead(t('LEVEL {unit}', { unit: unitName() }), priceW + USD_W - 12 - measure(priceHead), measure) : t('LEVEL USD'), x0 + priceW + USD_W, line);
       if (pull) {
         ctx.fillText(pull.kind === 'filling' ? `Δ ${t('{n} s', { n: pull.waitS })}…` : pull.kind === 'fine' ? 'Δ –' : `Δ ${windowText(state.pullStack)}`, x0 + priceW + usdW, line);
       }
@@ -1192,9 +1195,9 @@ export class LadderPane {
       // The gridlines' values on the bottom row, each on a patch of the background so the bars under it do not hide it.
       ctx.save(); ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace'; ctx.textAlign = 'center';
       const ly = o.head + rows * ROW_H - ROW_H / 2;
-      // A label that would overlap the one before it (a narrow column) is left out; its gridline stays.
+      // A label that would overlap the one before it (a narrow column) or run past the pane's edge (a long ticker's, 1T PEPE) is left out; its gridline stays.
       let right = -Infinity;
-      for (const tick of ticks) { const text = amount(tick.v), tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
+      for (const tick of ticks) { const text = amount(tick.v), tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2 || tick.x + tw / 2 > x0 + w) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
       ctx.restore();
       // The key again over the faded lines' entries, so the one under the pointer stands out there too.
       if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve, dashesAlone || runsPast(curves[this.hoveredCurve]!)); }

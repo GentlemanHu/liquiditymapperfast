@@ -25,6 +25,11 @@ export const inCoins = (): boolean => current === 'coin';
 export const readUnits = (raw: unknown): Units => raw === 'coin' ? 'coin' : 'usd';
 /** The unit's name for a heading or beside a figure: USD, or the coin's ticker (BTC). */
 export const unitName = (): string => current === 'coin' ? currentCoin().coin : 'USD';
+/**
+ * A heading that names the units, as `full` while it fits in `room` pixels, else the units alone: a long ticker (VIRTUAL, BIGTIME) does
+ * not run into the heading beside it. `measure` is the width of a text as it is drawn (a canvas's `measureText`).
+ */
+export const unitHead = (full: string, room: number, measure: (text: string) => number): string => measure(full) <= room ? full : unitName();
 
 /** The coins `usdValue` bought at `price`; NaN where there is no price. */
 export const coinsAt = (usdValue: number, price: number): number => price > 0 ? usdValue / price : Number.NaN;
