@@ -12,8 +12,14 @@
  *
  * Limits: our books are USD-valued bins on a shared grid (not native ticks) and carry no per-order data, so the size
  * filter applies to the aggregated size of a bin on one venue, not to individual orders.
+ *
+ * In coins (the page's units, units.ts, issue 9): the tracker keeps dollars per window only (its levels' own prices are gone by then), so a
+ * window's figures are its dollars over that window's price (`ltPrices`: the chart candles' typical price there, `ltInCoins`). That is accurate
+ * to within how far the weighted levels sit from the touch (a few half-lives) and how far the price moved inside the window or its candle. The
+ * size filters stay dollars, and so does everything that orders or judges (the table's order, the imbalance, which is the same either way).
  */
 import { LT_LENGTH, ltIndex, ltWeight } from '../shared/lt-sample.ts';
+import type { CandleRow } from './store.ts';
 
 export { ltWeight };
 
@@ -175,6 +181,37 @@ export function ltSeries(stores: LtStore[], t0: number, t1: number, stepMs: numb
     if (parts.wBid && parts.wAsk) { parts.wBid[at] = o.wb[i]!; parts.wAsk[at] = o.wa[i]!; }
   }));
   return { times, bid, ask, estimated, parts, approx };
+}
+
+/**
+ * The price each window of a series is valued at in coins: the mean typical price, (high + low + close) / 3, of the chart's candles starting
+ * inside the window, else that of the candle holding its middle (the last starting before the window), else of the first candle after it;
+ * NaN with no candles. `times` and `candles` oldest first.
+ */
+export function ltPrices(times: ArrayLike<number>, stepMs: number, candles: readonly CandleRow[]): Float64Array {
+  const n = times.length, out = new Float64Array(n).fill(NaN), typical = (c: CandleRow): number => c[3] > 0 ? (c[2] + c[3] + c[4]) / 3 : NaN;
+  let k = 0;
+  for (let i = 0; i < n; i++) {
+    const t0 = times[i]!, t1 = t0 + stepMs;
+    while (k < candles.length && candles[k]![0] < t0) k++;
+    let sum = 0, count = 0;
+    for (let j = k; j < candles.length && candles[j]![0] < t1; j++) { const p = typical(candles[j]!); if (p > 0) { sum += p; count++; } }
+    if (count) { out[i] = sum / count; continue; }
+    const c = candles[k - 1] ?? candles[k];
+    if (c) out[i] = typical(c);
+  }
+  return out;
+}
+
+/**
+ * A series' figures in coins: each window's dollars over its price (`ltPrices`), the parts too (in the Per level mode a market's weighted sum,
+ * whose weights carry no unit); NaN where the window has no price.
+ */
+export function ltInCoins(s: Pick<LtSeries, 'times' | 'bid' | 'ask' | 'parts'>, prices: ArrayLike<number>): { bid: Float32Array; ask: Float32Array; parts?: LtParts } {
+  const n = s.times.length, over = (side: ArrayLike<number>): Float32Array => Float32Array.from({ length: side.length }, (_, at) => { const p = prices[at % n]!; return p > 0 ? side[at]! / p : NaN; });
+  const out: { bid: Float32Array; ask: Float32Array; parts?: LtParts } = { bid: over(s.bid), ask: over(s.ask) };
+  if (s.parts) out.parts = { bid: over(s.parts.bid), ask: over(s.parts.ask), ...(s.parts.wBid ? { wBid: s.parts.wBid } : {}), ...(s.parts.wAsk ? { wAsk: s.parts.wAsk } : {}) };
+  return out;
 }
 
 /** One market's figures in one window of a series' parts: its bid and ask (its own average in the Per level mode), or null where it had nothing. */

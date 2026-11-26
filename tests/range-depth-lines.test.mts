@@ -139,3 +139,19 @@ test('a selection whose columns all lack a price centre says so', () => {
   const lines = new DepthRangeSummary().lines(sel(0, 3), one, true, one.key, NOW);
   assert.equal(text(lines, 'dp-empty'), 'No column of this selection has a price centre: one side of the book is empty.');
 });
+
+test('coins (issue 9): the page\'s units decide, read from the snapshot\'s coin bands, and a toggle is never answered from the memo', async () => {
+  const { setUnits } = await import('../src/app/units.ts');
+  const h = book(flat(3, 100_000, 50_000)), summary = new DepthRangeSummary();
+  try {
+    const usd = summary.lines(sel(0, 3), h, true, KEY, NOW);
+    assert.match(JSON.stringify(usd), /\$100,000 \/ \$50,000/, 'dollars as before');
+    setUnits('coin');
+    assert.equal(depthStretch(h, sel(0, 3), NOW).bands[1]!.bid, 2, 'the coin bands: 100K over 50K a coin');
+    const coins = summary.lines(sel(0, 3), h, true, KEY, NOW);
+    assert.notEqual(coins, usd, 'not the dollars\' memo');
+    const grid = JSON.stringify(coins.flatMap(l => l.grid ?? []));
+    assert.match(grid, /2 BTC/); assert.doesNotMatch(grid, /\$/);
+  } finally { setUnits('usd'); }
+  assert.match(JSON.stringify(summary.lines(sel(0, 3), h, true, KEY, NOW)), /\$100,000 \/ \$50,000/, 'and back');
+});

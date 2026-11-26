@@ -146,3 +146,21 @@ test('each window says whether a column of it was worked out from an average boo
   assert.deepEqual([...out.times], [0, MIN, 2 * MIN]);
   assert.deepEqual([...out.approx!], [1, 0, 0]);
 });
+
+test('coins (issue 9): each window at the chart candles\' typical price there, its parts too; nothing to value it by is NaN', async () => {
+  const { ltInCoins, ltPrices } = await import('../src/app/lt.ts');
+  // 5-minute candles; windows of 1 minute (inside a candle) and of 10 minutes (holding two).
+  const c = (t: number, high: number, low: number, close: number): [number, number, number, number, number, number] => [t, low, high, low, close, 1];
+  const candles = [c(0, 103, 97, 100), c(5 * MIN, 113, 107, 110), c(10 * MIN, 123, 117, 120)];
+  assert.deepEqual([...ltPrices([MIN, 6 * MIN, 30 * MIN], MIN, candles)], [100, 110, 120], 'the candle holding the window; past the newest, the newest');
+  assert.deepEqual([...ltPrices([0], 10 * MIN, candles)], [105], 'the mean of the candles starting inside it');
+  assert.deepEqual([...ltPrices([-10 * MIN], MIN, candles)], [100], 'before the first candle: the first');
+  assert.ok(Number.isNaN(ltPrices([0], MIN, [])[0]!), 'no candle: not known');
+  const parts = { bid: Float32Array.from([100, 220, 300, 440]), ask: Float32Array.from([50, 110, 0, 0]) };
+  const coins = ltInCoins({ times: Float64Array.from([0, MIN]), bid: Float32Array.from([400, 660]), ask: Float32Array.from([50, 110]), parts }, Float64Array.from([100, 110]));
+  near(coins.bid, [4, 6]); near(coins.ask, [0.5, 1]);
+  near(coins.parts!.bid, [1, 2, 3, 4], 1e-6); near(coins.parts!.ask, [0.5, 1, 0, 0], 1e-6);
+  assert.equal(imbalanceAxis(Math.abs(4 - 0.5) / 4.5), imbalanceAxis(Math.abs(400 - 50) / 450), 'the imbalance is the same in either units');
+  const unpriced = ltInCoins({ times: Float64Array.from([0]), bid: Float32Array.from([1]), ask: Float32Array.from([1]) }, Float64Array.from([NaN]));
+  assert.ok(Number.isNaN(unpriced.bid[0]!));
+});

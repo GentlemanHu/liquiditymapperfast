@@ -197,3 +197,26 @@ test('review dcr4: only a first reaching back drops a kept result (not one movin
   assert.equal(text(p.lines(sel(T, T + 3 * H), back, true, KEY, NOW), 'dl-kept'), undefined);
   assert.equal(usdPair(12_345_678, 12_300_000), '+$12.35M → +$12.30M');
 });
+
+test('coins (issue 9): a snapshot with its candles in coins is written in the coin (the candles the dollars counted); without them, dollars', async () => {
+  const { setUnits } = await import('../src/app/units.ts');
+  const rows: [number, number][] = [[5, 50], [10, 100], [-4, 40], [20, 200]];
+  const base = held(rows), starts = base.starts, coinFlows = rows.map(([d, g]) => flow(d / 100, g / 100));
+  const coins = { flows: coinFlows, candles: new Map(deltaCandles(starts, coinFlows, rows.map(() => 0)).map(c => [c.t, c] as const)) };
+  const h = held(rows, { coins });
+  setUnits('coin');
+  try {
+    const s = deltaStretch(h, { t0: T + H, t1: T + 4 * H })!;
+    assert.deepEqual(s.coins && [s.coins.delta, s.coins.volume, s.coins.largest], [0.26, 3.4, 0.2]);
+    assert.equal(s.delta, 26, 'the dollars stay what is counted');
+    const lines = new DeltaRangeSummary().lines(sel(T + H, T + 4 * H), h, true, KEY, NOW);
+    assert.equal(text(lines, 'dl-delta'), 'Delta | +0.26 BTC · +7.6% of the volume', 'the share is the dollars\'');
+    assert.equal(text(lines, 'dl-split'), 'Bought 1.83 BTC | Sold 1.57 BTC');
+    assert.equal(text(lines, 'dl-volume'), 'Recorded taker volume | 3.4 BTC');
+    assert.match(text(lines, 'dl-largest') ?? '', /· \+0\.2 BTC$/);
+    // A counted candle without its coin flow: nothing in coins rather than a total of some candles; and no coins given at all: dollars.
+    const gap = held(rows, { coins: { ...coins, flows: coinFlows.map((f, i) => i === 2 ? null : f) } });
+    assert.equal(deltaStretch(gap, { t0: T + H, t1: T + 4 * H })!.coins, undefined);
+    assert.equal(text(new DeltaRangeSummary().lines(sel(T + H, T + 4 * H), base, true, KEY, NOW), 'dl-delta'), 'Delta | +$26 · +7.6% of the volume');
+  } finally { setUnits('usd'); }
+});

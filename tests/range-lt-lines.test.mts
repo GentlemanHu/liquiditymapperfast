@@ -132,3 +132,25 @@ test('time with each side heavier shares one denominator with its label: equal s
   const tiny = new LtRangeSummary().lines(sel(0, 2), held({ bid: [100, 100.04], ask: [100, 100] }), true, KEY, NOW);
   assert.match(text(tiny, 'lt-imb-move') ?? '', /0\.00 % → \+0\.02 %/);
 });
+
+test('coins (issue 9): a snapshot drawn in coins is summed in its coins and said in the coin; its key holds the units, so the other units\' is stale', async () => {
+  const { setUnits } = await import('../src/app/units.ts');
+  const usd = held({ bid: [100, 200], ask: [50, 100] });
+  setUnits('coin');
+  try {
+    // Each window at its own price: 100 and 200 dollars at 100 and 200 a coin.
+    const coinKey = ltHeldKey(IDS, SET);
+    assert.notEqual(coinKey, KEY, 'the key says coins');
+    const h: LtPaneHeld = { ...usd, key: coinKey, coins: { bid: Float32Array.from([1, 1]), ask: Float32Array.from([0.5, 0.5]), coin: 'BTC' } };
+    const s = ltStretch(h, sel(0, 2), NOW);
+    assert.deepEqual([s.bid!.mean, s.ask!.mean, s.imbalance!.mean], [1, 0.5, 1 / 3]);
+    const summary = new LtRangeSummary(), lines = summary.lines(sel(0, 2), h, true, coinKey, NOW);
+    assert.equal(tile(lines, 'bid')!.value, '1 BTC');
+    assert.match(JSON.stringify(tile(lines, 'ask')), /0\.5 BTC → 0\.5 BTC/);
+    assert.equal(tile(summary.lines(sel(0, 2), usd, false, coinKey, NOW), 'bid')!.value, '1 BTC', 'the settled coin result is kept for this selection in coins');
+    assert.equal(text(new LtRangeSummary().lines(sel(0, 2), usd, false, coinKey, NOW), 'lt-stale')?.startsWith('The Liquidity Tracker last drew'), true, 'a hidden pane\'s dollars are not said as coins');
+    const gap: LtPaneHeld = { ...h, coins: { bid: Float32Array.from([NaN, 1]), ask: Float32Array.from([NaN, 0.5]), coin: 'BTC' } };
+    assert.equal(ltStretch(gap, sel(0, 2), NOW).covered, M, 'a window with no price is not measured');
+  } finally { setUnits('usd'); }
+  assert.equal(ltHeldKey(IDS, SET), KEY, 'and back in dollars the key is as it was');
+});

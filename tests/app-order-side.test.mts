@@ -156,7 +156,7 @@ test('the drawings follow the rule too: the Depth pane\'s rings, terraces, lit b
   assert.match(depth, /take: take \? \{ long: liqFigure\(take, 'long', top\), short: liqFigure\(take, 'short', top\) \} : null/, 'the take profits beside: the shorts\' below, the longs\' above');
   assert.match(depth, /bid: readRow \? liqFigure\(readRow, 'long', j\) : NaN, ask: readRow \? liqFigure\(readRow, 'short', j\) : NaN/, 'the table\'s first side is the longs below');
   assert.match(depth, /this\.#drawTable\(rows, [^;]*, depthHeads\(levelsKind\), sides, lines, /);
-  assert.match(depth, /liqCardLines\(\{ asOf: readRow\.asOf, bands: rows, watched: top, units: settings\.units, coin, view: liqHeld!\.view, takes: tk \}\)/, 'the card knows the kind');
+  assert.match(depth, /liqCardLines\(\{ asOf: readRow\.asOf, bands: rows, watched: top, units: pageUnits\(\), coin, view: liqHeld!\.view, takes: tk \}\)/, 'the card knows the kind');
   assert.match(method(lower, '  #drawTable('), /rows: depthTableRows\(rows, p, sides, ranks\)/);
   const heat = read('src/app/panes/heat-pane.ts');
   // The column's box: its colours by kind (above: shorts bought back, or take profits alone sold), and the Mirror band as the box.

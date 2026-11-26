@@ -198,3 +198,33 @@ test('coverage is the instrument that recorded the most minutes, in whatever ord
   assert.ok(line(rangeLines(input({ partial: true })), 'abs-partial'));
   assert.equal(line(rangeLines(input()), 'abs-partial'), undefined);
 });
+
+test('coins (issue 9): the map\'s summary writes each size in the coin at the price it traded at; shares, settings and open interest as in dollars', async () => {
+  const { setUnits } = await import('../src/app/units.ts');
+  // Two rows of step 10: 99,995 + 5 = 100,000 and 100,005 + 5 = 100,010 a coin.
+  const rows: RangeAnswer['rows'] = [[99_995, 200_000, 100_000, 2, 1], [100_005, 100_010, 0, 1, 0]];
+  const ans = answer([inst('a:BTC', { band: { buy: 300_010, sell: 100_000, buyN: 3, sellN: 1 }, countedUsd: { buy: 300_010, sell: 100_000 }, all: { buy: 300_010, sell: 100_000 } })], rows);
+  const mark = (side: 'buy' | 'sell', usd: number, price: number) => ({ id: 'a:BTC', t0: T0, t1: T0 + 1, price, usd, side, threshold: 50_000 }) as unknown as AbsorptionMark;
+  const liq = { t: T0 + MINUTE, id: 'a:BTC', side: 'long', price: 81_500, usd: 50_000, reported: 100_000, kind: 'single' } as never;
+  const prints = [{ id: 'a:BTC', t: T0 + 2 * MINUTE, price: 81_250, usd: 162_500, side: 'buy' }] as never;
+  const make = () => rangeLines(input({ answer: ans, marks: [mark('sell', 81_500, 81_500)], liquidations: [liq], liquidationMin: 1_000, prints, resting: [{ id: 'a:BTC', bid: 815_000, ask: 1_630_000 }] as never }));
+  const dollars = make();
+  setUnits('coin');
+  try {
+    const lines = make(), cell = (key: string): string => line(lines, key)!.cells.join(' | ');
+    assert.equal(cell('split'), 'Bought 3 BTC | Sold 1 BTC', 'each row over its own price');
+    assert.match(cell('delta'), /^Delta \| \+2 BTC · \+50% of the volume$/);
+    assert.match(cell('average'), /1 BTC buy · 1 BTC sell/, 'the average order at its side\'s average price');
+    assert.match(cell('largest'), /^Largest order \| 2 BTC buy · 81,250/, 'at its own price');
+    assert.match(cell('liquidations'), /0\.5 BTC longs · 0 BTC shorts .*\(from \$1K\)/, 'at the reported price; the setting in dollars');
+    assert.match(cell('abs-total'), /^Absorbed \| 1 BTC/, 'a mark over its own price');
+    assert.equal(cell('abs-v-a'), 'A | 1 BTC | 0 BTC | $50K', 'the threshold, which judges, in dollars');
+    assert.equal(cell('abs-of'), 'Of all market orders | 82% of the 1 BTC sold · 0% of the 3 BTC bought', 'the shares are the dollars\'');
+    assert.equal(cell('who-a'), 'A | 3 BTC | 1 BTC | 100%', 'an exchange at each side\'s average price');
+    assert.equal(cell('rest-split'), 'Bids 10 BTC | Asks 20 BTC', 'at the box\'s middle price, 81,500');
+    assert.deepEqual(line(lines, 'profile')!.profile!.map(b => b.total).filter(Boolean), ['1 BTC', '3 BTC'], 'every bar\'s volume in coins, the highest price first');
+    assert.match(cell('profile-top'), /^Most traded \| 99,995 · 3 BTC · 75%/);
+    assert.equal(line(lines, 'split')!.share, line(dollars, 'split')!.share, 'the bar is the dollars\'');
+  } finally { setUnits('usd'); }
+  assert.deepEqual(make(), dollars, 'back in dollars, the same lines');
+});

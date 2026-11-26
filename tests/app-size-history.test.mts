@@ -423,3 +423,31 @@ test('the card gives the pane\'s table what its row does not say: how unusual, i
   assert.deepEqual(said(1), ['Open interest change', 'Markets', 'Not unusual', 'Its baseline: the 39 earlier candles'], 'its change in dollars is the row\'s Δ');
   assert.ok(said(1, { oiCoins: { value: 12, coin: 'BTC' } }).includes('Change'), 'the coins beside the dollars keep the line');
 });
+
+test('coins (issue 9): the card and the table write the coin\'s figures (sizes at the candle\'s typical price, liquidations at their own); the bars stay the dollars\'', async () => {
+  const { historyCoins, slotPrices } = await import('../src/app/size-history/model.ts');
+  const bars = [bar(0, boxes({ 0: 2000, 1: 30_000 }), boxes({ 0: 1000 })), bar(1, boxes({ 0: 4000 }), boxes({ 0: 500 })), null];
+  const liquidations = { buy: new Map([[T0, 1000]]), sell: new Map([[T0, 200]]), buyCoin: new Map([[T0, 10]]), sellCoin: new Map([[T0, 2]]), cut: false };
+  const model = buildHistory(input(bars, { highlight: { ...H, on: false }, liquidations, oi: new Map([[T0 + TF, 5000]]) }));
+  // Typical prices: candle 0 (100 + 90 + 95) / 3 = 95; candle 1 none, so the one before it; the third slot the second candle (120 + 110 + 115) / 3.
+  const candles = [[T0, 92, 100, 90, 95, 1], [T0 + 2 * TF, 112, 120, 110, 115, 1]] as [number, number, number, number, number, number][];
+  const times = bars.map((_, i) => T0 + i * TF), prices = slotPrices(times, candles);
+  assert.deepEqual([...prices], [95, 95, 115]);
+  assert.deepEqual([...slotPrices([T0 - TF], candles)], [95], 'before the first candle: the first');
+  assert.ok(Number.isNaN(slotPrices([T0], [])[0]!), 'no candle: not known');
+  const coins = historyCoins(model, times, prices, liquidations, new Map([[T0 + TF, 2.5]]));
+  assert.equal(coins.sides[0]!.buy[0], 2000 / 95); assert.equal(coins.sides[1]!.buy[0], 30_000 / 95);
+  assert.equal(coins.liq.buy[0], 10); assert.equal(coins.oi[1], 2.5); assert.ok(Number.isNaN(coins.sides[0]!.buy[2]!), 'no bar: not known');
+  const ctx = { time: 'T', live: false, judging: false, oiSource: null, oiNote: null, mult: 2, coins: { figures: coins, coin: 'BTC' } } as const;
+  const said = (r: number, i: number): string => cardLines(model, r, i, ctx).map(l => `${l.label ?? ''}=${l.text}`).join(' | ');
+  assert.match(said(2, 0), /Buys \/ sells=21\.1 BTC \/ 10\.5 BTC \| Net=\+10\.5 BTC/, 'the smallest size: 2000 and 1000 dollars at 95');
+  assert.match(said(0, 0), /Shorts liquidated=10 BTC \| Longs liquidated=2 BTC/);
+  assert.match(said(1, 1), /Change=\+2\.5 BTC/);
+  assert.doesNotMatch((said(2, 0) + said(0, 0) + said(1, 1)).replace('< $25K', ''), /\$/, 'no dollar figure left (the band\'s name is its size boxes\' edge)');
+  const p = { bid: 'b', ask: 'a', text: 't', muted: 'm' };
+  const usdRows = sizeTableRows(model, 0, p), coinRows = sizeTableRows(model, 0, p, coins);
+  assert.deepEqual(coinRows[2]!.slice(1, 4).map(c => c.text), ['21.1', '10.5', '+10.5']);
+  assert.equal(coinRows[2]![4]!.text, usdRows[2]![4]!.text, 'the share of the candle stays its dollars\'');
+  assert.deepEqual(coinRows[0]!.slice(1, 3).map(c => c.text), ['10', '2']);
+  assert.deepEqual(model.rows.map(r => r.parts.map(part => [...part.values])), buildHistory(input(bars, { highlight: { ...H, on: false }, liquidations, oi: new Map([[T0 + TF, 5000]]) })).rows.map(r => r.parts.map(part => [...part.values])), 'the bars are the dollars\' in either units');
+});

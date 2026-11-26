@@ -1,4 +1,5 @@
 import { clock, usd } from '../format.ts';
+import { coinText, inCoins } from '../units.ts';
 import type { LtParts } from '../lt.ts';
 import { sizeText } from '../sizes.ts';
 import { t, tn } from '../i18n.ts';
@@ -21,8 +22,13 @@ export interface LtPaneHeld {
   minUsd: number; maxUsd: number; minApplied: number; maxApplied: number;
   /** Per level (`average`): each side's weighted size divided by its levels' summed weights. */
   average: boolean;
-  /** The windows' starts, oldest first, each `stepMs` long; bids and asks as drawn (USD). */
+  /** The windows' starts, oldest first, each `stepMs` long; bids and asks in dollars. */
   times: Float64Array; bid: Float32Array; ask: Float32Array;
+  /**
+   * In coins (units.ts): the bids and asks as drawn, each window's dollars over its price (lt.ts `ltInCoins`; NaN where it has none), and the
+   * coin. Absent in dollars: the key says which (`ltHeldKey`).
+   */
+  coins?: { bid: Float32Array; ask: Float32Array; coin: string };
   /**
    * Each venue's part of each window (`LtParts`, in the order of `ids`), NaN where it had nothing: a window holds every venue asked for where
    * none is NaN. Null for one venue (the window is its), or an answer read without them.
@@ -39,9 +45,9 @@ export interface LtPaneHeld {
   answeredAt: number;
 }
 
-/** What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode. */
+/** What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode, and in coins the units (its figures are the coin's). */
 export const ltHeldKey = (ids: readonly string[], lt: { halfLifeBp: number; minUsd: number; maxUsd: number; average: boolean }): string =>
-  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}`;
+  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}${inCoins() ? '|coins' : ''}`;
 
 /**
  * The tracker over a selection, on the windows that overlap it, each counting for the time it overlaps (ms). Only closed windows holding
@@ -70,7 +76,8 @@ export interface Side { mean: number; first: number; last: number; low: number; 
 
 /** The tracker over `sel` from what the pane holds; `now` is the clock's or a replay's moment. */
 export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1'>, now: number): LtStretch {
-  const { times, bid, ask, parts, approx, stepMs: step } = held, owners = held.ids.length, windows = times.length;
+  // The figures as drawn: in coins each window's own (a window without a price is measured as not held). The imbalance is the same in either.
+  const { times, parts, approx, stepMs: step } = held, owners = held.ids.length, windows = times.length, bid = held.coins?.bid ?? held.bid, ask = held.coins?.ask ?? held.ask;
   // Every venue asked for has a part in window i (a lane gap or a venue not recorded then is NaN there).
   const full = (i: number): boolean => {
     if (!parts || owners < 2) return true;
@@ -99,6 +106,8 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
     }
     if (dt <= 0) continue;
     const b = bid[i]!, a = ask[i]!;
+    // In coins a window with no price to value it at (no candle at all) is not measured: left to the time no window covers.
+    if (Number.isNaN(b) || Number.isNaN(a)) continue;
     covered += dt; counted++;
     if (approx?.[i]) apx += dt;
     bSum += dt * b; aSum += dt * a;
@@ -125,9 +134,13 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
   };
 }
 
-const money = (x: number): string => `$${usd(x)}`;
+/** A figure of the tracker as drawn: dollars, or with `coin` (a snapshot drawn in coins) the coin's ("13.2 BTC"). */
+const money = (x: number, coin: string | null = null): string => coin !== null ? `${coinText(x)} ${coin}` : `$${usd(x)}`;
 /** A signed figure: a sign only where the written figure is not zero. */
-const signedMoney = (x: number): string => { const v = usd(Math.abs(x)); return `${v === '0' ? '' : x > 0 ? '+' : '−'}$${v}`; };
+const signedMoney = (x: number, coin: string | null = null): string => {
+  const v = coin !== null ? coinText(Math.abs(x)) : usd(Math.abs(x)), sign = v === '0' ? '' : x > 0 ? '+' : '−';
+  return coin !== null ? `${sign}${v} ${coin}` : `${sign}$${v}`;
+};
 /** Decimals for a set of shares (0..1) written as percentages: one, or two where every one of them is under a tenth of a percent. */
 const digitsOf = (...xs: number[]): number => xs.every(x => Math.abs(x) * 100 < 0.1) ? 2 : 1;
 /** A share as a signed percentage; one written as zero has no sign. */
@@ -202,15 +215,17 @@ export class LtRangeSummary {
     } else if (!s.bid || !s.ask) {
       lines.push(note('lt-empty', s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
     } else {
+      // In the units the pane drew in (the key holds them): in coins each window's own figures.
+      const coin = h.coins?.coin ?? null;
       const sideTile = (key: 'bid' | 'ask', x: Side): GridItem => ({
         key, label: key === 'bid' ? (h.average ? t('Time mean of bid size per level') : t('Time mean of weighted bids')) : (h.average ? t('Time mean of ask size per level') : t('Time mean of weighted asks')),
-        value: money(x.mean), tone: key === 'bid' ? 'buy' : 'sell',
+        value: money(x.mean, coin), tone: key === 'bid' ? 'buy' : 'sell',
         tip: t('Each included window is weighted by its overlap with the selection.'),
         // One window: its value is all there is (no first and last, no range).
         rows: s.windows < 2 ? [] : [
-          { label: t('First → last included window'), value: `${money(x.first)} → ${money(x.last)}` },
-          { label: t('Last − first'), value: signedMoney(x.last - x.first) },
-          { label: t('Lowest – highest window values'), value: `${money(x.low)} – ${money(x.high)}` },
+          { label: t('First → last included window'), value: `${money(x.first, coin)} → ${money(x.last, coin)}` },
+          { label: t('Last − first'), value: signedMoney(x.last - x.first, coin) },
+          { label: t('Lowest – highest window values'), value: `${money(x.low, coin)} – ${money(x.high, coin)}` },
         ],
       });
       lines.push({ key: 'lt-grid', kind: 'grid', cells: [], grid: [sideTile('bid', s.bid), sideTile('ask', s.ask)] });
