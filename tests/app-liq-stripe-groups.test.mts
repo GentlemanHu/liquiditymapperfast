@@ -262,7 +262,7 @@ test('the map draws the stripe through its painter and takes only what it painte
   assert.match(stripe, /\.\.\.\(left\?\.takes \? \[\{ lane: left\.takes, words: t\('Take profits'\), dashed: true, old: src\.takesOutOfDate\(\) \}\] : \[\]\),/);
   assert.match(heat, /if \(lanes\.length\) this\.#laneEdge = Math\.min\(\.\.\.lanes\.map\(l => l\.x0\), \.\.\.\(this\.#liqPlates \?\? \[\]\)\.map\(pl => pl\.x\)\);/);
   assert.match(heat, /if \(replaying\(\)\) return \[\];\n    const held = this\.#liqHeld\.right;\n    if \(right && held && x >= right\.lane\.x0 && x < right\.lane\.x1\) return this\.#laneLines\(state, right\.set, held, y, ph, touch, right\.whose\);\n    if \(!lanes \|\| src\.state !== 'ready'\) return \[\];/);
-  assert.match(heat, /inTakes \? lanes\.takesWhose : lanes\.whose\);/);
+  assert.match(heat, /inTakes \? lanes\.takesWhose : lanes\.whose, said\);/);
   assert.match(heat, /return setBoxLines\(found, set, at > 0 \? at : this\.hub\.liqLevels\.lastPriceOf\(levels\), side => shown\(found, side\), whose\);/);
   // The painter's right lane: from the right set, its rows kept by that set's key.
   assert.match(stripe, /const rr = held\.right = laneRows\(\{ key: \(\) => right\.key\(\), takesKey: \(\) => '', taken: \(\) => right\.taken\(\), takesTaken: \(\) => null \}, 'levels', right\.levels,/);

@@ -424,8 +424,58 @@ export function binsBetween(levels: LiqLevels, side: 'long' | 'short', kLo: numb
   return { positions, top };
 }
 
+/**
+ * The levels in coins (app/units.ts): every bin's dollars (both parts of each side, and the largest one) over the price in its middle,
+ * (k + 0.5) * step, as the Depth pane's Liquidation levels view puts each of its buckets over its own price (liq-history.ts `cumulate`); the
+ * bins, their counts and everything else as they are, so what price has taken of the dollars (`Taken`, by bin) reads them too. Made once a
+ * set of levels: they are never changed once read.
+ */
+export function levelsInCoins(levels: LiqLevels): LiqLevels {
+  let out = coinLevels.get(levels);
+  if (out) return out;
+  const step = levels.step, per = (i: number): number => { const mid = (levels.k[i]! + 0.5) * step; return mid > 0 ? 1 / mid : 0; };
+  const scale = (a: Float64Array): Float64Array => a.map((v, i) => v * per(i));
+  out = { ...levels, longIso: scale(levels.longIso), longCross: scale(levels.longCross), shortIso: scale(levels.shortIso), shortCross: scale(levels.shortCross), longTop: scale(levels.longTop), shortTop: scale(levels.shortTop) };
+  coinLevels.set(levels, out);
+  return out;
+}
+const coinLevels = new WeakMap<LiqLevels, LiqLevels>();
+
 /** What still stands of each side, added up bin by bin from the lowest (sums with a leading 0), for the profile column. */
 export interface LiqStanding { k: Int32Array; step: number; long: Float64Array; short: Float64Array }
+
+/**
+ * A standing in coins (app/units.ts): what stands in each bin (the running sums' steps) over the price in the bin's middle, as `levelsInCoins`
+ * puts the bins, added up again from the lowest; so everything read off it (`standingBelow`, `onTheWay`, `liqProfile`) is in coins, each bin
+ * converted before it is added. Made once a standing (what price takes makes a new one).
+ */
+export function standingInCoins(s: LiqStanding): LiqStanding {
+  let out = coinStandings.get(s);
+  if (out) return out;
+  const n = s.k.length, long = new Float64Array(n + 1), short = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    const mid = (s.k[i]! + 0.5) * s.step, per = mid > 0 ? 1 / mid : 0;
+    long[i + 1] = long[i]! + (s.long[i + 1]! - s.long[i]!) * per;
+    short[i + 1] = short[i]! + (s.short[i + 1]! - s.short[i]!) * per;
+  }
+  out = { k: s.k, step: s.step, long, short };
+  coinStandings.set(s, out);
+  return out;
+}
+const coinStandings = new WeakMap<LiqStanding, LiqStanding>();
+
+/** A standing in the page's units: as it is in dollars, in coins `standingInCoins` (app/units.ts). */
+export const standingSaid = (s: LiqStanding, coins: boolean): LiqStanding => coins ? standingInCoins(s) : s;
+
+/** A row of the stripe (grouped from `levels` by `liqRows`) in coins: the same bins, each over the price in its middle before they are added. */
+export function rowInCoins(levels: LiqLevels, taken: { long: Taken; short: Taken } | null, row: LiqRow): LiqRow {
+  const per = Math.max(1, Math.round((row.p1 - row.p0) / levels.step));
+  const same = liqRows(levelsInCoins(levels), taken, per, row.p0, row.p1).find(r => Math.abs(r.p0 - row.p0) < levels.step / 2);
+  if (same) return same;
+  // Not on the levels' own grid (never, for a row the stripe drew): the row over its middle price.
+  const mid = (row.p0 + row.p1) / 2, k = mid > 0 ? 1 / mid : 0;
+  return { ...row, long: row.long * k, longIso: row.longIso * k, short: row.short * k, shortIso: row.shortIso * k, longTop: row.longTop * k, shortTop: row.shortTop * k, longLeft: row.longLeft * k, shortLeft: row.shortLeft * k };
+}
 
 export function liqStanding(levels: LiqLevels, taken: { long: Taken; short: Taken } | null): LiqStanding {
   const n = levels.k.length, long = new Float64Array(n + 1), short = new Float64Array(n + 1);
@@ -464,6 +514,8 @@ export function onTheWay(s: LiqStanding, price: number, at: number): { side: 'lo
  * sum, bin by bin, is the view's own standing, so the two parts always add up to the total the page shows beside them.
  */
 export interface LiqParts { liq: LiqStanding; stops: LiqStanding }
+/** Both parts in the page's units (`standingSaid`). */
+export const partsSaid = (parts: LiqParts, coins: boolean): LiqParts => coins ? { liq: standingInCoins(parts.liq), stops: standingInCoins(parts.stops) } : parts;
 /** What stands of each part on one side within [lo, hi) (a row of the stripe, of the column, of the Liq tab). */
 export function partsBetween(parts: LiqParts, side: 'long' | 'short', lo: number, hi: number): { liq: number; stops: number } {
   const of = (s: LiqStanding): number => Math.max(0, standingBelow(s, side, hi) - standingBelow(s, side, lo));
@@ -499,6 +551,25 @@ export function liqProfile(s: LiqStanding, step: number, p0: number, p1: number,
     longBelow = longTo; shortBelow = shortTo;
   }
   return out;
+}
+
+/**
+ * What a liquidation column's LEVEL MAX and CUM MAX say in the page's units (app/units.ts): what the row with the longest bar holds (both its
+ * sides) and the longest running total, each read from the same rows in coins (`said`, `liqProfile` of `standingInCoins`) where the dollars
+ * (`prof`, which lay the column out) put them. `takes`: the take profits beside it on the same scale, whose rows count for LEVEL MAX only.
+ */
+export function profileMaxima(prof: LiqProfile, said: LiqProfile, takes: { prof: LiqProfile; said: LiqProfile } | null = null): { level: number; cum: number } {
+  let level = 0, levelSaid = 0, cum = 0, cumSaid = 0;
+  const rows = (p: LiqProfile, s: LiqProfile): void => {
+    for (let r = 0; r < p.long.length; r++) { const v = p.long[r]! + p.short[r]!; if (v > level) { level = v; levelSaid = (s.long[r] ?? 0) + (s.short[r] ?? 0); } }
+  };
+  rows(prof, said);
+  if (takes) rows(takes.prof, takes.said);
+  for (let r = 0; r < prof.long.length; r++) {
+    if (prof.cumLong[r]! > cum) { cum = prof.cumLong[r]!; cumSaid = said.cumLong[r] ?? 0; }
+    if (prof.cumShort[r]! > cum) { cum = prof.cumShort[r]!; cumSaid = said.cumShort[r] ?? 0; }
+  }
+  return { level: levelSaid, cum: cumSaid };
 }
 
 /** A point of a cumulative curve: a price and what would be liquidated on the way there from the price. */
@@ -1222,9 +1293,10 @@ export function spearman(a: readonly number[], b: readonly number[]): number | n
  * the rows whose middle lies within `d` of the price. Each side: the book against the liquidations in the band and over every row, and the
  * rank correlation of level size with book size over the rows that hold liquidations (book depth thins away from the price while
  * liquidations gather away from it, so over every row a coefficient would mostly measure that distance). And for the three largest
- * liquidation levels, the book at their row against the mean of the three rows either side: a wall above 1, a void below.
+ * liquidation levels, the book at their row against the mean of the three rows either side: a wall above 1, a void below. `dollar`: a
+ * dollar in the rows' units (app/units.ts `unitFloor`: 1 in dollars, a dollar's worth of coin in coins), the floor under the rows around a wall.
  */
-export function seamStats(rows: { row0: number; step: number; bid: ArrayLike<number>; ask: ArrayLike<number>; long: ArrayLike<number>; short: ArrayLike<number> }, price: number, d: number): SeamStats {
+export function seamStats(rows: { row0: number; step: number; bid: ArrayLike<number>; ask: ArrayLike<number>; long: ArrayLike<number>; short: ArrayLike<number> }, price: number, d: number, dollar = 1): SeamStats {
   const n = Math.min(rows.bid.length, rows.ask.length, rows.long.length, rows.short.length);
   const side = (below: boolean): SeamSide => {
     const book = below ? rows.bid : rows.ask, liq = below ? rows.long : rows.short;
@@ -1253,7 +1325,7 @@ export function seamStats(rows: { row0: number; step: number; bid: ArrayLike<num
     let sum = 0, count = 0;
     for (let k = i - 3; k <= i + 3; k++) if (k !== i && k >= 0 && k < n) { sum += book[k]!; count++; }
     const around = count ? sum / count : 0;
-    return { price: (rows.row0 + i + 0.5) * rows.step, side, usd, ratio: book[i]! / Math.max(around, 1) };
+    return { price: (rows.row0 + i + 0.5) * rows.step, side, usd, ratio: book[i]! / Math.max(around, dollar) };
   });
   return { below: side(true), above: side(false), walls };
 }

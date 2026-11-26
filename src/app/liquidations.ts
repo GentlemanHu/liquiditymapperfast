@@ -1,6 +1,7 @@
 import { LIQUIDATION_COVERAGE, fromWire, type Liquidation } from '../shared/liquidations.ts';
 import { TimeBook } from './prints.ts';
-import { price as fmtPrice, usd, clock } from './format.ts';
+import { price as fmtPrice, clock } from './format.ts';
+import { amount, inCoins } from './units.ts';
 import { venueLabel } from './venues.ts';
 import { scaledUsd } from './coin.ts';
 import { SIZE_MAX_USD } from './sizes.ts';
@@ -75,11 +76,20 @@ export function coverageLines(markets: readonly { venue: string; spot: boolean }
   return out;
 }
 
-/** The box for a liquidation under the pointer. */
-export function liquidationLines(l: Liquidation): InfoLine[] {
-  const symbol = l.id.split(':').slice(1).join(':');
+/**
+ * A liquidation's coins (app/units.ts): its dollars over the price the exchange reported it at (the position's own price; the map draws it at
+ * the market's, `price`, which a bankruptcy report can be far from), or that drawn price where no price was reported.
+ */
+export const liquidationCoins = (l: Pick<Liquidation, 'usd' | 'reported' | 'price'>): number => l.usd / (l.reported > 0 ? l.reported : l.price);
+
+/**
+ * The box for a liquidation under the pointer. Its size in the page's units: in coins `coins`, by default the liquidation's own
+ * (`liquidationCoins`); a caller that shows several added together hands in their coins, each over its own reported price.
+ */
+export function liquidationLines(l: Liquidation, coins?: number): InfoLine[] {
+  const symbol = l.id.split(':').slice(1).join(':'), size = amount(inCoins() ? coins ?? liquidationCoins(l) : l.usd);
   const lines: InfoLine[] = [
-    { text: `${l.side === 'long' ? t('LONGS LIQUIDATED') : t('SHORTS LIQUIDATED')}  $${usd(l.usd)}`, bold: true, color: l.side === 'long' ? 'sell' : 'buy', mark: l.id },
+    { text: `${l.side === 'long' ? t('LONGS LIQUIDATED') : t('SHORTS LIQUIDATED')}  ${size}`, bold: true, color: l.side === 'long' ? 'sell' : 'buy', mark: l.id },
     { text: l.side === 'long' ? t('A long position was closed by force: the exchange sold it at market.') : t('A short position was closed by force: the exchange bought it back at market.'), wrap: true },
     { label: t('Venue'), text: `${venueLabel(l.id)} ${symbol}`, rule: true },
     { label: t('Market price'), text: fmtPrice(l.price) },

@@ -1,5 +1,6 @@
 import { ABSORPTION_WINDOW_MS, GROUP_FLOOR_USD, GROUPS_PER_MINUTE, autoThreshold, largerFirst, markedPart, peakOf, type AbsorptionAnswer, type AbsorptionGroup, type AbsorptionMinute } from '../shared/absorption.ts';
 import { clock, price as fmtPrice, usd } from './format.ts';
+import { amount, inCoins, inUnits } from './units.ts';
 import { venueLabel } from './venues.ts';
 import { t, tn } from './i18n.ts';
 import { scaledUsd } from './coin.ts';
@@ -432,29 +433,46 @@ export class AbsorptionBook {
   }
 }
 
-/** What the passive side did, in words: passive buyers took market sells, passive sellers took market buys. */
-export const passiveText = (side: 'buy' | 'sell', amount: number): string => side === 'sell'
-  ? t('Passive buyers took ${value} of market sells', { value: usd(amount) })
-  : t('Passive sellers took ${value} of market buys', { value: usd(amount) });
+/**
+ * What the passive side did, in words: passive buyers took market sells, passive sellers took market buys. `size` is in the page's units
+ * (app/units.ts): dollars as the words always had them, or coins, said with the coin.
+ */
+export const passiveText = (side: 'buy' | 'sell', size: number): string => !inCoins()
+  ? side === 'sell' ? t('Passive buyers took ${value} of market sells', { value: usd(size) }) : t('Passive sellers took ${value} of market buys', { value: usd(size) })
+  : side === 'sell' ? t('Passive buyers took {value} of market sells', { value: amount(size) }) : t('Passive sellers took {value} of market buys', { value: amount(size) });
+
+/**
+ * The coins of marks drawn as one square (app/units.ts): each mark's dollars over its own price, added up; kept for the square's list of
+ * marks, which is never changed once the squares are laid out.
+ */
+export function marksCoins(marks: readonly AbsorptionMark[]): number {
+  let coins = coinsOfMarks.get(marks);
+  if (coins === undefined) { coins = 0; for (const m of marks) if (m.price > 0) coins += m.usd / m.price; coinsOfMarks.set(marks, coins); }
+  return coins;
+}
+const coinsOfMarks = new WeakMap<readonly AbsorptionMark[], number>();
 
 /** A time to the millisecond (absorption happens inside a window of a few milliseconds). */
 const precise = (time: number): string => `${clock(time, true)}:${String(new Date(time).getSeconds()).padStart(2, '0')}.${String(time % 1000).padStart(3, '0')}`;
 
-/** How the threshold was set, in words. */
+/** How the threshold was set, in words: a setting, so in dollars in either units (app/units.ts). */
 export function thresholdText(s: AbsorptionSettings, threshold: number): string {
   return s.mode === 'fixed' ? t('${value}, fixed', { value: usd(threshold) }) : t('${value}: mean + {k} SD of the last {minutes} min', { value: usd(threshold), k: s.k, minutes: s.sdMinutes });
 }
 
-/** The box for one or more marks under the pointer (marks drawn as one icon are on one side, and are summed). */
+/**
+ * The box for one or more marks under the pointer (marks drawn as one icon are on one side, and are summed). Sizes in the page's units
+ * (app/units.ts: each mark over its own price); the threshold, a setting, in dollars.
+ */
 export function markLines(marks: readonly AbsorptionMark[], s: AbsorptionSettings): InfoLine[] {
-  const side = marks[0]!.side, total = marks.reduce((a, m) => a + m.usd, 0), lines: InfoLine[] = [];
+  const side = marks[0]!.side, total = inCoins() ? marksCoins(marks) : marks.reduce((a, m) => a + m.usd, 0), lines: InfoLine[] = [];
   lines.push({ text: t('ABSORPTION'), bold: true, color: side === 'sell' ? 'buy' : 'sell' });
   lines.push({ text: passiveText(side, total), wrap: true });
   if (marks.length === 1) {
     const m = marks[0]!, symbol = m.id.split(':').slice(1).join(':');
     lines.push({ label: t('Venue'), text: `${venueLabel(m.id)} ${symbol}`, rule: true, mark: m.id }, { label: t('Price'), text: fmtPrice(m.price) });
     lines.push({ label: t('Time'), text: m.t1 > m.t0 ? `${precise(m.t0)} +${m.t1 - m.t0} ms` : precise(m.t0) });
-    lines.push({ label: t('Fills'), text: String(m.fills) }, { label: t('Largest window'), text: `$${usd(m.peak)}` });
+    lines.push({ label: t('Fills'), text: String(m.fills) }, { label: t('Largest window'), text: amount(inUnits(m.peak, m.price)) });
     lines.push({ label: t('Threshold'), text: thresholdText(s, m.threshold) });
   } else {
     const venues = [...new Set(marks.map(m => venueLabel(m.id)))].join(', ');

@@ -1,5 +1,6 @@
 import { t } from '../i18n.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, inUnits } from '../units.ts';
 import type { Palette } from '../theme.ts';
 import type { KeyTag } from '../keylevels/paint.ts';
 import { ANCHORS, newDrawing, positionFigures, type DrawColor, type Drawing } from './model.ts';
@@ -284,7 +285,8 @@ export function paintEditing(ctx: CanvasRenderingContext2D, draw: DrawController
     const s = cursor.snap;
     ctx.strokeStyle = p.text; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cursor.x, cursor.y, 6, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = p.text; ctx.beginPath(); ctx.arc(cursor.x, cursor.y, 2, 0, Math.PI * 2); ctx.fill();
-    const text = caughtText(s.field, fmtPrice(s.p), `$${usd(s.usd ?? 0)}`);
+    // A wall's dollars (the magnet judges dollars) in the page's units: in coins over the price of its row (app/units.ts).
+    const text = caughtText(s.field, fmtPrice(s.p), amount(inUnits(s.usd ?? 0, s.p)));
     const right = cursor.x > pr.w - 170;
     label(ctx, text, right ? cursor.x - 10 : cursor.x + 10, cursor.y - 14, p.text, p, right ? 'right' : 'left');
   }

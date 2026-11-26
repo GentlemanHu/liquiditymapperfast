@@ -1,6 +1,7 @@
 import { t, tn } from '../i18n.ts';
 import { el } from '../dom.ts';
-import { clock, price as fmtPrice, usd } from '../format.ts';
+import { clock, price as fmtPrice } from '../format.ts';
+import { amount, inUnits } from '../units.ts';
 import { compactBar, isCoarse } from '../device.ts';
 import { togglePanel, switchRow, segmented, heading, note, button, type Panel } from '../ui.ts';
 import { DRAW_COLORS, DRAW_WIDTHS, MAX_IMPORT_CHARS, positionFigures, type DrawColor, type DrawKind, type Drawing } from './model.ts';
@@ -106,14 +107,18 @@ function span(ms: number): string {
   return tn(Math.round(h / 24), '{n} day', '{n} days');
 }
 
-/** What the bar says about a selected drawing: its prices, how far the price is, what rests there now, its height or its move. */
+/**
+ * What the bar says about a selected drawing: its prices, how far the price is, what rests there now, its height or its move. `resting` is in
+ * dollars; it is said in the page's units (app/units.ts), in coins over the price in the middle of its row, as the book profile's rows are.
+ */
 export function readout(d: Drawing, mark: number, resting: { bid: number; ask: number; step: number } | null): string {
   const [a, b, c] = d.points;
   switch (d.kind) {
     case 'level': {
       const p = a!.p, parts = [fmtPrice(p)];
       if (mark > 0) parts.push(t('{pct} from the price', { pct: pct((p - mark) / mark * 100) }));
-      if (resting) parts.push(resting.bid + resting.ask > 0 ? t('{usd} resting in the {step} row now', { usd: `$${usd(resting.bid + resting.ask)}`, step: `$${fmtPrice(resting.step, resting.step)}` }) : t('nothing resting in the {step} row now', { step: `$${fmtPrice(resting.step, resting.step)}` }));
+      const rowMid = resting ? (Math.floor(p / resting.step) + 0.5) * resting.step : 0;
+      if (resting) parts.push(resting.bid + resting.ask > 0 ? t('{usd} resting in the {step} row now', { usd: amount(inUnits(resting.bid + resting.ask, rowMid)), step: `$${fmtPrice(resting.step, resting.step)}` }) : t('nothing resting in the {step} row now', { step: `$${fmtPrice(resting.step, resting.step)}` }));
       else parts.push(t('the book is not held here'));
       return parts.join(' · ');
     }

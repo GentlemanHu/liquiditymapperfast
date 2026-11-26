@@ -1,6 +1,7 @@
 import { t } from '../../i18n.ts';
-import { usd } from '../../format.ts';
 import type { OiBar } from '../../store.ts';
+import { figure, inCoins, signedAmount } from '../../units.ts';
+import { saidMax, saidSides } from '../../traded.ts';
 import type { OiPart } from '../../oi-change.ts';
 import { ensureDeltaFlow } from '../../delta/flows.ts';
 import { flowLoadIds } from '../../cvd/ids.ts';
@@ -11,9 +12,6 @@ import { bucketFor, oiRows, oiSpread, readingSpacing } from '../model.ts';
 import { Asked, NO_FLAGS, emptyAnswer, worked, type MeasureDef, type TimeWorker } from '../measure.ts';
 
 const MINUTE = 60_000;
-
-/** A signed USD amount: +$1.2M, −$300K. */
-const signed = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 
 /**
  * The change in open interest: each perpetual's change between its readings spread over the prices (or the minutes) that traded on it in
@@ -27,13 +25,18 @@ export const OI: MeasureDef<'oi'> = {
   words: () => ({ buy: t('Open interest added'), sell: t('Open interest removed'), net: t('Net change'), share: t('Share of the change'), none: t('No change in open interest placed at these prices.') }),
   stretchNone: () => t('Open interest did not change in this stretch.'),
   unit: 'usd', completeness: ['unplaced'],
-  // What was added and what was removed, and the change it could not place when that is more than a hundredth of what it placed.
+  // What was added and what was removed, and the change it could not place when that is more than a hundredth of what it placed. Whether it
+  // is said is judged on the dollars; the figures are in the page's units (app/units.ts: open interest's own coins, `unplacedCoins`).
   header(rows, flags) {
     const head = t('OI CHANGE');
     if (!rows) return { head, sub: '', warn: false };
     let up = 0, down = 0; for (let i = 0; i < rows.buy.length; i++) { up += rows.buy[i]!; down += rows.sell[i]!; }
-    const unplaced = flags.unplaced ?? 0, total = t('OI +{up} −{down}', { up: usd(up), down: usd(down) });
-    return Math.abs(unplaced) > (up + down) / 100 ? { head: total, sub: t('{value} not placed', { value: signed(unplaced) }), warn: true } : { head: total, sub: t('ROW MAX {value}', { value: usd(rows.max) }), warn: false };
+    const said = saidSides(rows), coins = said !== rows;
+    let saidUp = up, saidDown = down;
+    if (coins) { saidUp = 0; saidDown = 0; for (let i = 0; i < rows.buy.length; i++) { saidUp += said.buy[i]!; saidDown += said.sell[i]!; } }
+    const unplaced = flags.unplaced ?? 0, total = t('OI +{up} −{down}', { up: figure(saidUp), down: figure(saidDown) });
+    const unplacedSaid = !inCoins() ? unplaced : flags.unplacedCoins ?? Number.NaN;
+    return Math.abs(unplaced) > (up + down) / 100 ? { head: total, sub: t('{value} not placed', { value: signedAmount(unplacedSaid) }), warn: true } : { head: total, sub: t('ROW MAX {value}', { value: figure(saidMax(rows)) }), warn: false };
   },
   priceNotes: ({ browser }) => [
     t('Each perpetual\'s change in open interest between its readings (about one a minute) spread over the prices that traded on it in between, by their share of the volume: where exposure grew (bid colour) and where it shrank (ask colour). An estimate of where, never of who: a change does not say which side opened or closed. Each venue counts on its own, and a change with no trades recorded under it, or between readings an hour apart, is not placed: the header says how much.'),
@@ -63,15 +66,15 @@ function oiWorker(): TimeWorker {
       const { from: of, to: ot } = q.whole;
       const oiIds = q.ids.filter(oiInstrument).slice(0, MAX_PROFILE_INSTRUMENTS), base = oiIds.join(','), askFrom = Math.floor((of - 10 * MINUTE) / MINUTE) * MINUTE, askTo = Math.ceil(ot / MINUTE) * MINUTE + MINUTE;
       series.ensure(base, askFrom, askTo, q.live, async () => ({ ids: base, parts: (await Promise.all(oiIds.map(async id => ({ id, ...await q.hub.oiSeries(id, '1m', askFrom, askTo).catch(() => ({ bars: [] as OiBar[] })) })))).filter(p => p.bars.length) }), q.loaded);
-      const { step, limit } = bucketFor(q.span, q.pw, MINUTE);
-      const key = `o|${step}|${of}|${ot}|${q.second}|${series.version}|${q.hub.flow.loads}`;
+      const { step, limit } = bucketFor(q.span, q.pw, MINUTE), coins = inCoins();
+      const key = `o|${step}|${of}|${ot}|${q.second}|${series.version}|${q.hub.flow.loads}|${coins ? 'coins' : 'usd'}`;
       if (last?.key === key) return last;
       ensureDeltaFlow(q.hub, flowLoadIds(q.state, q.hub.flow.ids), of, Date.now());
       // Replay: only the minutes that had ended by its moment.
       const parts = (series.held?.parts ?? []).map(p => ({ ...p, bars: replaying() ? p.bars.filter(b => b[0] + MINUTE <= q.now) : p.bars }));
       const spread = oiSpread(parts.map(p => ({ ...p, track: q.hub.flow.track(p.id) })), of, ot, q.state.mark.price);
-      return worked(q, key, [], oiRows(spread.parts, spread.covered, of, ot, step, spread.first), limit,
-        { spacingMs: readingSpacing(parts.map(p => p.bars)), flags: { ...NO_FLAGS, unplaced: spread.unplaced }, since: of > q.win.from + MINUTE ? of : null });
+      return worked(q, key, [], oiRows(spread.parts, spread.covered, of, ot, step, spread.first, coins), limit,
+        { spacingMs: readingSpacing(parts.map(p => p.bars)), flags: { ...NO_FLAGS, unplaced: spread.unplaced, unplacedCoins: spread.unplacedCoins }, since: of > q.win.from + MINUTE ? of : null });
     },
   };
 }

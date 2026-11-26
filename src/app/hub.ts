@@ -98,7 +98,8 @@ function answered(sets: readonly { id: string; step: number }[], ids: readonly s
   return ids.map(id => byId.get(id) ?? { id, step: 0 });
 }
 
-export interface RasterResult { id: number; w: number; h: number; data: Float32Array; stats: RasterStats; bounds: Bounds }
+/** `coins`: the grid and its percentiles are in coins (app/units.ts), as the request asked; else in dollars. */
+export interface RasterResult { id: number; w: number; h: number; data: Float32Array; stats: RasterStats; bounds: Bounds; coins: boolean }
 
 /** Owns data loading: bootstrap, live socket, candles, OI, recorded columns and the raster worker. */
 /**
@@ -649,7 +650,7 @@ export class Hub {
           const bounds = this.#inflight.get(message.id);
           this.#inflight.delete(message.id);
           this.busyMs = message.busyMs;
-          if (bounds) this.onRaster({ id: message.id, w: message.w, h: message.h, data: message.data, stats: message.stats, bounds });
+          if (bounds) this.onRaster({ id: message.id, w: message.w, h: message.h, data: message.data, stats: message.stats, bounds, coins: message.coins === true });
         }
       };
     });
@@ -1898,12 +1899,12 @@ export class Hub {
   /** New minutes may have been recorded: the next `loadColumns` asks again for the windows that could have changed. */
   invalidateColumns(): void { this.#columnsStale = true; }
 
-  /** Ask the worker for a grid covering `bounds`. Returns false when too many requests are already running. */
-  raster(enabled: string[], bounds: Bounds, w: number, h: number, smooth: boolean): boolean {
+  /** Ask the worker for a grid covering `bounds`, in coins with `coins` (app/units.ts). Returns false when too many requests are already running. */
+  raster(enabled: string[], bounds: Bounds, w: number, h: number, smooth: boolean, coins = false): boolean {
     if (this.#inflight.size >= 1) return false;
     const id = ++this.#rasterId;
     this.#inflight.set(id, { ...bounds });
-    this.#post({ type: 'raster', id, enabled, ...bounds, w, h, smooth });
+    this.#post({ type: 'raster', id, enabled, ...bounds, w, h, smooth, coins });
     return true;
   }
 }

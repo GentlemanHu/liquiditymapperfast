@@ -1,18 +1,19 @@
 /**
  * What Liquidation levels' boxes and readings say, apart from where they are drawn (pure, tested in tests/app-liq-plus.test.mts): the stripe's
- * box for a row, the column's reading at the pointer, its Mirror box's parts and the phone Liq tab's finger. Every amount is in dollars
- * (`dollars`), and under each total of Liq + stops its two parts, which add up to the figure above them as it is printed (`splitText` with
- * that figure).
+ * box for a row, the column's reading at the pointer, its Mirror box's parts and the phone Liq tab's finger. Every amount is in the page's
+ * units (`dollars`: "$1.2M", or "13.2 BTC" in coins, app/units.ts), handed in so by the caller (in coins each bin over its own price:
+ * liq-levels.ts `standingInCoins`, `rowInCoins`), and under each total of Liq + stops its two parts, which add up to the figure above them
+ * as it is printed (`splitText` with that figure).
  */
 import { INFO, type InfoLine } from './infobox.ts';
 import { t } from './i18n.ts';
-import { usd } from './format.ts';
 import { distanceText } from './panes/ladder-info.ts';
-import { onTheWay, partsBetween, partsOnTheWay, type LevelsKind, type LiqParts, type LiqRow, type LiqSet, type LiqStanding } from './liq-levels.ts';
+import { onTheWay, partsBetween, partsOnTheWay, partsSaid, rowInCoins, standingSaid, type LevelsKind, type LiqParts, type LiqRow, type LiqSet, type LiqStanding } from './liq-levels.ts';
 import { countLabel, ordersAbsent, sideTitle, splitLabel, splitText, topLabel } from './liq-words.ts';
+import { amount, inCoins } from './units.ts';
 
-/** An amount as the boxes write it: "$1.2M". */
-export const dollars = (value: number): string => `$${usd(value)}`;
+/** An amount as the boxes write it, in the page's units: "$1.2M", or "13.2 BTC" in coins (app/units.ts). */
+export const dollars = (value: number): string => amount(value);
 
 /**
  * The stripe's box for a row under the pointer (`HeatPane.#liquidationLines` finds the row), for each side `shown` holds: what is at that
@@ -20,19 +21,20 @@ export const dollars = (value: number): string => `$${usd(value)}`;
  * level's far edge), how many positions or orders make it up and how big the largest is, and its two parts (isolated and cross margin;
  * whole-position orders and orders with their own size). Liq + stops (`parts`) gives both of its figures as their total and its two parts.
  * `whose` names the group of a lane that has one beside another group's (everyone beside the profitable traders, `stripePlan`), after each
- * side's title ("Long liquidations · Profitable"); null names none.
+ * side's title ("Long liquidations · Profitable"); null names none. `said`: the same row in the page's units (`rowInCoins` in coins), which
+ * the amounts are written from, with `standing` and `parts` in those units too; the largest one's share of the level is the dollars'.
  */
-export function stripeBoxLines(row: LiqRow, kind: LevelsKind, price: number, standing: LiqStanding | null, parts: LiqParts | null, shown: (side: 'long' | 'short') => boolean, whose: string | null = null): InfoLine[] {
+export function stripeBoxLines(row: LiqRow, kind: LevelsKind, price: number, standing: LiqStanding | null, parts: LiqParts | null, shown: (side: 'long' | 'short') => boolean, whose: string | null = null, said: LiqRow = row): InfoLine[] {
   const lines: InfoLine[] = [];
   for (const side of ['long', 'short'] as const) {
     if (!shown(side)) continue;
-    const total = row[side], left = row[`${side}Left`], iso = row[`${side}Iso`], top = row[`${side}Top`];
+    const share = row[side] > 0 ? row[`${side}Top`] / row[side] : 0, total = said[side], left = said[`${side}Left`], iso = said[`${side}Iso`], top = said[`${side}Top`];
     // In the colour it is drawn in: what sells in the falling colour, what buys in the rising one (take profits of shorts are buys).
     const sells = kind === 'takes' ? side === 'short' : side === 'long';
     lines.push({ text: whose ? `${sideTitle(kind, side)} · ${whose}` : sideTitle(kind, side), color: sells ? 'sell' : 'buy', bold: true, rule: true });
     // What still stands, said first wherever it prints differently from the whole (Sol's review, round 2: a level 0.4 % gone printed the whole
     // and its standing parts scaled back up to it); the split is of what still stands, so it adds up to the figure said first.
-    const taken = usd(left) !== usd(total);
+    const taken = dollars(left) !== dollars(total);
     lines.push({ label: t('At this level'), text: taken ? t('{left} of {total}', { left: dollars(left), total: dollars(total) }) : dollars(total), bold: true });
     if (parts) lines.push({ text: splitText(partsBetween(parts, side, row.p0, row.p1), left), color: 'muted', wrap: true });
     // Measured from the edge price reaches first; on the way there, everything that still stands between the price and this level.
@@ -46,7 +48,7 @@ export function stripeBoxLines(row: LiqRow, kind: LevelsKind, price: number, sta
       if (split) lines.push({ text: splitText(split, usdWay), color: 'muted', wrap: true });
     }
     lines.push({ label: countLabel(kind), text: String(row[`${side}Wallets`]) });
-    if (top > 0) lines.push({ label: topLabel(kind), text: `${dollars(top)} (${Math.round(top / total * 100)}%)` });
+    if (top > 0) lines.push({ label: topLabel(kind), text: `${dollars(top)} (${Math.round(share * 100)}%)` });
     if (!parts) lines.push({ label: splitLabel(kind), text: `${dollars(iso)} / ${dollars(total - iso)}` });
   }
   return lines;
@@ -57,10 +59,13 @@ export function stripeBoxLines(row: LiqRow, kind: LevelsKind, price: number, sta
  * traders' levels), as `stripeBoxLines` writes it from that set alone, its group named where `whose` gives one; where the set's stop and
  * take-profit orders are not on the server (the profitable traders'), it says so under them, never anything of everyone's in their place.
  */
-export function setBoxLines(row: LiqRow, set: Pick<LiqSet, 'levels' | 'standing' | 'partStandings' | 'ordersAbsent'>, price: number, shown: (side: 'long' | 'short') => boolean, whose: string | null = null): InfoLine[] {
+export function setBoxLines(row: LiqRow, set: Pick<LiqSet, 'levels' | 'standing' | 'partStandings' | 'ordersAbsent'> & Partial<Pick<LiqSet, 'taken'>>, price: number, shown: (side: 'long' | 'short') => boolean, whose: string | null = null): InfoLine[] {
   const kind = set.levels?.kind;
   if (!kind) return [];
-  const lines = stripeBoxLines(row, kind, price, set.standing(), kind === 'both' ? set.partStandings() : null, shown, whose);
+  // In the page's units (app/units.ts): in coins the row, the standing and the parts each bin over its own price.
+  const coins = inCoins(), standing = set.standing(), parts = kind === 'both' ? set.partStandings() : null;
+  const said = coins && set.levels ? rowInCoins(set.levels, set.taken?.() ?? null, row) : row;
+  const lines = stripeBoxLines(row, kind, price, standing ? standingSaid(standing, coins) : null, parts ? partsSaid(parts, coins) : null, shown, whose, said);
   return set.ordersAbsent() ? [...lines, { text: ordersAbsent(), color: 'muted', wrap: true, rule: true }] : lines;
 }
 

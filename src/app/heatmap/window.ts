@@ -1,7 +1,7 @@
 /**
- * The colour window: which cell sizes (USD) the colour ramp spans. Its baseline comes from the percentiles of the cells on screen
- * (the page's own auto-contrast), and the Contrast slider slides it along the size axis, so the same ramp is spent on thinner liquidity
- * (to the right) or only on the biggest walls (to the left).
+ * The colour window: which cell sizes (USD, or coins while the page writes sizes in coins: app/units.ts) the colour ramp spans. Its baseline
+ * comes from the percentiles of the cells on screen (the page's own auto-contrast), and the Contrast slider slides it along the size axis,
+ * so the same ramp is spent on thinner liquidity (to the right) or only on the biggest walls (to the left).
  */
 export interface SizeWindow { lo: number; hi: number }
 
@@ -18,15 +18,21 @@ export function clampContrast(value: unknown): number {
   return Number.isFinite(n) ? Math.max(CONTRAST.min, Math.min(CONTRAST.max, Math.round(n))) : CONTRAST.neutral;
 }
 
-/** The window for a baseline and a slider position (a placeholder window until there is a baseline to move). */
-export function colourWindow(baseline: SizeWindow | null, contrast: number): SizeWindow {
-  if (!baseline) return { lo: 1, hi: 2 };
+/**
+ * The window for a baseline and a slider position (a placeholder window until there is a baseline to move). `floor`: a dollar in the units the
+ * cells are in (heatmap/coins.ts `rasterFloor`: 1 in dollars, a dollar's worth of coin in coins), which the placeholder is made of.
+ */
+export function colourWindow(baseline: SizeWindow | null, contrast: number, floor = 1): SizeWindow {
+  if (!baseline) return { lo: floor, hi: 2 * floor };
   const shift = -((clampContrast(contrast) - CONTRAST.neutral) / CONTRAST.neutral) * Math.log(baseline.hi / baseline.lo) * 0.75;
   return { lo: baseline.lo * Math.exp(shift), hi: baseline.hi * Math.exp(shift) };
 }
 
-/** The window taken from the cells on screen, and the view it was taken for: when (`at`, `since`: the last new view) and the price span. */
-export interface Baseline extends SizeWindow { at: number; since: number; spanP: number }
+/**
+ * The window taken from the cells on screen, and the view it was taken for: when (`at`, `since`: the last new view) and the price span; and the
+ * units the cells were in (app/units.ts: `coins`, else dollars) with a dollar in them (`floor`, heatmap/coins.ts `rasterFloor`).
+ */
+export interface Baseline extends SizeWindow { at: number; since: number; spanP: number; coins?: boolean; floor?: number }
 
 /** How long a new view's baseline keeps following the cells while its history loads, and how often Auto blends it toward them after that. */
 export const SETTLE_MS = 15_000, BLEND_MS = 10_000;
@@ -36,13 +42,16 @@ export const SETTLE_MS = 15_000, BLEND_MS = 10_000;
  * the baseline's) takes a new one, with Auto off too: a cell holds every price of its row, so cell sizes follow the zoom, and a window kept
  * from another view saturates everything or nothing. It follows the cells for `SETTLE_MS` after that, while the view's history loads (the
  * first raster can hold little more than the live column). Then Auto blends it halfway toward the cells every `BLEND_MS`; Auto off holds it.
+ * `coins` and `floor`: the units the cells are in and a dollar in them (app/units.ts; 1 in dollars), so a window in coins is the window in
+ * dollars over the price; a baseline in other units than the cells' (the page switched) is never kept or blended: a new one is taken.
  */
-export function nextBaseline(b: Baseline | null, s: { p15: number; p96: number }, o: { auto: boolean; force: boolean; spanP: number; now: number }): Baseline | null {
+export function nextBaseline(b: Baseline | null, s: { p15: number; p96: number }, o: { auto: boolean; force: boolean; spanP: number; now: number; coins?: boolean; floor?: number }): Baseline | null {
   if (!(s.p96 > 0)) return b;
-  const hi = s.p96, lo = Math.max(1, Math.min(s.p15, hi / 4));
+  const coins = o.coins === true, floor = o.floor ?? 1, hi = s.p96, lo = Math.max(floor, Math.min(s.p15, hi / 4));
   const zoomed = b !== null && o.spanP > 0 && b.spanP > 0 && Math.abs(Math.log(o.spanP / b.spanP)) > Math.LN2;
-  if (!b || o.force || zoomed) return { lo, hi, at: o.now, since: o.now, spanP: o.spanP };
-  if (o.now - b.since < SETTLE_MS) return { ...b, lo, hi, at: o.now };
+  const otherUnits = b !== null && (b.coins === true) !== coins;
+  if (!b || o.force || zoomed || otherUnits) return { lo, hi, at: o.now, since: o.now, spanP: o.spanP, coins, floor };
+  if (o.now - b.since < SETTLE_MS) return { ...b, lo, hi, at: o.now, floor };
   if (!o.auto || o.now - b.at <= BLEND_MS) return b;
   const blend = (from: number, to: number): number => Math.exp(Math.log(from) * 0.5 + Math.log(to) * 0.5);
   return { ...b, lo: blend(b.lo, lo), hi: blend(b.hi, hi), at: o.now };

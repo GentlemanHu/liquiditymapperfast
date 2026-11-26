@@ -14,6 +14,12 @@ import { t } from '../i18n.ts';
  * round length (a bucket), its two sides in the column's places and colours, its busiest bucket the point of control, and the value area the
  * buckets around that one holding the column's share. The rows are `TradedRows` with time for price (`step` is the bucket's length in ms,
  * bucket `i` starts at (bin0 + i) * step), so the column's header, sums and words read them unchanged.
+ *
+ * In coins (app/units.ts) the rows carry their two sides in coins too (`TradedRows.coins`), which the header and the boxes print: the flow
+ * from the markets' coin tracks (each second over its own price, a minute held whole over its price: `withFlowCoins`), open interest in its
+ * own coins (a linear market's readings are coins; an inverse market's USD over the price traded in the minute, `oiSpread`), events each
+ * over its own price (a liquidation's reported price, a mark's). The bars, the point of control, the value area and every share are read
+ * from the dollars, so the band looks the same in either units.
  */
 
 const SECOND = 1000, MINUTE = 60_000, HOUR = 3_600_000, DAY = 86_400_000;
@@ -90,6 +96,29 @@ function finish(rows: TimeRows): TimeRows {
 }
 
 /**
+ * `rows` from `flowRows` with their two sides in coins too (`TradedRows.coins`): the same buckets added up, by the same rule, over the markets'
+ * coin tracks (`FlowBook.track(id, true)`: each second's buys and sells over its own price, a minute's over its price); a bucket the dollars
+ * leave out (not recorded, a quiet stretch) holds none. Sets them on `rows`, which it returns.
+ */
+export function withFlowCoins(rows: TimeRows, coinTracks: readonly DeltaTrack[]): TimeRows {
+  const n = rows.buy.length, buy = new Float64Array(n), sell = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    if (rows.gaps[i] !== null) continue;
+    const [a, b] = bucketSpan(rows, i), s = Math.floor(a / SECOND), e = Math.floor(b / SECOND) - 1;
+    if (e < s) continue;
+    let g = 0, d = 0;
+    for (const k of coinTracks) {
+      if (k.first === null || k.first > s - 1) continue;
+      const end = k.settled ? Math.max(s - 1, k.settled(e)) : e;
+      g += k.cumGross(end) - k.cumGross(s - 1); d += k.cumDelta(end) - k.cumDelta(s - 1);
+    }
+    buy[i] = Math.max(0, (g + d) / 2); sell[i] = Math.max(0, (g - d) / 2);
+  }
+  rows.coins = { buy, sell };
+  return rows;
+}
+
+/**
  * Traded volume by time from the flow column's running sums (`DeltaTrack`, the Delta pane's), the time analog of the column's answer: each
  * bucket's gross volume and delta over the markets give what was bought, (gross + delta) / 2, and sold, (gross − delta) / 2. A market counts
  * in a bucket when it holds the second before it, so it never steps in halfway with its whole running sum. Seconds as far as they are
@@ -133,8 +162,8 @@ export function minuteFlowAt(tracks: readonly DeltaTrack[], from: number): boole
   return tracks.some(k => k.first !== null && k.settled !== undefined && k.settled(s) !== s);
 }
 
-/** A part of one market's change of open interest in USD, in the minute it is put in. */
-export interface OiStep { t: number; usd: number }
+/** A part of one market's change of open interest in USD, in the minute it is put in, and in coins (`coins`, app/units.ts). */
+export interface OiStep { t: number; usd: number; coins?: number }
 
 /**
  * One perpetual's open interest by the minute and what its changes are put in dollars with: an inverse market's own USD (its coins were put
@@ -153,18 +182,22 @@ export interface OiMarket {
  * changes nothing. A change with nothing traded on its market between its readings, across a gap, or reaching past the window is not
  * placed: `unplaced` (USD, signed; coins at `price`, the market's last, or the page's mark), which the header says as the column's does.
  * `covered` are the minutes readings no further apart than the gap rule stand for, a change or none: outside them a bucket has no reading;
- * `first`, when the first reading held stands (before it, no history).
+ * `first`, when the first reading held stands (before it, no history). Each part and the unplaced change in coins too (app/units.ts): a
+ * linear market's readings are its coins, unpriced; an inverse market's USD over the price that traded on it in the part's minute (its last,
+ * else `usdAt`'s).
  */
-export function oiSpread(markets: readonly OiMarket[], from: number, to: number, mark = 0): { parts: OiStep[]; covered: [number, number][]; unplaced: number; first: number } {
+export function oiSpread(markets: readonly OiMarket[], from: number, to: number, mark = 0): { parts: OiStep[]; covered: [number, number][]; unplaced: number; unplacedCoins: number; first: number } {
   const parts: OiStep[] = [], covered: [number, number][] = [];
-  let unplaced = 0, first = Infinity;
+  let unplaced = 0, unplacedCoins = 0, first = Infinity;
   for (const m of markets) {
     const bars = [...m.bars].sort((a, b) => a[0] - b[0]), k = m.track, inverse = m.usdAt !== undefined && m.usdAt > 0;
     if (bars.length) first = Math.min(first, bars[0]![0] + MINUTE);
     for (let i = 1; i < bars.length; i++) if (bars[i]![0] - bars[i - 1]![0] <= OI_GAP_MS) covered.push([bars[i - 1]![0] + MINUTE, bars[i]![0] + MINUTE]);
     const last = k ? k.priceAt(Math.floor(to / 1000) - 1) : NaN, price = inverse ? m.usdAt! : Number.isFinite(last) && last > 0 ? last : mark;
+    // Coins per unit of the readings: 1 for a linear market's coins; an inverse market's USD (its coins at `usdAt`) over the price at `at`.
+    const perCoin = (at: number): number => !inverse ? 1 : m.usdAt! / (Number.isFinite(at) && at > 0 ? at : m.usdAt!);
     const { intervals, skipped } = oiIntervals(bars, from, to);
-    unplaced += skipped * price;
+    unplaced += skipped * price; unplacedCoins += skipped * perCoin(last);
     for (const iv of intervals) {
       // The market's volume in each minute of the interval: where the change is put, and how much of it.
       const minutes: [number, number][] = [];
@@ -173,22 +206,24 @@ export function oiSpread(markets: readonly OiMarket[], from: number, to: number,
         const s = t / 1000, g = k && k.first !== null && k.first <= s - 1 ? k.cumGross(s + 59) - k.cumGross(s - 1) : 0;
         if (g > 0) { minutes.push([t, g]); total += g; }
       }
-      if (!(total > 0)) { unplaced += iv.amount * price; continue; }
+      if (!(total > 0)) { unplaced += iv.amount * price; unplacedCoins += iv.amount * perCoin(last); continue; }
       for (const [t, g] of minutes) {
         const at = inverse ? m.usdAt! : k!.priceAt(t / 1000 + 59);
-        parts.push({ t, usd: iv.amount * g / total * (Number.isFinite(at) && at > 0 ? at : price) });
+        parts.push({ t, usd: iv.amount * g / total * (Number.isFinite(at) && at > 0 ? at : price), coins: iv.amount * g / total * perCoin(inverse ? k!.priceAt(t / 1000 + 59) : 1) });
       }
     }
   }
-  return { parts, covered, unplaced, first };
+  return { parts, covered, unplaced, unplacedCoins, first };
 }
 
 /**
  * Open interest by time: in each bucket the parts that added to it (bid colour) and those that took from it (ask colour), added up apart,
  * never netted, and never called buying or selling. A bucket no reading stands for has no data (`covered`); one before the first, no history.
+ * `coins`: the rows carry the parts' coins too (`TradedRows.coins`).
  */
-export function oiRows(steps: readonly OiStep[], covered: readonly [number, number][], from: number, to: number, step: number, first = Infinity): TimeRows {
+export function oiRows(steps: readonly OiStep[], covered: readonly [number, number][], from: number, to: number, step: number, first = Infinity, coins = false): TimeRows {
   const rows = emptyRows(from, to, step, 'noReading');
+  const coinBuy = coins ? new Float64Array(rows.buy.length) : null, coinSell = coins ? new Float64Array(rows.buy.length) : null;
   for (const [a, b] of covered) {
     if (b <= from || a >= to) continue;
     for (let i = Math.max(0, Math.floor(Math.max(a, from) / step) - rows.bin0), end = Math.min(rows.gaps.length - 1, Math.floor((Math.min(b, to) - 1) / step) - rows.bin0); i <= end; i++) rows.gaps[i] = null;
@@ -198,29 +233,35 @@ export function oiRows(steps: readonly OiStep[], covered: readonly [number, numb
     const i = Math.floor(s.t / step) - rows.bin0;
     rows.gaps[i] = null;
     if (s.usd > 0) rows.buy[i]! += s.usd; else rows.sell[i]! -= s.usd;
+    // In coins on the side its dollars put it on, so the two never disagree on which way a part went.
+    if (coinBuy && coinSell) { const c = Math.abs(s.coins ?? 0); if (s.usd > 0) coinBuy[i]! += c; else coinSell[i]! += c; }
   }
   for (let i = 0; i < rows.gaps.length; i++) if (rows.gaps[i] && bucketSpan(rows, i)[1] <= first) rows.gaps[i] = 'noHistory';
+  if (coinBuy && coinSell) rows.coins = { buy: coinBuy, sell: coinSell };
   return finish(rows);
 }
 
-/** One event with a time, a side (0: the first side, bid colour; 1: the second, ask colour) and a size in USD. */
-export interface TimeEvent { t: number; side: 0 | 1; usd: number }
+/** One event with a time, a side (0: the first side, bid colour; 1: the second, ask colour), a size in USD and in coins (`coins`, app/units.ts). */
+export interface TimeEvent { t: number; side: 0 | 1; usd: number; coins?: number }
 
 /**
  * Events by time (liquidations, absorption marks): each bucket's two sides added up. `cover` is the stretch the page holds them for: a bucket
- * outside it is not loaded, one inside it with nothing in it a zero.
+ * outside it is not loaded, one inside it with nothing in it a zero. `coins`: the rows carry the events' coins too (`TradedRows.coins`).
  */
-export function eventRows(events: Iterable<TimeEvent>, from: number, to: number, step: number, cover: { from: number; to: number } | null): TimeRows {
+export function eventRows(events: Iterable<TimeEvent>, from: number, to: number, step: number, cover: { from: number; to: number } | null, coins = false): TimeRows {
   const rows = emptyRows(from, to, step, null);
+  const coinBuy = coins ? new Float64Array(rows.buy.length) : null, coinSell = coins ? new Float64Array(rows.buy.length) : null;
   for (const e of events) {
     if (e.t < from || e.t >= to) continue;
     const i = Math.floor(e.t / step) - rows.bin0;
     if (e.side === 0) rows.buy[i]! += e.usd; else rows.sell[i]! += e.usd;
+    if (coinBuy && coinSell) { if (e.side === 0) coinBuy[i]! += e.coins ?? 0; else coinSell[i]! += e.coins ?? 0; }
   }
   for (let i = 0; i < rows.gaps.length; i++) {
     const [a, b] = bucketSpan(rows, i);
-    if (!cover || b <= cover.from || a >= cover.to) { rows.gaps[i] = 'notLoaded'; rows.buy[i] = 0; rows.sell[i] = 0; }
+    if (!cover || b <= cover.from || a >= cover.to) { rows.gaps[i] = 'notLoaded'; rows.buy[i] = 0; rows.sell[i] = 0; if (coinBuy && coinSell) { coinBuy[i] = 0; coinSell[i] = 0; } }
   }
+  if (coinBuy && coinSell) rows.coins = { buy: coinBuy, sell: coinSell };
   return finish(rows);
 }
 

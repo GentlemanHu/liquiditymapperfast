@@ -2,6 +2,8 @@ import type { HeatRenderer, HeatStyle } from '../heatmap/gl.ts';
 import { heatRenderer } from '../heatmap/canvas.ts';
 import { buildLut } from '../heatmap/lut.ts';
 import { colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
+import { gridRowPrice, rasterFloor } from '../heatmap/coins.ts';
+import { amount, figure, inCoins, inUnits, unitFloor } from '../units.ts';
 import { isCoarse, isPhone } from '../device.ts';
 import { dimOutside, mirrorFrame, mirrorStats, paintBand, paintMirrorBox, percentText, type MirrorLine, type MirrorStats } from '../mirror.ts';
 import { PROFILE_CANDLES_BACK_MS, TIMEFRAMES, askedSpan, valueAreaKey, windowProfileKey, type Hub, type RasterResult } from '../hub.ts';
@@ -27,19 +29,19 @@ import { Held, ROW_HOLD_MS, booksReaching, depthBand, depthBandLines, depthHereL
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from '../scope.ts';
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText, wrapText } from '../text-fit.ts';
-import { LIQ_PROFILE_ROWS, binsBetween, captionPlace, dollarPriceOf, laneRows, liqCurves, liqProfile, liqStanding, onTheWay, partsBetween, seamStats, standingBelow, standingBins, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
+import { LIQ_PROFILE_ROWS, binsBetween, captionPlace, dollarPriceOf, laneRows, levelsInCoins, liqCurves, liqProfile, liqStanding, onTheWay, partsBetween, partsSaid, profileMaxima, rowInCoins, seamStats, standingBelow, standingBins, standingSaid, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
 import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, ownScales, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, whyLines, type Rect, type Sub, type SubScale } from '../liq-split.ts';
 import { MAP_PLOT_FLOOR } from '../layouts/dock-model.ts';
 import { bubbleHidden, bubbleRadius, printPriceLines, topPrints, type Print } from '../prints.ts';
-import { periodRowLines, tradedFigures, tradedLines, tradedNet, tradedNetLine, tradedRowAt, tradedRowsHeld, type TradedRows } from '../traded.ts';
+import { periodRowLines, saidNet, tradedFigures, tradedLines, tradedNetLine, tradedRowAt, tradedRowsHeld, type TradedRows } from '../traded.ts';
 import { MEASURES, measureDef, metricWords, type ProfileMetric } from '../measures/registry.ts';
 import { lineMetric, onPriceAxis, placedOn } from '../traded/profiles.ts';
 import { MAX_BANDS, arrangeProfiles, arrangeSides, columnHit, type Arranged, type ProfileRoom } from '../traded/arrange.ts';
 import { flowIds, flowLoadIds, instrumentShown, liquidationIds, mapVenues, oiFlowIds, shownKey } from '../cvd/ids.ts';
 import { aggregateIds } from '../cvd/model.ts';
 import { resolvePicks } from '../market-choice.ts';
-import { iconsOf, markLines, markSize, sameMarks, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
-import { diamondRadius, liquidationHidden, liquidationLines, type Liquidation } from '../liquidations.ts';
+import { iconsOf, markLines, markSize, marksCoins, sameMarks, type AbsorptionMark, type MarkIcon } from '../absorption.ts';
+import { diamondRadius, liquidationCoins, liquidationHidden, liquidationLines, type Liquidation } from '../liquidations.ts';
 import { venueLabel } from '../venues.ts';
 import { describeSources } from '../cell-sources.ts';
 import { anomalies, type Anomalies } from '../anomaly.ts';
@@ -91,7 +93,7 @@ import { draftLabel } from '../range/stats.ts';
 import type { RangePoint, RangeTool } from '../range/tool.ts';
 import { paintDivergence, type Divergence } from '../delta/divergence.ts';
 import { TopBands, topMarks, type TopProfile } from '../measures/strip.ts';
-import { BAND_GAP, flowRows, volumeBand, type TimeRows } from '../measures/model.ts';
+import { BAND_GAP, flowRows, volumeBand, withFlowCoins, type TimeRows } from '../measures/model.ts';
 import { CANDLE_LINE_PX, LINE_POINT_PX, countdown, lineSide, thinLine, type LinePoint } from '../price-line.ts';
 import { candleInk, candleTone } from '../candle-colours.ts';
 import { candleHolding, newestCandle, sameButLast, zoomedCandles } from '../zoomed-candles.ts';
@@ -191,7 +193,7 @@ const CARRY_DASH = [12, 5], CARRY_LINE_ALPHA = 0.6;
 const CARRY_WORDS = { poc: t('POC'), vah: t('VAH'), val: t('VAL') } as const;
 type ColumnBox = { lines: InfoLine[]; y: number; placement?: 'center' | 'down' };
 /** A period profile drawn on the chart, for the pointer: where it begins, its rows and scale, and what its box says of it. */
-type ProfileHit = { x0: number; room: number; row: number; max: number; rows: Map<number, [number, number]>; total: number; split: boolean; name: string; levels: ValueLevels; source: string | null };
+type ProfileHit = { x0: number; room: number; row: number; max: number; rows: Map<number, [number, number]>; coins: Map<number, [number, number]> | null; total: number; split: boolean; name: string; levels: ValueLevels; source: string | null };
 /** The row of a period profile under the pointer. */
 type ProfileRowHit = { hit: ProfileHit; k: number; buy: number; sell: number };
 /**
@@ -622,7 +624,8 @@ export class HeatPane {
   /** When each past point of control was first traded at again (`#touchedAfter`), by window, price and the candles read. */
   readonly #touched = new Map<string, number | null>();
   /** Each on-chart profile's rows on the display grid, by what they were grouped from (an answer, or a candle estimate), kept while it is. */
-  readonly #profileRows = new WeakMap<object, { row: number; rows: Map<number, [number, number]>; max: number; median: number; total: number }>();
+  /** Each period profile's rows on its grid (dollars, which lay it out) and, in coins (app/units.ts), what they print (`coins`). */
+  readonly #profileRows = new WeakMap<object, { row: number; rows: Map<number, [number, number]>; coins: Map<number, [number, number]> | null; max: number; median: number; total: number }>();
   /** The period profiles drawn in the last frame, for the pointer: where each begins, its rows and scale, and what its box says of it. */
   #profileHits: ProfileHit[] = [];
   /** The volume strip's recorded rows (kept while what they come from is), and what it drew last frame, for the pointer. */
@@ -787,9 +790,10 @@ export class HeatPane {
   #bubbles: { x: number; y: number; r: number; print: Print }[] = [];
   /** The liquidations drawn this frame (half-diagonal `r`), for the pointer. */
   #diamonds: { x: number; y: number; r: number; liq: Liquidation }[] = [];
-  #grid: { data: Float32Array; w: number; h: number; bounds: Bounds } | null = null;
+  /** The raster drawn: in coins where `coins` says so (app/units.ts), with a dollar in its units (`floor`, heatmap/coins.ts `rasterFloor`). */
+  #grid: { data: Float32Array; w: number; h: number; bounds: Bounds; coins: boolean; floor: number } | null = null;
   /** The raster as the walls are read from it (the type of `#grid`). */
-  get grid(): { data: Float32Array; w: number; h: number; bounds: Bounds } | null { return this.#grid; }
+  get grid(): { data: Float32Array; w: number; h: number; bounds: Bounds; coins: boolean; floor: number } | null { return this.#grid; }
   /** Where the liquidity under the pointer comes from: asked of the worker once per map cell and kept while the pointer stays in it. */
   #sources: { key: string; text: string } | null = null;
   #sourcesAsked = '';
@@ -866,12 +870,20 @@ export class HeatPane {
   /** The Flow history's bars, without rows (`#sizes`). */
   get sizesData(): FootprintData { return this.#sizes; }
 
-  /** USD window currently mapped onto the colour ramp: the percentile baseline shifted by the contrast slider. */
-  get window(): { lo: number; hi: number } { return colourWindow(this.#baseline, this.store.state.heat.contrast); }
+  /**
+   * The window currently mapped onto the colour ramp: the percentile baseline shifted by the contrast slider, in dollars, or in coins where
+   * `coins` says so (the raster it was taken from was: app/units.ts; the legend writes it so). Until there is a baseline, a placeholder in
+   * the page's units.
+   */
+  get window(): { lo: number; hi: number; coins: boolean } {
+    const b = this.#baseline, v = this.view;
+    return { ...colourWindow(b, this.store.state.heat.contrast, b?.floor ?? unitFloor((v.p0 + v.p1) / 2)), coins: b ? b.coins === true : inCoins() };
+  }
 
-  #updateBaseline(): void {
+  /** The colour window after a raster in coins (`coins`) or dollars, with a dollar in its units `floor` (heatmap/coins.ts). */
+  #updateBaseline(coins: boolean, floor: number): void {
     if (!(this.stats.p96 > 0)) return;
-    this.#baseline = nextBaseline(this.#baseline, this.stats, { auto: this.store.state.heat.auto, force: this.#forceBaseline, spanP: this.view.p1 - this.view.p0, now: performance.now() });
+    this.#baseline = nextBaseline(this.#baseline, this.stats, { auto: this.store.state.heat.auto, force: this.#forceBaseline, spanP: this.view.p1 - this.view.p0, now: performance.now(), coins, floor });
     this.#forceBaseline = false;
   }
   invalidate(): void { this.#dirty = true; this.#schedule(); }
@@ -1136,9 +1148,13 @@ export class HeatPane {
   }
 
   #onRaster(result: RasterResult): void {
+    // An answer in the units the page has just stopped writing (app/units.ts: switched while it was being made) is let go before it touches
+    // the colour window, so the new units' first raster takes the new window; the next frame asks again (the raster's key holds the units).
+    if (result.coins !== inCoins()) { this.invalidate(); return; }
     this.stats = result.stats;
-    this.#updateBaseline();
-    this.#grid = { data: result.data, w: result.w, h: result.h, bounds: result.bounds };
+    const floor = rasterFloor(result.coins, result.bounds.p0, result.bounds.p1);
+    this.#updateBaseline(result.coins, floor);
+    this.#grid = { data: result.data, w: result.w, h: result.h, bounds: result.bounds, coins: result.coins, floor };
     this.gl.upload(result.data, result.w, result.h, result.bounds);
     this.#wasLoaded = true;
     this.onStats(); this.invalidate();
@@ -1156,8 +1172,9 @@ export class HeatPane {
     const v = this.view;
     if (!(v.t1 > v.t0)) return;
     const ids = this.#enabledIds();
-    const smooth = this.store.state.heat.smooth !== 'off';
-    const key = `${ids.join(',')}|${this.plotW}x${this.plotH}|${smooth ? 's' : 'r'}`;
+    const smooth = this.store.state.heat.smooth !== 'off', coins = inCoins();
+    // The units (app/units.ts) are in the key: a switch asks for the raster again, and takes a new colour window with it.
+    const key = `${ids.join(',')}|${this.plotW}x${this.plotH}|${smooth ? 's' : 'r'}|${coins ? 'coins' : 'usd'}`;
     const cov = this.gl.coverage;
     const outside = !cov || v.t0 < cov.t0 || v.t1 > cov.t1 || v.p0 < cov.p0 || v.p1 > cov.p1
       || (v.t1 - v.t0) / (cov.t1 - cov.t0) < 0.55 || (v.p1 - v.p0) / (cov.p1 - cov.p0) < 0.55;
@@ -1173,13 +1190,13 @@ export class HeatPane {
     const bounds: Bounds = { t0: v.t0 - spanT * 0.2, t1: v.t1 + spanT * 0.2, p0: v.p0 - spanP * 0.2, p1: v.p1 + spanP * 0.2 };
     const cap = Math.min(2600, this.gl.maxSize);
     const w = Math.min(cap, Math.round(this.plotW * 1.4)), h = Math.min(cap, Math.round(this.plotH * 1.4));
-    if (this.hub.raster(ids, bounds, w, h, smooth)) { this.#rasteredVersion = this.#dataVersion; this.#rasteredKey = key; this.#lastRasterAt = performance.now(); }
+    if (this.hub.raster(ids, bounds, w, h, smooth, coins)) { this.#rasteredVersion = this.#dataVersion; this.#rasteredKey = key; this.#lastRasterAt = performance.now(); }
   }
 
   #style(): HeatStyle {
     const p = this.#palette, { heat } = this.store.state, w = this.window;
     const opacity = heat.style === 'size' ? this.#lodFrame.heatmapOpacity : (p.dark ? 0.95 : 1) * this.#lodFrame.heatmapOpacity;
-    return { bid: rgb(p.bid), bidSoft: rgb(p.bidSoft), ask: rgb(p.ask), askSoft: rgb(p.askSoft), min: w.lo, max: w.hi, mode: heat.style, opacity };
+    return { bid: rgb(p.bid), bidSoft: rgb(p.bidSoft), ask: rgb(p.ask), askSoft: rgb(p.askSoft), min: w.lo, max: w.hi, mode: heat.style, opacity, floor: this.#grid?.floor ?? 1 };
   }
 
   /**
@@ -1656,8 +1673,10 @@ export class HeatPane {
     ctx.beginPath(); ctx.moveTo(x0, line); ctx.lineTo(x0 + W, line); ctx.stroke(); ctx.setLineDash([]);
     ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(x, line, 3.5, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = p.panel; ctx.stroke();
     // How far (in the precision the stripe's box and Mirror use), and what goes on the way: the distance is dropped where both do not fit.
-    // Liq + stops: the total and its two parts under it, wrapped to the column ("Total $X = liquidations $Y + stops $Z").
-    const reading = readingTexts(way, price, at, set.partStandings());
+    // Liq + stops: the total and its two parts under it, wrapped to the column ("Total $X = liquidations $Y + stops $Z"). In the page's units
+    // (app/units.ts: in coins each bin over its own price); the dot stands where the dollars put it, on the curve as drawn.
+    const coins = inCoins(), saidWay = coins && s ? onTheWay(standingSaid(s, true), price, at) ?? way : way, parts = set.partStandings();
+    const reading = readingTexts(saidWay, price, at, parts ? partsSaid(parts, coins) : null);
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
     const text = ctx.measureText(reading.full).width <= W - 14 ? reading.full : reading.short;
     ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
@@ -1773,9 +1792,10 @@ export class HeatPane {
     const row = (p: number): number => Math.floor((p - b.p0) / (b.p1 - b.p0) * g.h);
     const y0 = Math.max(0, row(v.p0)), y1 = Math.min(g.h - 1, row(v.p1));
     if (y1 <= y0) return [];
+    // The magnet judges walls by their dollars in either units (app/units.ts): a raster in coins is put back, each row times its own price.
     const values = new Float32Array(y1 - y0 + 1);
-    for (let y = y0; y <= y1; y++) { const i = (y * g.w + gx) * 2; values[y - y0] = g.data[i]! + g.data[i + 1]!; }
-    return wallRows(values, i => b.p0 + (y0 + i + 0.5) / g.h * (b.p1 - b.p0));
+    for (let y = y0; y <= y1; y++) { const i = (y * g.w + gx) * 2; values[y - y0] = (g.data[i]! + g.data[i + 1]!) * (g.coins ? gridRowPrice(y, g.h, b.p0, b.p1) : 1); }
+    return wallRows(values, i => gridRowPrice(y0 + i, g.h, b.p0, b.p1));
   }
 
   /** The book's row around `price` now, in the rows the book profile beside the map shows: its resting USD by side and its size; null in a replay. */
@@ -1920,9 +1940,10 @@ export class HeatPane {
     if (c) {
       up = c[4] >= c[1];
       const at = state.candles.indexOf(c), found = this.#volumeAnalysis(state).found, z = found.sigma[at], unusual = state.highlight.on && found.flag[at] === 1;
-      if (phone) { detail = `O ${px(c[1])}  H ${px(c[2])}  L ${px(c[3])}  C ${px(c[4])}`; tail = `${t('Vol')} ${usd(c[5])}`; }
+      // The candle's volume is in coins (`CandleRow`): written as it always was in dollars mode, in the coin's own form in coins (app/units.ts).
+      if (phone) { detail = `O ${px(c[1])}  H ${px(c[2])}  L ${px(c[3])}  C ${px(c[4])}`; tail = `${t('Vol')} ${figure(c[5])}`; }
       else {
-        detail = `O ${fmtPrice(c[1])}  H ${fmtPrice(c[2])}  L ${fmtPrice(c[3])}  C ${fmtPrice(c[4])}  ${t('Vol')} ${usd(c[5])}${unusual && Number.isFinite(z) ? `  ${t('({z}σ above its baseline)', { z: z!.toFixed(1) })}` : ''}`;
+        detail = `O ${fmtPrice(c[1])}  H ${fmtPrice(c[2])}  L ${fmtPrice(c[3])}  C ${fmtPrice(c[4])}  ${t('Vol')} ${figure(c[5])}${unusual && Number.isFinite(z) ? `  ${t('({z}σ above its baseline)', { z: z!.toFixed(1) })}` : ''}`;
         // With the footprint on, the candle under the pointer says what its check found, or why it has none: no event and no data are different things.
         const check = hovered && state.show.footprint && this.#lodFrame.barAlpha >= 0.3 ? trapStatusText(this.#traps.decisionOf(hovered[0])) : null;
         if (check) { ctx.font = '11px ui-sans-serif, system-ui, sans-serif'; const extended = `${detail}  ·  ${check}`; if (ctx.measureText(extended).width < this.plotW - 40) detail = extended; }
@@ -2560,8 +2581,11 @@ export class HeatPane {
     }
     if (!row) return [];
     const found = row, kind = levels.kind;
-    const lines = stripeBoxLines(found, kind, this.#liqPrice(state), inTakes ? src.takesStanding() : src.standing(), kind === 'both' ? src.partStandings() : null, side => shown(found, side),
-      inTakes ? lanes.takesWhose : lanes.whose);
+    // What the box says, in the page's units (app/units.ts): in coins the row, the standing and the parts each bin over its own price.
+    const coins = inCoins(), standing = inTakes ? src.takesStanding() : src.standing(), parts = kind === 'both' ? src.partStandings() : null;
+    const said = coins ? rowInCoins(levels, inTakes ? src.takesTaken() : src.taken(), found) : found;
+    const lines = stripeBoxLines(found, kind, this.#liqPrice(state), standing ? standingSaid(standing, coins) : null, parts ? partsSaid(parts, coins) : null, side => shown(found, side),
+      inTakes ? lanes.takesWhose : lanes.whose, said);
     // The profitable traders' orders the view asks for are not on the server: said where a level is read, never drawn from everyone's.
     return src.ordersAbsent() ? [...lines, { text: ordersAbsent(), color: 'muted', wrap: true, rule: true }] : lines;
   }
@@ -2632,16 +2656,19 @@ export class HeatPane {
     const normal = candleBody(slot), body = Math.max(1, (normal + (Math.max(1, layout.body) - normal) * narrowing));
     // A profile by time where the recording reaches, the market's own candles before it (measures/volume-strip.ts, Karl, 2026-10-20): the
     // venues' flow on the candles' boundaries, from a run of the Highlights' length before the screen so their baseline starts on it.
-    const now = pageNow(), ids = flowIds(state, this.hub.flow.ids), tracks = ids.flatMap(id => { const k = this.hub.flow.track(id); return k ? [k] : []; });
+    const now = pageNow(), ids = flowIds(state, this.hub.flow.ids), tracks = ids.flatMap(id => { const k = this.hub.flow.track(id); return k ? [k] : []; }), coins = inCoins();
     const margin = Math.max(0, state.highlight.length) * tf, asked = askedSpan(Math.floor((v.t0 - margin) / tf) * tf, Math.min(v.t1, now));
     let rows: TimeRows | null = null;
     if (tracks.length && asked.to > asked.from) {
       ensureDeltaFlow(this.hub, flowLoadIds(state, this.hub.flow.ids), asked.from, Date.now());
       // The closed buckets worked out once (again only when the flow loads more or the markets change), the one under way each second.
       const from = Math.floor(asked.from / tf) * tf, open = Math.max(from, Math.min(asked.to, Math.floor(now / tf) * tf));
-      const key = `${tf}|${from}|${open}|${ids.join(',')}|${this.hub.flow.loads}`;
-      if (this.#stripRows?.key !== key) this.#stripRows = { key, rows: flowRows(tracks, from, open, tf, now) };
-      rows = asked.to > open ? joinRows(this.#stripRows.rows, flowRows(tracks, open, asked.to, tf, now)) : this.#stripRows.rows;
+      // In coins (app/units.ts) the rows carry what the box prints too, from the markets' coin tracks; the bars stay on the dollars.
+      const coinTracks = coins ? ids.flatMap(id => { const k = this.hub.flow.track(id, true); return k ? [k] : []; }) : null;
+      const made = (a: number, b: number): TimeRows => { const r = flowRows(tracks, a, b, tf, now); return coinTracks ? withFlowCoins(r, coinTracks) : r; };
+      const key = `${tf}|${from}|${open}|${ids.join(',')}|${this.hub.flow.loads}|${coins ? 'coins' : 'usd'}`;
+      if (this.#stripRows?.key !== key) this.#stripRows = { key, rows: made(from, open) };
+      rows = asked.to > open ? joinRows(this.#stripRows.rows, made(open, asked.to)) : this.#stripRows.rows;
     }
     // The seam is where the recording kept begins (`recordedSince`, as the status bar says it), not where the flow loaded so far reaches: a
     // stretch still loading is a gap that fills in, never a candle that flashes over recorded history.
@@ -2673,7 +2700,7 @@ export class HeatPane {
       }
     }
     const place = (start: number): { x: number; w: number } => { const xc = v.xOf(start + tf / 2, pw); return { x: xc + (v.xOf(start, pw) + layout.candleCenter - xc) * narrowing, w: body }; };
-    const all = stripBars(candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying());
+    const all = stripBars(candles, tf, rows, since, now, v.t0 - margin, v.t1, place, start => own?.get(start), replaying(), coins);
     const first = all.findIndex(b => b.t + tf >= v.t0), cut = first < 0 ? all.length : first, bars = all.slice(cut);
     const found = state.highlight.on ? this.#stripHighlights.of(all, state.highlight) : null, highlights = found ? { flag: found.flag.slice(cut), threshold: found.threshold.slice(cut) } : null;
     const height = volumeBand(ph), top = ph - height - 6;
@@ -2787,7 +2814,7 @@ export class HeatPane {
       ctx.globalAlpha = fade; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 3;
       ctx.strokeStyle = p.dark ? 'rgba(0,0,0,0.65)' : 'rgba(255,255,255,0.85)'; ctx.fillStyle = p.text;
       for (let i = this.#bubbles.length - 1; i >= 0; i--) {
-        const b = this.#bubbles[i]!, label = `$${usd(b.print.usd)}`, size = Math.min(12, Math.max(9, b.r * 0.5));
+        const b = this.#bubbles[i]!, label = amount(inUnits(b.print.usd, b.print.price)), size = Math.min(12, Math.max(9, b.r * 0.5));
         // A bubble with a mark in its middle writes its size under the mark, if it is large enough for both, and otherwise not at all.
         const marked = s.marks && b.r >= MARK_MIN_R;
         if (marked && b.r < BOTH_MIN_R) continue;
@@ -3775,14 +3802,19 @@ export class HeatPane {
       if (!from) continue;
       const split = !candle || candle.buys !== null;
       let grouped = this.#profileRows.get(from);
-      if (!grouped || grouped.row !== row) {
-        const rows = new Map<number, [number, number]>(), into = (price: number, a: number, b: number): void => { const k = Math.floor(price / row * (1 + 1e-12)), c = rows.get(k) ?? [0, 0]; c[0] += a; c[1] += b; rows.set(k, c); };
+      if (!grouped || grouped.row !== row || (grouped.coins !== null) !== inCoins()) {
+        // In coins, each part over the price it is placed at (a recorded row's middle; a candle estimate's row, to within its candle's price).
+        const rows = new Map<number, [number, number]>(), coins = inCoins() ? new Map<number, [number, number]>() : null;
+        const into = (price: number, a: number, b: number): void => {
+          const k = Math.floor(price / row * (1 + 1e-12)), c = rows.get(k) ?? [0, 0]; c[0] += a; c[1] += b; rows.set(k, c);
+          if (coins && price > 0) { const d = coins.get(k) ?? [0, 0]; d[0] += a / price; d[1] += b / price; coins.set(k, d); }
+        };
         if (from instanceof Map) for (const [k, usd] of from) { const bought = candle?.buys ? Math.min(usd, candle.buys.get(k) ?? 0) : usd; into((k + 0.5) * step, bought, candle?.buys ? usd - bought : 0); }
         else for (const inst of from.instruments) for (const [low, buy, sell] of inst.rows) into(low + inst.step / 2, buy, sell);
         let max = 0, total = 0; for (const [a, b] of rows.values()) { max = Math.max(max, a + b); total += a + b; }
-        grouped = { row, rows, max, total, median: medianRow([...rows.values()].map(([a, b]) => a + b)) }; this.#profileRows.set(from, grouped);
+        grouped = { row, rows, coins, max, total, median: medianRow([...rows.values()].map(([a, b]) => a + b)) }; this.#profileRows.set(from, grouped);
       }
-      const { rows, max, median, total } = grouped;
+      const { rows, coins, max, median, total } = grouped;
       if (!(max > 0)) continue;
       // With the TPO drawing this window too, the volume profile is its outline over the TPO's letters, as wide as the TPO's longest row (layout A).
       // Laid out in time, the TPO's columns stand where this profile would: it is left out rather than drawn over them.
@@ -3824,7 +3856,7 @@ export class HeatPane {
         ctx.strokeStyle = over ? p.text : p.poc; ctx.lineWidth = over ? 1.25 : 1; ctx.globalAlpha = 0.9 * fade; trace(); ctx.globalAlpha = 1;
         const top = edges[0]![0];
         ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-        if (!candle) { this.#profileHits.push({ x0: bx, room: over!.width, row, max, rows, total, split, name, levels: drawn.levels, source: null }); continue; }
+        if (!candle) { this.#profileHits.push({ x0: bx, room: over!.width, row, max, rows, coins, total, split, name, levels: drawn.levels, source: null }); continue; }
         // Above its top row, but never under the legend or the bands along the top, where a tall profile's top row often is; within its own
         // width on the chart, shortened to its name where the source does not fit, and left out where it would cover another label.
         const clear = Math.max(this.#legendBox.bottom, ...this.#arranged.top.map(b => b.top + b.height)) + 9, ly = Math.max(top - 9, clear), room = Math.min(x1, pw) - x0;
@@ -3839,7 +3871,7 @@ export class HeatPane {
       const source = !candle ? null : split
         ? t('{market} {minutes}-minute candles, each spread over its range and split by its taker buys: an estimate.', { market: candle.spot ? t('{venue} futures and spot', { venue: market }) : market, minutes })
         : t('{market} candles do not say who bought: the total only.', { market });
-      this.#profileHits.push({ x0: bx, room, row, max, rows, total, split, name: candle ? `≈ ${name}` : name, levels: drawn.levels, source });
+      this.#profileHits.push({ x0: bx, room, row, max, rows, coins, total, split, name: candle ? `≈ ${name}` : name, levels: drawn.levels, source });
     }
     ctx.restore();
   }
@@ -4030,7 +4062,8 @@ export class HeatPane {
     const bar = (from: number, length: number): [number, number] => left ? [x0 + W - 1 - from - length, length] : [x0 + 1 + from, length];
     // The column's inside, off the edge line on the map's side.
     const inner = left ? x0 : x0 + 1;
-    const rows: TradedRows | null = answer ? tradedRowsHeld(answer, this.#tradedStep(), v.p0, v.p1) : null;
+    // The rows' dollars lay the column out; in coins (app/units.ts) they carry what it prints too (`TradedRows.coins`).
+    const rows: TradedRows | null = answer ? tradedRowsHeld(answer, this.#tradedStep(), v.p0, v.p1, inCoins()) : null;
     const s = state.traded, levels = this.#viewLevels(metric), loaded = this.#loadedColumn(metric), unsplit = !!loaded && !loaded.split;
     // The heading (map-top.ts): the measure's name on the tools' row, then from the first line under it the total, the line under it, and the
     // difference of the two sides (none for an estimate whose candles do not say who bought).
@@ -4114,7 +4147,9 @@ export class HeatPane {
     ctx.fillText(measure(def.name()) <= headRoom ? def.name() : fitText(measure, def.short(), headRoom), x0 + HEAD_INSET, rowNameTop(look, nameSize));
     ctx.fillStyle = p.muted; ctx.font = bodyFont(headSize);
     const held = this.hub.profile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
-    const measured = measureDef(metric).header(rows, flags);
+    // Open interest's change not placed, from a source that says it in dollars only: in coins at the price now (app/units.ts), an estimate.
+    const unplacedCoins = flags.unplacedCoins ?? (flags.unplaced !== undefined && state.mark.price > 0 ? flags.unplaced / state.mark.price : undefined);
+    const measured = measureDef(metric).header(rows, { ...flags, ...(unplacedCoins !== undefined ? { unplacedCoins } : {}) });
     let { head, sub } = measured;
     // An estimate from the candles says so, in the profile colour, where a recording's window says "since" in amber.
     const anchored = this.anchoredWindow(), fromText = anchored ? (anchored.from < startOfDay(Date.now()) ? clockYear(anchored.from) : clock(anchored.from)) : '';
@@ -4134,7 +4169,7 @@ export class HeatPane {
     if (anchored?.state) sub = anchored.state === 'coming' ? t('finding the anchor…') : anchored.state === 'far' ? t('anchor too far back') : anchored.state === 'failed' ? t('anchor: candles not read, retrying')
       : anchored.state === 'short' ? t('anchor: history too short') : t('anchor not begun yet');
     if (sub) { if (warn || (anchored?.state && anchored.state !== 'coming')) ctx.fillStyle = cautionInk(p); else if (loaded) ctx.fillStyle = p.poc; ctx.fillText(sub, x0 + HEAD_INSET, lineY); }
-    if (rows && rows.total > 0 && !unsplit) { const net = tradedNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + HEAD_INSET, lineY + HEAD_PITCH, headRoom); }
+    if (rows && rows.total > 0 && !unsplit) { const net = saidNet(rows); ctx.fillStyle = net > 0 ? p.bid : net < 0 ? p.ask : p.muted; ctx.fillText(tradedNetLine(rows), x0 + HEAD_INSET, lineY + HEAD_PITCH, headRoom); }
     ctx.restore(); ctx.textBaseline = 'middle';
     // The edge line on the map's side: a right column's left edge, a left column's right edge.
     const edge = left ? x0 + W - 0.5 : x0 + 0.5;
@@ -4205,12 +4240,17 @@ export class HeatPane {
     const p = this.#palette, v = this.view;
     const ids = this.#enabledIds();
     const step = niceStep(v.p1 - v.p0, ph / 3);
-    const g = groupLevels(this.kernels, frame, ids, step, v.p0, v.p1);
+    // The bars are laid out from the dollars (`g`), so the picture is the same in either units; the figures, the Mirror and the box say the
+    // page's units (`shown`: in coins each row over the price in its middle, `Grouped.coins`; app/units.ts), each MAX what the row or side
+    // with the longest bar holds.
+    const g = groupLevels(this.kernels, frame, ids, step, v.p0, v.p1, inCoins()), shown = g.coins ?? g;
     const cum = cumulative(g, state.mark.price);
-    let maxLevel = 0;
-    for (let i = 0; i < g.nBins; i++) maxLevel = Math.max(maxLevel, g.totalBid[i]! + g.totalAsk[i]!);
+    let maxLevel = 0, levelSaid = 0;
+    for (let i = 0; i < g.nBins; i++) { const level = g.totalBid[i]! + g.totalAsk[i]!; if (level > maxLevel) { maxLevel = level; levelSaid = shown.totalBid[i]! + shown.totalAsk[i]!; } }
     const W = profileColumnW(state), strip = W < PROFILE_W;
     const maxCum = Math.max(cum.maxBid, cum.maxAsk, 1), x0 = pw + liqColumnW(state), width = W - 6;
+    const cumShown = shown === g ? cum : cumulative(shown, state.mark.price), cumSaid = shown === g ? maxCum : cum.maxAsk > cum.maxBid ? cumShown.maxAsk : cumShown.maxBid;
+    if (shown === g) levelSaid = maxLevel;
     ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, W, ph); ctx.clip();
     ctx.fillStyle = p.panel; ctx.fillRect(x0, 0, W, ph);
     for (let i = 0; i < g.nBins; i++) {
@@ -4234,7 +4274,7 @@ export class HeatPane {
       // A compact map (a phone's): no corner tools' row to stand on and 84 px across, so its two figure lines stay at the top.
       ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, 28); ctx.globalAlpha = 1;
       ctx.fillStyle = p.muted; ctx.font = bodyFont(pw < NARROW_PLOT ? 9.5 : 10); ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-      ctx.fillText(t('LEVEL MAX {value}', { value: usd(maxLevel) }), x0 + 4, 4); ctx.fillText(t('CUM MAX {value}', { value: usd(maxCum) }), x0 + 4, 16);
+      ctx.fillText(t('LEVEL MAX {value}', { value: figure(levelSaid) }), x0 + 4, 4); ctx.fillText(t('CUM MAX {value}', { value: figure(cumSaid) }), x0 + 4, 16);
     } else if (!strip) {
       // The heading (map-top.ts): the column's name on the tools' row, its figures from the line every column's figures stand on.
       const look = document.documentElement.dataset.frame, headSize = pw < NARROW_PLOT ? 9.5 : 10, first = firstLine(look);
@@ -4244,10 +4284,10 @@ export class HeatPane {
       ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = nameFont(nameSize); ctx.fillStyle = p.text;
       ctx.fillText(fit(t('Profile')), x0 + HEAD_INSET, rowNameTop(look, nameSize));
       ctx.font = bodyFont(headSize); ctx.fillStyle = p.muted;
-      ctx.fillText(fit(t('LEVEL MAX {value}', { value: usd(maxLevel) })), x0 + HEAD_INSET, first); ctx.fillText(fit(t('CUM MAX {value}', { value: usd(maxCum) })), x0 + HEAD_INSET, first + HEAD_PITCH);
+      ctx.fillText(fit(t('LEVEL MAX {value}', { value: figure(levelSaid) })), x0 + HEAD_INSET, first); ctx.fillText(fit(t('CUM MAX {value}', { value: figure(cumSaid) })), x0 + HEAD_INSET, first + HEAD_PITCH);
     }
     this.#profileBox = null;
-    this.#paintProfileMirror(ctx, state, g, step, x0, ph, W);
+    this.#paintProfileMirror(ctx, state, shown, step, x0, ph, W);
     ctx.restore(); ctx.textBaseline = 'middle';
     const box = this.#profileBox as { lines: MirrorLine[]; y: number; placement: 'down' | 'up' } | null; // set by #paintProfileMirror above
     if (box) {
@@ -4265,6 +4305,7 @@ export class HeatPane {
    * the price to the pointer and its mirror, framed and compared in one line, with how far the books' feeds reach; with Mirror off, or on the
    * price's own row (no band), how far they reach there. The band counts from the price even when the price is off screen: from a grouping that
    * holds it (`groupSpan`, as the order book does), not from the view's edge; with too many rows for one grouping it says part is outside.
+   * `g` is the column's grouping in the page's units (app/units.ts), and so are the row, the band, its pills and the box's figures.
    */
   #paintProfileMirror(ctx: CanvasRenderingContext2D, state: AppState, g: Grouped, step: number, x0: number, ph: number, W: number): void {
     const hv = this.#profileHover, p = this.#palette, v = this.view, mark = state.mark.price, frame = state.levels;
@@ -4273,7 +4314,10 @@ export class HeatPane {
     if (hb < 0 || hb >= g.nBins) return;
     const side = at < mark ? 'bid' : 'ask', wide = W >= PROFILE_W, row = this.#heldRow(g, hb, side), lines = depthRowLines(row, step);
     let band = false;
-    const b = state.show.mirror ? depthBand(g, mark, hb, () => { const span = groupSpan(v.p0, v.p1, mark, step); return span ? groupLevels(this.kernels, frame, g.ids, step, span.lo, span.hi) : null; }) : null;
+    const b = state.show.mirror ? depthBand(g, mark, hb, () => {
+      const span = groupSpan(v.p0, v.p1, mark, step), spanned = span ? groupLevels(this.kernels, frame, g.ids, step, span.lo, span.hi, inCoins()) : null;
+      return spanned ? spanned.coins ?? spanned : null;
+    }) : null;
     if (b) {
       const G = b.grid, { above, below, loBin, hiBin } = b;
       const stats = mirrorStats(mark, mark + (b.hoverBin - b.markBin) * step, above, below, b.clipped);
@@ -4283,7 +4327,7 @@ export class HeatPane {
         const top = v.yOf((G.bin0 + hiBin + 1) * step, ph), bottom = v.yOf((G.bin0 + loBin) * step, ph);
         // The strip has no room for the band's pills, and an edge off the screen shows none: the box says those totals.
         dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.6);
-        paintBand(ctx, p, x0, W, { y: top, color: p.ask, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: p.bid, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
+        paintBand(ctx, p, x0, W, { y: top, color: p.ask, label: wide ? `${figure(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: p.bid, label: wide ? `${figure(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
         const reach = { bid: booksReaching(frame, G.ids, mark, (G.bin0 + loBin) * step, step, 'bid'), ask: booksReaching(frame, G.ids, mark, (G.bin0 + hiBin) * step, step, 'ask'), of: G.ids.length };
         lines.push(...depthBandLines({ bid: below, ask: above, pct, reach, totals: !wide || top < 0 || bottom > ph, clipped: stats.clipped }));
       }
@@ -4297,9 +4341,9 @@ export class HeatPane {
 
   /** The row read for the profile column's box, kept for `ROW_HOLD_MS` while the pointer stays on the same row of the same books. */
   #rowHeld = new Held<DepthRow>(ROW_HOLD_MS);
-  /** The row at bin `i` of `g`, read again at most once a `ROW_HOLD_MS`; another row, side, zoom or set of books reads at once. */
+  /** The row at bin `i` of `g`, read again at most once a `ROW_HOLD_MS`; another row, side, zoom, set of books or units reads at once. */
   #heldRow(g: Grouped, i: number, side: 'bid' | 'ask'): DepthRow {
-    return this.#rowHeld.get(`${side}|${g.bin0 + i}|${g.step}|${g.ids.join(',')}`, performance.now(), () => depthRow(g, i, side));
+    return this.#rowHeld.get(`${side}|${g.bin0 + i}|${g.step}|${g.ids.join(',')}|${inCoins() ? 'coins' : 'usd'}`, performance.now(), () => depthRow(g, i, side));
   }
 
   /**
@@ -4489,12 +4533,19 @@ export class HeatPane {
     // The pointer's layer reads the curve where the pointer is (`#paintLiqReadout`), on this scale.
     this.#liqScale = curves ? { x0, width, maxCum, W } : null;
     if (!strip) {
+      // The scales as they print (app/units.ts): in coins what the row with the longest bar and the longest curve hold, read from the same
+      // rows in coins; the bars stay laid out by the dollars.
+      let levelSaid = maxLevel, cumSaid = maxCum;
+      if (inCoins()) {
+        const said = profileMaxima(prof, liqProfile(standingSaid(s, true), step, v.p0, v.p1, price), tprof && ts ? { prof: tprof, said: liqProfile(standingSaid(ts, true), step, v.p0, v.p1, price) } : null);
+        levelSaid = said.level; cumSaid = said.cum;
+      }
       // The heading: its button (a page element), the two scales on the line every column's figures stand on, then the notes (whose; what the
       // curve leaves out), then History (a page element).
       ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.fillRect(x0 + 1, 0, W - 1, this.#liqHeadH); ctx.globalAlpha = 1;
       ctx.fillStyle = p.muted;
-      ctx.fillText(fitText(wide, t('LEVEL MAX {value}', { value: usd(maxLevel) }), liqRoom(W)), x0 + HEAD_INSET, heading.first);
-      ctx.fillText(fitText(wide, t('CUM MAX {value}', { value: usd(maxCum) }), liqRoom(W)), x0 + HEAD_INSET, heading.first + HEAD_PITCH);
+      ctx.fillText(fitText(wide, t('LEVEL MAX {value}', { value: figure(levelSaid) }), liqRoom(W)), x0 + HEAD_INSET, heading.first);
+      ctx.fillText(fitText(wide, t('CUM MAX {value}', { value: figure(cumSaid) }), liqRoom(W)), x0 + HEAD_INSET, heading.first + HEAD_PITCH);
       const inks = this.#inks();
       left.forEach((note, n) => { ctx.font = roleFont(note.role, size); ctx.fillStyle = roleInk(note.role, inks); ctx.fillText(note.text, x0 + HEAD_INSET, heading.first + HEAD_PITCH * (2 + n)); });
       ctx.font = bodyFont(size);
@@ -4545,8 +4596,16 @@ export class HeatPane {
     const ts = takesShown ? src.takesStanding() : null, tprof = ts ? liqProfile(ts, step, v.p0, v.p1, price) : null;
     const shared = pair.split === 'kinds', own = ownScales(profs[0], tprof, profs[1]), none: SubScale = { maxLevel: 0, maxCum: 0 };
     const scales = splitScales(own[0] ?? none, own[1] ?? none, shared);
-    const maxima = (sc: SubScale | null): [string, string] | null => sc && [t('LEVEL MAX {value}', { value: usd(sc.maxLevel) }), t('CUM MAX {value}', { value: usd(sc.maxCum) })];
-    const heads = splitHeads(wide, { maxima: [maxima(own[0]), maxima(own[1])], across: shared ? t('Both columns on one dollar scale') : null,
+    // Each sub-column's own maxima as they print (app/units.ts): in coins what its row with the longest bar and its longest curve hold, read
+    // from its rows in coins; the bars and curves are laid out by the dollars, so in coins the words across say one scale, not one dollar scale.
+    const coins = inCoins();
+    const said = (i: 0 | 1, sc: SubScale | null): { level: number; cum: number } | null => {
+      const prof = profs[i], st = stands[i];
+      if (!sc || !coins || !prof || !st) return sc && { level: sc.maxLevel, cum: sc.maxCum };
+      return profileMaxima(prof, liqProfile(standingSaid(st, true), step, v.p0, v.p1, price), i === 0 && tprof && ts ? { prof: tprof, said: liqProfile(standingSaid(ts, true), step, v.p0, v.p1, price) } : null);
+    };
+    const maxima = (m: { level: number; cum: number } | null): [string, string] | null => m && [t('LEVEL MAX {value}', { value: figure(m.level) }), t('CUM MAX {value}', { value: figure(m.cum) })];
+    const heads = splitHeads(wide, { maxima: [maxima(said(0, own[0])), maxima(said(1, own[1]))], across: shared ? (coins ? t('Both columns on one scale') : t('Both columns on one dollar scale')) : null,
       subRoom: subRoom(subs[0]), wholeRoom: liqRoom(W) });
     const history = !!stands[0] && !(state.show.depth && state.depthSource === 'liq'), heading = liqHeading(look, heads.rows + notes.length, history);
     this.#placeLiqHistory(history ? x0 : null, heading);
@@ -4664,17 +4723,20 @@ export class HeatPane {
     const p0 = span?.lo ?? v.p0, p1 = span?.hi ?? v.p1;
     // A band past the view that no grouping could hold: its amounts are the view's part only, and the box says so (Sol, review 2026-11-20).
     const clipped = past && !span;
-    const g = groupLevels(this.kernels, frame, this.#enabledIds(), step, p0, p1), prof = liqProfile(s, step, p0, p1, price);
+    // The book and the levels in the page's units (app/units.ts: in coins each book row and each bin over its own price); nothing here is laid
+    // out by them but the pills' and the box's figures.
+    const coins = inCoins(), usdRows = groupLevels(this.kernels, frame, this.#enabledIds(), step, p0, p1, coins), g = usdRows.coins ?? usdRows;
+    const prof = liqProfile(standingSaid(s, coins), step, p0, p1, price);
     // The two columns' rows at the same prices (both begin at floor(p0 / step), so the offset is 0 unless one of them ends sooner).
     const long = new Float64Array(g.nBins), short = new Float64Array(g.nBins);
     for (let i = 0; i < g.nBins; i++) { const j = g.bin0 + i - prof.row0; if (j >= 0 && j < prof.long.length) { long[i] = prof.long[j]!; short[i] = prof.short[j]!; } }
-    const st = seamStats({ row0: g.bin0, step, bid: g.totalBid, ask: g.totalAsk, long, short }, price, d);
+    const st = seamStats({ row0: g.bin0, step, bid: g.totalBid, ask: g.totalAsk, long, short }, price, d, unitFloor(price));
     const x0 = pw, liqW = liqColumnW(state), W = liqW + profileColumnW(state), top = v.yOf(price + d, ph), bottom = v.yOf(price - d, ph);
     ctx.save();
     dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.55);
     // Two strips (a compact map) have no room for the band's pills: the box says the same.
     const pills = liqW >= PROFILE_W;
-    paintBand(ctx, p, x0, W, { y: top, color: p.candleUp, label: pills ? `${usd(st.above.book)} · ${usd(st.above.liq)}` : '' }, { y: bottom, color: p.candleDown, label: pills ? `${usd(st.below.book)} · ${usd(st.below.liq)}` : '' }, { y0: 0, y1: ph });
+    paintBand(ctx, p, x0, W, { y: top, color: p.candleUp, label: pills ? `${figure(st.above.book)} · ${figure(st.above.liq)}` : '' }, { y: bottom, color: p.candleDown, label: pills ? `${figure(st.below.book)} · ${figure(st.below.liq)}` : '' }, { y0: 0, y1: ph });
     // The seam itself, lit while it is pointed at.
     ctx.strokeStyle = p.ui; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0 + liqW, 0); ctx.lineTo(x0 + liqW, ph); ctx.stroke();
     ctx.restore();
@@ -4696,9 +4758,12 @@ export class HeatPane {
    * of the band is heavier and how many times the other (`liqBandVerdict`), with its totals where no pill shows them (a strip, a split's
    * sub-column, an edge off the screen).
    */
-  #paintLiqColumnMirror(ctx: CanvasRenderingContext2D, state: AppState, s: LiqStanding, price: number, x0: number, ph: number, W: number, set: LiqSet = this.hub.liqLevels): void {
+  #paintLiqColumnMirror(ctx: CanvasRenderingContext2D, state: AppState, usdStanding: LiqStanding, price: number, x0: number, ph: number, W: number, set: LiqSet = this.hub.liqLevels): void {
     const hv = this.#profileHover, p = this.#palette, v = this.view;
     if (!hv || hv.column !== 'liq' || !state.show.mirror || !(price > 0)) return;
+    // Every figure, the band's verdict and the box in the page's units (app/units.ts: in coins each bin over its own price); the band and the
+    // row are prices, the same in either.
+    const coins = inCoins(), s = standingSaid(usdStanding, coins), levels = set.levels && coins ? levelsInCoins(set.levels) : set.levels;
     const at = v.pOf(hv.y, ph), d = Math.abs(at - price);
     const below = Math.max(0, standingBelow(s, 'long', price) - standingBelow(s, 'long', price - d));
     const above = Math.max(0, standingBelow(s, 'short', price + d) - standingBelow(s, 'short', price));
@@ -4710,17 +4775,17 @@ export class HeatPane {
     dimOutside(ctx, x0, W, 0, ph, top, bottom, p.panel, 0.6);
     // In the colours of what the orders would do, as the column and its box: the shorts above are bought back, take profits alone sell there.
     const buysAbove = levelsOrderSide(set.levels?.kind ?? 'liq', 'short') === 'buy';
-    paintBand(ctx, p, x0, W, { y: top, color: buysAbove ? p.candleUp : p.candleDown, label: wide ? `${usd(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: buysAbove ? p.candleDown : p.candleUp, label: wide ? `${usd(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
+    paintBand(ctx, p, x0, W, { y: top, color: buysAbove ? p.candleUp : p.candleDown, label: wide ? `${figure(stats.aboveUsd)} · ${pct}` : '' }, { y: bottom, color: buysAbove ? p.candleDown : p.candleUp, label: wide ? `${figure(stats.belowUsd)} · ${pct}` : '' }, { y0: 0, y1: ph });
     // The row under the pointer: the column's row on the snapshot's own bins (`liqCardRow`), so what stands, the snapshot's amount, its count and
     // its largest describe the same prices.
     const row = liqCardRow(at, niceStep(v.p1 - v.p0, ph / 3), set.levels?.step ?? 0), { lo, hi } = row, step = hi - lo, side = at < price ? 'long' : 'short';
-    const kind = set.levels?.kind ?? 'liq', parts = kind === 'both' ? set.partStandings() : null;
+    const kind = set.levels?.kind ?? 'liq', partsHeld = kind === 'both' ? set.partStandings() : null, parts = partsHeld ? partsSaid(partsHeld, coins) : null;
     // What still stands in the row and what the snapshot put there, by bin number (`standingBins`, `binsBetween`): whole bins, no proration, no
     // bin lost to rounding.
-    const whole = set.levels ? liqStanding(set.levels, null) : null;
+    const whole = levels ? liqStanding(levels, null) : null;
     const level = row.kLo !== null ? standingBins(s, side, row.kLo, row.kHi) : Math.max(0, standingBelow(s, side, hi) - standingBelow(s, side, lo));
     const total = whole && row.kLo !== null ? Math.max(level, standingBins(whole, side, row.kLo, row.kHi)) : level;
-    const bins = set.levels && row.kLo !== null ? binsBetween(set.levels, side, row.kLo, row.kHi) : { positions: 0, top: 0 };
+    const bins = levels && row.kLo !== null ? binsBetween(levels, side, row.kLo, row.kHi) : { positions: 0, top: 0 };
     const ry0 = v.yOf(hi, ph), ry1 = v.yOf(lo, ph);
     ctx.save(); ctx.globalAlpha = 0.9; ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.strokeRect(x0 + 1.5, Math.round(ry0) - 0.5, W - 3, Math.max(2, Math.round(ry1 - ry0) + 1)); ctx.restore();
     const lines = liqCardLines({ kind, side, lo, hi, step, level, total, split: parts ? partsBetween(parts, side, lo, hi) : null, positions: bins.positions, top: bins.top,
@@ -4790,7 +4855,7 @@ export class HeatPane {
     } else if (hit) { // a large trade under the pointer: say what it was
       const { print } = hit, venue = venueLabel(print.id), symbol = print.id.split(':').slice(1).join(':'), buy = print.side === 'buy';
       const lines: InfoLine[] = [
-        { text: `${buy ? t('BUY') : t('SELL')}  $${usd(print.usd)}`, bold: true, color: buy ? 'buy' : 'sell', mark: print.id },
+        { text: `${buy ? t('BUY') : t('SELL')}  ${amount(inUnits(print.usd, print.price))}`, bold: true, color: buy ? 'buy' : 'sell', mark: print.id },
         { label: t('Venue'), text: `${venue} ${symbol}` },
         ...printPriceLines(print),
         { label: t('Time'), text: `${clock(print.t, true)}:${String(new Date(print.t).getSeconds()).padStart(2, '0')}` },
@@ -4804,8 +4869,8 @@ export class HeatPane {
       const rect = paintInfoBox(ctx, touch ? [...lines, { text: t('Tap this box for the TPO menu'), color: 'muted' }] : lines, x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
       if (touch && rect) this.#tpoCard = { rect, hit: tpoHit };
     } else if (ownY && here && (profiled = this.#periodProfileAt(x, y, ph))) { // a row of a day's, week's, month's or session's profile, painted over the rest
-      const { hit, k, buy, sell } = profiled, step = hit.row;
-      const lines = periodRowLines({ name: hit.name, low: k * step, high: (k + 1) * step, step, buy, sell, total: hit.total, split: hit.split, levels: hit.levels, source: hit.source });
+      const { hit, k, buy, sell } = profiled, step = hit.row, said = inCoins() ? hit.coins?.get(k) : undefined;
+      const lines = periodRowLines({ name: hit.name, low: k * step, high: (k + 1) * step, step, buy, sell, total: hit.total, split: hit.split, levels: hit.levels, source: hit.source, ...(said ? { said: { buy: said[0], sell: said[1] } } : {}) });
       paintInfoBox(ctx, lines, x, touch ? y - 24 : y, { x0: 0, y0: 0, x1: pw, y1: ph }, p, { placement: touch ? 'up' : 'center' });
     } else if (ownY && here && (trapHit = this.#trapUnder(x, hv.t, hv.price!, pw))) {
       this.#paintTrapPopup(ctx, trapHit, x, y, pw, ph, touch);
@@ -4821,7 +4886,7 @@ export class HeatPane {
         const lines: InfoLine[] = [{ label: t('Price'), text: fmtPrice(hv.price!) }];
         if (state.layer === 'liquidity') {
           const cell = this.valueAt(hv.t, hv.price!), side = bookSide(cell), source = side ? this.#sourceOf(hv.t, hv.price!, side) : '';
-          if (cell && side) lines.push({ label: side === 'ask' ? t('Ask') : t('Bid'), text: `$${usd(Math.max(cell.bid, cell.ask))}`, color: side === 'ask' ? 'above' : 'below', bold: true });
+          if (cell && side) lines.push({ label: side === 'ask' ? t('Ask') : t('Bid'), text: amount(inUnits(Math.max(cell.bid, cell.ask), cell.price)), color: side === 'ask' ? 'above' : 'below', bold: true });
           if (source) lines.push({ label: t('Source'), text: source });
         }
         lines.push(...liquidation);
@@ -4979,7 +5044,7 @@ export class HeatPane {
         const taken = this.#absorptionIcons.map(i => ({ x0: i.x - i.s / 2, y0: i.y - i.s / 2, x1: i.x + i.s / 2, y1: i.y + i.s / 2 }));
         ctx.lineWidth = 3; ctx.strokeStyle = p.dark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.8)'; ctx.fillStyle = p.text;
         for (const icon of [...this.#absorptionIcons].reverse()) {
-          const label = `$${usd(icon.usd)}`, w = ctx.measureText(label).width;
+          const label = amount(inCoins() ? marksCoins(icon.marks) : icon.usd), w = ctx.measureText(label).width;
           let x0 = icon.x + icon.s / 2 + 3; if (x0 + w > pw - 2) x0 = icon.x - icon.s / 2 - 3 - w;
           const box = { x0, y0: icon.y - 6, x1: x0 + w, y1: icon.y + 6 };
           if (taken.some(r => r.x0 < box.x1 && box.x0 < r.x1 && r.y0 < box.y1 && box.y0 < r.y1)) continue;
@@ -5042,7 +5107,7 @@ export class HeatPane {
       ctx.lineWidth = 3; ctx.strokeStyle = p.dark ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)'; ctx.fillStyle = p.text;
       for (let i = this.#diamonds.length - 1; i >= 0; i--) {
         const d = this.#diamonds[i]!; if (d.r < 7) continue;
-        const label = `$${usd(d.liq.usd)}`, w = ctx.measureText(label).width;
+        const label = amount(inCoins() ? liquidationCoins(d.liq) : d.liq.usd), w = ctx.measureText(label).width;
         let x0 = d.x + d.r + 3; if (x0 + w > pw - 2) x0 = d.x - d.r - 3 - w;
         const box = { x0, y0: d.y - 6, x1: x0 + w, y1: d.y + 6 };
         if (taken.some(r => r.x0 < box.x1 && box.x0 < r.x1 && r.y0 < box.y1 && box.y0 < r.y1)) continue;
@@ -5104,13 +5169,16 @@ export class HeatPane {
     return '';
   }
 
-  /** Bid/ask USD of the rasterised cell under (t, price), or null outside the texture. */
-  valueAt(t: number, price: number): { bid: number; ask: number } | null {
+  /**
+   * Bid/ask USD of the rasterised cell under (t, price), and the price its row stands for, or null outside the texture. Dollars in either
+   * units (a raster in coins is put back, times the row's price), so a raster of the units the page has just left never prints as these.
+   */
+  valueAt(t: number, price: number): { bid: number; ask: number; price: number } | null {
     const g = this.#grid; if (!g) return null;
     const b = g.bounds, x = Math.floor((t - b.t0) / (b.t1 - b.t0) * g.w), y = Math.floor((price - b.p0) / (b.p1 - b.p0) * g.h);
     if (x < 0 || y < 0 || x >= g.w || y >= g.h) return null;
-    const i = (y * g.w + x) * 2;
-    return { bid: g.data[i]!, ask: g.data[i + 1]! };
+    const i = (y * g.w + x) * 2, rowPrice = gridRowPrice(y, g.h, b.p0, b.p1), k = g.coins ? rowPrice : 1;
+    return { bid: g.data[i]! * k, ask: g.data[i + 1]! * k, price: rowPrice };
   }
 
   // ---- touch ----------------------------------------------------------------------------------------------------------------------

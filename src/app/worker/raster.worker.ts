@@ -8,6 +8,7 @@ import { shareInCell, type CellShare } from '../cell-sources.ts';
 import { depthBands, depthNow, freshBooks, type DepthNow } from '../depth-series.ts';
 import { dropAbsent } from './membership.ts';
 import { RecordedColumns, type ColumnStore as Store } from './column-store.ts';
+import { gridInCoins } from '../heatmap/coins.ts';
 
 export type WorkerIn =
   /** These instruments' columns at this step, each replacing what was held for it (the other instruments, and the other steps, are kept). */
@@ -21,18 +22,20 @@ export type WorkerIn =
   /** Forget these instruments' columns at this step, or all of its (`ids` null). */
   | { type: 'columnsDrop'; stepMs: number; ids: string[] | null }
   | { type: 'live'; books: LiveBook[]; now: number; asOf?: number }
-  | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean }
+  /** `coins`: the grid in coins (app/units.ts), each row over its own price before the percentiles (`gridInCoins`); dollars without. */
+  | { type: 'raster'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number; w: number; h: number; smooth: boolean; coins?: boolean }
   | { type: 'depth'; id: number; enabled: string[]; t0: number; t1: number; w: number; radii: number[] }
   | { type: 'lt'; id: number; enabled: string[]; t0: number; t1: number; params: LtParams; /** Read the lane's trackers (`ltLane`) in place of the columns'. */ lane?: boolean; /** Each market's own part too (`LtParts`, in the order of `enabled`). */ parts?: boolean }
   /** The trackers the lane holds, whole (a replacement): per market its windows' starts and LT_FIELDS numbers each, at this step. */
   | { type: 'ltLane'; stepMs: number; instruments: { id: string; times: Float64Array; values: Float32Array }[] }
   | { type: 'cell'; id: number; enabled: string[]; t0: number; t1: number; p0: number; p1: number };
 export type { CellShare };
-/** Quantiles of the non-empty cells (bid + ask USD): p15 is the black cutoff, p96 the white point. */
+/** Quantiles of the non-empty cells (bid + ask, USD or coins as the grid is): p15 is the black cutoff, p96 the white point. */
 export interface RasterStats { p15: number; p50: number; p96: number; max: number; /** Where the raster's time went, in ms: building the column list, the kernel, the blur, the quantiles. */ ms?: { prep: number; kernel: number; blur: number; quant: number } }
 export type WorkerOut =
   | { type: 'ready' }
-  | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number }
+  /** `coins`: the request's, so the page knows which units the grid and its percentiles are in. */
+  | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number; coins: boolean }
   | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; stepMs: number; newest: DepthNow | null }
   | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number; parts?: LtParts; approx?: Uint8Array }
   | { type: 'cell'; id: number; items: CellShare[] }
@@ -129,11 +132,14 @@ function raster(message: Extract<WorkerIn, { type: 'raster' }>): void {
   const data = kernels!.rasterColumns({ steps: stepArr, colInst: Uint32Array.from(colInst), colTime: Float64Array.from(colTime), colCount: Uint32Array.from(colCount),
     bins: concat(bins, n => new Int32Array(n)), bid: concat(bid, n => new Float32Array(n)), ask: concat(ask, n => new Float32Array(n)),
     stepMs: recordedStepMs, t0: message.t0, t1: message.t1, p0: message.p0, p1: message.p1, w: message.w, h: message.h, sigma });
+  // In coins, the kernel's dollars (and its dollar cut of faint smoothed cells) each over the price of its row, before the percentiles.
+  const coins = message.coins === true;
+  if (coins) gridInCoins(data, message.w, message.h, message.p0, message.p1);
   const kernel = lap();
   const blur = 0;
   const stats = quantiles(data); const quant = lap();
   stats.ms = { prep, kernel, blur, quant };
-  scope.postMessage({ type: 'raster', id: message.id, w: message.w, h: message.h, data, stats, busyMs: performance.now() - started }, [data.buffer]);
+  scope.postMessage({ type: 'raster', id: message.id, w: message.w, h: message.h, data, stats, busyMs: performance.now() - started, coins }, [data.buffer]);
 }
 
 /** Bid and ask within each of the nested bands (`radii`, ascending) of the books' own price in each pixel column, in USD and in coins, summed over venues (`depthBands`). */

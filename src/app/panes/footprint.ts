@@ -13,6 +13,7 @@ import type { BarMarks } from '../footprint/marks.ts';
 import type { FootprintSettings } from '../footprint/settings.ts';
 import { barPieces } from './ladder-pieces.ts';
 import { drawVenueMark } from '../venue-marks.ts';
+import { amount, coinText, inCoins } from '../units.ts';
 
 type Row = [number, number, number];
 /** Trade counts and USD by size bucket (see SIZE_BUCKET_LABELS); only present for bars whose executions were recorded with stats. */
@@ -407,6 +408,39 @@ export function volText(value: number): string {
   return value.toFixed(0);
 }
 
+/** A row's figure in the page's units (app/units.ts): `volText` in dollars, the coin's own three figures in coins (0.0523, 13.2), 0.00 for none. */
+export const rowText = (value: number): string => inCoins() ? (value > 0 ? coinText(value) : '0.00') : volText(value);
+
+/**
+ * A bar in coins (app/units.ts): each row's dollars over the price in its middle (`low + step / 2`, the row's own price to within half a row),
+ * each market's part of a row over the same price, and the candle's totals those rows' coins added up. Kept beside the bar: an answer brings
+ * new bars and never changes one held, so the bar's own rows and dollars stay as they are (Bar stats and Highlights read them).
+ */
+export interface BarCoins { rows: Row[]; buy: number; sell: number; parts?: VenuePart[][] }
+export function barCoins(bar: Bar, step: number): BarCoins {
+  const held = coinBars.get(bar);
+  if (held && held.step === step) return held.coins;
+  let buy = 0, sell = 0;
+  const rows = bar.rows.map(([low, b, s]): Row => { const k = perCoin(low, step); buy += b * k; sell += s * k; return [low, b * k, s * k]; });
+  const parts = bar.parts?.map((row, r) => { const k = perCoin(bar.rows[r]?.[0] ?? 0, step); return row.map(([id, b, s]): VenuePart => [id, b * k, s * k]); });
+  const coins: BarCoins = { rows, buy, sell, ...(parts ? { parts } : {}) };
+  coinBars.set(bar, { step, coins });
+  return coins;
+}
+const coinBars = new WeakMap<Bar, { step: number; coins: BarCoins }>();
+/** Coins per dollar in the row starting at `low`: one over the price in its middle (none at a price of zero or below). */
+const perCoin = (low: number, step: number): number => { const mid = low + step / 2; return mid > 0 ? 1 / mid : 0; };
+
+/**
+ * The volume-weighted price of a bar's rows (each row at its middle): what the bar's figures that keep no price of their own (the size buckets
+ * of `stats`, the size lines' `over`) are put in coins with, as the narrowest price the bar has. NaN where its rows hold nothing.
+ */
+export function barVwap(bar: Bar, step: number): number {
+  let usd = 0, coins = 0;
+  for (const [low, b, s] of bar.rows) { usd += b + s; coins += (b + s) * perCoin(low, step); }
+  return usd > 0 && coins > 0 ? usd / coins : Number.NaN;
+}
+
 /** Asks which drawn rows to mark (the cells of a flagged candle) and receives their rectangles. */
 export interface RowMarks { wants(barT: number, mid: number, side: 'buy' | 'sell'): boolean; add(x: number, y: number, w: number, h: number, barT: number): void }
 
@@ -425,6 +459,9 @@ export function paintFootprint(ctx: CanvasRenderingContext2D, data: FootprintDat
   const tfMs = TIMEFRAMES[tf] ?? 3_600_000, step = data.step;
   if (!(step > 0) || lod.barAlpha <= 0.005) return;
   const slot = pw * tfMs / (view.t1 - view.t0), rowPx = Math.abs(view.yOf(0, ph) - view.yOf(step, ph)), layout = footprintLayout(slot);
+  // The rows are laid out from their dollars (bars, sides, venue pieces), so the picture is the same in either units; what a row prints is in
+  // the page's units (app/units.ts: `barCoins`, each row over the price in its middle).
+  const coins = inCoins();
   // The busiest row in view (sold and bought together) is a full column.
   let busiest = 0;
   const until = look?.until ?? Infinity, widths = look?.settings.widths ?? 'sqrt';
@@ -440,13 +477,15 @@ export function paintFootprint(ctx: CanvasRenderingContext2D, data: FootprintDat
     const flags = diagonal?.get(bar.t)?.flags;
     // Whether the numbers print: a venue mark is not drawn over them (their spans across, worked out per row below).
     const numbers = lod.sellBuyAlpha > 0.3 && mode !== 'none';
+    const said = coins ? barCoins(bar, step).rows : bar.rows;
     for (let r = 0; r < bar.rows.length; r++) {
-      const [low, buy, sell] = bar.rows[r]!;
+      // `own`: the row's dollars, which lay it out; `buy` and `sell`: what it prints.
+      const own = bar.rows[r]!, [low, buy, sell] = said[r]!;
       const yTop = view.yOf(low + step, ph), h = Math.max(1, rowPx - 1);
       if (yTop + h < 0 || yTop > ph) continue;
       // Every row with volume has a bar as long as its volume (sold and bought), in the colour of a side that traded at least
       // IMBALANCE_RATIO times the other, grey where neither did: a bar only on imbalanced rows left gaps that moved as the rows regrouped.
-      const side = imbalance(buy, sell), fraction = barFraction(buy + sell, busiest, widths);
+      const side = imbalance(own[1], own[2]), fraction = barFraction(own[1] + own[2], busiest, widths);
       if (fraction > 0) {
         const alpha = (side ? (p.dark ? 0.9 : 0.62) : (p.dark ? 0.42 : 0.3)) * lod.barAlpha; ctx.fillStyle = side === 'buy' ? p.candleUp : side === 'sell' ? p.candleDown : p.muted;
         const barWidth = Math.max(2, Math.min(layout.colWidth, layout.colWidth * fraction));
@@ -454,9 +493,9 @@ export function paintFootprint(ctx: CanvasRenderingContext2D, data: FootprintDat
         // Every row of markets added together says whose it is, a row only one of them traded included.
         if (parts?.length && data.venueOrder.length) {
           const spans = !numbers ? [] : mode === 'split'
-            ? [[split - 3 - ctx.measureText(volText(sell)).width, split - 2], [split + 2, split + 3 + ctx.measureText(volText(buy)).width]]
-            : (w => [[(left + right - w) / 2 - 2, (left + right + w) / 2 + 2]])(ctx.measureText(mode === 'delta' ? signed(buy - sell) : volText(buy + sell)).width);
-          paintPieces(ctx, data.venueOrder, parts, buy + sell, left, barWidth, yTop, h, ctx.fillStyle as string, alpha, lod.barAlpha, spans);
+            ? [[split - 3 - ctx.measureText(rowText(sell)).width, split - 2], [split + 2, split + 3 + ctx.measureText(rowText(buy)).width]]
+            : (w => [[(left + right - w) / 2 - 2, (left + right + w) / 2 + 2]])(ctx.measureText(mode === 'delta' ? signed(buy - sell) : rowText(buy + sell)).width);
+          paintPieces(ctx, data.venueOrder, parts, own[1] + own[2], left, barWidth, yTop, h, ctx.fillStyle as string, alpha, lod.barAlpha, spans);
         }
         else { ctx.globalAlpha = alpha; ctx.fillRect(left, yTop, barWidth, h); }
         if (side && marks?.wants(bar.t, low + step / 2, side)) marks.add(left, yTop, barWidth, h, bar.t);
@@ -472,13 +511,13 @@ export function paintFootprint(ctx: CanvasRenderingContext2D, data: FootprintDat
         const y = yTop + h / 2;
         if (mode === 'split') {
           ctx.font = flag?.sell !== undefined ? BOLD : FONT; ctx.fillStyle = flag?.sell !== undefined ? p.candleDown : textColor;
-          ctx.textAlign = 'right'; ctx.fillText(volText(sell), split - 2.5, y);
+          ctx.textAlign = 'right'; ctx.fillText(rowText(sell), split - 2.5, y);
           ctx.font = flag?.buy !== undefined ? BOLD : FONT; ctx.fillStyle = flag?.buy !== undefined ? p.candleUp : textColor;
-          ctx.textAlign = 'left'; ctx.fillText(volText(buy), split + 2.5, y);
+          ctx.textAlign = 'left'; ctx.fillText(rowText(buy), split + 2.5, y);
         } else {
           const value = mode === 'delta' ? buy - sell : buy + sell;
           ctx.font = flag ? BOLD : FONT; ctx.fillStyle = mode === 'delta' ? (value > 0 ? p.candleUp : value < 0 ? p.candleDown : textColor) : textColor;
-          ctx.textAlign = 'center'; ctx.fillText(mode === 'delta' ? signed(value) : volText(value), (left + right) / 2, y);
+          ctx.textAlign = 'center'; ctx.fillText(mode === 'delta' ? signed(value) : rowText(value), (left + right) / 2, y);
         }
       }
     }
@@ -525,16 +564,26 @@ export interface RowCell {
   parts?: readonly VenuePart[];
 }
 
-/** The row of `bar` that holds `price`, with its place in the candle, or null where the candle has no executions at that price. */
+/**
+ * The row of `bar` that holds `price`, with its place in the candle, or null where the candle has no executions at that price. Its sizes in
+ * the page's units (app/units.ts: `barCoins`); whether it is the busiest row and its share are read from the dollars.
+ */
 export function rowCellAt(bar: Bar, step: number, price: number): RowCell | null {
   const index = bar.rows.findIndex(r => price >= r[0] && price < r[0] + step), row = bar.rows[index];
   if (!row) return null;
   let busiest = 0, total = 0;
   for (const r of bar.rows) { busiest = Math.max(busiest, r[1] + r[2]); total += r[1] + r[2]; }
-  return { low: row[0], buy: row[1], sell: row[2], poc: row[1] + row[2] >= busiest && busiest > 0, share: total > 0 ? (row[1] + row[2]) / total : 0, barBuy: bar.buyUsd, barSell: bar.sellUsd, ...(bar.parts?.[index] ? { parts: bar.parts[index] } : {}) };
+  const judged = { low: row[0], poc: row[1] + row[2] >= busiest && busiest > 0, share: total > 0 ? (row[1] + row[2]) / total : 0 };
+  if (inCoins()) {
+    const c = barCoins(bar, step), own = c.rows[index]!;
+    return { ...judged, buy: own[1], sell: own[2], barBuy: c.buy, barSell: c.sell, ...(c.parts?.[index] ? { parts: c.parts[index] } : {}) };
+  }
+  return { ...judged, buy: row[1], sell: row[2], barBuy: bar.buyUsd, barSell: bar.sellUsd, ...(bar.parts?.[index] ? { parts: bar.parts[index] } : {}) };
 }
 
-const signed = (value: number): string => (value < 0 ? '-' : value > 0 ? '+' : '') + volText(Math.abs(value));
+const signed = (value: number): string => (value < 0 ? '-' : value > 0 ? '+' : '') + rowText(Math.abs(value));
+/** A size with its unit, as a row's box writes it: "$13.4M" in dollars, "0.0523 BTC" in coins (app/units.ts). */
+const sized = (value: number): string => inCoins() ? amount(value) : `$${volText(value)}`;
 
 /** How a diagonal ratio reads: "3.4×", or no ratio at all against an empty row. */
 const ratioText = (ratio: number): string => Number.isFinite(ratio) ? `${ratio.toFixed(1)}×` : '';
@@ -553,8 +602,8 @@ export function rowCellLines(cell: RowCell, bar: Bar, step: number, tf: string, 
     { text: `${fmtPrice(cell.low, step)} – ${fmtPrice(cell.low + step, step)}`, bold: true },
     { label: t('Candle'), text: `${clock(bar.t, true)} · ${tf}` },
     ...(markets > 1 ? [{ label: t('Markets'), text: t('{n} added together', { n: markets }) }] : []),
-    { label: t('Sold'), text: `$${volText(cell.sell)}`, color: 'sell' },
-    { label: t('Bought'), text: `$${volText(cell.buy)}`, color: 'buy' },
+    { label: t('Sold'), text: sized(cell.sell), color: 'sell' },
+    { label: t('Bought'), text: sized(cell.buy), color: 'buy' },
     { label: t('Delta'), text: signed(delta), color: delta > 0 ? 'buy' : delta < 0 ? 'sell' : 'text', bold: true },
     { label: t('Share of candle'), text: `${(cell.share * 100).toFixed(cell.share < 0.1 ? 1 : 0)}%` },
   ];
@@ -567,13 +616,13 @@ export function rowCellLines(cell: RowCell, bar: Bar, step: number, tf: string, 
   // Below zero: no venue lines at all (a pane too short even for the summary line).
   if (cell.parts?.length && venueLines >= 0) {
     const ranked = [...cell.parts].sort((a, b) => b[1] + b[2] - a[1] - a[2]), shown = ranked.slice(0, Math.max(0, venueLines)), rest = ranked.slice(Math.max(0, venueLines));
-    shown.forEach(([id, buy, sell], i) => lines.push({ mark: id, label: venueLabel(venueOfInstrument(id)), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'text', ...(i === 0 ? { rule: true } : {}) }));
+    shown.forEach(([id, buy, sell], i) => lines.push({ mark: id, label: venueLabel(venueOfInstrument(id)), text: `${rowText(sell)} × ${rowText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'text', ...(i === 0 ? { rule: true } : {}) }));
     if (rest.length) {
       const buy = rest.reduce((s, r) => s + r[1], 0), sell = rest.reduce((s, r) => s + r[2], 0);
-      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${volText(sell)} × ${volText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'muted', ...(shown.length ? {} : { rule: true }) });
+      lines.push({ label: tn(rest.length, '{n} more venue', '{n} more venues'), text: `${rowText(sell)} × ${rowText(buy)} · ${signed(buy - sell)}`, color: buy > sell ? 'buy' : buy < sell ? 'sell' : 'muted', ...(shown.length ? {} : { rule: true }) });
     }
   }
-  lines.push({ label: t('Candle volume'), text: `$${volText(cell.barBuy + cell.barSell)}`, rule: true });
+  lines.push({ label: t('Candle volume'), text: sized(cell.barBuy + cell.barSell), rule: true });
   lines.push({ label: t('Candle delta'), text: signed(cell.barBuy - cell.barSell), color: cell.barBuy > cell.barSell ? 'buy' : cell.barBuy < cell.barSell ? 'sell' : 'text' });
   return lines;
 }
