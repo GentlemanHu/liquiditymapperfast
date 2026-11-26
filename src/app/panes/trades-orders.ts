@@ -247,10 +247,11 @@ export class OrderList {
     const book = this.liquidations(), s = this.store.state, tr = s.trades;
     if (!book) return this.#liqRows = [];
     const minUsd = scaledUsd(tr.liqMinUsd);
-    const key = `${book.version}|${minUsd}|${tr.side}|${tr.group}|${this.#filterKeyNow()}`;
+    // In coins the rows add up their coins too (units.ts): another units is another set of rows.
+    const coins = inCoins(), key = `${book.version}|${minUsd}|${tr.side}|${tr.group}|${this.#filterKeyNow()}|${coins}`;
     if (key === this.#liqKey) return this.#liqRows;
     this.#liqKey = key;
-    return this.#liqRows = buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group);
+    return this.#liqRows = buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group, undefined, coins);
   }
   #showLiqHeld(): void { this.#pill.hidden = this.#liqNew <= 0; if (this.#liqNew > 0) setText(this.#pill, t('Held · {n} new ↑', { n: String(this.#liqNew) })); }
 
@@ -861,9 +862,11 @@ export class OrderList {
       }
       const buy = l.side === 'buy', signed = buy ? l.usd : -l.usd, tier = TIERS[tierOf(signed, scaledUsd, whale)]!, rowH = tier.row, sec = Math.floor(l.t / 1000);
       if (y + rowH <= 0) { lastSec = sec; y += rowH; continue; }
-      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders, l.price > 0 ? l.usd / l.price : Number.NaN), y, tier, rowH, fw, sec !== lastSec ? rowH / 2 : -1, false, p);
+      // In coins its dollars over its volume-weighted price (exact: that price is its dollars over its coins); in dollars none of that work.
+      const coins = inCoins() ? (l.price > 0 ? l.usd / l.price : Number.NaN) : 0;
+      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders, coins), y, tier, rowH, fw, sec !== lastSec ? rowH / 2 : -1, false, p);
       lastSec = sec;
-      drawn.push({ kind: 'row', k: -1 - i, y, h: rowH, rec: { k: -1 - i, t: l.t, price: l.price, usd: signed, id: l.id, lo: l.lo, hi: l.hi }, orders: l.orders, usd: signed, coins: l.price > 0 ? l.usd / l.price : Number.NaN });
+      drawn.push({ kind: 'row', k: -1 - i, y, h: rowH, rec: { k: -1 - i, t: l.t, price: l.price, usd: signed, id: l.id, lo: l.lo, hi: l.hi }, orders: l.orders, usd: signed, coins });
       y += rowH;
     }
   }

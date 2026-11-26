@@ -5,7 +5,7 @@ import { helpButton } from '../help.ts';
 import { setTip } from '../tip.ts';
 import { t, tn } from '../i18n.ts';
 import { addTune } from '../pane-tune.ts';
-import { clock } from '../format.ts';
+import { clock, usd } from '../format.ts';
 import { inCoins, signedAmount, unitFloor, unitName } from '../units.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
@@ -52,8 +52,8 @@ export function deltaHeldKey(state: AppState, ids: readonly string[]): string {
   return `${state.marketId}|${state.timeframe}|${s.style}|${s.nlns}|${s.reset}|${zone}|${ids.join(',')}${oi}${inCoins() ? '|coins' : ''}`;
 }
 
-/** A signed size in the page's units (units.ts): "+$12.3M", "−0.35 BTC". */
-const signed = (v: number): string => signedAmount(v);
+/** A signed size in the page's units (units.ts): in dollars as the pane always wrote it ("+$12.3M", "$–" for none), in coins "−0.35 BTC". */
+const signed = (v: number): string => inCoins() ? signedAmount(v) : `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 
 /** The popup for one candle of the pane: its time (the table's foot says it), its delta and the CVD it closed at (a candle in the page's units). */
 export function deltaCardLines(c: DeltaCandle, tf: string): InfoLine[] {
@@ -346,8 +346,9 @@ export class DeltaPane extends TimePane {
     const { candles, drawn: coinCandles, earliest, starts, flows, raw, ids, support, firsts } = this.#candles(state, now);
     this.candles = candles;
     // In coins the snapshot carries the candles in coins too, for a Range summary in coins (range/delta-lines.ts `DeltaPaneHeld.coins`).
-    const coinsHeld = coinCandles && this.#coinParts ? { coins: { flows: this.#coinParts.flows, candles: new Map(coinCandles.map(c => [c.t, c] as const)) } } : {};
-    this.#keep({ key: deltaHeldKey(state, ids), mode: s.style === 'bars' ? 'bars' : 'cvd', tfMs: tf, tf: state.timeframe, reset: s.reset, starts, flows, raw, candles, support, markets: ids.length, earliest, firsts, ...coinsHeld, ...this.#price(state), nlns: null, whose: '', coin: '', replayAt: replaying() ? Math.floor(now / tf) * tf : null });
+    const held: Omit<DeltaPaneHeld, 'candles'> & { candles: readonly DeltaCandle[] } = { key: deltaHeldKey(state, ids), mode: s.style === 'bars' ? 'bars' : 'cvd', tfMs: tf, tf: state.timeframe, reset: s.reset, starts, flows, raw, candles, support, markets: ids.length, earliest, firsts, ...this.#price(state), nlns: null, whose: '', coin: '', replayAt: replaying() ? Math.floor(now / tf) * tf : null };
+    if (coinCandles && this.#coinParts) held.coins = { flows: this.#coinParts.flows, candles: new Map(coinCandles.map(c => [c.t, c] as const)) };
+    this.#keep(held);
     // Divergences need the chart's candles to be this market's: a borrowed reference series is another market's price. They are found on the
     // dollars' candles in either units (a judgment); what is drawn and written below is the candles in the page's units (`drawn`).
     const bars = state.seriesInstrument === state.marketId ? state.candles.map(c => ({ t: c[0], high: c[2], low: c[3] })) : [];

@@ -129,7 +129,9 @@ export function pulseRows(flow: FlowBook, ids: readonly string[], nowSec: number
     }
     const covered = recorded(minutes);
     const label = PULSE_LABELS[minutes] ?? `${minutes}m`;
-    return { key: `pulse:${minutes}`, label, range: label, buy, sell, ...(coins ? { coins: { buy: cBuy, sell: cSell } } : {}), share: shareOf(buy, sell), weight: null, covered, minutes, partial: isPartial(covered, minutes) };
+    const row: StripRow = { key: `pulse:${minutes}`, label, range: label, buy, sell, share: shareOf(buy, sell), weight: null, covered, minutes, partial: isPartial(covered, minutes) };
+    if (coins) row.coins = { buy: cBuy, sell: cSell };
+    return row;
   });
 }
 
@@ -164,7 +166,9 @@ export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null,
   const total = sums.reduce((a, s) => a + s.buy + s.sell, 0), covered = window ? window.stats : null;
   return bands.map((b, i) => {
     const { buy, sell, approx } = sums[i]!;
-    return { key: `size:${i}`, label: approx ? `≈${b.label}` : b.label, range: b.range, buy, sell, ...(perUsd > 0 ? { coins: { buy: buy * perUsd, sell: sell * perUsd } } : {}), ...(approx ? { approx } : {}), share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
+    const row: StripRow = { key: `size:${i}`, label: approx ? `≈${b.label}` : b.label, range: b.range, buy, sell, ...(approx ? { approx } : {}), share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
+    if (perUsd > 0) row.coins = { buy: buy * perUsd, sell: sell * perUsd };
+    return row;
   });
 }
 

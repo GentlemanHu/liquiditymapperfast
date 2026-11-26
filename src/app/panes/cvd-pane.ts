@@ -700,7 +700,7 @@ export class CvdPane {
       this.#modelKey = key;
     }
     if (unitsNow !== this.#unitsDrawn) { this.#unitsDrawn = unitsNow; this.#strip.refresh(); }
-    this.#floor = unitFloor(this.#unitPrice());
+    this.#floor = inCoins() ? unitFloor(this.#unitPrice()) : 1;
     const model = this.#model;
     this.#drawn = { t0: this.view.t0, t1: this.view.t1 };
     this.#empty = emptyScopeMessage(s) ?? (!model.rows.length ? (ids.length ? t('Waiting for trades…') : t('No venues are enabled.')) : null);

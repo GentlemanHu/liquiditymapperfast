@@ -572,9 +572,9 @@ export class BlockList {
 /** Everything a block's row shows, as a key: a settled block keeps it, so its row is shifted with the canvas instead of drawn again. */
 function blockSig(b: Block, chosen: boolean): string {
   const tb = b.topBuy, ts = b.topSell;
+  const sig = `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.liqBuy}|${b.liqSell}|${b.liqN}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}`;
   // In coins the row writes its coins (units.ts): they are part of what it shows.
-  const coins = inCoins() ? `|c${b.cBuy}|${b.cSell}|${tb.has ? tb.coins : '-'}|${ts.has ? ts.coins : '-'}` : '';
-  return `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.liqBuy}|${b.liqSell}|${b.liqN}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}${coins}`;
+  return inCoins() ? `${sig}|c${b.cBuy}|${b.cSell}|${tb.has ? tb.coins : '-'}|${ts.has ? ts.coins : '-'}` : sig;
 }
 /** Text cut with an ellipsis to fit `max` px (one measure per cut step: only short notes go through it). */
 function fitText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, max: number): void {

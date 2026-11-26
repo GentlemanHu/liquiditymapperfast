@@ -90,7 +90,7 @@ export class LiqStrip {
     setText(this.#soundBtn, soundOn ? t('Sound on') : t('Sound off'));
     this.#soundBtn.dataset.tip = soundOn ? t('Mute liquidation sounds') : t('Enable liquidation sounds');
     const maxRows = isPhone() ? MAX_ROWS_PHONE : MAX_ROWS_DESKTOP;
-    const rows: LiqRow[] = book ? buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group).slice(0, maxRows) : [];
+    const rows: LiqRow[] = book ? buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group, undefined, inCoins()).slice(0, maxRows) : [];
     const key = `${rows.map(r => `${r.key}:${r.count}:${Math.round(r.usd)}`).join('|')}|${minUsd}|${document.documentElement.lang}|${units()}`;
     if (key === this.#lastKey) return;
     const topKey = rows[0]?.key ?? '';

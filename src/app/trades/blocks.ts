@@ -20,8 +20,9 @@ import { liqCoins, liqSideMatches, lowerBoundLiq, summarizeLiqsIn } from './liqu
  *
  * Coins (units.ts, issue 9): a reader in coins (`coinsOn`) adds each part's coins beside its dollars (`Block.cBuy`, `cSell`, `MarketRow.cBuy`,
  * `cSell`), each at its own price: the tally's per-order coins (exact), the flow's coin series (each second over its own price), a recorded
- * order's dollars over its own price, a liquidation's over its reported price. A named order carries its coins always. The bars, their venue
- * pieces, the size floor and the largest orders' choice stay the dollars'.
+ * order's dollars over its own price, a liquidation's over its reported price, and a named order its coins. A reader in dollars does none of
+ * that work (dollars mode is the page as it was, its work included); its blocks' coin fields are not read. The bars, their venue pieces, the
+ * size floor and the largest orders' choice stay the dollars'.
  */
 
 /**
@@ -44,7 +45,8 @@ export interface OlderPrints { from: number; to: number; prints: readonly PrintL
 
 /**
  * One order named in a block: its dollars (unsigned), time, market, VWAP and the prices it reached; `recorded` when it came from the recording
- * (from $25K); `coins`, what it bought or sold in coins (its dollars over its own price; a liquidation's over its reported price).
+ * (from $25K); `coins`, what it bought or sold in coins (its dollars over its own price; a liquidation's over its reported price), set by a
+ * reader in coins (one in dollars leaves it as it was).
  */
 export interface NamedOrder { has: boolean; usd: number; t: number; id: string; price: number; lo: number; hi: number; recorded: boolean; coins: number }
 const noOrder = (): NamedOrder => ({ has: false, usd: 0, t: 0, id: '', price: 0, lo: 0, hi: 0, recorded: false, coins: 0 });
@@ -255,7 +257,8 @@ export class BlockReader {
     out.s = s; out.B = B; out.buy = 0; out.sell = 0; out.vBuy.fill(0); out.vSell.fill(0); out.n = 0; out.from = 0; out.partial = false; out.gap = false; out.unknown = false; out.unrecorded = false;
     out.topBuy.has = false; out.topSell.has = false; out.refPx = NaN; out.refPrev = NaN;
     out.liqBuy = 0; out.liqSell = 0; out.liqN = 0;
-    out.cBuy = 0; out.cSell = 0; out.cLiqBuy = 0; out.cLiqSell = 0;
+    // The coins only from a reader in coins: one in dollars does none of their work (its blocks' coins are not read).
+    if (this.coinsOn()) { out.cBuy = 0; out.cSell = 0; out.cLiqBuy = 0; out.cLiqSell = 0; }
     if (this.mode === 'liquidations') { this.#computeLiquidations(s, end, out); return; }
     const cov = this.coveredSec(), tapeFrom = Math.max(s, cov);
     // The part before the tape's covered start: the flow (any size) or the recording (from its own floor), else unknown.
@@ -297,10 +300,10 @@ export class BlockReader {
       if (forcedBuy) { out.buy += l.usd; if (coins) out.cBuy += liqCoins(l); if (slot >= 0) out.vBuy[slot]! += l.usd; }
       else { out.sell += l.usd; if (coins) out.cSell += liqCoins(l); if (slot >= 0) out.vSell[slot]! += l.usd; }
       const named = forcedBuy ? out.topBuy : out.topSell;
-      if (!named.has || l.usd > named.usd) setNamed(named, l.usd, l.t, l.id, l.price, l.price, l.price, true, liqCoins(l));
+      if (!named.has || l.usd > named.usd) setNamed(named, l.usd, l.t, l.id, l.price, l.price, l.price, true, coins ? liqCoins(l) : undefined);
     }
     out.liqBuy = out.buy; out.liqSell = out.sell; out.liqN = out.n;
-    out.cLiqBuy = out.cBuy; out.cLiqSell = out.cSell;
+    if (coins) { out.cLiqBuy = out.cBuy; out.cLiqSell = out.cSell; }
     const flow = this.flowOf?.(this.ref);
     if (flow?.span) {
       const z = Math.min(end - 1, flow.span.last), a = Math.max(s, flow.span.first);
@@ -339,8 +342,8 @@ export class BlockReader {
     if (out.from !== 0) { out.partial = true; out.n = -1; } else out.n = n;
     out.from |= FROM.tape;
     // The tape's largest unless the part before it (the recording's) named a larger one.
-    if (topBK >= 0 && !(out.topBuy.has && out.topBuy.usd >= topB)) readNamed(ring, topBK, out.topBuy);
-    if (topSK >= 0 && !(out.topSell.has && out.topSell.usd >= topS)) readNamed(ring, topSK, out.topSell);
+    if (topBK >= 0 && !(out.topBuy.has && out.topBuy.usd >= topB)) readNamed(ring, topBK, out.topBuy, coins);
+    if (topSK >= 0 && !(out.topSell.has && out.topSell.usd >= topS)) readNamed(ring, topSK, out.topSell, coins);
   }
 
   #history(s: number, end: number, out: Block): void {
@@ -391,7 +394,7 @@ export class BlockReader {
   #prints(p: readonly PrintLike[], s: number, end: number, out: Block, count: boolean): void {
     const t0 = s * 1000, t1 = end * 1000;
     if (this.#marketsFor !== this.markets) { this.#marketsFor = this.markets; this.#marketSet = new Set(this.markets); }
-    const counted = this.#marketSet, coins = count && this.coinsOn();
+    const counted = this.#marketSet, named = this.coinsOn(), coins = count && named;
     let lo = 0, hi = p.length;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (p[mid]!.t < t0) lo = mid + 1; else hi = mid; }
     for (let i = lo; i < p.length && p[i]!.t < t1; i++) {
@@ -403,8 +406,8 @@ export class BlockReader {
         // A recorded order's coins: its dollars over its own volume-weighted price.
         if (coins) { if (buy) out.cBuy += coinsOf(o.usd, o.price); else out.cSell += coinsOf(o.usd, o.price); }
       }
-      const named = buy ? out.topBuy : out.topSell;
-      if (!named.has || o.usd > named.usd) setNamed(named, o.usd, o.t, o.id, o.price, o.lo ?? o.price, o.hi ?? o.price, true, coinsOf(o.usd, o.price));
+      const top = buy ? out.topBuy : out.topSell;
+      if (!top.has || o.usd > top.usd) setNamed(top, o.usd, o.t, o.id, o.price, o.lo ?? o.price, o.hi ?? o.price, true, named ? coinsOf(o.usd, o.price) : undefined);
     }
   }
 
@@ -429,30 +432,30 @@ export class BlockReader {
     // From a reader in coins each row carries its coins too, each part at its own price (the order of the rows stays the dollars').
     const coins = this.coinsOn();
     if (this.mode === 'liquidations') {
-      const end = s + B, t0 = s * 1000, t1 = end * 1000, by = new Map<string, [number, number, number, number]>();
+      const end = s + B, t0 = s * 1000, t1 = end * 1000, by = new Map<string, number[]>();
       for (let i = lowerBoundLiq(this.liqItems, t0); i < this.liqItems.length; i++) {
         const l = this.liqItems[i]!;
         if (l.t >= t1) break;
         if (l.usd < this.liqMinUsd || !liqSideMatches(l.side, this.side) || !this.liqShown(l.id)) continue;
-        const e = by.get(l.id) ?? [0, 0, 0, 0];
-        if (l.side === 'short') { e[0] += l.usd; e[2] += liqCoins(l); } else { e[1] += l.usd; e[3] += liqCoins(l); }
+        const e = by.get(l.id) ?? (coins ? [0, 0, 0, 0] : [0, 0]);
+        if (l.side === 'short') { e[0]! += l.usd; if (coins) e[2]! += liqCoins(l); } else { e[1]! += l.usd; if (coins) e[3]! += liqCoins(l); }
         by.set(l.id, e);
       }
       const rows: MarketRow[] = [];
-      for (const [id, [buy, sell, cBuy, cSell]] of by) {
+      for (const [id, [buy = 0, sell = 0, cBuy = 0, cSell = 0]] of by) {
         const f = this.flowOf?.(id);
         let last = 0, before = 0;
         if (f?.span) {
           for (let sec = Math.min(end - 1, f.span.last); sec >= Math.max(s, f.span.first) && !last; sec--) last = f.ownPrice(sec);
           for (let sec = s - 1; sec >= s - Math.max(2, B) && !before; sec--) before = f.ownPrice(sec);
         }
-        rows.push({ id, buy, sell, move: last > 0 && before > 0 ? 1e4 * Math.log(last / before) : NaN, ...(coins ? { cBuy, cSell } : {}) });
+        { const move = last > 0 && before > 0 ? 1e4 * Math.log(last / before) : NaN; rows.push(coins ? { id, buy, sell, move, cBuy, cSell } : { id, buy, sell, move }); }
       }
       return rows.sort((a, b) => (b.buy + b.sell) - (a.buy + a.sell));
     }
     const end = s + B, tally = this.tally, ring = tally?.ring ?? null, cov = this.coveredSec(), rows: MarketRow[] = [], split = Math.min(end, Math.max(s, cov));
     // Under a size floor the part before the tape is the recording's orders, counted per market as the block's own totals count them.
-    const recorded = new Map<string, [number, number, number, number]>(), rec = this.recorded;
+    const recorded = new Map<string, number[]>(), rec = this.recorded;
     if (this.minUsd > 0 && rec && this.minUsd >= rec.minUsd && split > s) {
       const p = rec.prints, t0 = s * 1000, t1 = split * 1000;
       let lo = 0, hi = p.length;
@@ -460,8 +463,8 @@ export class BlockReader {
       for (let i = lo; i < p.length && p[i]!.t < t1; i++) {
         const o = p[i]!, buy = o.side === 'buy';
         if (o.usd < this.minUsd || (this.side === 'buy' && !buy) || (this.side === 'sell' && buy)) continue;
-        const e = recorded.get(o.id) ?? [0, 0, 0, 0];
-        if (buy) { e[0] += o.usd; e[2] += coinsOf(o.usd, o.price); } else { e[1] += o.usd; e[3] += coinsOf(o.usd, o.price); }
+        const e = recorded.get(o.id) ?? (coins ? [0, 0, 0, 0] : [0, 0]);
+        if (buy) { e[0]! += o.usd; if (coins) e[2]! += coinsOf(o.usd, o.price); } else { e[1]! += o.usd; if (coins) e[3]! += coinsOf(o.usd, o.price); }
         recorded.set(o.id, e);
       }
     }
@@ -487,7 +490,7 @@ export class BlockReader {
         else before = f?.ownPrice(sec) ?? 0;
       }
       if (buy === 0 && sell === 0 && !last) continue;
-      rows.push({ id, buy, sell, move: last > 0 && before > 0 ? 1e4 * Math.log(last / before) : NaN, ...(coins ? { cBuy, cSell } : {}) });
+      { const move = last > 0 && before > 0 ? 1e4 * Math.log(last / before) : NaN; rows.push(coins ? { id, buy, sell, move, cBuy, cSell } : { id, buy, sell, move }); }
     }
     return rows.sort((a, b) => (b.buy + b.sell) - (a.buy + a.sell));
   }
@@ -498,14 +501,16 @@ export function olderFor(older: readonly OlderPrints[], t0: number, t1: number):
   for (const w of older) if (w.from <= t0 && w.to >= t1) return w;
   return undefined;
 }
-function setNamed(o: NamedOrder, usd: number, t: number, id: string, price: number, lo: number, hi: number, recorded: boolean, coins: number): void {
-  o.has = true; o.usd = usd; o.t = t; o.id = id; o.price = price; o.lo = lo; o.hi = hi; o.recorded = recorded; o.coins = coins;
+/** `coins`: the order's coins, from a reader in coins (one in dollars leaves them as they were: they are not read). */
+function setNamed(o: NamedOrder, usd: number, t: number, id: string, price: number, lo: number, hi: number, recorded: boolean, coins?: number): void {
+  o.has = true; o.usd = usd; o.t = t; o.id = id; o.price = price; o.lo = lo; o.hi = hi; o.recorded = recorded;
+  if (coins !== undefined) o.coins = coins;
 }
-/** Read write `k` of the ring into a named order (left without one when the ring has wrapped past it). */
-function readNamed(ring: TallyRing, k: number, o: NamedOrder): void {
+/** Read write `k` of the ring into a named order (left without one when the ring has wrapped past it), with its coins when `coins`. */
+function readNamed(ring: TallyRing, k: number, o: NamedOrder, coins: boolean): void {
   if (k < ring.first || k >= ring.written) return;
   const at = (k % ring.capacity) * STRIDE, d = ring.data, usd = d[at + 2]!, a = usd < 0 ? -usd : usd, price = ring.p0 + d[at + 1]!;
-  setNamed(o, a, ring.t0 + d[at]!, ring.ids[d[at + 3]!] ?? '', price, ring.p0 + d[at + 4]!, ring.p0 + d[at + 5]!, false, coinsOf(a, price));
+  setNamed(o, a, ring.t0 + d[at]!, ring.ids[d[at + 3]!] ?? '', price, ring.p0 + d[at + 4]!, ring.p0 + d[at + 5]!, false, coins ? coinsOf(a, price) : undefined);
 }
 export function copyBlock(a: Block, b: Block): void {
   b.s = a.s; b.B = a.B; b.buy = a.buy; b.sell = a.sell; b.vBuy.set(a.vBuy); b.vSell.set(a.vSell); b.n = a.n;
@@ -535,8 +540,8 @@ export function coincidences(orders: readonly NoteOrder[], min: number): Coincid
     const venues = [...new Set(group.map(o => o.venue))];
     if (venues.length < 2) continue;
     for (const o of group) used.add(o);
-    const coins = group.every(o => o.coins !== undefined) ? { coins: group.reduce((a, o) => a + o.coins!, 0) } : {};
-    out.push({ side, t: head.t, usd: group.reduce((a, o) => a + Math.abs(o.usd), 0), venues, ...coins });
+    const usd = group.reduce((a, o) => a + Math.abs(o.usd), 0);
+    out.push(group[0]!.coins !== undefined && group.every(o => o.coins !== undefined) ? { side, t: head.t, usd, venues, coins: group.reduce((a, o) => a + o.coins!, 0) } : { side, t: head.t, usd, venues });
   }
   return out.sort((a, b) => b.usd - a.usd);
 }
@@ -566,7 +571,10 @@ export class OrderScan {
     for (const g of this.#used) this.#n[g] = 0;
     this.#used = [];
   }
-  /** One order: `coins`, what it bought or sold in coins, where its dollars over `price` are not it (a liquidation's reported price). */
+  /**
+   * One order: `coins`, what it bought or sold in coins, where its dollars over `price` are not it (a liquidation's reported price). A scan
+   * in dollars does what it always did; one in coins also keeps each order's coins (`#c`, as long as the times).
+   */
   add(group: number, id: string, t: number, usd: number, price: number, lo: number, hi: number, coins?: number): void {
     const a = usd < 0 ? -usd : usd, inCoins = this.#coins, c = inCoins ? coins ?? coinsOf(a, price) : 0;
     if (a >= this.#floor) {
@@ -574,44 +582,54 @@ export class OrderScan {
       if (!full || a > Math.abs(L[L.length - 1]!.usd)) {
         let at = L.length - (full ? 1 : 0);
         while (at > 0 && Math.abs(L[at - 1]!.usd) < a) at--;
-        const o: ScanOrder = { t, id, venue: this.venueOf(id), usd, price, lo, hi, ...(inCoins ? { coins: c } : {}) };
+        const o: ScanOrder = inCoins ? { t, id, venue: this.venueOf(id), usd, price, lo, hi, coins: c } : { t, id, venue: this.venueOf(id), usd, price, lo, hi };
         if (full) L.pop();
         L.splice(at, 0, o);
       }
     }
-    if (a >= this.#bigMin) this.big.push({ t, id, venue: this.venueOf(id), usd, ...(inCoins ? { coins: c } : {}) });
+    if (a >= this.#bigMin) this.big.push(inCoins ? { t, id, venue: this.venueOf(id), usd, coins: c } : { t, id, venue: this.venueOf(id), usd });
     if (a < 10) return;
     const g = 2 * group + (usd > 0 ? 0 : 1);
     let n = this.#n[g] ?? 0;
     if (n === 0) { this.#used.push(g); this.#ids[g] = id; }
-    let ts = this.#t[g], us = this.#u[g], cs = this.#c[g];
-    if (!ts || !us || !cs || n >= ts.length) {
-      const grown = Math.max(64, (ts?.length ?? 0) * 2), nt = new Float64Array(grown), nu = new Float64Array(grown), nc = new Float64Array(grown);
-      if (ts && us && cs) { nt.set(ts.subarray(0, n)); nu.set(us.subarray(0, n)); nc.set(cs.subarray(0, n)); }
-      this.#t[g] = ts = nt; this.#u[g] = us = nu; this.#c[g] = cs = nc;
+    let ts = this.#t[g], us = this.#u[g];
+    if (!ts || !us || n >= ts.length) {
+      const grown = Math.max(64, (ts?.length ?? 0) * 2), nt = new Float64Array(grown), nu = new Float64Array(grown);
+      if (ts && us) { nt.set(ts.subarray(0, n)); nu.set(us.subarray(0, n)); }
+      this.#t[g] = ts = nt; this.#u[g] = us = nu;
     }
-    ts[n] = t; us[n] = a; cs[n] = c; this.#n[g] = ++n;
+    ts[n] = t; us[n] = a;
+    if (inCoins) {
+      let cs = this.#c[g];
+      if (!cs || cs.length < ts.length) { const nc = new Float64Array(ts.length); if (cs) nc.set(cs.subarray(0, Math.min(n, cs.length))); this.#c[g] = cs = nc; }
+      cs[n] = c;
+    }
+    this.#n[g] = ++n;
   }
   repeats(minN = 5, tol = 0.01, gapMs = 10_000): Repeat[] {
     const out: Repeat[] = [];
     for (const g of this.#used) {
-      const n = this.#n[g]!, ts = this.#t[g]!, us = this.#u[g]!, cs = this.#c[g]!;
+      const n = this.#n[g]!, ts = this.#t[g]!, us = this.#u[g]!, cs = this.#coins ? this.#c[g]! : null;
       let sorted = true;
       for (let i = 1; i < n; i++) if (ts[i]! < ts[i - 1]!) { sorted = false; break; }
       let T = ts, U = us, C = cs;
       if (!sorted) {
         // A stable sort by time (an order a batch delivered late), as `repeats` sorts its lists.
         const idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => ts[a]! - ts[b]! || a - b);
-        T = Float64Array.from(idx, i => ts[i]!); U = Float64Array.from(idx, i => us[i]!); C = Float64Array.from(idx, i => cs[i]!);
+        T = Float64Array.from(idx, i => ts[i]!); U = Float64Array.from(idx, i => us[i]!);
+        if (cs) C = Float64Array.from(idx, i => cs[i]!);
       }
       let start = 0;
       for (let i = 1; i <= n; i++) {
         const same = i < n && T[i]! - T[i - 1]! <= gapMs && Math.abs(U[i]! / U[i - 1]! - 1) <= tol;
         if (same) continue;
         if (i - start >= minN) {
-          let lo = Infinity, hi = -Infinity, cLo = Infinity, cHi = -Infinity;
-          for (let j = start; j < i; j++) { const u = U[j]!, c = C[j]!; if (u < lo) lo = u; if (u > hi) hi = u; if (c < cLo) cLo = c; if (c > cHi) cHi = c; }
-          out.push({ id: this.#ids[g]!, side: g % 2 === 0 ? 1 : -1, n: i - start, lo, hi, ms: T[i - 1]! - T[start]!, ...(this.#coins ? { coins: (cLo + cHi) / 2 } : {}) });
+          let lo = Infinity, hi = -Infinity;
+          for (let j = start; j < i; j++) { const u = U[j]!; if (u < lo) lo = u; if (u > hi) hi = u; }
+          const run: Repeat = { id: this.#ids[g]!, side: g % 2 === 0 ? 1 : -1, n: i - start, lo, hi, ms: T[i - 1]! - T[start]! };
+          // In coins, the middle of the run's smallest and largest coins.
+          if (C) { let cLo = Infinity, cHi = -Infinity; for (let j = start; j < i; j++) { const c = C[j]!; if (c < cLo) cLo = c; if (c > cHi) cHi = c; } run.coins = (cLo + cHi) / 2; }
+          out.push(run);
         }
         start = i;
       }
@@ -629,8 +647,11 @@ export function repeats(orders: readonly NoteOrder[], minN = 5, tol = 0.01, gapM
       const same = i < list.length && list[i]!.t - list[i - 1]!.t <= gapMs && Math.abs(Math.abs(list[i]!.usd) / Math.abs(list[i - 1]!.usd) - 1) <= tol;
       if (same) continue;
       if (i - start >= minN) {
-        const run = list.slice(start, i), a = run.map(o => Math.abs(o.usd)), c = run.every(o => o.coins !== undefined) ? run.map(o => o.coins!) : null;
-        out.push({ id: k.slice(0, k.lastIndexOf('|')), side: k.endsWith('|1') ? 1 : -1, n: run.length, lo: Math.min(...a), hi: Math.max(...a), ms: run[run.length - 1]!.t - run[0]!.t, ...(c ? { coins: (Math.min(...c) + Math.max(...c)) / 2 } : {}) });
+        const run = list.slice(start, i), a = run.map(o => Math.abs(o.usd));
+        const found: Repeat = { id: k.slice(0, k.lastIndexOf('|')), side: k.endsWith('|1') ? 1 : -1, n: run.length, lo: Math.min(...a), hi: Math.max(...a), ms: run[run.length - 1]!.t - run[0]!.t };
+        // Orders read in coins carry them (orders read in dollars never do): the middle of the run's smallest and largest coins.
+        if (run[0]!.coins !== undefined && run.every(o => o.coins !== undefined)) { const c = run.map(o => o.coins!); found.coins = (Math.min(...c) + Math.max(...c)) / 2; }
+        out.push(found);
       }
       start = i;
     }

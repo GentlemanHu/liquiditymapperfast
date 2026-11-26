@@ -14,7 +14,7 @@ import { SecondTally } from '../src/app/trades/tally.ts';
 import { BlockReader, OrderScan, coincidences, emptyBlock, repeats, type FlowLike, type NoteOrder } from '../src/app/trades/blocks.ts';
 import { buildLiqRows, liqCoins, summarizeLiqsIn } from '../src/app/trades/liquidations.ts';
 import { TapeTally } from '../src/app/candle/model.ts';
-import { alertText, type AlertEntry } from '../src/app/sound/alerts.ts';
+import { alertText, windowCoinDelta, type AlertEntry } from '../src/app/sound/alerts.ts';
 import { inspectorModel } from '../src/app/panes/trades-inspector.ts';
 import { deltaRow } from '../src/app/panes/delta-pane.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -129,12 +129,13 @@ test('a block read in coins adds each part at its own price: the tape\'s orders,
   const out = emptyBlock(1), now = T0 + 3_600_000;
   r.read(T0 / 1000, 60, out, now);
   close(out.buy, 130_000); assert.equal(out.cBuy, 0, 'a reader in dollars adds no coins');
-  close(out.topBuy.coins, 2, 'a named order carries its coins always'); close(out.topSell.coins, 2);
+  assert.equal(out.topBuy.coins, 0, 'nor works out a named order\'s'); assert.equal(r.marketRows(T0 / 1000, 60)[0]!.cBuy, undefined);
   const key = r.dataKey();
   r.coinsOn = () => true;
   assert.notEqual(r.dataKey(), key, 'another units is another key: kept blocks are read again');
   r.read(T0 / 1000, 60, out, now);
   close(out.buy, 130_000); close(out.cBuy, 2 + 0.6); close(out.cSell, 2);
+  close(out.topBuy.coins, 2, 'a named order\'s coins, its dollars over its own price'); close(out.topSell.coins, 2);
   const rows = r.marketRows(T0 / 1000, 60);
   close(rows[0]!.cBuy!, 2.6); close(rows[0]!.cSell!, 2); close(rows[0]!.buy, 130_000);
   // Liquidations: each over its reported price, never the market price it is drawn at.
@@ -148,8 +149,9 @@ test('a block read in coins adds each part at its own price: the tape\'s orders,
 test('liquidation rows and windows count coins over the reported price, grouped rows added up', () => {
   const mk = (t: number, usd: number, reported: number, price = 70_000): Liquidation => ({ t, id: P, side: 'long', price, usd, reported, kind: 'fill' });
   const items = [mk(1_000, 7_000, 70_000), mk(1_100, 13_800, 69_000, 69_900)];
-  const [row] = buildLiqRows(items, { minUsd: 0, side: 'both', shown: () => true }, true);
+  const [row] = buildLiqRows(items, { minUsd: 0, side: 'both', shown: () => true }, true, undefined, true);
   close(row!.coins, 0.1 + 0.2); close(liqCoins(items[1]!), 0.2);
+  assert.equal(buildLiqRows(items, { minUsd: 0, side: 'both', shown: () => true }, true)[0]!.coins, 0, 'rows built in dollars do none of the coins\' work');
   const sum = summarizeLiqsIn(items, 0, 2_000, { minUsd: 0, side: 'both', shown: () => true }, true);
   close(sum.coins!.sell, 0.3); assert.equal(summarizeLiqsIn(items, 0, 2_000, { minUsd: 0, side: 'both', shown: () => true }).coins, undefined);
 });
@@ -171,9 +173,17 @@ test('the inspector\'s scan in coins: each order\'s coins (its own price, or the
   const plain: NoteOrder[] = scan.big.map(({ coins: _, ...o }) => o);
   assert.equal(coincidences(plain, 100_000)[0]!.coins, undefined);
   assert.equal(repeats(plain).length, 0);
+  // A scan in dollars keeps no coins anywhere, its repeats included, even after one in coins (out-of-order orders take its sort).
   const dollars = new OrderScan(id => id); dollars.reset(9, 0, 100_000);
   dollars.add(0, P, 0, 150_000, 50_000, 0, 0);
-  assert.equal(dollars.largest[0]!.coins, undefined);
+  assert.equal(dollars.largest[0]!.coins, undefined); assert.equal(dollars.big[0]!.coins, undefined);
+  scan.reset(9, 0, 100_000);
+  for (const i of [4, 2, 0, 3, 1]) scan.add(0, P, 1_000 + i, 800, 40_000, 0, 0);
+  const [plainRun] = scan.repeats();
+  assert.equal(plainRun!.n, 5); assert.equal(plainRun!.coins, undefined); assert.deepEqual(scan.repeats(), repeats([4, 2, 0, 3, 1].map(i => ({ t: 1_000 + i, id: P, venue: 'binance', usd: 800 }))));
+  scan.reset(9, 0, 100_000, true);
+  for (const i of [4, 2, 0, 3, 1]) scan.add(0, P, 1_000 + i, 800, 40_000 + i * 100, 0, 0);
+  close(scan.repeats()[0]!.coins!, (800 / 40_400 + 800 / 40_000) / 2, 'a scan in coins again: the coins sorted with the times');
 });
 
 test('the inspector writes coins in coin mode: markets, largest orders, notes in their own sentences, liquidations', () => {
@@ -218,22 +228,32 @@ test('the phone Tape keeps each row\'s coins beside its dollars, one for one, ac
   close(tape.coinRows(wide, null).find(r => r[0] === near[0])![1], 4, 'an order added to the kept rows adds its coins');
 });
 
-test('an alert names its size as numbers, written when the Recent list shows: in dollars as it fired, in coins its coins', () => {
+test('an alert keeps its coins from when it fired, written when the Recent list shows: in dollars as it fired, in coins its coins', () => {
   const words = (size: string): string => `Bid wall appeared: ${size}`;
-  const wall: AlertEntry = { at: 0, panel: 'book', kind: 'wall-appeared', side: 'buy', text: words('$4.5M'), audible: true, size: { usd: 4_500_000, signed: false, price: 90_000, words } };
-  assert.equal(alertText(wall), 'Bid wall appeared: $4.5M');
+  const wall: AlertEntry = { at: 0, panel: 'book', kind: 'wall-appeared', side: 'buy', text: words('$4.5M'), audible: true, size: { usd: 4_500_000, coins: 50, signed: false, words } };
   const delta = (d: string): string => `1h candle closed with ${d} of net taker flow`;
-  const bar: AlertEntry = { at: 0, panel: 'bars', kind: 'bar-delta', side: 'sell', text: delta('−$2.1M'), audible: true, size: { usd: -2_100_000, signed: true, flow: { ids: [P, S, 'none:X'], from: 10, to: 20 }, words: delta } };
-  const asked: [string, number, number][] = [];
-  const coinsOf = (id: string) => id === 'none:X' ? undefined : { delta: (from: number, to: number) => { asked.push([id, from, to]); return id === P ? -20 : -3.5; } };
+  const bar: AlertEntry = { at: 0, panel: 'bars', kind: 'bar-delta', side: 'sell', text: delta('−$2.1M'), audible: true, size: { usd: -2_100_000, coins: -23.5, signed: true, words: delta } };
+  assert.equal(alertText(wall), 'Bid wall appeared: $4.5M'); assert.equal(alertText(bar), bar.text);
   inCoinMode(() => {
     assert.equal(alertText(wall), 'Bid wall appeared: 50 BTC');
-    assert.equal(alertText(bar, coinsOf), '1h candle closed with −23.5 BTC of net taker flow');
-    assert.deepEqual(asked, [[P, 10, 20], [S, 10, 20]]);
-    assert.equal(alertText(bar), bar.text, 'no coin series to read: as it fired');
+    assert.equal(alertText(bar), '1h candle closed with −23.5 BTC of net taker flow');
+    assert.equal(alertText({ ...bar, size: { ...bar.size!, coins: Number.NaN } }), '1h candle closed with – of net taker flow', 'coins not known when it fired: a dash');
     assert.equal(alertText({ ...wall, size: undefined }), wall.text);
   });
-  assert.equal(asked.length, 2, 'in dollars nothing is read');
+});
+
+test('an alert\'s coins come from the dollars\' series as it fires: each second over its own price, else the last before it, NaN without one', () => {
+  const book = new FlowBook();
+  // Five seconds: $1,000 bought at 100, nothing traded, $600 sold with no price of its own (the last, 100, holds), $2,000 bought at 200.
+  book.apply([[P, (SEC - 4) * 1000, 1_000, 0, 100], [P, (SEC - 3) * 1000, 0, 0, 0], [P, (SEC - 2) * 1000, 0, 600, 0], [P, (SEC - 1) * 1000, 2_000, 0, 200]]);
+  const series = book.get(P)!;
+  assert.equal(series.coins, undefined, 'in dollars no coin series is kept, and none is needed');
+  close(windowCoinDelta(series, SEC - 4, SEC), 10 - 6 + 10); close(windowCoinDelta(series, SEC - 2, SEC - 2), -6);
+  close(windowCoinDelta(series, SEC - 100, SEC + 100), 14, 'the seconds the series holds, as its dollars count them');
+  assert.equal(windowCoinDelta(series, SEC + 10, SEC + 20), 0, 'nothing traded: none');
+  const unpriced = new FlowBook(); unpriced.apply([[P, SEC * 1000, 500, 0]]);
+  assert.ok(Number.isNaN(windowCoinDelta(unpriced.get(P)!, SEC, SEC)), 'a second that moved with no price at all: not known');
+  assert.equal(series.coins, undefined, 'still no coin series kept');
 });
 
 test('a Delta table row in coins: half a cent\'s worth of coin is nothing, not half a coin', () => {

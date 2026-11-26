@@ -103,7 +103,10 @@ function laneLine(id: string, kind: Kind, series: FlowSeries, track: FlowTrack, 
   const lo = new Float64Array(o.columns), hi = new Float64Array(o.columns), last = new Float64Array(o.columns);
   for (let c = 0; c < o.columns; c++) { lo[c] = out[c * 3]! - base; hi[c] = out[c * 3 + 1]! - base; last[c] = out[c * 3 + 2]! - base; }
   const r = range(lo, hi);
-  return { id, kind, series, lo, hi, last, ...r, before, ...figures(series, o.winStart, o.nowSec), ...(coins ? { coins: figures(coins, o.winStart, o.nowSec) } : {}), quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
+  const delta = series.delta(o.winStart, o.nowSec), gross = series.gross(o.winStart, o.nowSec);
+  const line: LaneLine = { id, kind, series, lo, hi, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
+  if (coins) line.coins = figures(coins, o.winStart, o.nowSec);
+  return line;
 }
 
 /**
@@ -128,7 +131,9 @@ export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, 
   // The ranking (and the share and quiet flag beside it) is the dollars'; a row's figure of what it traded is written in coins in coin mode.
   const rows: FamilyRow[] = held.map((r, i) => {
     const lanes = [...r.family.lanes].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'spot' ? -1 : 1)).map(lane => laneLine(lane.id, lane.kind, flow.get(lane.id)!, flow.track(lane.id, coins)!, common, coins ? flow.coinsOf(lane.id) : undefined));
-    return { key: r.family.key, rank: i + 1, share: r.share, gross: r.gross, quiet: r.quiet, lanes, ...(coins ? { coins: { gross: lanes.reduce((sum, lane) => sum + (lane.coins?.gross ?? 0), 0) } } : {}) };
+    const row: FamilyRow = { key: r.family.key, rank: i + 1, share: r.share, gross: r.gross, quiet: r.quiet, lanes };
+    if (coins) row.coins = { gross: lanes.reduce((sum, lane) => sum + (lane.coins?.gross ?? 0), 0) };
+    return row;
   });
   const volumeFamilies = everyone.length;
 

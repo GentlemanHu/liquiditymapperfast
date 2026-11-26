@@ -656,15 +656,16 @@ export class TradesView {
     const cut = Math.min(t1, this.#tally.coveredFrom()), unrecorded = !liqMode && floor === 0 ? reader.holes.filter(([a, b]) => a < cut && b > t0).map(([a, b]) => [Math.max(a, t0), Math.min(b, cut)] as [number, number]) : [];
     let blockLiqs: BlockLiquidations | null = null;
     if (reader.mode === 'both' && block.liqN > 0) {
-      const items = reader.liqItems, picked: BlockLiquidations['largest'] = [];
+      const items = reader.liqItems, picked: BlockLiquidations['largest'] = [], coins = inCoins();
       for (let i = lowerBoundLiq(items, t0); i < items.length; i++) {
         const l = items[i]!;
         if (l.t >= t1) break;
         if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
-        picked.push({ id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price, coins: liqCoins(l) });
+        picked.push(coins ? { id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price, coins: liqCoins(l) } : { id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price });
       }
       picked.sort((a, b) => b.usd - a.usd);
-      blockLiqs = { buy: block.liqBuy, sell: block.liqSell, n: block.liqN, largest: picked.slice(0, isPhone() ? 4 : 6), ...(inCoins() ? { coins: { buy: block.cLiqBuy, sell: block.cLiqSell } } : {}) };
+      blockLiqs = { buy: block.liqBuy, sell: block.liqSell, n: block.liqN, largest: picked.slice(0, isPhone() ? 4 : 6) };
+      if (coins) blockLiqs.coins = { buy: block.cLiqBuy, sell: block.cLiqSell };
     }
     return inspectorModel({
       block, state, time, marketCount: reader.markets.length, ref: reader.ref, minUsd: floor, recordedFloor: scaledUsd(TNS_FLOOR_USD),
@@ -682,11 +683,12 @@ export class TradesView {
   *#scanSteps(scan: OrderScan, t0: number, t1: number): Generator<void, void, void> {
     const reader = this.blocks.reader;
     if (reader.mode === 'liquidations') {
+      const coins = inCoins();
       for (let i = lowerBoundLiq(reader.liqItems, t0); i < reader.liqItems.length; i++) {
         const l = reader.liqItems[i]!;
         if (l.t >= t1) break;
         if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
-        scan.add(this.#group(l.id), l.id, l.t, l.side === 'short' ? l.usd : -l.usd, l.price, l.price, l.price, liqCoins(l));
+        scan.add(this.#group(l.id), l.id, l.t, l.side === 'short' ? l.usd : -l.usd, l.price, l.price, l.price, coins ? liqCoins(l) : undefined);
       }
       return;
     }

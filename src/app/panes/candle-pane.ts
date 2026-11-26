@@ -462,8 +462,8 @@ export class CandlePane {
   #paintTape(ctx: CanvasRenderingContext2D, l: M.CandleLayout, s: M.PriceScale, tape: readonly (readonly [number, number, number])[], step: number, p: Palette, coinRows: readonly (readonly [number, number, number])[] | null = null): void {
     const x0 = l.candleX0, x1 = l.candleX1, split = (x0 + x1) / 2, half = (x1 - x0) / 2 - 2;
     const judged = true, glass = this.#glassOn(), look = this.#settings.rows;
-    // Each row's coins beside it (`coinRows` lists the same rows one for one), written in coins in place of its dollars.
-    const rows = step > 0 ? tape.flatMap((r, i) => r[1] + r[2] > 0 ? [{ r, split: { buy: r[1], sell: r[2] }, coins: coinRows?.[i] ?? null }] : []) : [];
+    // The tape lists only rows that traded, so `rows` is the tape one for one, and `coinRows` (the same rows' coins, in coins) is read by index.
+    const rows = step > 0 ? tape.flatMap(r => r[1] + r[2] > 0 ? [{ r, split: { buy: r[1], sell: r[2] } }] : []) : [];
     this.#frost = [];
     if (!glass) { ctx.fillStyle = p.panel; ctx.fillRect(x0, s.y0, x1 - x0, s.y1 - s.y0); }
     ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(split + 0.5, s.y0); ctx.lineTo(split + 0.5, s.y1); ctx.stroke();
@@ -474,7 +474,7 @@ export class CandlePane {
     // The point of control: the row where the most traded.
     const poc = judged ? M.pocIndex(rows.map(({ r, split: c }) => [r[0], c.buy, c.sell] as const)) : -1;
     ctx.textBaseline = 'middle';
-    rows.forEach(({ r: [low, buy, sell], split: c, coins }, i) => {
+    rows.forEach(({ r: [low, buy, sell], split: c }, i) => {
       const y = M.yOf(s, low + step); if (y + rh < s.y0 || y > s.y1) return;
       // Which side won, and how strongly that shows (0 to 1, continuous).
       const e = judged ? M.rowEmphasis(c.buy, c.sell, maxNet) : null, win = e?.side ?? null, k = !e ? 0 : look === 'lean' ? e.lean : e.net;
@@ -505,6 +505,7 @@ export class CandlePane {
         // The winner's number in full and bolder the more it won; the loser's fading with it. A small row's numbers are the ink faded.
         const small = buy + sell < busiest * 0.04, ink = p.text, fade = small ? 0.55 : 1;
         ctx.fillStyle = ink;
+        const coins = coinRows ? coinRows[i] : undefined;
         ctx.font = win === 'sell' && k > 0.45 ? BOLD_NUM : NUM_FONT; ctx.globalAlpha = fade * (win === 'buy' ? 1 - 0.5 * k : 1);
         // Written where a dollar or more traded (judged on the dollars, so the same rows say a number in either units).
         ctx.textAlign = 'right'; if (sell >= 1) ctx.fillText(coins ? figure(coins[2]) : volText(sell), split - 4, y + rh / 2);

@@ -334,9 +334,9 @@ export const TAPE_BINS = 4096;
 
 /**
  * The rows of one step and set of markets, kept up to date as orders come (`add`), and the lists made from them (null once an order changed
- * them): `sums` the dollars, `coinSums` the coins, laid out alike.
+ * them): `sums` the dollars, `coinSums` the coins laid out alike (null until `coinRows` asks: dollars mode adds rows up as it always did).
  */
-interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | null; base: number; sums: Float64Array; coinSums: Float64Array; list: [number, number, number][] | null; coinList: [number, number, number][] | null }
+interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | null; base: number; sums: Float64Array; coinSums: Float64Array | null; list: [number, number, number][] | null; coinList: [number, number, number][] | null }
 
 /**
  * The Tape (Karl, 2026-10-17): every market order the page has seen since it opened, never fetched and never reset, so the view opens at
@@ -349,8 +349,9 @@ interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | 
  *
  * Coins (units.ts, issue 9): beside the dollars, each bin holds the coins its orders bought and sold, each order's dollars over its own price
  * (exact: the tape ring's price of an order is its own), kept from the first order on whatever the page's units (the tape is never read
- * again, so coins could not be had later): at most TAPE_BINS bins of two doubles a market, 64 KB a market, as the dollars. `coinRows` gives
- * them for the rows `rows` lists.
+ * again, so coins could not be had later, and the switch of units is instant): at most TAPE_BINS bins of two doubles a market, 64 KB a market,
+ * as the dollars, and in dollars mode one division and one addition an order, moved with the dollars when the bins move. Nothing else of the
+ * coins is worked out in dollars mode: `coinRows` adds the rows' coins up only when asked, for the rows `rows` lists.
  */
 export class TapeTally {
   /** When the tape began (the page's clock, ms), and the price step it counts at (set by its first order). */
@@ -395,8 +396,9 @@ export class TapeTally {
     if (c && (!c.markets || c.markets.has(market))) {
       const row = 2 * (Math.floor(bin * this.#factor / c.ratio) - c.base);
       if (row >= 0 && row < c.sums.length) {
-        if (usd > 0) { c.sums[row]! += usd; c.coinSums[row]! += coins; } else { c.sums[row + 1]! -= usd; c.coinSums[row + 1]! += coins; }
-        c.list = null; c.coinList = null;
+        if (usd > 0) c.sums[row]! += usd; else c.sums[row + 1]! -= usd;
+        c.list = null;
+        if (c.coinSums) { c.coinSums[usd > 0 ? row : row + 1]! += coins; c.coinList = null; }
       }
       else this.#cache = null;
     }
@@ -436,9 +438,10 @@ export class TapeTally {
     if (!(this.fine > 0) || !(step > 0) || !this.#count) return [];
     this.rows(step, markets);
     const c = this.#cache!;
+    c.coinSums ??= this.#groupCoins(c);
     if (!c.coinList) {
       const list: [number, number, number][] = [];
-      for (let i = 0; i < c.sums.length; i += 2) if (c.sums[i]! + c.sums[i + 1]! > 0) list.push([(c.base + i / 2) * c.ratio * this.fine, c.coinSums[i]!, c.coinSums[i + 1]!]);
+      for (let i = 0; i < c.sums.length; i += 2) if (c.sums[i]! + c.sums[i + 1]! > 0) list.push([(c.base + i / 2) * c.ratio * this.fine, c.coinSums![i]!, c.coinSums![i + 1]!]);
       c.coinList = list;
     }
     return c.coinList;
@@ -447,18 +450,34 @@ export class TapeTally {
   /** Add the bins up into rows of `ratio` fine steps, over every bin the arrays hold (so an order there is added to them as it comes). */
   #group(key: string, ratio: number, markets: readonly string[] | null): TapeRows {
     const f = this.#factor, base = Math.floor(this.#base * f / ratio), top = Math.floor((this.#base + this.#cap - 1) * f / ratio);
-    const set = markets ? new Set(markets) : null, sums = new Float64Array(2 * Math.max(1, top - base + 1)), coinSums = new Float64Array(sums.length);
+    const set = markets ? new Set(markets) : null, sums = new Float64Array(2 * Math.max(1, top - base + 1));
     for (const [market, m] of this.#markets) {
       if (set && !set.has(market)) continue;
-      const k = this.#coins.get(market)!;
       for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
         const at = 2 * (bin - this.#base), buy = m[at]!, sell = m[at + 1]!;
         if (buy === 0 && sell === 0) continue;
         const row = 2 * (Math.floor(bin * f / ratio) - base);
-        sums[row]! += buy; sums[row + 1]! += sell; coinSums[row]! += k[at]!; coinSums[row + 1]! += k[at + 1]!;
+        sums[row]! += buy; sums[row + 1]! += sell;
       }
     }
-    return { key, ratio, markets: set, base, sums, coinSums, list: null, coinList: null };
+    return { key, ratio, markets: set, base, sums, coinSums: null, list: null, coinList: null };
+  }
+
+  /** The coins of the rows `c` holds, added up as its dollars were (`coinRows`, coin mode only). */
+  #groupCoins(c: TapeRows): Float64Array {
+    const f = this.#factor, coinSums = new Float64Array(c.sums.length);
+    for (const [market, m] of this.#markets) {
+      if (c.markets && !c.markets.has(market)) continue;
+      const k = this.#coins.get(market)!;
+      for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
+        const at = 2 * (bin - this.#base);
+        if (m[at] === 0 && m[at + 1] === 0) continue;
+        const row = 2 * (Math.floor(bin * f / c.ratio) - c.base);
+        if (row < 0 || row >= coinSums.length) continue;
+        coinSums[row]! += k[at]!; coinSums[row + 1]! += k[at + 1]!;
+      }
+    }
+    return coinSums;
   }
 
   /** Make the arrays hold the bins from `lo` to `hi` (at most TAPE_BINS), with room to spare on both sides, every market's moved with them. */
