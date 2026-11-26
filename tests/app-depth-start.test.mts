@@ -37,10 +37,11 @@ test('a start on another day carries its date: away from the line nothing else s
 test('where the sentence does not fit, it breaks before the moment, which is never cut off; in every language, with a date', () => {
   assert.deepEqual(depthStartLines(wide, since, since - HOUR, since + DAY, 150), ['Depth recorded from', 'Nov 26 14:55']);
   assert.deepEqual(depthStartLines(wide, since, since - HOUR, now, 150), ['Depth recorded from 14:55'], 'one line where it fits');
-  // The narrowest legend row measured: a 320 px phone's 230 px plot, the words given 198 px (`#paintLegend`), at 6 px a letter 33 letters.
+  // The words' room (`#paintLegend`): a 390 px phone's 300 px plot gives them 218 px, left of its Draw key; a 320 px phone's, and a desktop
+  // legend beside the corner tools at its least, 148 px (at 6 px a letter, 24 letters).
   for (const { code } of LANGUAGES) {
     setLanguage(code, code === 'en' ? {} : JSON.parse(fs.readFileSync(`src/app/i18n/${code}.json`, 'utf8')) as Record<string, string>);
-    for (const room of [198, 150]) {
+    for (const room of [218, 148]) {
       const lines = depthStartLines(wide, since, since - HOUR, since + DAY, room);
       assert.ok(lines.length >= 1 && lines.length <= 2, `${code} in ${room} px: ${JSON.stringify(lines)}`);
       assert.ok(lines.every(line => wide(line) <= room), `${code} in ${room} px: every line fits ${JSON.stringify(lines)}`);
@@ -55,6 +56,9 @@ test('the map prints the words as the legend\'s last row, never beside the line,
   assert.doesNotMatch(body('#paintHistoryStart'), /fillText|measureText/, 'the dashed line alone');
   const legend = body('#paintLegend');
   assert.match(legend, /depthStartLines\(wide, this\.hub\.depthSince\(\), this\.view\.t0, pageNow\(\), depthRoom\)/);
+  // The plate is one rectangle from the title down: beside the corner buttons the row keeps to the legend's room, short of the buttons (a
+  // phone's Draw key included), so a row wider than the others never carries the plate behind them; under the buttons, the legend's room.
+  assert.match(legend, /depthRoom = Math\.max\(40, \(cornerBox && !dy \? Math\.min\(room, cornerBox\.x0 - 20\) : room\) - 12\)/);
   // After the scripts and their count, so their rows and buttons never move when the row comes or goes; in the plate's height, which the
   // levels' note, the bands, the drawing tools and the stripe's captions are placed by; not in the room the corner tools judge their look by.
   assert.ok(legend.indexOf('depthLines.forEach') > legend.indexOf('if (moreScripts)'), 'the last row');

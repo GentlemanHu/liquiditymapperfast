@@ -2012,10 +2012,12 @@ export class HeatPane {
     const textH = (detail ? 36 : 22) + (detail2 ? 14 : 0) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
     // Where the map's recorded depth begins, while the view starts before it (`depthStartLines`): the plate's last row, so nothing above it
     // moves when it comes or goes, with a sample of the dashed line that marks the moment on the map where the scripts have their swatches.
-    // Below the corner buttons it may run the plot's width; beside them it keeps clear of them (a phone's Draw key too, which `room` does not
-    // know). Left out of `#legendNeed`, so the corner tools never change their look as a drag brings the line in or out.
+    // The plate is one rectangle from the title down, so beside the corner buttons the row keeps to the legend's room and stops short of them
+    // (a phone's Draw key too, which `room` does not know): a row wider than the others would carry the plate's top edge behind them. Where
+    // the plate stands under the buttons it has the plot's width, as every row has. Left out of `#legendNeed`, so the corner tools never
+    // change their look as a drag brings the line in or out.
     const scriptsH = scriptRows ? scriptRows * lineH + 2 : 0, depthTop = 6 + textH + scriptsH, cornerBox = this.#cornerTools(this.plotW);
-    const depthRoom = Math.max(40, (cornerBox && dy + depthTop < cornerBox.y1 + 4 - (ctx.canvas as HTMLCanvasElement).offsetTop ? Math.min(room, cornerBox.x0 - 20) : this.plotW - 20) - 12);
+    const depthRoom = Math.max(40, (cornerBox && !dy ? Math.min(room, cornerBox.x0 - 20) : room) - 12);
     const depthLines = depthStartLines(wide, this.hub.depthSince(), this.view.t0, pageNow(), depthRoom);
     const depthW = depthLines.length ? 12 + Math.max(...depthLines.map(wide)) : 0;
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
