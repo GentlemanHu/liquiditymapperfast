@@ -44,7 +44,9 @@ export function rowLabel(row: FamilyRow, window: string, height: number, showQui
  * in its line's colour, and the band's share of the volume of all six bands, folded the same way into a short row.
  */
 export function sizeRowLabel(row: SizeRow, height: number): LabelLine[] {
-  return foldLabel({ text: row.label, tone: 'text', bold: true }, row.lanes, row.share, row.gross, height);
+  const head: LabelLine = { text: row.label, tone: 'text', bold: true };
+  // A row with no line (its bars not read yet, or none for the window) says its sizes alone: "0% · $0" would say nothing traded.
+  return row.lanes.length ? foldLabel(head, row.lanes, row.share, row.gross, height) : [head];
 }
 
 /** A row's head, its lanes' nets and its share, in lines that fit `height` px at 12 px a line (the two lanes on one line in a short row). */
@@ -123,7 +125,7 @@ export function sizeRowHover(row: SizeRow, column: number, timeMs: number, windo
     out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(lane.kind), window }), text: signedUsd(lane.delta), color: leanColor(lane.delta), rule: lane === row.lanes[0] });
     out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(lane.kind) }), text: `${plainUsd(lane.buy)} / ${plainUsd(lane.sell)}` });
   }
-  out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
+  if (row.lanes.length) out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
   out.push({ text: tn(Math.round(tfMs / 60_000), 'Read from bars of {n} minute: order sizes are kept a minute at a time.', 'Read from bars of {n} minutes: order sizes are kept a minute at a time.'), color: 'muted', wrap: true });
   if (row.unknown > 0) out.push({ text: tn(row.unknown, '{n} bar here holds no order sizes: the lines break there.', '{n} bars here hold no order sizes: the lines break there.'), color: 'muted', wrap: true });
   return out;

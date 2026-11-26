@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSizeModel, lineAt, rasterise, sizeTf, type SizeBars, type SizeInput } from '../src/app/cvd/sizes.ts';
+import { sizeRowLabel } from '../src/app/cvd/text.ts';
 import { BANDS } from '../src/app/size-history/model.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 
@@ -122,4 +123,12 @@ test('a window that starts before the first bar held draws nothing there: the li
   assert.ok(last.slice(0, 3).every(Number.isNaN), 'nothing before the first bar: ' + last.join(','));
   assert.deepEqual(last.slice(3), [500, 1_000, 1_500]);
   assert.match(model.rows[1]!.label, /^\$25K–100K$/, 'each row carries the name of its sizes (BTC: the second band)');
+});
+
+test('a row without a line says its sizes alone; with one, the net of each kind and the share', () => {
+  const empty = buildSizeModel(input(null, null)).rows[0]!;
+  assert.deepEqual(sizeRowLabel(empty, 87).map(l => l.text), [empty.label], 'no "0% · $0" while nothing is read');
+  const bars = held([bar(0, box(0, 5_000), box(0, 1_000))], 0, M);
+  const row = buildSizeModel(input(bars, null, { t1: M, columns: 1, now: M, rankMs: M })).rows[0]!;
+  assert.deepEqual(sizeRowLabel(row, 87).map(l => l.text), [row.label, 'S +$4K', '100% · $6K']);
 });

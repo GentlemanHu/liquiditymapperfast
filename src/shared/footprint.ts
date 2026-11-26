@@ -989,7 +989,7 @@ export class FootprintRecorder {
     // A market named twice counts once.
     const known = [...new Set(ids)].filter(id => this.#steps.has(id));
     const fine = known.reduce((most, id) => Math.max(most, this.#steps.get(id)!), 0);
-    if (!fine) return { step: 0, fine: 0, bars: [], from };
+    if (!fine) return { step: 0, fine: 0, bars: [], from, ...(sumsOnly ? { totals: true as const } : {}) };
     from = this.#reach(known, from, to, tfMs, budget, sumsOnly);
     const step = sumsOnly ? fine : fine * Math.max(1, Math.round(rowStep / fine));
     // With `byVenue` (several markets), each row also keeps every market's part: [buy, sell] per market of `known`, in one array.
