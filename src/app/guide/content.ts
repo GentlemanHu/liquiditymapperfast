@@ -201,7 +201,18 @@ export const SECTIONS: readonly Section[] = [
         'Older blocks come from what the page already holds, and nothing is fetched: any size from its per-second record of every exchange, from $25,000 from its recording of large orders, smaller sizes only from when the page began listening.',
         'Point at the list to hold it still. Beside a wide list, the details of the newest second (or the block you click) show each market\'s dollars and price move, the largest orders, and notes such as large orders on several exchanges within 5 ms.',
       ] },
-      { t: 'note', text: 'With the column closed, the strip along the window\'s edge has a tab for each view: Flow and Tape. On a phone the Flow tab shows the lines and the Tape tab the list, where a tap on a block opens its details.' },
+      { t: 'note', text: 'With the column closed, the strip along the window\'s edge has a tab for each view: Flow, Tape and Sizes. On a phone the Flow tab shows the lines and the Tape tab the list, where a tap on a block opens its details.' },
+    ],
+  },
+  {
+    id: 'flow-sizes', title: 'Sizes in the flow column',
+    blocks: [
+      { t: 'p', text: '**Sizes**, the third tab in the flow column\'s title, keeps the top row and the price strip and puts a row for each size of market order under them: under $25K, $25K–100K, $100K–500K, $500K–1M, $1M–5M and $5M and over (smaller sizes for smaller coins), the six of the Flow history. Each row has its spot and its perpetual line: the running delta of the orders of that size from the left edge. Added together, the six rows make the top row.' },
+      { t: 'list', items: [
+        'Read the rows against each other: small orders buying while large ones sell, or the reverse, is what the top row alone hides. Every line has its own scale, so compare shapes, not heights.',
+        'Beside each row: each kind\'s net over the window set in the gear, and the size\'s share of the volume of all six.',
+        'The sizes are kept only as each minute\'s order statistics, so the lines move a minute at a time (over a long span, five minutes or more). A stretch recorded before order sizes were kept breaks the lines.',
+      ] },
     ],
   },
   {
