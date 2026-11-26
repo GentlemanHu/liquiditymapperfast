@@ -3394,5 +3394,24 @@
  "Unusual candle volume": "異常なローソク出来高",
  "Trade side": "約定サイド",
  "Both sides, or only large market buys or only large market sells.": "両サイド、大口成行買いのみ、または大口成行売りのみ。",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "ここに表示されているレベルが時間とともにどう変わったか（列の上部のボタンで選んだ種類のとおり：清算、ストップ、利益確定）。それらをデプスパネルで開きます。"
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "ここに表示されているレベルが時間とともにどう変わったか（列の上部のボタンで選んだ種類のとおり：清算、ストップ、利益確定）。それらをデプスパネルで開きます。",
+ "Sizes": "サイズ",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "サイズ：成行注文のサイズ別テイカーフロー。フロー履歴の6つのサイズ（$25K未満から$5M以上まで）ごとに1行、それぞれ現物と無期限の累積出来高デルタ。一番上の行はすべての合計です。",
+ "How the column draws the order sizes, and its dot rows.": "この列が注文サイズをどう描くか、そしてドット行。",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "成行注文のサイズごとに1行（フロー履歴の6つ）：左端からの現物注文と無期限注文の累積デルタで、毎分記録される注文統計から求めます（そのため線は1分ごとに動きます）。6行を足すと一番上の行になります。",
+ "Net and share over": "ネットと割合の期間",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "各行の数値（種類ごとのネット、6サイズの出来高に占める割合）を集計する期間。",
+ "Reading the order sizes…": "注文サイズを読み込んでいます…",
+ "No order sizes recorded for this window.": "この期間の注文サイズは記録されていません。",
+ "Orders {band}": "注文 {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "other": "{n}分足から読んでいます：注文サイズは1分ごとに記録されます。"
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "other": "ここでは{n}本の足に注文サイズがありません：線はそこで途切れます。"
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "フロー列の3つ目の表示：サイズ別の成行注文。フロー履歴の6つのサイズごとに1行、それぞれ現物と無期限の累積出来高デルタ。一番上の行はすべての合計です。",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "誰のお金が価格を動かしているのか？各行は成行注文の1つのサイズで、$25K未満から$5M以上まで（小さいコインではサイズも小さくなります）：線はそのサイズの注文の買いから売りを引いたもので、現物と無期限はそれぞれ専用の色、左端のゼロから始まります。6行を足すと一番上の行になります。",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "線ごとに独自のスケールがあるので、高さではなく形を比べてください。各行の横には、歯車で設定した期間の種類ごとのネットと、6サイズの出来高に占めるそのサイズの割合。行にカーソルを合わせると数値が見られます。",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "サイズは毎分の注文統計としてしか記録されないため、これらの線は1分ごとに動きます（長い期間では5分以上ごと）。フロー表示の線は毎秒動きます。注文サイズの記録が始まる前に記録された区間にはサイズがなく、線はそこで途切れます。市場は一番上の行と同じで、現物／無期限のフィルターもここで有効です。"
 }

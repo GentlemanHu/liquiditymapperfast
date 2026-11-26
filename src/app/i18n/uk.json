@@ -3697,5 +3697,30 @@
  "Unusual candle volume": "Незвичний обсяг свічки",
  "Trade side": "Сторона угод",
  "Both sides, or only large market buys or only large market sells.": "Обидві сторони, лише великі ринкові купівлі або лише великі ринкові продажі.",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Як показані тут рівні змінювалися з часом, які б види не показувала кнопка вгорі колонки (ліквідації, стопи, тейк-профіти): відкриває їх у панелі глибини."
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "Як показані тут рівні змінювалися з часом, які б види не показувала кнопка вгорі колонки (ліквідації, стопи, тейк-профіти): відкриває їх у панелі глибини.",
+ "Sizes": "Розміри",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "Розміри: потік тейкерів за розміром ринкової заявки. По рядку на кожен із шести розмірів історії потоку, від менше $25K до $5M і більше, у кожному кумулятивна дельта обсягу спота і перпетуалів; верхній рядок підсумовує їх усі.",
+ "How the column draws the order sizes, and its dot rows.": "Як колонка малює розміри заявок, і її ряди крапок.",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "По рядку на кожен розмір ринкової заявки, шість розмірів історії потоку: кумулятивна дельта її спотових і перпетуальних заявок від лівого краю, за статистикою заявок, що зберігається щохвилини (тож лінія рухається раз на хвилину). Разом шість рядків дають верхній рядок.",
+ "Net and share over": "Нетто і частка за",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "Вікно, за яке беруться цифри кожного рядка (нетто кожного виду, частка в обсязі шести розмірів).",
+ "Reading the order sizes…": "Читання розмірів заявок…",
+ "No order sizes recorded for this window.": "За це вікно розміри заявок не записано.",
+ "Orders {band}": "Заявки {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "one": "За барами по {n} хвилині: розміри заявок зберігаються щохвилини.",
+  "few": "За барами по {n} хвилини: розміри заявок зберігаються щохвилини.",
+  "many": "За барами по {n} хвилин: розміри заявок зберігаються щохвилини.",
+  "other": "За барами по {n} хвилини: розміри заявок зберігаються щохвилини."
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "one": "Тут {n} бар без розмірів заявок: лінії там перериваються.",
+  "few": "Тут {n} бари без розмірів заявок: лінії там перериваються.",
+  "many": "Тут {n} барів без розмірів заявок: лінії там перериваються.",
+  "other": "Тут {n} бару без розмірів заявок: лінії там перериваються."
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "Третій вигляд колонки потоку: ринкові заявки за розміром, по рядку на кожен із шести розмірів історії потоку, у кожному кумулятивна дельта обсягу спота і перпетуалів. Верхній рядок підсумовує їх усі.",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "Чиї гроші рухають ціну? Кожен рядок — один розмір ринкової заявки, від менше $25K до $5M і більше (для дрібніших монет розміри менші): його лінії — те, що заявки цього розміру купили, мінус те, що продали, спот і перпетуали кожен своїм кольором, від нуля біля лівого краю. Разом шість рядків дають верхній рядок.",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "Кожна лінія має власну шкалу, тож порівнюйте форми, а не висоту. Поруч із кожним рядком: нетто кожного виду за вікно, вибране в шестірні, і частка розміру в обсязі всіх шести. Наведіть на рядок, щоб побачити його числа.",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "Розміри зберігаються лише як щохвилинна статистика заявок, тому ці лінії рухаються раз на хвилину (на довгому відрізку — раз на п'ять хвилин або рідше), тоді як лінії вигляду «Потік» рухаються щосекунди. Відрізок, записаний до того, як почали зберігати розміри заявок, їх не має: лінії там перериваються. Ринки ті самі, що й у верхнього рядка, і фільтр Спот / Перп тут теж діє."
 }

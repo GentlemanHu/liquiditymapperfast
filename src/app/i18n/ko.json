@@ -3394,5 +3394,24 @@
  "Unusual candle volume": "이례적 캔들 거래량",
  "Trade side": "체결 방향",
  "Both sides, or only large market buys or only large market sells.": "양방향, 대형 시장가 매수만 또는 대형 시장가 매도만.",
- "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "여기 표시된 레벨이 시간에 따라 어떻게 바뀌었는지(열 위쪽 버튼에서 고른 종류: 청산, 손절, 익절). 뎁스 패널에서 엽니다."
+ "How the levels shown here changed over time, whatever kinds the button at the top of the column shows (liquidations, stops, take profits): opens them in the Depth pane.": "여기 표시된 레벨이 시간에 따라 어떻게 바뀌었는지(열 위쪽 버튼에서 고른 종류: 청산, 손절, 익절). 뎁스 패널에서 엽니다.",
+ "Sizes": "크기",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "크기: 시장가 주문 크기별 테이커 플로우. 플로우 이력의 여섯 크기($25K 미만부터 $5M 이상까지)마다 한 행이며, 각각 현물과 무기한의 누적 거래량 델타입니다. 맨 위 행은 모두의 합입니다.",
+ "How the column draws the order sizes, and its dot rows.": "이 열이 주문 크기를 그리는 방식과 점 행.",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "시장가 주문의 크기마다 한 행(플로우 이력의 여섯 크기): 왼쪽 끝부터 현물 주문과 무기한 주문의 누적 델타이며, 매분 기록되는 주문 통계에서 구합니다(그래서 선이 1분 단위로 움직입니다). 여섯 행을 더하면 맨 위 행이 됩니다.",
+ "Net and share over": "순액과 비중 기준 구간",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "각 행의 수치(종류별 순액, 여섯 크기 거래량 중 비중)를 집계하는 구간.",
+ "Reading the order sizes…": "주문 크기를 읽는 중…",
+ "No order sizes recorded for this window.": "이 구간에는 기록된 주문 크기가 없습니다.",
+ "Orders {band}": "주문 {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "other": "{n}분 봉에서 읽음: 주문 크기는 1분 단위로 기록됩니다."
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "other": "여기서 {n}개 봉에는 주문 크기가 없습니다: 선이 그곳에서 끊깁니다."
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "플로우 열의 세 번째 보기: 크기별 시장가 주문. 플로우 이력의 여섯 크기마다 한 행이며, 각각 현물과 무기한의 누적 거래량 델타입니다. 맨 위 행은 모두의 합입니다.",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "누구의 돈이 가격을 움직이는가? 각 행은 시장가 주문의 한 크기로, $25K 미만부터 $5M 이상까지입니다(작은 코인은 크기도 작습니다). 선은 그 크기 주문의 매수에서 매도를 뺀 값이며, 현물과 무기한은 각자의 색으로 왼쪽 끝의 0에서 시작합니다. 여섯 행을 더하면 맨 위 행이 됩니다.",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "선마다 자체 눈금이 있으므로 높이가 아니라 모양을 비교하세요. 각 행 옆에는 톱니바퀴에서 정한 구간의 종류별 순액과, 여섯 크기 거래량 중 그 크기의 비중이 있습니다. 행에 마우스를 올리면 숫자를 볼 수 있습니다.",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "크기는 매분의 주문 통계로만 기록되므로 이 선들은 1분 단위로 움직입니다(긴 구간에서는 5분 이상 단위). 플로우 보기의 선은 매초 움직입니다. 주문 크기를 기록하기 전에 기록된 구간에는 크기가 없어 선이 그곳에서 끊깁니다. 시장은 맨 위 행과 같으며, 현물 / 무기한 필터도 여기에 적용됩니다."
 }

@@ -238,7 +238,7 @@ async function main(): Promise<void> {
     { id: 'script', root: script.root, height: 220, min: 60, head: script.header, closeLabel: t('Switch off the scripts in this panel (they stay in Scripts…)') },
   ];
   const arrange = new Layout(main, chart, { left: flowCol, right: side }, strip, [
-    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow'), views: [{ id: 'flow', title: t('Flow') }, { id: 'trades', title: t('Tape') }] },
+    { id: 'cvd', root: cvd.root, head: cvd.controls, title: t('Flow'), views: [{ id: 'flow', title: t('Flow') }, { id: 'trades', title: t('Tape') }, { id: 'sizes', title: t('Sizes') }] },
     { id: 'book', root: ladder.root, head: ladder.controls, title: t('Order Book') },
   ]);
   // What the person does to the layout (layouts/actions.ts): the layouts panel, a pane's close button and the edge tab of a closed side pane (the Panels row in the top bar flips the same switches).
@@ -247,7 +247,7 @@ async function main(): Promise<void> {
     env: () => ({ width: window.innerWidth, height: chart.clientHeight || Math.max(400, window.innerHeight - 200), held: scriptRows(store.state) ? ['script' as const] : [] }),
   });
   arrange.onClose = id => { if (id === 'script') script.switchOffPane(); else layouts.hide(id, arrange.title(id)); }; arrange.onOpen = id => layouts.setPane(id, true);
-  arrange.onView = (id, view) => { if (id === 'cvd' && (view === 'flow' || view === 'trades') && store.state.flowView !== view) store.set({ flowView: view }); };
+  arrange.onView = (id, view) => { if (id === 'cvd' && (view === 'flow' || view === 'trades' || view === 'sizes') && store.state.flowView !== view) store.set({ flowView: view }); };
   // Trades reads the tape ring (blocks and each order), the per-second flow the Flow lines hold (any size before the tape) and the recording's
   // large orders (the browser's memory or the local server: free, never an exchange); a click takes the map to an order or a block's time.
   cvd.trades.ring = () => hub.tape;

@@ -12,7 +12,7 @@ import { FREE_DAYS } from './plus/config.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes' | 'cvdSizes';
 
 export interface HelpTopic {
   title: string;
@@ -296,6 +296,13 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     body: [t('Passive liquidity (the heatmap and the book) is what traders have placed and may pull; flow is what they have actually done. A line rising means buyers are lifting offers faster than sellers are hitting bids.'),
       t('Rows are ranked by volume over the window you choose and re-ranked now and then. Every line has its own scale, so compare shapes, not heights. The labels are on the left so that the ends of the lines stay clear. Hover a row for its numbers; the gear sets how many exchanges, how tall each row is and when the order changes.'),
       t('A small triangle on a line marks a burst: in ten seconds that exchange bought (up) or sold (down) far more at market than it usually does, judged against its last half hour, and at least the smallest burst. Only bursts seen while the page is open are marked, so a reload clears them. The marks are off until switched on in the gear, which also sets how big and how unusual a burst must be.')],
+  },
+  cvdSizes: {
+    title: t('Sizes'), guide: 'flow-sizes',
+    tip: t("The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all."),
+    body: [t("Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row."),
+      t("Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers."),
+      t("The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.")],
   },
   trades: {
     title: t('Tape'), guide: 'flow-trades',
