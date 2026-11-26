@@ -3426,5 +3426,6 @@
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "影线成交量：市价买入 {buy}，卖出 {sell}（净 {net}%）；占该 K 线成交量的 {share}%",
  "Both columns on one scale": "两栏使用同一个刻度",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "每笔订单只计一次，计在其首笔成交的那一分钟，按订单自身的美元金额以该 K 线的均价折算为 {coin}：可能与柱的数值略有不同。",
- "no candle to price it in coins: {time}": "没有可用于换算为币的 K 线：{time}"
+ "no candle to price it in coins: {time}": "没有可用于换算为币的 K 线：{time}",
+ "No chart candle prices this selection's windows, so they have no coin figure.": "图表中没有 K 线能为此选择的窗口定价，因此它们没有以币计的数值。"
 }

@@ -1723,8 +1723,11 @@ export class LtPane extends TimePane {
   /** What the pane drew last, for its Range summary (range/lt-lines.ts): the same object while that does not change. */
   #held: LtPaneHeld | null = null;
   get rangeHeld(): LtPaneHeld | null { return this.#held; }
-  /** What a snapshot of the pane is for, now: the books counted (Venues), the half-life, the size filters and the mode. */
-  rangeKey(state: AppState): string { return ltHeldKey(bookIds(state), state.lt); }
+  /**
+   * What a snapshot of the pane is for, now: the books counted (Venues), the half-life, the size filters and the mode; in coins the timeframe of
+   * the candles that price it (the chart's, or the one before while its candles still stand: store.ts `candlesTimeframe`).
+   */
+  rangeKey(state: AppState): string { return ltHeldKey(bookIds(state), state.lt, state.candlesTimeframe ?? state.timeframe); }
   #publish(held: LtPaneHeld | null): void { if (held !== this.#held) { this.#held = held; this.rangeChanged(); } }
   #key = ''; #busy = false; #lastAt = 0;
   #sync: (() => void)[] = [];
@@ -1867,7 +1870,9 @@ export class LtPane extends TimePane {
     if (replaying()) n = shownBy(s.times, s.stepMs, pageNow());
     // In coins (units.ts) the figures and the lines are each window's dollars over its price (lt.ts `ltInCoins`); the filters stay dollars, and
     // the imbalance is the same in either units.
-    const coins = inCoins(), inCoin = coins ? this.#inCoins(s, state.candles, TIMEFRAMES[state.timeframe] ?? 3_600_000) : null, bidS = inCoin?.value.bid ?? s.bid, askS = inCoin?.value.ask ?? s.ask;
+    // The candles are priced at their own timeframe (store.ts `candlesTimeframe`: right after a switch they can be the one before's).
+    const coins = inCoins(), pricedBy = state.candlesTimeframe ?? state.timeframe;
+    const inCoin = coins ? this.#inCoins(s, state.candles, TIMEFRAMES[pricedBy] ?? 3_600_000) : null, bidS = inCoin?.value.bid ?? s.bid, askS = inCoin?.value.ask ?? s.ask;
     {
       // The snapshot of what is drawn: a new one only for a new answer, a replay's cut moving, or its minute; in coins also new prices (the
       // candles), and either way other units (the key holds them).
@@ -1878,14 +1883,14 @@ export class LtPane extends TimePane {
       if (!ids.length) this.#publish(null);
       else if (!was || was.times !== s.times || was.shown !== n || was.replayAt !== replayAt || (was.coins?.bid ?? null) !== (inCoin?.value.bid ?? null)) {
         const a = s.asked;
-        this.#publish({ key: ltHeldKey(s.ids, a), ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
+        this.#publish({ key: ltHeldKey(s.ids, a, pricedBy), ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
           minApplied: scaledUsd(a.minUsd), maxApplied: scaledUsd(a.maxUsd), average: a.average,
           times: s.times, bid: s.bid, ask: s.ask, parts: s.parts ?? null, approx: s.approx ?? null, stepMs: s.stepMs, shown: n, replayAt, answeredAt: s.answeredAt,
           ...(inCoin ? { coins: { bid: inCoin.value.bid, ask: inCoin.value.ask, coin: unitName() } } : {}) });
       }
     }
     if (!n) { setText(readout, ''); return; }
-    const step = s.stepMs, xOf = (t: number) => v.xOf(t + step / 2, pw), gap = step * 2.5;
+    const step = s.stepMs, xOf = (t: number) => v.xOf(t + step / 2, pw);
     let max = 0;
     // A window with no price to value it at in coins (NaN: no candle at all) is drawn as a gap, never read into the scale.
     for (let i = 0; i < n; i++) if (s.times[i]! + step >= v.t0 && s.times[i]! <= v.t1 && bidS[i] === bidS[i] && askS[i] === askS[i]) max = Math.max(max, bidS[i]!, askS[i]!);
@@ -1913,13 +1918,7 @@ export class LtPane extends TimePane {
       }
       for (const [data, color] of [[bidS, p.bid], [askS, p.ask]] as const) {
         ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
-        let prev = -Infinity;
-        for (let i = 0; i < n; i++) {
-          const t = s.times[i]!; if (t + step < v.t0 - step || t > v.t1 + step || data[i] !== data[i]) continue;
-          const px = xOf(t), py = y(data[i]!);
-          if (t - prev > gap) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-          prev = t;
-        }
+        ltLinePath(ctx, s.times, data, n, step, v, xOf, y);
         ctx.stroke();
       }
       ctx.lineWidth = 1; ctx.fillStyle = p.muted;
@@ -1990,6 +1989,24 @@ export class LtPane extends TimePane {
       const heads = ltHeads(parts), lines = headed(t('Total'), tableLines(over === at && this.#lines ? this.#lines : cardAt(at)));
       if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !state.hover }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}` })?.complete) this.#lines = null;
     }
+  }
+}
+
+/**
+ * One line of the Liquidity Tracker on the path begun: through the windows of the first `n` in view (a window either side of it too, so the line
+ * runs off the edges), starting afresh after a gap of more than two and a half windows and after a window with no figure (NaN: in coins one no
+ * chart candle prices, lt.ts `ltPrices`), so it never joins across either.
+ */
+export function ltLinePath(ctx: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo'>, times: ArrayLike<number>, data: ArrayLike<number>, n: number, step: number, view: { t0: number; t1: number },
+  x: (t: number) => number, y: (value: number) => number): void {
+  const gap = step * 2.5;
+  let prev = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const t = times[i]!; if (t + step < view.t0 - step || t > view.t1 + step) continue;
+    if (data[i] !== data[i]) { prev = -Infinity; continue; }
+    const px = x(t), py = y(data[i]!);
+    if (t - prev > gap) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    prev = t;
   }
 }
 

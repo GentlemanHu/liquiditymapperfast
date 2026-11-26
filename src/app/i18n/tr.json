@@ -3604,5 +3604,6 @@
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "İğne hacmi: piyasa fiyatından {buy} alındı, {sell} satıldı (net %{net}); mum hacminin %{share}'i",
  "Both columns on one scale": "İki sütun da tek bir ölçekte",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Her emir, ilk eşleşmesinin geldiği dakikada, mumun ortalama fiyatından {coin} cinsine çevrilmiş kendi dolarıyla bir kez sayılır: çubuğunkinden biraz farklı olabilir.",
- "no candle to price it in coins: {time}": "coin olarak değerlemek için mum yok: {time}"
+ "no candle to price it in coins: {time}": "coin olarak değerlemek için mum yok: {time}",
+ "No chart candle prices this selection's windows, so they have no coin figure.": "Bu seçimin pencerelerine fiyat veren bir grafik mumu yok, bu yüzden coin değerleri yok."
 }

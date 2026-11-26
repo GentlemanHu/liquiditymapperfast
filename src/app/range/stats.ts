@@ -447,21 +447,21 @@ function profileLines(answer: RangeAnswer, total: number): RangeLine[] {
   if (!rows.length) return [];
   const step = answer.step, low = Math.min(...rows.map(r => r[0])), high = Math.max(...rows.map(r => r[0]));
   const span = Math.round((high - low) / step) + 1, per = Math.max(1, Math.ceil(span / PROFILE_BARS)), n = Math.ceil(span / per);
-  // In coins each bar's coins too, each row's dollars over its middle (units.ts): the bars' lengths, the busiest and the shares stay the dollars'.
-  const coins = inCoins(), bars = Array.from({ length: n }, (_, k) => ({ from: low + k * per * step, buy: 0, sell: 0, orders: 0, coins: 0 }));
+  const bars = Array.from({ length: n }, (_, k) => ({ from: low + k * per * step, buy: 0, sell: 0, orders: 0 }));
+  // In coins (only) each bar's coins too, each row's dollars over its middle (units.ts): the bars' lengths, the busiest and the shares stay the dollars'.
+  const coinsOf = inCoins() ? new Map<(typeof bars)[number], number>() : null;
   for (const [price, buy, sell, buyN, sellN] of rows) {
     const bar = bars[Math.min(n - 1, Math.floor(Math.round((price - low) / step) / per))]!;
     bar.buy += buy; bar.sell += sell; bar.orders += buyN + sellN;
-    if (coins && price + step / 2 > 0) bar.coins += (buy + sell) / (price + step / 2);
+    if (coinsOf && price + step / 2 > 0) coinsOf.set(bar, (coinsOf.get(bar) ?? 0) + (buy + sell) / (price + step / 2));
   }
   const most = Math.max(...bars.map(b => b.buy + b.sell)), top = bars.find(b => b.buy + b.sell === most)!, width = per * step;
-  const volume = (b: { buy: number; sell: number; coins: number }): string => coins ? amount(b.coins) : money(b.buy + b.sell);
   const label = (from: number): string => fmtPrice(from, step);
   const counted = answer.instruments.some(i => i.counted > 0);
   const out: RangeLine[] = [{ key: 'h-profile', kind: 'heading', cells: [t('Volume by price')] }];
-  out.push({ key: 'profile', kind: 'profile', cells: [], profile: [...bars].reverse().map(b => ({ label: label(b.from), buy: b.buy / most, sell: b.sell / most, total: b.buy + b.sell > 0 ? volume(b) : '', top: b === top })) });
+  out.push({ key: 'profile', kind: 'profile', cells: [], profile: [...bars].reverse().map(b => ({ label: label(b.from), buy: b.buy / most, sell: b.sell / most, total: b.buy + b.sell > 0 ? (coinsOf ? amount(coinsOf.get(b) ?? 0) : money(b.buy + b.sell)) : '', top: b === top })) });
   const where = per > 1 ? `${label(top.from)} – ${label(top.from + width)}` : label(top.from);
-  out.push({ key: 'profile-top', kind: 'stat', cells: [t('Most traded'), `${where} · ${volume(top)} · ${pct(most / total)}${counted && top.orders > 0 ? ` · ${tn(top.orders, '{n} order', '{n} orders', { n: top.orders.toLocaleString('en-US') })}` : ''}`] });
+  out.push({ key: 'profile-top', kind: 'stat', cells: [t('Most traded'), `${where} · ${coinsOf ? amount(coinsOf.get(top) ?? 0) : money(most)} · ${pct(most / total)}${counted && top.orders > 0 ? ` · ${tn(top.orders, '{n} order', '{n} orders', { n: top.orders.toLocaleString('en-US') })}` : ''}`] });
   out.push({ key: 'profile-note', kind: 'note', tone: 'muted', cells: [t('What the market orders traded at each price, buys in the bid colour and sells in the ask colour, in bars of {step}.', { step: fmtPrice(width, step) })] });
   return out;
 }
@@ -480,30 +480,34 @@ function absorptionLines(input: RangeInput, s: ReturnType<typeof totals> | null,
   if (!marks.length) { out.push({ key: 'abs-none', kind: 'note', tone: 'muted', cells: [t('No absorption marks in this selection.')] }); return out; }
   // A mark's side is the side of the market orders: passive buyers took market sells, passive sellers took market buys. A price is added up
   // per side: passive buyers and passive sellers can both have taken orders at one price, and one figure would give the other side's to one.
-  const took = { sell: 0, buy: 0 }, tookC = { sell: 0, buy: 0 }, byPrice = new Map<string, { price: number; usd: number; c: number; side: 'buy' | 'sell' }>();
-  const byVenue = new Map<string, { sell: number; buy: number; sellC: number; buyC: number; thresholds: number[] }>(), coins = inCoins();
+  const took = { sell: 0, buy: 0 }, byPrice = new Map<string, { price: number; usd: number; side: 'buy' | 'sell' }>();
+  const byVenue = new Map<string, { sell: number; buy: number; thresholds: number[] }>();
+  // In coins (only) each mark's dollars over its own price too, by side, by price (keyed as `byPrice`) and by exchange: the figures written; the
+  // order, bars and shares read the dollars.
+  const coin = inCoins() ? { took: { sell: 0, buy: 0 }, byPrice: new Map<string, number>(), byVenue: new Map<string, { sell: number; buy: number }>() } : null;
   for (const m of marks) {
     took[m.side] += m.usd;
-    const key = familyKey(venueOfInstrument(m.id)), v = byVenue.get(key) ?? { sell: 0, buy: 0, sellC: 0, buyC: 0, thresholds: [] };
+    const key = familyKey(venueOfInstrument(m.id)), v = byVenue.get(key) ?? { sell: 0, buy: 0, thresholds: [] };
     v[m.side] += m.usd; v.thresholds.push(m.threshold); byVenue.set(key, v);
     const where = `${m.price}|${m.side}`, at = byPrice.get(where);
-    if (at) at.usd += m.usd; else byPrice.set(where, { price: m.price, usd: m.usd, c: 0, side: m.side });
-    // In coins (only) each mark's dollars over its own price beside its dollars: the figures written; the order, bars and shares read the dollars.
-    if (coins && m.price > 0) { const c = m.usd / m.price; tookC[m.side] += c; v[m.side === 'sell' ? 'sellC' : 'buyC'] += c; byPrice.get(where)!.c += c; }
+    if (at) at.usd += m.usd; else byPrice.set(where, { price: m.price, usd: m.usd, side: m.side });
+    if (coin && m.price > 0) {
+      const c = m.usd / m.price, cv = coin.byVenue.get(key) ?? { sell: 0, buy: 0 };
+      coin.took[m.side] += c; cv[m.side] += c; coin.byVenue.set(key, cv); coin.byPrice.set(where, (coin.byPrice.get(where) ?? 0) + c);
+    }
   }
-  const shown = (usdValue: number, coinValue: number): string => coins ? amount(coinValue) : money(usdValue);
   // What was absorbed, split into the two sides so they add up to all of it.
   const absorbed = took.sell + took.buy;
-  out.push({ key: 'abs-total', kind: 'stat', cells: [t('Absorbed'), `${shown(absorbed, tookC.sell + tookC.buy)} · ${tn(marks.length, '{n} mark', '{n} marks', { n: marks.length.toLocaleString('en-US') })}`] });
+  out.push({ key: 'abs-total', kind: 'stat', cells: [t('Absorbed'), `${coin ? amount(coin.took.sell + coin.took.buy) : money(absorbed)} · ${tn(marks.length, '{n} mark', '{n} marks', { n: marks.length.toLocaleString('en-US') })}`] });
   if (absorbed > 0) {
     // One share rounded and the other its complement, so the two always say 100 %.
     const buyers = Math.round(took.sell / absorbed * 100);
-    out.push({ key: 'abs-split', kind: 'split', share: took.sell / absorbed, cells: [t('Passive buyers {value} · {share}', { value: shown(took.sell, tookC.sell), share: `${buyers}%` }), t('Passive sellers {value} · {share}', { value: shown(took.buy, tookC.buy), share: `${100 - buyers}%` })] });
+    out.push({ key: 'abs-split', kind: 'split', share: took.sell / absorbed, cells: [t('Passive buyers {value} · {share}', { value: coin ? amount(coin.took.sell) : money(took.sell), share: `${buyers}%` }), t('Passive sellers {value} · {share}', { value: coin ? amount(coin.took.buy) : money(took.buy), share: `${100 - buyers}%` })] });
   }
   // Each side against all the market orders it could have taken: passive buyers take sells, passive sellers take buys.
   if (s && (s.sell > 0 || s.buy > 0)) {
     const of = (part: number, all: number): string => all > 0 ? pct(Math.min(1, part / all)) : '–';
-    const sold = coins && rates ? size(sideIn(s.sell, rates.sell)) : money(s.sell), bought = coins && rates ? size(sideIn(s.buy, rates.buy)) : money(s.buy);
+    const sold = coin && rates ? size(sideIn(s.sell, rates.sell)) : money(s.sell), bought = coin && rates ? size(sideIn(s.buy, rates.buy)) : money(s.buy);
     out.push({ key: 'abs-of', kind: 'stat', stack: true, cells: [t('Of all market orders'), t('{sells} of the {sold} sold · {buys} of the {bought} bought', { sells: of(took.sell, s.sell), sold, buys: of(took.buy, s.buy), bought })] });
   }
   // By exchange, with the threshold its marks were judged at: a lower threshold marks more of an exchange's volume. Auto moves a threshold
@@ -516,16 +520,17 @@ function absorptionLines(input: RangeInput, s: ReturnType<typeof totals> | null,
     return sorted[sorted.length - 1]! > sorted[0]! * 1.1 ? `≈${money(middle)}` : money(middle);
   };
   out.push({ key: 'abs-head', kind: 'row', tone: 'muted', cells: [t('Exchange'), t('Buyers took'), t('Sellers took'), t('Threshold')] });
-  for (const [key, v] of venues.slice(0, 6)) out.push({ key: `abs-v-${key}`, kind: 'row', mark: key, cells: [venueLabel(key), shown(v.sell, v.sellC), shown(v.buy, v.buyC), threshold(v)], bars: [v.sell / most, v.buy / most] });
+  for (const [key, v] of venues.slice(0, 6)) out.push({ key: `abs-v-${key}`, kind: 'row', mark: key, cells: [venueLabel(key), coin ? amount(coin.byVenue.get(key)?.sell ?? 0) : money(v.sell), coin ? amount(coin.byVenue.get(key)?.buy ?? 0) : money(v.buy), threshold(v)], bars: [v.sell / most, v.buy / most] });
   const rest = venues.slice(6);
   if (rest.length) {
-    const sum = rest.reduce((a, [, v]) => ({ sell: a.sell + v.sell, buy: a.buy + v.buy, sellC: a.sellC + v.sellC, buyC: a.buyC + v.buyC }), { sell: 0, buy: 0, sellC: 0, buyC: 0 });
-    out.push({ key: 'abs-v-rest', kind: 'row', cells: [tn(rest.length, '{n} other', '{n} others'), shown(sum.sell, sum.sellC), shown(sum.buy, sum.buyC), ''], bars: [sum.sell / most, sum.buy / most] });
+    const sum = rest.reduce((a, [, v]) => ({ sell: a.sell + v.sell, buy: a.buy + v.buy }), { sell: 0, buy: 0 });
+    const sumC = coin ? rest.reduce((a, [key]) => { const cv = coin.byVenue.get(key); return cv ? { sell: a.sell + cv.sell, buy: a.buy + cv.buy } : a; }, { sell: 0, buy: 0 }) : null;
+    out.push({ key: 'abs-v-rest', kind: 'row', cells: [tn(rest.length, '{n} other', '{n} others'), sumC ? amount(sumC.sell) : money(sum.sell), sumC ? amount(sumC.buy) : money(sum.buy), ''], bars: [sum.sell / most, sum.buy / most] });
   }
   // The prices each side held at most.
   // A whole price without its ".0", so three of them fit on the line.
   const at = (price: number): string => Number.isInteger(price) ? fmtPrice(price, 1) : fmtPrice(price);
-  const prices = (side: 'buy' | 'sell'): string => [...byPrice.values()].filter(p => p.side === side).sort((a, b) => b.usd - a.usd).slice(0, 3).map(p => `${at(p.price)} ${shown(p.usd, p.c)}`).join(' · ');
+  const prices = (side: 'buy' | 'sell'): string => [...byPrice.values()].filter(p => p.side === side).sort((a, b) => b.usd - a.usd).slice(0, 3).map(p => `${at(p.price)} ${coin ? amount(coin.byPrice.get(`${p.price}|${p.side}`) ?? 0) : money(p.usd)}`).join(' · ');
   if (took.sell > 0) out.push({ key: 'abs-at-buyers', kind: 'stat', stack: true, tone: 'buy', cells: [t('Passive buyers held at'), prices('sell')] });
   if (took.buy > 0) out.push({ key: 'abs-at-sellers', kind: 'stat', stack: true, tone: 'sell', cells: [t('Passive sellers held at'), prices('buy')] });
   out.push({ key: 'abs-note', kind: 'note', tone: 'muted', cells: [t('A mark is market orders of one side meeting resting orders at one price within 10 ms, more than the exchange\'s threshold: only the marks the map draws count. Passive buyers take market sells, passive sellers take market buys.')] });

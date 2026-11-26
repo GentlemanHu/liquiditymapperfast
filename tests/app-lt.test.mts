@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LT_DEFAULTS, imbalanceAxis, ltPartAt, ltSeries, ltWeight, shownBy, type LtParams, type LtStore, ltInCoins, ltPrices } from '../src/app/lt.ts';
 import { LT_LENGTH, ltIndex } from '../src/shared/lt-sample.ts';
+import { ltLinePath } from '../src/app/panes/lower-panes.ts';
 
 const MIN = 60_000;
 const near = (actual: ArrayLike<number>, expected: number[], eps = 1e-3) => { assert.equal(actual.length, expected.length); expected.forEach((v, i) => assert.ok(Math.abs(actual[i]! - v) < eps, `index ${i}: ${actual[i]} vs ${v}`)); };
@@ -166,4 +167,14 @@ test('coins (issue 9): each window at the typical price of the chart candles ove
   assert.equal(imbalanceAxis(Math.abs(4 - 0.5) / 4.5), imbalanceAxis(Math.abs(400 - 50) / 450), 'the imbalance is the same in either units');
   const unpriced = ltInCoins({ times: Float64Array.from([0]), bid: Float32Array.from([1]), ask: Float32Array.from([1]) }, Float64Array.from([NaN]));
   assert.ok(Number.isNaN(unpriced.bid[0]!));
+});
+
+test('coins (issue 9): a line starts afresh after a window with no figure (one no candle prices), as after a gap in the windows', () => {
+  const calls: string[] = [], ctx = { moveTo: (x: number) => { calls.push(`M${x}`); }, lineTo: (x: number) => { calls.push(`L${x}`); } };
+  const times = Float64Array.from([0, 1, 2, 3, 4, 8, 9].map(m => m * MIN)), view = { t0: 0, t1: 10 * MIN }, x = (t: number) => t / MIN, y = (v: number) => v;
+  ltLinePath(ctx, times, Float32Array.from([1, 1, NaN, 1, 1, 1, 1]), times.length, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'L1', 'M3', 'L4', 'M8', 'L9'], 'broken at the window with no figure and at the four minutes no window holds, never joined across');
+  calls.length = 0;
+  ltLinePath(ctx, times, Float32Array.from([1, 1, 1, 1, 1, 1, 1]), times.length, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'L1', 'L2', 'L3', 'L4', 'M8', 'L9'], 'with every figure (dollars) the path is as before: broken at the gap alone');
 });

@@ -3672,5 +3672,6 @@
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "Volume dello stoppino: {buy} comprati e {sell} venduti a mercato ({net}% netto); {share}% del volume della candela",
  "Both columns on one scale": "Entrambe le colonne su un’unica scala",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Ogni ordine conta una volta, al minuto del suo primo eseguito, con i suoi dollari in {coin} al prezzo medio della candela: possono differire un poco da quelli della barra.",
- "no candle to price it in coins: {time}": "nessuna candela per valutarlo in coin: {time}"
+ "no candle to price it in coins: {time}": "nessuna candela per valutarlo in coin: {time}",
+ "No chart candle prices this selection's windows, so they have no coin figure.": "Nessuna candela del grafico dà un prezzo alle finestre di questa selezione, quindi non hanno un valore in coin."
 }

@@ -240,3 +240,23 @@ test('coins (issue 9): the delta\'s share of the volume and its colour are the c
     assert.deepEqual([delta().cells[1], delta().tone], ['−0.5 BTC · −20% of the volume', 'sell'], 'the share and the colour agree with the coin figure');
   } finally { setUnits('usd'); }
 });
+
+test('coins (issue 9): absorption by side, by price and past the sixth exchange in coins, each mark over its own price; in dollars as before', () => {
+  // Eight exchanges' passive buyers took market sells: a 800K, b 700K … g 200K at 100,000 a coin, and h 100K at 50,000.
+  const mark = (venue: string, usd: number, price: number) => ({ id: `${venue}:BTC`, t0: T0, t1: T0 + 1, price, usd, side: 'sell', threshold: 50_000 }) as unknown as AbsorptionMark;
+  const marks = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((v, k) => mark(v, (8 - k) * 100_000, 100_000)).concat(mark('h', 100_000, 50_000));
+  const make = () => rangeLines(input({ marks })), cell = (lines: RangeLine[], key: string): string => line(lines, key)!.cells.join(' | ');
+  const dollars = make();
+  assert.equal(cell(dollars, 'abs-v-rest'), '2 others | $300K | $0 | ');
+  assert.equal(cell(dollars, 'abs-at-buyers'), 'Passive buyers held at | 100,000 $3.5M · 50,000 $100K');
+  setUnits('coin');
+  try {
+    const lines = make();
+    assert.equal(cell(lines, 'abs-total'), 'Absorbed | 37 BTC · 8 marks');
+    assert.equal(cell(lines, 'abs-split'), 'Passive buyers 37 BTC · 100% | Passive sellers 0 BTC · 0%');
+    assert.equal(cell(lines, 'abs-v-rest'), '2 others | 4 BTC | 0 BTC | ', 'g\'s 2 and h\'s 2, at its own 50,000');
+    assert.equal(cell(lines, 'abs-at-buyers'), 'Passive buyers held at | 100,000 35 BTC · 50,000 2 BTC');
+    assert.deepEqual(line(lines, 'abs-v-rest')!.bars, line(dollars, 'abs-v-rest')!.bars, 'the bars are the dollars\'');
+  } finally { setUnits('usd'); }
+  assert.deepEqual(make(), dollars, 'back in dollars, the same lines');
+});

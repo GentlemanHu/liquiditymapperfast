@@ -3426,5 +3426,6 @@
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "꼬리 거래량: 시장가 매수 {buy}, 매도 {sell}(순 {net}%); 캔들 거래량의 {share}%",
  "Both columns on one scale": "두 열 모두 하나의 눈금",
  "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "각 주문은 첫 체결이 온 분에 자체 달러 금액을 캔들의 평균 가격으로 {coin}로 환산해 한 번 셉니다: 막대의 값과 조금 다를 수 있습니다.",
- "no candle to price it in coins: {time}": "코인으로 환산할 캔들 없음: {time}"
+ "no candle to price it in coins: {time}": "코인으로 환산할 캔들 없음: {time}",
+ "No chart candle prices this selection's windows, so they have no coin figure.": "이 선택의 시간 구간에 가격을 매길 차트 캔들이 없어 코인 수치가 없습니다."
 }

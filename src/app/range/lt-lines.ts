@@ -45,9 +45,13 @@ export interface LtPaneHeld {
   answeredAt: number;
 }
 
-/** What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode, and in coins the units (its figures are the coin's). */
-export const ltHeldKey = (ids: readonly string[], lt: { halfLifeBp: number; minUsd: number; maxUsd: number; average: boolean }): string =>
-  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}${inCoins() ? '|coins' : ''}`;
+/**
+ * What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode, and in coins the units (its figures are the
+ * coin's) and `pricedBy`, the timeframe of the candles that price its windows (lt.ts `ltPrices`): figures priced by another timeframe's candles
+ * are not this snapshot's, nor a result kept from them.
+ */
+export const ltHeldKey = (ids: readonly string[], lt: { halfLifeBp: number; minUsd: number; maxUsd: number; average: boolean }, pricedBy = ''): string =>
+  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}${inCoins() ? `|coins|${pricedBy}` : ''}`;
 
 /**
  * The tracker over a selection, on the windows that overlap it, each counting for the time it overlaps (ms). Only closed windows holding
@@ -216,7 +220,10 @@ export class LtRangeSummary {
       // Several venues and no parts: which venues each window holds is unknown, so no figure can claim a set of venues that stays the same.
       lines.push(note('lt-unverified', t('This answer does not say which venues each window holds, so its windows cannot be compared: nothing is summed up.')));
     } else if (!s.bid || !s.ask) {
-      lines.push(note('lt-empty', s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
+      // In coins the closed windows holding every venue may all be ones no candle prices: that is the reason, not an empty selection, and it
+      // comes first, as some window does hold every venue then (the cover note below says what lacked a venue too).
+      lines.push(note('lt-empty', s.unpriced > 0 ? t('No chart candle prices this selection\'s windows, so they have no coin figure.')
+        : s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
     } else {
       // In the units the pane drew in (the key holds them): in coins each window's own figures.
       const coin = h.coins?.coin ?? null;
