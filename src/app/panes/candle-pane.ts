@@ -22,6 +22,7 @@ import * as M from '../candle/model.ts';
 import { liveCanvas } from '../live-canvas.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { candleTone } from '../candle-colours.ts';
+import { figure, inCoins } from '../units.ts';
 
 const NUM_FONT = '10.5px ui-monospace, SFMono-Regular, Menlo, monospace', BOLD_NUM = `700 ${NUM_FONT}`;
 const SMALL_FONT = '10px ui-sans-serif, system-ui, sans-serif';
@@ -46,6 +47,11 @@ const MAX_TRAIL_MARKS = 10;
  * Venues: the small orders stay anonymous dots; an order from the Bar stats' whale size up carries its exchange's mark beside it in the
  * trail, fading with it, and the largest flashes on the rail show the mark of the exchange that sent them for a moment. They are drawn on
  * a canvas of their own between the trail and the book, at the trail's pace, so the book and the tape are not redrawn for them.
+ *
+ * Units (units.ts, issue 9): in coins the figures are written in coins and nothing else changes: each price row's bought and sold are its
+ * orders' coins (`TapeTally.coinRows`), the book's two largest rows' labels the grouping's coins (`groupLevels` with coins: each row over the
+ * price in its middle). The shapes, bars, emphasis, point of control, which rows say a number, and the waves, pulses, flashes, marks and
+ * dots are laid out by the dollars.
  */
 /** A palette's colours as the trail's renderer takes them (0-1 RGB). */
 interface RendererTones { p: Palette; bid: [number, number, number]; ask: [number, number, number]; mid: [number, number, number]; bookBid: [number, number, number]; bookAsk: [number, number, number] }
@@ -279,11 +285,12 @@ export class CandlePane {
     const scale = M.priceSpan(lo, hi, mark > 0 ? mark : (lo + hi) / 2, l.plotY0, l.plotY1, this.#zoom, this.#pan); this.#scale = scale;
     const markets = this.markets(state); this.#marketsNow = markets;
     const fine = this.#tape.fine, step = fine > 0 ? M.rowStepFor(fine, scale) : niceStep(scale.p1 - scale.p0, (scale.y1 - scale.y0) / 18); this.#step = step;
-    const rows = this.#tape.rows(step, markets);
+    // In coins the rows' figures are their coins (each order over its own price, `TapeTally.coinRows`); every length and judgment the dollars'.
+    const rows = this.#tape.rows(step, markets), coinRows = inCoins() ? this.#tape.coinRows(step, markets) : null;
     this.#paintRuler(ctx, l, p);
     ctx.save(); ctx.beginPath(); ctx.rect(0, l.plotY0, l.axisX0, l.plotY1 - l.plotY0); ctx.clip();
     this.#paintBook(ctx, l, scale, step, mark, state, p);
-    this.#paintTape(ctx, l, scale, rows, step, p);
+    this.#paintTape(ctx, l, scale, rows, step, p, coinRows);
     this.#paintRail(ctx, l, scale, step, p);
     ctx.restore();
     this.#paintAxis(ctx, l, scale, mark, { o: this.#tape.first || mark, c: mark }, p);
@@ -373,7 +380,8 @@ export class CandlePane {
   /** The live book on the rows of the footprint: asks above the price growing right of the candle, bids below growing left. */
   #paintBook(ctx: CanvasRenderingContext2D, l: M.CandleLayout, s: M.PriceScale, step: number, mark: number, state: AppState, p: Palette): void {
     const frame = state.levels; if (!frame || !(mark > 0) || !(step > 0)) { this.#clearGlassRows(); return; }
-    const g = groupLevels(this.kernels, frame, activeIds(state), step, s.p0, s.p1);
+    // Laid out by the dollars (`g`); in coins only the two largest rows' labels are written from its coins (`g.coins`: units.ts).
+    const g = groupLevels(this.kernels, frame, activeIds(state), step, s.p0, s.p1, inCoins());
     if (!g.ids.length) { this.#clearGlassRows(); return; }
     // The book's rows are the levels kernel's, which puts a level at one price in its row by plain division (crates/hlm-kernels
     // `spread_levels`), so the price's row is found the same way: forgiven as the tape's rows are, an ask at the price itself could fall
@@ -437,7 +445,8 @@ export class CandlePane {
     ctx.font = SMALL_FONT; ctx.textBaseline = 'middle'; ctx.fillStyle = p.text;
     for (const side of ['ask', 'bid'] as const) {
       for (const lvl of top.filter(x => x.side === side && x.usd > 0).sort((a, b) => b.usd - a.usd).slice(0, 2)) {
-        const y = M.yOf(s, (g.bin0 + lvl.i + 0.5) * step), w = lvl.usd / max * sideW, label = volText(lvl.usd), tw = ctx.measureText(label).width;
+        const y = M.yOf(s, (g.bin0 + lvl.i + 0.5) * step), w = lvl.usd / max * sideW, coins = g.coins ? (side === 'ask' ? g.coins.totalAsk : g.coins.totalBid)[lvl.i]! : null;
+        const label = coins !== null ? figure(coins) : volText(lvl.usd), tw = ctx.measureText(label).width;
         const x = side === 'ask' ? Math.min(l.askX0 + w + 4, l.askX1 - tw) : Math.max(l.bidX1 - w - 4 - tw, l.bidX0);
         ctx.globalAlpha = 0.72; ctx.fillStyle = p.bg; ctx.fillRect(x - 2, y - 6.5, tw + 4, 13);
         ctx.globalAlpha = 1; ctx.fillStyle = p.text; ctx.textAlign = 'left'; ctx.fillText(label, x, y);
@@ -450,10 +459,11 @@ export class CandlePane {
    * map's footprint counts. Each row's winning side shows more strongly the more it won (the Rows look), and the busiest row is outlined.
    * Solid, the column is a panel the full height of the plot that hides the trail; as glass it is the glass's own (trail-gl.ts).
    */
-  #paintTape(ctx: CanvasRenderingContext2D, l: M.CandleLayout, s: M.PriceScale, tape: readonly (readonly [number, number, number])[], step: number, p: Palette): void {
+  #paintTape(ctx: CanvasRenderingContext2D, l: M.CandleLayout, s: M.PriceScale, tape: readonly (readonly [number, number, number])[], step: number, p: Palette, coinRows: readonly (readonly [number, number, number])[] | null = null): void {
     const x0 = l.candleX0, x1 = l.candleX1, split = (x0 + x1) / 2, half = (x1 - x0) / 2 - 2;
     const judged = true, glass = this.#glassOn(), look = this.#settings.rows;
-    const rows = step > 0 ? tape.flatMap(r => r[1] + r[2] > 0 ? [{ r, split: { buy: r[1], sell: r[2] } }] : []) : [];
+    // Each row's coins beside it (`coinRows` lists the same rows one for one), written in coins in place of its dollars.
+    const rows = step > 0 ? tape.flatMap((r, i) => r[1] + r[2] > 0 ? [{ r, split: { buy: r[1], sell: r[2] }, coins: coinRows?.[i] ?? null }] : []) : [];
     this.#frost = [];
     if (!glass) { ctx.fillStyle = p.panel; ctx.fillRect(x0, s.y0, x1 - x0, s.y1 - s.y0); }
     ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(split + 0.5, s.y0); ctx.lineTo(split + 0.5, s.y1); ctx.stroke();
@@ -464,7 +474,7 @@ export class CandlePane {
     // The point of control: the row where the most traded.
     const poc = judged ? M.pocIndex(rows.map(({ r, split: c }) => [r[0], c.buy, c.sell] as const)) : -1;
     ctx.textBaseline = 'middle';
-    rows.forEach(({ r: [low, buy, sell], split: c }, i) => {
+    rows.forEach(({ r: [low, buy, sell], split: c, coins }, i) => {
       const y = M.yOf(s, low + step); if (y + rh < s.y0 || y > s.y1) return;
       // Which side won, and how strongly that shows (0 to 1, continuous).
       const e = judged ? M.rowEmphasis(c.buy, c.sell, maxNet) : null, win = e?.side ?? null, k = !e ? 0 : look === 'lean' ? e.lean : e.net;
@@ -496,9 +506,10 @@ export class CandlePane {
         const small = buy + sell < busiest * 0.04, ink = p.text, fade = small ? 0.55 : 1;
         ctx.fillStyle = ink;
         ctx.font = win === 'sell' && k > 0.45 ? BOLD_NUM : NUM_FONT; ctx.globalAlpha = fade * (win === 'buy' ? 1 - 0.5 * k : 1);
-        ctx.textAlign = 'right'; if (sell >= 1) ctx.fillText(volText(sell), split - 4, y + rh / 2);
+        // Written where a dollar or more traded (judged on the dollars, so the same rows say a number in either units).
+        ctx.textAlign = 'right'; if (sell >= 1) ctx.fillText(coins ? figure(coins[2]) : volText(sell), split - 4, y + rh / 2);
         ctx.font = win === 'buy' && k > 0.45 ? BOLD_NUM : NUM_FONT; ctx.globalAlpha = fade * (win === 'sell' ? 1 - 0.5 * k : 1);
-        ctx.textAlign = 'left'; if (buy >= 1) ctx.fillText(volText(buy), split + 4, y + rh / 2);
+        ctx.textAlign = 'left'; if (buy >= 1) ctx.fillText(coins ? figure(coins[1]) : volText(buy), split + 4, y + rh / 2);
         ctx.globalAlpha = 1;
       }
       if (i === poc) { ctx.strokeStyle = p.poc; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 0.75, y + 0.25, x1 - x0 - 1.5, rh - 0.5); }

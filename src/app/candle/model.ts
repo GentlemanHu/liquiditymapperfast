@@ -332,8 +332,11 @@ export function pulseEnvelope(age: number): number {
  */
 export const TAPE_BINS = 4096;
 
-/** The rows of one step and set of markets, kept up to date as orders come (`add`), and the list made from them (null once an order changed them). */
-interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | null; base: number; sums: Float64Array; list: [number, number, number][] | null }
+/**
+ * The rows of one step and set of markets, kept up to date as orders come (`add`), and the lists made from them (null once an order changed
+ * them): `sums` the dollars, `coinSums` the coins, laid out alike.
+ */
+interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | null; base: number; sums: Float64Array; coinSums: Float64Array; list: [number, number, number][] | null; coinList: [number, number, number][] | null }
 
 /**
  * The Tape (Karl, 2026-10-17): every market order the page has seen since it opened, never fetched and never reset, so the view opens at
@@ -343,6 +346,11 @@ interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | 
  * in width when the prices outgrow it. The rows last asked for are kept and each new order is added to them, so a paint while orders
  * flow does not add every bin up again. A page that was hidden or in the background got no orders meanwhile: what it covers is from
  * `since`, less the gaps the caller reports (`TapeGaps`).
+ *
+ * Coins (units.ts, issue 9): beside the dollars, each bin holds the coins its orders bought and sold, each order's dollars over its own price
+ * (exact: the tape ring's price of an order is its own), kept from the first order on whatever the page's units (the tape is never read
+ * again, so coins could not be had later): at most TAPE_BINS bins of two doubles a market, 64 KB a market, as the dollars. `coinRows` gives
+ * them for the rows `rows` lists.
  */
 export class TapeTally {
   /** When the tape began (the page's clock, ms), and the price step it counts at (set by its first order). */
@@ -352,6 +360,8 @@ export class TapeTally {
   #factor = 1;
   /** Per market, bought and sold USD per bin, interleaved: bin `#base + i` at 2i and 2i + 1, `#cap` bins, the same bins for every market. */
   #markets = new Map<string, Float64Array>();
+  /** Per market, bought and sold coins per bin, laid out as `#markets`. */
+  #coins = new Map<string, Float64Array>();
   #base = 0; #cap = 0;
   /** The lowest and highest bin an order is in. */
   #binLo = Infinity; #binHi = -Infinity;
@@ -374,8 +384,9 @@ export class TapeTally {
     if (bin < this.#binLo) this.#binLo = bin;
     if (bin > this.#binHi) this.#binHi = bin;
     let m = this.#markets.get(market); if (!m) { m = new Float64Array(2 * this.#cap); this.#markets.set(market, m); }
-    const at = 2 * (bin - this.#base);
-    if (usd > 0) m[at]! += usd; else m[at + 1]! -= usd;
+    let k = this.#coins.get(market); if (!k) { k = new Float64Array(2 * this.#cap); this.#coins.set(market, k); }
+    const at = 2 * (bin - this.#base), coins = Math.abs(usd) / price;
+    if (usd > 0) { m[at]! += usd; k[at]! += coins; } else { m[at + 1]! -= usd; k[at + 1]! += coins; }
     if (!this.#count) this.#first = price;
     if (price < this.#lo) this.#lo = price;
     if (price > this.#hi) this.#hi = price;
@@ -383,7 +394,10 @@ export class TapeTally {
     const c = this.#cache;
     if (c && (!c.markets || c.markets.has(market))) {
       const row = 2 * (Math.floor(bin * this.#factor / c.ratio) - c.base);
-      if (row >= 0 && row < c.sums.length) { if (usd > 0) c.sums[row]! += usd; else c.sums[row + 1]! -= usd; c.list = null; }
+      if (row >= 0 && row < c.sums.length) {
+        if (usd > 0) { c.sums[row]! += usd; c.coinSums[row]! += coins; } else { c.sums[row + 1]! -= usd; c.coinSums[row + 1]! += coins; }
+        c.list = null; c.coinList = null;
+      }
       else this.#cache = null;
     }
   }
@@ -414,29 +428,48 @@ export class TapeTally {
     return c.list;
   }
 
+  /**
+   * The coins of the rows `rows(step, markets)` lists, one for one (the same rows, by the dollars: a row with dollars is listed): [the row's
+   * low price, bought coins, sold coins].
+   */
+  coinRows(step: number, markets: readonly string[] | null): readonly [number, number, number][] {
+    if (!(this.fine > 0) || !(step > 0) || !this.#count) return [];
+    this.rows(step, markets);
+    const c = this.#cache!;
+    if (!c.coinList) {
+      const list: [number, number, number][] = [];
+      for (let i = 0; i < c.sums.length; i += 2) if (c.sums[i]! + c.sums[i + 1]! > 0) list.push([(c.base + i / 2) * c.ratio * this.fine, c.coinSums[i]!, c.coinSums[i + 1]!]);
+      c.coinList = list;
+    }
+    return c.coinList;
+  }
+
   /** Add the bins up into rows of `ratio` fine steps, over every bin the arrays hold (so an order there is added to them as it comes). */
   #group(key: string, ratio: number, markets: readonly string[] | null): TapeRows {
     const f = this.#factor, base = Math.floor(this.#base * f / ratio), top = Math.floor((this.#base + this.#cap - 1) * f / ratio);
-    const set = markets ? new Set(markets) : null, sums = new Float64Array(2 * Math.max(1, top - base + 1));
+    const set = markets ? new Set(markets) : null, sums = new Float64Array(2 * Math.max(1, top - base + 1)), coinSums = new Float64Array(sums.length);
     for (const [market, m] of this.#markets) {
       if (set && !set.has(market)) continue;
+      const k = this.#coins.get(market)!;
       for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
         const at = 2 * (bin - this.#base), buy = m[at]!, sell = m[at + 1]!;
         if (buy === 0 && sell === 0) continue;
         const row = 2 * (Math.floor(bin * f / ratio) - base);
-        sums[row]! += buy; sums[row + 1]! += sell;
+        sums[row]! += buy; sums[row + 1]! += sell; coinSums[row]! += k[at]!; coinSums[row + 1]! += k[at + 1]!;
       }
     }
-    return { key, ratio, markets: set, base, sums, list: null };
+    return { key, ratio, markets: set, base, sums, coinSums, list: null, coinList: null };
   }
 
   /** Make the arrays hold the bins from `lo` to `hi` (at most TAPE_BINS), with room to spare on both sides, every market's moved with them. */
   #place(lo: number, hi: number): void {
     const need = hi - lo + 1, cap = Math.min(TAPE_BINS, Math.max(64, 2 * need)), base = lo - Math.floor((cap - need) / 2);
-    for (const [market, m] of this.#markets) {
-      const next = new Float64Array(2 * cap);
-      if (this.#binLo <= this.#binHi) next.set(m.subarray(2 * (this.#binLo - this.#base), 2 * (this.#binHi - this.#base + 1)), 2 * (this.#binLo - base));
-      this.#markets.set(market, next);
+    for (const arrays of [this.#markets, this.#coins]) {
+      for (const [market, m] of arrays) {
+        const next = new Float64Array(2 * cap);
+        if (this.#binLo <= this.#binHi) next.set(m.subarray(2 * (this.#binLo - this.#base), 2 * (this.#binHi - this.#base + 1)), 2 * (this.#binLo - base));
+        arrays.set(market, next);
+      }
     }
     this.#base = base; this.#cap = cap;
   }
@@ -444,13 +477,15 @@ export class TapeTally {
   /** Every bin twice as wide: neighbours merged on the same grid, so rows of any step from the new width up are what they were. */
   #widen(): void {
     const lo = Math.floor(this.#binLo / 2), hi = Math.floor(this.#binHi / 2), cap = this.#cap, base = lo - Math.floor((cap - (hi - lo + 1)) / 2);
-    for (const [market, m] of this.#markets) {
-      const next = new Float64Array(2 * cap);
-      for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
-        const from = 2 * (bin - this.#base), to = 2 * (Math.floor(bin / 2) - base);
-        next[to]! += m[from]!; next[to + 1]! += m[from + 1]!;
+    for (const arrays of [this.#markets, this.#coins]) {
+      for (const [market, m] of arrays) {
+        const next = new Float64Array(2 * cap);
+        for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
+          const from = 2 * (bin - this.#base), to = 2 * (Math.floor(bin / 2) - base);
+          next[to]! += m[from]!; next[to + 1]! += m[from + 1]!;
+        }
+        arrays.set(market, next);
       }
-      this.#markets.set(market, next);
     }
     this.#factor *= 2; this.#base = base; this.#binLo = lo; this.#binHi = hi; this.#cache = null;
   }

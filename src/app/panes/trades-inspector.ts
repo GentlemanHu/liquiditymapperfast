@@ -3,6 +3,7 @@ import { t, tn } from '../i18n.ts';
 import { clockSeconds, price as fmtPrice, usd as pageUsd } from '../format.ts';
 import { venueMark, markOf } from '../venue-marks.ts';
 import { venueLabel } from '../venues.ts';
+import { amount, inCoins } from '../units.ts';
 import type { Block, Coincidence, MarketRow, Repeat } from '../trades/blocks.ts';
 
 /**
@@ -10,6 +11,10 @@ import type { Block, Coincidence, MarketRow, Repeat } from '../trades/blocks.ts'
  * this), or in a bottom sheet when a finger taps a block on a phone. Page elements, not canvas: it changes at most once a second and must
  * wrap in twelve languages. `inspectorModel` is every word and number (plain data, so tests need no page); `renderInspector` puts it on the
  * page. Facts only: what was traded, where, at what price; never who or why.
+ *
+ * Units (units.ts, issue 9): in coins every size it writes is the coins its input carries (a market's, an order's, a coincidence's, a run of
+ * repeated sizes', the liquidations'), '–' where they are not known. The size filter and the recording's floor are said in dollars (they are
+ * the settings), the price change in dollars (a price), and the "same size" test of the repeats is the dollars'.
  */
 
 export type Tone = 'up' | 'down' | 'flat' | 'muted';
@@ -25,13 +30,14 @@ export interface InspectorModel {
   liquidations?: { title: string; summary: string; items: { id: string; side: 'buy' | 'sell'; usd: string; detail: string }[] };
 }
 
-/** One of a block's largest orders, as the inspector lists it. */
-export interface ListedOrder { t: number; id: string; usd: number; price: number; lo: number; hi: number }
+/** One of a block's largest orders, as the inspector lists it; `coins`, what it bought or sold in coins (read in coins). */
+export interface ListedOrder { t: number; id: string; usd: number; price: number; lo: number; hi: number; coins?: number }
 
-/** Liquidations summary for a trade block in Both mode. */
+/** Liquidations summary for a trade block in Both mode; `coins`, the sides in coins, and each listed one's coins (read in coins). */
 export interface BlockLiquidations {
   buy: number; sell: number; n: number;
-  largest: { id: string; side: 'long' | 'short'; usd: number; t: number; price: number }[];
+  largest: { id: string; side: 'long' | 'short'; usd: number; t: number; price: number; coins?: number }[];
+  coins?: { buy: number; sell: number };
 }
 
 export interface InspectorInput {
@@ -67,6 +73,8 @@ const signed = (v: number, dp: number): string => { const r = Number(Math.abs(v)
 const tone = (v: number, dp: number): Tone => Number(Math.abs(v).toFixed(dp)) === 0 ? 'flat' : v > 0 ? 'up' : 'down';
 /** A reach in basis points of the order's own price: how far its fills went (0 for one price). */
 export const reachBp = (o: { price: number; lo: number; hi: number }): number => o.price > 0 && o.hi >= o.lo ? 1e4 * (o.hi - o.lo) / o.price : 0;
+/** A positive size in the page's units: dollars as `money` writes them, or `coins` with the coin's name ('–' where they are not known). */
+const sized = (usd: number, coins: number | undefined): string => !inCoins() ? money(usd) : coins !== undefined && Number.isFinite(coins) ? amount(coins) : '–';
 
 export function inspectorModel(i: InspectorInput): InspectorModel {
   const b = i.block, held = i.state === 'held', liqMode = i.liqMode === true;
@@ -90,29 +98,38 @@ export function inspectorModel(i: InspectorInput): InspectorModel {
   const movesText = moves.length >= 2 ? t('Markets\' own moves: median {median} bp, {lo} to {hi}', { median: signed(median, 1), lo: signed(moves[0]!, 1), hi: signed(moves[moves.length - 1]!, 1) }) : null;
   const notes: InspectorModel['notes'] = [];
   for (const [a, z] of (i.unrecorded ?? []).slice(0, 2)) notes.push({ text: t('Not recorded {from}–{to}: the totals miss it', { from: clockSeconds(a), to: clockSeconds(z) }), tone: 'muted' });
-  for (const c of i.coincidences.slice(0, 2)) notes.push({ text: t('{arrow} ${usd} within 5 ms on {n} venues ({venues})', { arrow: c.side > 0 ? '▲' : '▼', usd: fmtUsd(c.usd), n: String(c.venues.length), venues: c.venues.map(v => venueLabel(v)).join(', ') }), tone: c.side > 0 ? 'up' : 'down' });
+  // In coins the sentences without the dollar sign, naming the coins (`{amount}`: "13.2 BTC").
+  const coins = inCoins();
+  for (const c of i.coincidences.slice(0, 2)) {
+    const values = { arrow: c.side > 0 ? '▲' : '▼', n: String(c.venues.length), venues: c.venues.map(v => venueLabel(v)).join(', ') };
+    notes.push({ text: coins ? t('{arrow} {amount} within 5 ms on {n} venues ({venues})', { ...values, amount: sized(c.usd, c.coins) }) : t('{arrow} ${usd} within 5 ms on {n} venues ({venues})', { ...values, usd: fmtUsd(c.usd) }), tone: c.side > 0 ? 'up' : 'down' });
+  }
   for (const r of i.repeats.slice(0, 1)) {
     const when = r.ms < 1 ? t('in the same millisecond') : r.ms < 1000 ? t('in {ms} ms', { ms: String(r.ms) }) : t('in {s} s', { s: (r.ms / 1000).toFixed(1) });
-    notes.push({ text: r.side > 0 ? t('Repeated size: {market} buys, {n} × about ${usd} {when}', { market: marketName(r.id), n: String(r.n), usd: fmtUsd((r.lo + r.hi) / 2), when }) : t('Repeated size: {market} sells, {n} × about ${usd} {when}', { market: marketName(r.id), n: String(r.n), usd: fmtUsd((r.lo + r.hi) / 2), when }), tone: 'muted' });
+    const values = { market: marketName(r.id), n: String(r.n), when };
+    const text = coins
+      ? (r.side > 0 ? t('Repeated size: {market} buys, {n} × about {amount} {when}', { ...values, amount: sized((r.lo + r.hi) / 2, r.coins) }) : t('Repeated size: {market} sells, {n} × about {amount} {when}', { ...values, amount: sized((r.lo + r.hi) / 2, r.coins) }))
+      : (r.side > 0 ? t('Repeated size: {market} buys, {n} × about ${usd} {when}', { ...values, usd: fmtUsd((r.lo + r.hi) / 2) }) : t('Repeated size: {market} sells, {n} × about ${usd} {when}', { ...values, usd: fmtUsd((r.lo + r.hi) / 2) }));
+    notes.push({ text, tone: 'muted' });
   }
   const recorded = b.from !== 0 && !(b.from & 1);
   const liqs = !liqMode && i.liquidations && i.liquidations.n > 0 ? i.liquidations : null;
   const liqSummaryParts: string[] = [];
   if (liqs) {
-    if (liqs.sell > 0) liqSummaryParts.push(`${t('Longs liquidated')} ${money(liqs.sell)}`);
-    if (liqs.buy > 0) liqSummaryParts.push(`${t('Shorts liquidated')} ${money(liqs.buy)}`);
+    if (liqs.sell > 0) liqSummaryParts.push(`${t('Longs liquidated')} ${sized(liqs.sell, liqs.coins?.sell)}`);
+    if (liqs.buy > 0) liqSummaryParts.push(`${t('Shorts liquidated')} ${sized(liqs.buy, liqs.coins?.buy)}`);
   }
   return {
     title, sub: parts.join(' · '), ref, moves: movesText,
     buyHead: liqMode ? t('Shorts liq.') : t('Bought'),
     sellHead: liqMode ? t('Longs liq.') : t('Sold'),
     // The markets that bought or sold within the block's filter (one that traded only under a size floor moves the median, not the table).
-    markets: i.rows.filter(r => r.buy > 0 || r.sell > 0).map(r => ({ id: r.id, name: marketName(r.id), buy: money(r.buy), sell: money(r.sell) })),
+    markets: i.rows.filter(r => r.buy > 0 || r.sell > 0).map(r => ({ id: r.id, name: marketName(r.id), buy: sized(r.buy, r.cBuy), sell: sized(r.sell, r.cSell) })),
     notes,
     largestTitle: liqMode ? t('Largest liquidations') : recorded ? t('Largest recorded orders (from ${usd})', { usd: fmtUsd(i.recordedFloor) }) : t('Largest orders'),
     largest: i.largest.map(o => ({
       id: o.id, side: o.usd > 0 ? 'buy' as const : 'sell' as const,
-      usd: `${liqMode ? '◆' : o.usd > 0 ? '▲' : '▼'} ${money(Math.abs(o.usd))}`,
+      usd: `${liqMode ? '◆' : o.usd > 0 ? '▲' : '▼'} ${sized(Math.abs(o.usd), o.coins)}`,
       detail: liqMode
         ? `${clockSeconds(o.t)}.${String(Math.round(((o.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(o.price)}`
         : `${clockSeconds(o.t)}.${String(Math.round(((o.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(o.price)}  ${t('{bp} bp', { bp: reachBp(o).toFixed(1) })}`,
@@ -123,7 +140,7 @@ export function inspectorModel(i: InspectorInput): InspectorModel {
         summary: liqSummaryParts.join(' · '),
         items: liqs.largest.map(l => ({
           id: l.id, side: l.side === 'short' ? 'buy' as const : 'sell' as const,
-          usd: `◆ ${money(l.usd)}`,
+          usd: `◆ ${sized(l.usd, l.coins)}`,
           detail: `${clockSeconds(l.t)}.${String(Math.round(((l.t % 1000) + 1000) % 1000)).padStart(3, '0')}  ${fmtPrice(l.price)}`,
         })),
       },

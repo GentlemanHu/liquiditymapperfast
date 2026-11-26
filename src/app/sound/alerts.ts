@@ -17,13 +17,37 @@ import { TIMEFRAMES } from '../../shared/series.ts';
 import { t } from '../i18n.ts';
 import { scaledUsd } from '../coin.ts';
 import { usd } from '../format.ts';
+import { amount, coinsAt, inCoins, signedAmount } from '../units.ts';
 import { replaying } from '../replay/clock.ts';
 import { DepthWatch, depthMinutes } from './depth-watch.ts';
 import type { ColumnsFrame } from '../wire.ts';
 
 export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi' | 'script' | 'drawing';
-/** What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted. */
-export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean }
+/**
+ * The size an alert's words name, kept as numbers so the Recent list writes it in the page's units when it shows (units.ts, issue 9): its
+ * dollars, whether it is signed (a delta), and where its coins come from: the price it stood at (a wall: its dollars over the price in the
+ * middle of its bin), or the flow it was added up over (the markets and whole seconds [from, to]: their coin series' delta, each second over
+ * its own price, read when it is written in coins). `words` puts a written size into the alert's sentence.
+ */
+export interface AlertSize { usd: number; signed: boolean; price?: number; flow?: { ids: readonly string[]; from: number; to: number }; words: (size: string) => string }
+/**
+ * What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted.
+ * `text` is the sentence as it fired, in dollars; `size` what it names, for writing it again in coins (`alertText`).
+ */
+export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean; size?: AlertSize }
+
+/**
+ * An alert's words as the Recent list writes them: as it fired in dollars; in coins its sentence again with its size in coins (`coinsOf`: a
+ * market's coin series; a market without one adds nothing, as it added no dollars), or as it fired where its coins cannot be had.
+ */
+export function alertText(e: AlertEntry, coinsOf?: (id: string) => { delta(from: number, to: number): number } | undefined): string {
+  const size = e.size;
+  if (!size || !inCoins()) return e.text;
+  let coins = Number.NaN;
+  if (size.price !== undefined) coins = coinsAt(size.usd, size.price);
+  else if (size.flow && coinsOf) { coins = 0; for (const id of size.flow.ids) coins += coinsOf(id)?.delta(size.flow.from, size.flow.to) ?? 0; }
+  return Number.isFinite(coins) ? size.words(size.signed ? signedAmount(coins) : amount(coins)) : e.text;
+}
 
 /** What the alerts read: the page state, its flow book, and something that plays notes. */
 export interface AlertsHost { state: AppState }
@@ -112,13 +136,13 @@ export class Alerts {
 
   get #s(): AppState { return this.host.state; }
 
-  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume)): void {
+  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume), size?: AlertSize): void {
     const sounds = this.#s.sounds;
     if (!sounds.on) return;
     if (!this.#cool.take(key, now, cooldownMs) || !this.#cap.allow(now)) return;
     // An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
     const audible = notes.length ? this.player.play(notes) : true;
-    this.log.push({ at: now, panel, kind, side, text, audible });
+    this.log.push({ at: now, panel, kind, side, text, audible, ...(size ? { size } : {}) });
     if (this.log.length > 100) this.log.splice(0, this.log.length - 100);
     this.onChange();
   }
@@ -138,7 +162,12 @@ export class Alerts {
       const kind = kindOf(s.markets, id) === 'spot' ? 'spot' : 'perp', family = familyKey(venueOfInstrument(id));
       this.bursts.push({ ...found, t: now, id, family, kind });
       if (this.bursts.length > MAX_BURSTS) this.bursts.splice(0, this.bursts.length - MAX_BURSTS);
-      if (rule.burst) this.#fire(now, 'flow', 'flow-burst', found.delta > 0 ? 'buy' : 'sell', t('{venue} {kind}: {delta} of taker flow in 10 s', { venue: venueLabel(id), kind: kind === 'spot' ? t('spot') : t('perp'), delta: signedUsd(found.delta) }), `flow:${id}`, FLOW_COOLDOWN_MS);
+      if (rule.burst) {
+        // The sentence as it fires (in dollars), and what it names for the Recent list: the delta of the burst's window (units.ts).
+        const words = (delta: string): string => t('{venue} {kind}: {delta} of taker flow in 10 s', { venue: venueLabel(id), kind: kind === 'spot' ? t('spot') : t('perp'), delta });
+        this.#fire(now, 'flow', 'flow-burst', found.delta > 0 ? 'buy' : 'sell', words(signedUsd(found.delta)), `flow:${id}`, FLOW_COOLDOWN_MS, undefined,
+          { usd: found.delta, signed: true, flow: { ids: [id], from: nowSec - found.windowSec + 1, to: nowSec }, words });
+      }
       this.onChange();
     }
   }
@@ -162,8 +191,9 @@ export class Alerts {
     const context = `${s.levels.books.filter(book => active.has(book.id)).map(book => book.epoch ? `${book.id}#${book.epoch}` : book.id).sort().join(',')}|${s.marketId}|${s.seriesInstrument}`;
     for (const signal of this.#walls.update(now, bins, mark, scaledUsd(panels.book.usd), context)) {
       if (!panels.book.wall) continue;
-      const word = signal.kind === 'appeared' ? t('wall appeared') : t('wall pulled');
-      this.#fire(now, 'book', signal.kind === 'appeared' ? 'wall-appeared' : 'wall-pulled', signal.side, `${signal.side === 'buy' ? t('Bid') : t('Ask')} ${word}: $${usd(signal.usd)}`, `wall:${signal.side}:${signal.kind}`, WALL_COOLDOWN_MS);
+      const words = (size: string): string => `${signal.side === 'buy' ? t('Bid') : t('Ask')} ${signal.kind === 'appeared' ? t('wall appeared') : t('wall pulled')}: ${size}`;
+      this.#fire(now, 'book', signal.kind === 'appeared' ? 'wall-appeared' : 'wall-pulled', signal.side, words(`$${usd(signal.usd)}`), `wall:${signal.side}:${signal.kind}`, WALL_COOLDOWN_MS, undefined,
+        { usd: signal.usd, signed: false, price: signal.price, words });
     }
     // The balance starts over with the walls (another set of books or market, a gap), so a book found lopsided before says nothing now. Over
     // other books it has a warm-up of its own, by the walls' rules: another set of them or market, or a look more than ten seconds after the last.
@@ -205,7 +235,8 @@ export class Alerts {
     let delta = 0;
     for (const id of ids) delta += this.flow.get(id)?.delta(startSec, endSec) ?? 0;
     if (Math.abs(delta) < scaledUsd(rule.usd)) return;
-    this.#fire(now, 'bars', 'bar-delta', delta > 0 ? 'buy' : 'sell', t('{timeframe} candle closed with {delta} of net taker flow', { timeframe: s.timeframe, delta: signedUsd(delta) }), 'bar-delta', 1_000);
+    const timeframe = s.timeframe, words = (d: string): string => t('{timeframe} candle closed with {delta} of net taker flow', { timeframe, delta: d });
+    this.#fire(now, 'bars', 'bar-delta', delta > 0 ? 'buy' : 'sell', words(signedUsd(delta)), 'bar-delta', 1_000, undefined, { usd: delta, signed: true, flow: { ids, from: startSec, to: endSec }, words });
   }
 
   /**
@@ -314,6 +345,9 @@ export class Alerts {
     if (replaying()) return;
     this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
   }
+
+  /** An alert's words as the Recent list writes them now (`alertText`; the coin series are read only while the page writes coins). */
+  text(e: AlertEntry): string { return alertText(e, id => this.flow.coinsOf(id)); }
 
   test(kind: AlertKind, side: 'buy' | 'sell' | null = 'buy'): void {
     void this.player.unlock().then(() => { this.player.play(alertNotes(kind, side, this.#s.sounds.volume), true); });
