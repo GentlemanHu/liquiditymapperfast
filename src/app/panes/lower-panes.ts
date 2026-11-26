@@ -2179,6 +2179,9 @@ export class BarStatsPane extends TimePane {
    * of every cell, all worked out again at every move.
    */
   #rowPaint: { key: string; table: object; palette: Palette; rows: Map<number, RowPaint> } | null = null;
+  /** The table's body as last drawn (`#strip`): its picture, and what it was drawn for (the view and sizes, the rows' paint, the options, the View figures). */
+  #bodyCanvas = document.createElement('canvas');
+  #body: { key: string; paint: unknown; options: unknown; view: unknown } | null = null;
   /** The bands as last drawn, top to bottom (what a click on a header folds). */
   #layout: { band: TableBand; y: number; h: number }[] = [];
   protected override ownsPoint(x: number): boolean { return !!this.#viewSpan && x >= this.#viewSpan[0] && x <= this.#viewSpan[1]; }
@@ -2356,21 +2359,86 @@ export class BarStatsPane extends TimePane {
     };
     // A mark's tint by the side it stands for (three at most, worked out once a draw).
     const markFill = { buy: mixHex(p.panel, p.candleUp, 0.32), sell: mixHex(p.panel, p.candleDown, 0.32), text: mixHex(p.panel, p.muted, 0.32) };
-    ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    layout.forEach(({ band, y, h }, bandIndex) => {
-      if (band.kind === 'head') {
-        // A kind's header across the table: ▾ open, ▸ folded with how many rows it holds; a click folds or unfolds it.
-        ctx.save(); ctx.fillStyle = mixHex(p.panel, p.ui, bandIndex === hoverBand || bandIndex === viewBand ? 0.24 : 0.14); ctx.fillRect(0, y, this.w, h - 1);
-        ctx.textAlign = 'left'; ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.fillStyle = p.muted;
-        ctx.fillText(`${band.folded ? '▸' : '▾'} ${GROUP_SHORT[band.group]}${band.folded ? ` · ${band.count}` : ''}`, 6, y + (h - 1) / 2);
-        ctx.restore();
-        return;
+    // The table's body (every cell and the View column's figures) is drawn into a picture of its own while nothing it shows changes, and laid on
+    // the canvas: a pointer move draws only what follows the pointer (a header lit, the tints and boxes, the pinned columns, the row names over
+    // them). 2026-11-25: with every statistic shown over two days of 5m candles, each pointer move drew all 22,000 cells again (about 110 ms).
+    const viewAt = `${visible[0]}|${visible[visible.length - 1]}|${visible.length}`;
+    // The View column's figures, worked out again only for other candles in view or other figures.
+    if (this.#viewSpan && table.view?.at !== viewAt) table.view = { at: viewAt, cells: defs.map((def, r) => def.view?.(inputs[r]!, visible, rowsValues[r]!) ?? null) };
+    const bodyKey = `${v.t0}|${v.t1}|${pw}|${this.w}|${ph}|${this.dpr}|${this.#viewSpan ? `${vx}:${vw}` : '-'}|${layout.map(l => `${l.y}:${l.h}`).join(',')}`;
+    if (!this.#body || this.#body.key !== bodyKey || this.#body.paint !== this.#rowPaint || this.#body.options !== options || this.#body.view !== table.view) {
+      const canvas = this.#bodyCanvas, cw = Math.max(1, Math.round(this.w * this.dpr)), chh = Math.max(1, Math.round(this.h * this.dpr));
+      if (canvas.width !== cw || canvas.height !== chh) { canvas.width = cw; canvas.height = chh; }
+      const b = canvas.getContext('2d')!;
+      b.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); b.clearRect(0, 0, this.w, this.h);
+      b.globalAlpha = 1; b.lineWidth = 1; b.textBaseline = 'middle'; b.textAlign = 'center'; b.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      layout.forEach(({ band, y, h }) => {
+        if (band.kind === 'head') { this.#head(b, band, y, h, false); return; }
+        const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category';
+        const paint = paintOf(def, rowIndex, values, ranked), unusual = state.highlight.on ? paint.found?.flag ?? null : null;
+        if (!filled) { b.globalAlpha = 0.5; b.strokeStyle = p.line; b.beginPath(); b.moveTo(0, Math.round(y + h - 1) + 0.5); b.lineTo(pw, Math.round(y + h - 1) + 0.5); b.stroke(); b.globalAlpha = 1; }
+        if (cells === 'line' && def.scale !== 'category') { this.#line(b, def, values, visible, times, y, h, slot, partial, unusual); return; }
+        for (const i of visible) {
+          const x = v.xOf(times[i]!, pw), w = Math.max(1, slot - 1), value = values[i], fade = def.source === 'executions' && partial[i] ? 0.45 : 1;
+          if (value === null || value === undefined) {
+            if (filled) { b.globalAlpha = 0.5; b.fillStyle = p.line; b.fillRect(x, y, w, h - 1); b.globalAlpha = 1; }
+            if (slot >= 48) { b.fillStyle = p.muted; b.fillText('–', x + w / 2, y + (h - 1) / 2); }
+            continue;
+          }
+          if (def.scale === 'category') {
+            // A mark per candle: tinted by the side it stands for, empty where there is nothing to mark.
+            const mark = def.format(value), tone = mark ? def.tone?.(value) ?? null : null, fill = tone ? markFill[tone] : p.panel;
+            b.globalAlpha = fade;
+            if (filled || cells === 'line') { b.fillStyle = fill; b.fillRect(x, y, w, h - 1); }
+            if (mark && b.measureText(mark).width <= w - 2) { b.fillStyle = (filled || cells === 'line') && tone ? textOn(fill, 1, p) : toneColor(tone); b.fillText(mark, x + w / 2, y + (h - 1) / 2); }
+            b.globalAlpha = 1;
+            continue;
+          }
+          // The cell's strength and fill as worked out for the row (`paintOf`).
+          const t = paint.strength[i]!, tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown, fill = paint.fill[i] ?? p.panel;
+          if (filled) {
+            b.globalAlpha = fade; b.fillStyle = fill;
+            b.fillRect(x, y, w, h - 1);
+            if (def.scale === 'plain') { b.strokeStyle = p.line; b.strokeRect(x + 0.5, y + 0.5, w - 1, h - 2); }
+            b.globalAlpha = 1;
+          }
+          if (unusual?.[i]) { b.save(); b.lineWidth = 1.6; b.strokeStyle = p.text; b.globalAlpha = 0.95 * fade; b.strokeRect(x + 0.8, y + 0.8, Math.max(1, w - 1.6), h - 2.6); b.restore(); }
+          if (slot >= 48) {
+            b.fillStyle = filled ? (def.scale === 'plain' ? p.text : textOn(fill, 1, p)) : def.scale === 'diverging' ? tone : p.text;
+            b.globalAlpha = (filled ? 1 : 0.6 + 0.4 * t) * fade;
+            b.fillText(def.format(value), x + w / 2, y + (h - 1) / 2); b.globalAlpha = 1;
+          }
+        }
+      });
+      // The View column, right of the plot under the price axis and the columns: each row over the candles in view (its tip says how).
+      if (this.#viewSpan && table.view) {
+        const viewCells = table.view.cells;
+        b.save();
+        b.globalAlpha = 0.6; b.strokeStyle = p.line; b.beginPath(); b.moveTo(Math.round(pw) + 0.5, top); b.lineTo(Math.round(pw) + 0.5, gridBottom); b.stroke(); b.globalAlpha = 1;
+        for (const { band, y, h } of layout) {
+          if (band.kind !== 'row') continue;
+          const cell = viewCells[band.index] ?? null;
+          const fill = cell && cell.tone !== 'text' ? mixHex(p.panel, toneColor(cell.tone), 0.22) : mixHex(p.panel, p.ui, 0.08);
+          b.fillStyle = fill; b.fillRect(vx, y, vw, h - 1);
+          if (cell) {
+            let size = 11; b.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            while (size > 8 && b.measureText(cell.value).width > vw - 4) { size--; b.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`; }
+            if (b.measureText(cell.value).width <= vw - 2) { b.fillStyle = textOn(fill, 1, p); b.fillText(cell.value, vx + vw / 2, y + (h - 1) / 2); }
+          }
+        }
+        b.restore();
       }
-      const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category';
-      const paint = paintOf(def, rowIndex, values, ranked), found = paint.found;
-      const unusual = state.highlight.on ? found?.flag ?? null : null;
-      const mine = hoverIdx >= 0 && bandIndex === hoverBand ? values[hoverIdx] : undefined;
-      if (hoverIdx >= 0 && bandIndex === hoverBand && mine !== null && mine !== undefined) {
+      this.#body = { key: bodyKey, paint: this.#rowPaint, options, view: table.view };
+    }
+    ctx.drawImage(this.#bodyCanvas, 0, 0, this.w, this.h);
+    // A kind's header under the pointer is lit (a click folds or unfolds it).
+    for (const index of new Set([hoverBand, viewBand])) { const lit = index >= 0 ? layout[index] : undefined; if (lit?.band.kind === 'head') this.#head(ctx, lit.band, lit.y, lit.h, true); }
+    const hovered = hoverBand >= 0 ? layout[hoverBand] : undefined;
+    // The cell under the pointer: what its popup says.
+    if (hoverIdx >= 0 && hovered?.band.kind === 'row') {
+      const { def, index: rowIndex } = hovered.band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category';
+      const found = paintOf(def, rowIndex, values, ranked).found, unusual = state.highlight.on ? found?.flag ?? null : null, mine = values[hoverIdx];
+      if (mine !== null && mine !== undefined) {
         const previous = hoverIdx > 0 && times[hoverIdx - 1] === times[hoverIdx]! - tfMs ? values[hoverIdx - 1] : null;
         const seenValues = visible.map(i => values[i]).filter((x): x is number => x !== null && x !== undefined), rank = (x: number) => def.scale === 'diverging' ? deviation(def, x) : x;
         const share = all[hoverIdx] ? coverageOf(all[hoverIdx]!, times[hoverIdx]!, tfMs, now) : null;
@@ -2383,41 +2451,7 @@ export class BarStatsPane extends TimePane {
           partial: def.source === 'executions' && share !== null && share < 0.95 ? Math.round(share * 100) : null,
         };
       }
-      if (!filled) { ctx.globalAlpha = 0.5; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(0, Math.round(y + h - 1) + 0.5); ctx.lineTo(pw, Math.round(y + h - 1) + 0.5); ctx.stroke(); ctx.globalAlpha = 1; }
-      if (cells === 'line' && def.scale !== 'category') { this.#line(def, values, visible, times, y, h, slot, partial, unusual); return; }
-      for (const i of visible) {
-        const x = v.xOf(times[i]!, pw), w = Math.max(1, slot - 1), value = values[i], fade = def.source === 'executions' && partial[i] ? 0.45 : 1;
-        if (value === null || value === undefined) {
-          if (filled) { ctx.globalAlpha = 0.5; ctx.fillStyle = p.line; ctx.fillRect(x, y, w, h - 1); ctx.globalAlpha = 1; }
-          if (slot >= 48) { ctx.fillStyle = p.muted; ctx.fillText('–', x + w / 2, y + (h - 1) / 2); }
-          continue;
-        }
-        if (def.scale === 'category') {
-          // A mark per candle: tinted by the side it stands for, empty where there is nothing to mark.
-          const mark = def.format(value), tone = mark ? def.tone?.(value) ?? null : null, fill = tone ? markFill[tone] : p.panel;
-          ctx.globalAlpha = fade;
-          if (filled || cells === 'line') { ctx.fillStyle = fill; ctx.fillRect(x, y, w, h - 1); }
-          if (mark && ctx.measureText(mark).width <= w - 2) { ctx.fillStyle = (filled || cells === 'line') && tone ? textOn(fill, 1, p) : toneColor(tone); ctx.fillText(mark, x + w / 2, y + (h - 1) / 2); }
-          ctx.globalAlpha = 1;
-          continue;
-        }
-        // The cell's strength and fill as worked out for the row (`paintOf`).
-        const t = paint.strength[i]!, tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown, fill = paint.fill[i] ?? p.panel;
-        if (filled) {
-          ctx.globalAlpha = fade; ctx.fillStyle = fill;
-          ctx.fillRect(x, y, w, h - 1);
-          if (def.scale === 'plain') { ctx.strokeStyle = p.line; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 2); }
-          ctx.globalAlpha = 1;
-        }
-        if (unusual?.[i]) { ctx.save(); ctx.lineWidth = 1.6; ctx.strokeStyle = p.text; ctx.globalAlpha = 0.95 * fade; ctx.strokeRect(x + 0.8, y + 0.8, Math.max(1, w - 1.6), h - 2.6); ctx.restore(); }
-        if (slot >= 48) {
-          ctx.fillStyle = filled ? (def.scale === 'plain' ? p.text : textOn(fill, 1, p)) : def.scale === 'diverging' ? tone : p.text;
-          ctx.globalAlpha = (filled ? 1 : 0.6 + 0.4 * t) * fade;
-          ctx.fillText(def.format(value), x + w / 2, y + (h - 1) / 2); ctx.globalAlpha = 1;
-        }
-      }
-    });
-    const hovered = hoverBand >= 0 ? layout[hoverBand] : undefined;
+    }
     // The cell under the pointer: its column and row tinted, the cell itself boxed, and a popup beside the pointer.
     if (hoverIdx >= 0) {
       const x = v.xOf(times[hoverIdx]!, pw), w = Math.max(1, slot - 1);
@@ -2442,32 +2476,16 @@ export class BarStatsPane extends TimePane {
         x: page.left + leftGutter(state) + x + w, y: page.top });
     }
     pins.sort((a, b) => a.x - b.x);
-    // The View column, right of the plot under the price axis and the columns: each row over the candles in view (its tip says how).
-    if (this.#viewSpan) {
-      // Worked out again only for other candles in view or other figures (a pointer move redraws from what is held).
-      const at = `${visible[0]}|${visible[visible.length - 1]}|${visible.length}`;
-      if (table.view?.at !== at) table.view = { at, cells: defs.map((def, r) => def.view?.(inputs[r]!, visible, rowsValues[r]!) ?? null) };
-      const viewCells = table.view.cells;
-      ctx.save();
-      ctx.globalAlpha = 0.6; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(Math.round(pw) + 0.5, top); ctx.lineTo(Math.round(pw) + 0.5, gridBottom); ctx.stroke(); ctx.globalAlpha = 1;
-      layout.forEach(({ band, y, h }, bandIndex) => {
-        if (band.kind !== 'row') return;
-        const def = band.def, cell = viewCells[band.index] ?? null;
-        const fill = cell && cell.tone !== 'text' ? mixHex(p.panel, toneColor(cell.tone), 0.22) : mixHex(p.panel, p.ui, 0.08);
-        ctx.fillStyle = fill; ctx.fillRect(vx, y, vw, h - 1);
-        if (cell) {
-          let size = 11; ctx.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          while (size > 8 && ctx.measureText(cell.value).width > vw - 4) { size--; ctx.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`; }
-          if (ctx.measureText(cell.value).width <= vw - 2) { ctx.fillStyle = textOn(fill, 1, p); ctx.fillText(cell.value, vx + vw / 2, y + (h - 1) / 2); }
-        }
-        if (bandIndex === viewBand) {
-          ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.strokeRect(Math.round(vx) + 0.5, Math.round(y) + 0.5, Math.round(vw) - 1, Math.round(h) - 2);
-          viewHover = viewCellLines(labelOf.get(def.id)!, cell, def.title, visible.length);
-        }
-      });
-      ctx.restore();
+    // The View column's figure under the pointer: boxed, and its popup.
+    if (this.#viewSpan && table.view) {
+      const lit = viewBand >= 0 ? layout[viewBand] : undefined;
+      if (lit?.band.kind === 'row') {
+        ctx.save(); ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.strokeRect(Math.round(vx) + 0.5, Math.round(lit.y) + 0.5, Math.round(vw) - 1, Math.round(lit.h) - 2); ctx.restore();
+        viewHover = viewCellLines(labelOf.get(lit.band.def.id)!, table.view.cells[lit.band.index] ?? null, lit.band.def.title, visible.length);
+      }
     }
     if (viewHover) this.#viewLines = viewHover;
+    // The row names last, over the tints and boxes.
     ctx.textAlign = 'left'; ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
     for (const { band, y, h } of layout) {
       if (band.kind !== 'row') continue;
@@ -2477,13 +2495,22 @@ export class BarStatsPane extends TimePane {
     return pins;
   }
 
+  /** A kind's header across the table: ▾ open, ▸ folded with how many rows it holds (a click folds or unfolds it), lit while the pointer is on it. */
+  #head(ctx: CanvasRenderingContext2D, band: Extract<TableBand, { kind: 'head' }>, y: number, h: number, lit: boolean): void {
+    const p = this.palette;
+    ctx.save(); ctx.fillStyle = mixHex(p.panel, p.ui, lit ? 0.24 : 0.14); ctx.fillRect(0, y, this.w, h - 1);
+    ctx.textAlign = 'left'; ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.fillStyle = p.muted;
+    ctx.fillText(`${band.folded ? '▸' : '▾'} ${GROUP_SHORT[band.group]}${band.folded ? ` · ${band.count}` : ''}`, 6, y + (h - 1) / 2);
+    ctx.restore();
+  }
+
   /**
    * Line: a row drawn as a line through its candles (broken where one has no value), on its own scale: a share around 50 % or a signed figure
    * about its centre line, with each candle's side shaded from it, and the rest from their lowest to their highest in view. Unusual candles get
    * a ring while Highlights is on.
    */
-  #line(def: StatDef, values: readonly (number | null)[], visible: readonly number[], times: readonly number[], y: number, h: number, slot: number, partial: readonly boolean[], unusual: Uint8Array | null): void {
-    const { ctx, palette: p, view: v } = this, pw = this.plotW, center = def.center ?? 0, seenValues = visible.flatMap(i => { const x = values[i]; return x === null || x === undefined ? [] : [x]; });
+  #line(ctx: CanvasRenderingContext2D, def: StatDef, values: readonly (number | null)[], visible: readonly number[], times: readonly number[], y: number, h: number, slot: number, partial: readonly boolean[], unusual: Uint8Array | null): void {
+    const { palette: p, view: v } = this, pw = this.plotW, center = def.center ?? 0, seenValues = visible.flatMap(i => { const x = values[i]; return x === null || x === undefined ? [] : [x]; });
     if (!seenValues.length) return;
     const diverging = def.scale === 'diverging', reach = diverging ? Math.max(...seenValues.map(x => Math.abs(x - center))) || 1 : 0;
     const lo = Math.min(...seenValues), hi = Math.max(...seenValues), span = hi - lo || 1, pad = 3;
