@@ -117,6 +117,36 @@ export function fundingMedian(venues: readonly VenueFunding[], t0: number, t1: n
   return steps;
 }
 
+/** One stretch of a step line: from `t0` to `t1` at `per8h`, dashed where `forming` (a rate still accruing). */
+export interface LineStep { t0: number; t1: number; per8h: number; forming: boolean }
+/** One stroke of a step line: its points in time and rate, drawn solid or dashed. */
+export interface StepRun { forming: boolean; points: { t: number; per8h: number }[] }
+/** How far apart a step's end and the next one's start may be and still be drawn joined (a rate under way starts at the settlement the rows give to the minute). */
+const JOIN_MS = 60_000;
+/**
+ * A step line as strokes (pure), each solid or dashed: a step that starts where the one before ended (within `JOIN_MS`) joins it with a riser,
+ * also where solid turns dashed: the dashed stroke then starts at the level the solid one ended at, so the riser is dashed. Where a step starts
+ * elsewhere (a missing record left a hole, or a rate under way reaches back over settlements) the line breaks there. Steps in time order.
+ */
+export function stepRuns(steps: readonly LineStep[]): StepRun[] {
+  const runs: StepRun[] = [];
+  let prev: LineStep | null = null, run: StepRun | null = null;
+  for (const s of steps) {
+    const joined: boolean = prev !== null && run !== null && Math.abs(s.t0 - prev.t1) <= JOIN_MS && s.t1 >= prev.t1;
+    let into: StepRun;
+    // Joined, the riser stands where the step before ended: a start a few seconds off it moves there, never a slanted or backward stroke.
+    const at = joined && prev ? prev.t1 : s.t0;
+    if (joined && run && run.forming === s.forming) { into = run; into.points.push({ t: at, per8h: s.per8h }); }
+    else {
+      into = { forming: s.forming, points: joined && prev ? [{ t: at, per8h: prev.per8h }, { t: at, per8h: s.per8h }] : [{ t: at, per8h: s.per8h }] };
+      runs.push(into);
+    }
+    into.points.push({ t: s.t1, per8h: s.per8h });
+    run = into; prev = s;
+  }
+  return runs;
+}
+
 
 /** One settled funding, at `t`, over the `hours` before it: `rate` per its own interval, `per8h` the same per eight hours. */
 export interface FundingRow { t: number; rate: number; per8h: number; hours: number }
