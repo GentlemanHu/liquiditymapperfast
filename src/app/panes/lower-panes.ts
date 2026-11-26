@@ -14,7 +14,7 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, readsRows, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
@@ -67,6 +67,7 @@ import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { candleSplitStyles, emphasisFloor, medianRow } from '../traded/emphasis.ts';
 import type { OiPaneHeld } from '../range/oi-lines.ts';
 import type { BarsPaneHeld } from '../range/bars-lines.ts';
+import type { Bar } from './footprint.ts';
 import { ltHeldKey, type LtPaneHeld } from '../range/lt-lines.ts';
 import { depthHeldKey, type DepthPaneHeld } from '../range/depth-lines.ts';
 
@@ -2160,8 +2161,12 @@ export class BarStatsPane extends TimePane {
   /** What the table worked out last, for the Range summary of a selection made in this pane (range/bars-lines.ts); null without a table. */
   get rangeHeld(): BarsPaneHeld | null { return this.#held; }
   #held: BarsPaneHeld | null = null;
-  /** What the table worked out last, kept while nothing it was worked out from changes (a pointer move only redraws), and what Export CSV writes. */
-  #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
+  /**
+   * What the table worked out last, kept while nothing it was worked out from changes (a pointer move only redraws), and what Export CSV writes:
+   * `input` reads the bars without rows (`HeatPane.statSums`), `inputs` each statistic's own (the footprint's bars with rows for those that read
+   * rows, `readsRows`), and `cover` each slot's bar for its share recorded (the one without rows, else the one with).
+   */
+  #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; inputs: StatInput[]; cover: (Bar | null)[]; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
   /** Where the View column is (plot coordinates), while it is drawn: the pointer there reads it, not a candle. */
   #viewSpan: [number, number] | null = null;
   /** The bands as last drawn, top to bottom (what a click on a header folds). */
@@ -2212,14 +2217,17 @@ export class BarStatsPane extends TimePane {
   #strip(): { lines: InfoLine[]; x: number; y: number }[] {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state;
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000, defs = enabledStats(state.barStats), options = state.barStatOptions;
-    const readout = this.head.querySelector('.readout'), data = this.heat.footprintData, daily = options.cvdFrom === 'day';
+    const readout = this.head.querySelector('.readout'), daily = options.cvdFrom === 'day';
+    // The bars without rows (dollars, order statistics, minutes, size lines: quick over any window), and the footprint's bars with rows, loaded
+    // and read only for a statistic that reads rows or their markets, or the dollars from a source whose bars without rows carry none.
+    const sums = this.heat.statSums, rowData = this.heat.footprintData, fromRows = defs.map(def => readsRows(def, sums.totals)), anyRows = fromRows.some(Boolean);
     // Aggregated, the rows count every market the footprint adds together; open interest stays the OI pane's one market (as its row's tip says),
     // and the liquidations count the perpetuals whatever the Spot / Perp filter (`liquidationMarkets`, below).
     const markets = this.heat.footprintMarkets(state), stats = daily
       ? tn(defs.length, "{n} stat · cvd from each day's start", "{n} stats · cvd from each day's start")
       : tn(defs.length, '{n} stat · cvd sums the bars loaded for the view', '{n} stats · cvd sums the bars loaded for the view');
     // The size of the rows the footprint rows of the table (poc, imbalances) are read on: the footprint's at this zoom, whether it shows or not.
-    const rowSize = data.step > 0 ? ` · ${t('rows of {step}', { step: `$${fmtPrice(data.step, data.step)}` })}` : '';
+    const rowSize = anyRows && rowData.step > 0 ? ` · ${t('rows of {step}', { step: `$${fmtPrice(rowData.step, rowData.step)}` })}` : '';
     setText(readout, (markets.length > 1 ? `${t('{n} markets', { n: markets.length })} · ${stats}` : stats) + rowSize);
     this.#viewSpan = null; this.#layout = [];
     if (!defs.length) { this.#say(t('No statistics selected: use the settings key to add some.')); this.#table = null; this.#held = null; return []; }
@@ -2232,7 +2240,8 @@ export class BarStatsPane extends TimePane {
     // recording, a gap) is a slot without a bar: the rows read from the candles and open interest still show there.
     const starts = new Set<number>();
     for (const c of state.candles) if (near(c[0])) starts.add(c[0]);
-    for (const b of data.bars.values()) if (near(b.t)) starts.add(b.t);
+    for (const b of sums.bars.values()) if (near(b.t)) starts.add(b.t);
+    if (anyRows) for (const b of rowData.bars.values()) if (near(b.t)) starts.add(b.t);
     const times = [...starts].sort((a, b) => a - b);
     if (!times.length) { this.#say(t('Bar stats appear once executions are recorded for the visible candles.')); this.#table = null; this.#held = null; return []; }
     const parts = oiPartsUntil(state.oiParts, tfMs, replaying() ? Math.floor(now / tfMs) * tfMs : Infinity);
@@ -2256,28 +2265,30 @@ export class BarStatsPane extends TimePane {
     // (the coverage of the candle under way).
     // Whether a perpetual's executions are counted (a market of unknown kind may be one): oi × delta reads them against open interest.
     const perps = markets.some(id => kindOf(state.markets, id) !== 'spot');
-    const key = [data.version, data.step, state.candles, state.oi, parts, state.oiPrice, state.barStats, options, data.cuts, taker, liquidations, zone, times[0], times[times.length - 1], times.length, tfMs, Math.floor(now / 60_000), perps];
+    const key = [sums.version, sums.totals, sums.cuts, anyRows ? rowData.version : -1, anyRows ? rowData.step : 0, state.candles, state.oi, parts, state.oiPrice, state.barStats, options, taker, liquidations, zone, times[0], times[times.length - 1], times.length, tfMs, Math.floor(now / 60_000), perps];
     let table = this.#table;
     if (!table || table.key.length !== key.length || table.key.some((k, i) => k !== key[i])) {
       const candles = new Map(state.candles.map(c => [c[0], c] as const));
-      const input: StatInput = { bars: times.map(start => data.bars.get(start) ?? null), times, tfMs, now, ...(taker ? { taker } : {}), ...(liquidations ? { liquidations } : {}), ...(restart ? { restart } : {}),
-        step: data.step, options, cuts: data.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
-      table = this.#table = { key, times, defs, values: defs.map(def => def.compute(input)), input, view: null };
+      const input: StatInput = { bars: times.map(start => sums.bars.get(start) ?? null), times, tfMs, now, ...(taker ? { taker } : {}), ...(liquidations ? { liquidations } : {}), ...(restart ? { restart } : {}),
+        step: rowData.step, options, cuts: sums.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
+      const rowInput: StatInput | null = anyRows ? { ...input, bars: times.map(start => rowData.bars.get(start) ?? null), cuts: rowData.cuts } : null;
+      const inputs = defs.map((_, i) => fromRows[i] && rowInput ? rowInput : input);
+      table = this.#table = { key, times, defs, values: defs.map((def, i) => def.compute(inputs[i]!)), input, inputs, cover: input.bars.map((bar, i) => bar ?? rowInput?.bars[i] ?? null), view: null };
     }
     // The Range summary's snapshot: the same object while the table and what it is worked out for stay (range/bars-lines.ts). Only once the
     // footprint holds the bars of these markets and this timeframe: the map switches it in its own frame, and this pane can draw first after
     // a click, with the new choice but the old bars (published under the new key, they would be summed up, and kept, as the new markets').
-    const heldKey = barStatsHeldKey(state, markets), ours = data.holds(markets, state.timeframe);
+    const heldKey = barStatsHeldKey(state, markets), ours = sums.holds(markets, state.timeframe) && (!anyRows || rowData.holds(markets, state.timeframe));
     if (ours && (this.#held?.input !== table.input || this.#held.key !== heldKey)) {
       const chart = state.seriesInstrument || state.marketId;
-      this.#held = { key: heldKey, tfMs, tf: state.timeframe, input: table.input, times: table.times, defs: table.defs, values: table.values,
+      this.#held = { key: heldKey, tfMs, tf: state.timeframe, input: table.input, inputs: table.inputs, times: table.times, defs: table.defs, values: table.values,
         markets: markets.length, oiMarkets: Math.max(1, state.oiParts.length), coin: coinOf(state),
         candleMarket: chart ? `${venueLabel(chart)} ${chart.split(':').slice(1).join(':')}` : '', quote: state.markets.find(m => (m.instrumentId ?? m.id) === chart)?.quote ?? '',
-        replayAt: replaying() ? Math.floor(now / tfMs) * tfMs : null, answered: data.answered };
+        replayAt: replaying() ? Math.floor(now / tfMs) * tfMs : null, answered: sums.answered };
     }
-    const { input, values: rowsValues } = table, all = input.bars;
+    const { inputs, values: rowsValues } = table, all = table.cover;
     // A row taken at the nearest box edge for some bar (the source had no sums for the size set), or from a cut answer, says so: ≈ before its name.
-    const labelOf = new Map(defs.map(def => [def.id, def.approx?.(input) ? `≈${def.label}` : def.label]));
+    const labelOf = new Map(defs.map((def, i) => [def.id, def.approx?.(inputs[i]!) ? `≈${def.label}` : def.label]));
     // The bands: rows as chosen, or under a header per kind; the rows share what the headers leave.
     const bands = tableBands(defs, options), rowCount = bands.filter(b => b.kind === 'row').length, top = 3;
     const rowH = Math.max(15, (ph - 6 - (bands.length - rowCount) * HEAD_H) / Math.max(1, rowCount));
@@ -2325,7 +2336,7 @@ export class BarStatsPane extends TimePane {
         const share = all[hoverIdx] ? coverageOf(all[hoverIdx]!, times[hoverIdx]!, tfMs, now) : null;
         const sigma = found?.sigma[hoverIdx];
         hoverCell = {
-          label: labelOf.get(def.id)!, title: def.approx?.(input) ? `${def.title} ${def.approxNote?.() ?? t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.')}` : def.title,
+          label: labelOf.get(def.id)!, title: def.approx?.(inputs[rowIndex]!) ? `${def.title} ${def.approxNote?.() ?? t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.')}` : def.title,
           value: shown(def, mine), tone: toneOf(def, mine), time: clock(times[hoverIdx]!, true),
           previous: previous === null || previous === undefined ? null : shown(def, previous), rank: ranked ? 1 + seenValues.filter(x => rank(x) > rank(mine)).length : null, of: seenValues.length,
           sigma: (unusual?.[hoverIdx] || cells === 'unusual') && sigma !== undefined && Number.isFinite(sigma) && sigma > 0 ? sigma : null,
@@ -2400,7 +2411,7 @@ export class BarStatsPane extends TimePane {
     if (this.#viewSpan) {
       // Worked out again only for other candles in view or other figures (a pointer move redraws from what is held).
       const at = `${visible[0]}|${visible[visible.length - 1]}|${visible.length}`;
-      if (table.view?.at !== at) table.view = { at, cells: defs.map((def, r) => def.view?.(input, visible, rowsValues[r]!) ?? null) };
+      if (table.view?.at !== at) table.view = { at, cells: defs.map((def, r) => def.view?.(inputs[r]!, visible, rowsValues[r]!) ?? null) };
       const viewCells = table.view.cells;
       ctx.save();
       ctx.globalAlpha = 0.6; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(Math.round(pw) + 0.5, top); ctx.lineTo(Math.round(pw) + 0.5, gridBottom); ctx.stroke(); ctx.globalAlpha = 1;

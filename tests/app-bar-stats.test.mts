@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, readsRows, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -315,4 +315,31 @@ test('a click pins a candle alone, a Shift+click adds it to the pinned ones or t
   const before = [1, 2];
   pinsAfterClick(before, 3, true);
   assert.deepEqual(before, [1, 2], 'the pins given are not changed');
+});
+
+test('each statistic says what of a bar it reads: without rows (and their markets) every other one computes the same, and without dollars every one not reading them', () => {
+  // Bars with rows, markets, dollars, statistics and size-line sums, three candles with candles and open interest under some.
+  const parts: Bar['parts'] = [[['a:x', 20, 5], ['b:x', 10, 5]], [['a:x', 5, 20]]];
+  const full: Bar[] = bars.map((b, i) => ({ ...b, minutes: 1 + i, over: [1_000 * (i + 1), 500], ...(i === 0 ? { parts } : {}) }));
+  // The middle candle sells into two rows in a row against little bought one row up: a stack.
+  full[1] = { ...full[1]!, rows: [[100, 1, 30], [105, 1, 30], [110, 1, 30]], buyUsd: 3, sellUsd: 90 };
+  const base: StatInput = { bars: full, times: full.map(b => b.t), tfMs: MIN, now: 3 * MIN, step: 5, candles, oi, options: { ...DEFAULT_STAT_OPTIONS, imbRatio: 1.5, imbMinUsd: 0, stackedN: 2 }, cuts: [DEFAULT_STAT_OPTIONS.whaleUsd], perps: true,
+    liquidations: { buy: new Map([[0, 5], [MIN, 0], [2 * MIN, 1]]), sell: new Map([[0, 2], [MIN, 0], [2 * MIN, 0]]), cut: false } };
+  // As a source's bars without rows give them: no rows, no markets.
+  const noRows: StatInput = { ...base, bars: full.map(b => { const { parts: _p, ...rest } = b; return { ...rest, rows: [] }; }) };
+  // Dollars a source cannot give: what reads them must say so.
+  const noDollars: StatInput = { ...base, bars: full.map(b => ({ ...b, buyUsd: 0, sellUsd: 0 })) };
+  for (const def of BAR_STATS) {
+    const want = def.compute(base);
+    if (def.reads !== 'rows' && def.reads !== 'parts') assert.deepEqual(def.compute(noRows), want, `${def.id} reads no rows nor their markets`);
+    if (def.reads === undefined) assert.deepEqual(def.compute(noDollars), want, `${def.id} reads no dollars`);
+  }
+  // And those tagged do read what they say (each changes without it).
+  for (const def of BAR_STATS.filter(d => d.reads === 'rows' || d.reads === 'parts')) assert.notDeepEqual(def.compute(noRows), def.compute(base), `${def.id} reads rows`);
+  for (const def of BAR_STATS.filter(d => d.reads === 'totals')) assert.notDeepEqual(def.compute(noDollars), def.compute(base), `${def.id} reads dollars`);
+  // Read from rows: rows and markets always; dollars only from a source that sends none without rows (false), not before it is known (null).
+  assert.deepEqual((['rows', 'parts', 'totals', undefined] as const).map(reads => [readsRows({ reads }, true), readsRows({ reads }, false), readsRows({ reads }, null)]),
+    [[true, true, true], [true, true, true], [false, true, false], [false, false, false]]);
+  // The default preset reads no rows from a current source.
+  assert.ok(enabledStats(PRESETS.default).every(def => !readsRows(def, true)));
 });

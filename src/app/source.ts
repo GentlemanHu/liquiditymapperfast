@@ -58,7 +58,8 @@ export interface LiveHandlers {
 
 /** Executions per candle for a window, as the footprint draws them. */
 /** `from`: where the answer starts when the source answered only the newest part of the window for a `budget` (absent from an older source: the whole window). */
-export interface FootprintResponse { step: number; fine: number; bars: Bar[]; from?: number; /** With `venues`: the markets each bar's `venueRows` name by place. */ venues?: string[] }
+export interface FootprintResponse { step: number; fine: number; bars: Bar[]; from?: number; /** With `venues`: the markets each bar's `venueRows` name by place. */ venues?: string[];
+  /** A `sums` answer whose bars carry their bought and sold dollars (a source from before 2026-11-25 sent 0 there). */ totals?: boolean }
 
 /** One venue the person can switch on or off. */
 export interface VenueEntry {

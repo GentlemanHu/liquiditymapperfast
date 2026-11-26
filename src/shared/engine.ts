@@ -69,7 +69,7 @@ export interface EngineTick {
   prices: Record<string, number>;
   candles: Record<string, LiveCandle>;
 }
-export interface FootprintAnswer { step: number; fine: number; bars: ReturnType<FootprintRecorder['query']>['bars']; from: number; venues?: string[] }
+export interface FootprintAnswer { step: number; fine: number; bars: ReturnType<FootprintRecorder['query']>['bars']; from: number; venues?: string[]; /** A `sums` answer whose bars carry their bought and sold dollars. */ totals?: true }
 
 /** One open-interest reading as it is kept: the venue's perpetual, when it was read, its coins and (an inverse market) its own USD. */
 /**

@@ -564,10 +564,15 @@ test('bars without rows (sumsOnly): the same minutes, statistics and size-line s
     const reads = store.reads, sums = back.queryMany(ids, T0, NOW + MIN, tf, 10, [50_000], Infinity, true, true), full = all.queryMany(ids, T0, NOW + MIN, tf, 10, [50_000]);
     assert.equal(store.reads, reads, `${tf / MIN} min: nothing read back from the store`);
     assert.equal(sums.venues, undefined, 'no venues: there are no rows to split');
+    assert.equal(sums.totals, true, 'the answer says its bars carry their dollars');
+    assert.equal(full.totals, undefined, 'one with rows needs not say it');
     assert.deepEqual(sums.bars.map(b => b.t), full.bars.map(b => b.t), `${tf / MIN} min: the same bars`);
     for (const [i, bar] of sums.bars.entries()) {
       const twin = full.bars[i]!;
-      assert.deepEqual([bar.rows, bar.buyUsd, bar.sellUsd], [[], 0, 0], 'no rows');
+      assert.deepEqual(bar.rows, [], 'no rows');
+      // The minutes' sums, the same additions as the rows' in another order: equal to the last few digits.
+      for (const side of ['buyUsd', 'sellUsd'] as const) assert.ok(Math.abs(bar[side] - twin[side]) <= 1e-9 * Math.max(1, twin[side]), `${tf / MIN} min ${side}: ${bar[side]} against ${twin[side]}`);
+      assert.ok(twin.buyUsd + twin.sellUsd > 0, 'bars that traded');
       assert.deepEqual([bar.minutes, bar.stats, bar.over], [twin.minutes, twin.stats, twin.over], 'the same minutes, statistics and size-line sums');
     }
   }
