@@ -648,7 +648,7 @@ async function main(): Promise<void> {
     if (changed.has('timeZone')) { setTimeZone(state.timeZone); heat.invalidate(); lower(); cvd.invalidate(); showStatus(); }
     // Every size on the page is written in the one setting's units (units.ts): say they changed, and have whatever writes sizes draw again
     // (the map asks for its raster in the new units; the Range reads what it holds again).
-    if (changed.has('units')) { setUnits(state.units); hub.flow.setCoins(state.units === 'coin'); heat.invalidate(); ladder.invalidate(); lower(); cvd.invalidate(); cvd.trades.redraw(); candle.invalidate(); liq.invalidate(); range.refreshHeld(); }
+    if (changed.has('units')) { setUnits(state.units); hub.flow.setCoins(state.units === 'coin'); heat.invalidate(); ladder.invalidate(); lower(); cvd.invalidate(); cvd.trades.redraw(); candle.invalidate(); liq.invalidate(); range.refreshHeld(); toolbar.refreshOpenPanel(); }
     if (changed.has('theme')) { glass.setPalette(applyTheme(state.theme)); for (const p of themed) p.setPalette(state.theme); }
     if (changed.has('material')) { applyMaterial(); hub.setTape(tapeWanted()); }
     // The page's glass draws its next frame with the new strength; the Tape's reads it with each frame it draws.
