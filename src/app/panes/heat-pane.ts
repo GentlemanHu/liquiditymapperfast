@@ -20,7 +20,7 @@ import type { ProfileWindow, SessionDef } from '../traded/sessions.ts';
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, cautionInk, rgb, textOn, type Palette, paletteOf } from '../theme.ts';
 import { View, niceStep, type Bounds } from '../view.ts';
-import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, usd, zoneName } from '../format.ts';
+import { anchorDate, anchorDay, clock, clockYear, price as fmtPrice, startOfDay, timeZone, usd, zoneName } from '../format.ts';
 import { timeAxis } from '../time-axis.ts';
 export { timeTicks } from '../time-axis.ts';
 import type { Store, AppState, CandleRow } from '../store.ts';
@@ -29,7 +29,7 @@ import { Held, ROW_HOLD_MS, booksReaching, depthBand, depthBandLines, depthHereL
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from '../scope.ts';
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText, wrapText } from '../text-fit.ts';
-import { depthStartLines } from '../depth-start.ts';
+import { dayNumber, depthStartLines, depthStartShown } from '../depth-start.ts';
 import { LIQ_PROFILE_ROWS, binsBetween, captionPlace, dollarPriceOf, laneRows, levelsInCoins, liqCurves, liqProfile, liqStanding, onTheWay, partsBetween, partsSaid, profileMaxima, rowInCoins, seamStats, standingBelow, standingBins, standingSaid, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
 import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, ownScales, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, whyLines, type Rect, type Sub, type SubScale } from '../liq-split.ts';
 import { MAP_PLOT_FLOOR } from '../layouts/dock-model.ts';
@@ -52,7 +52,7 @@ import { layoutInfo, paintInfoBox, type InfoColor, type InfoLine, type InfoRect 
 import { TrapData, trapStatusText, trapText, type Trap } from '../traps.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type PinchInfo, type Pt } from '../touch.ts';
 import { PRICE_SPAN_SHARE, TIME_SPAN_MS, fitPrices, focusWindow, followPrice, holdPixel, limitFactor, liveEdgeShown, priceAtEdge, priceHeldAfter, priceRef, regionAt, wheelZoom, zoomedView } from './heat-zoom.ts';
-import { t, tn } from '../i18n.ts';
+import { language, t, tn } from '../i18n.ts';
 import { el } from '../dom.ts';
 import { FREE_DAYS, plusFree } from '../plus/config.ts';
 import { openMenu, type MenuItem } from '../menu.ts';
@@ -803,8 +803,10 @@ export class HeatPane {
   #sourcesAsked = '';
   /** Where a finger pinned the crosshair (the map's own coordinates), and the gesture in progress. */
   #pin: Pt | null = null;
-  /** The corner of the legend plate as the last frame drew it, so the history note can keep clear of it. */
+  /** The corner of the legend plate as the last frame drew it, so what stands under the legend (the levels' note, the bands, the drawing tools, the stripe's captions) can keep clear of it. */
   #legendBox = { right: 340, bottom: 42 };
+  /** The legend's depth row as last worked out, by what changes it (`#depthRow`). */
+  #depthHeld: { key: string; lines: readonly string[]; width: number } | null = null;
   #panKind: 'map' | 'price' | 'time' | null = null;
   #axisDrag: { view: Bounds; x: number; y: number } | null = null;
   /** A pinch: the view and the time and price under the fingers' midpoint when it began, and how far the pan had moved the map before it. */
@@ -1653,7 +1655,8 @@ export class HeatPane {
     // bands, the note under it, the corner tools and the drawing tools are placed by its foot, and the overlay was drawn by the old one (in a
     // whole frame as well: without a band, the levels' note stood a frame under the new row), so the map is drawn again under it.
     if (this.#legendBox.bottom !== legendBottom || this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate();
-    if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, 50); }
+    // Under the legend, whose last row can be the one saying where the recorded depth begins: a young recording's first load has both.
+    if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, Math.max(50, this.#legendBox.bottom + 8)); }
     const emptyScope = heatmapSourceOf(state) === 'aggregated' ? emptyScopeMessage(state) : null;
     if (emptyScope) { // the filter selected nothing: say so instead of drawing a blank map
       ctx.font = '600 13px ui-sans-serif, system-ui, sans-serif'; const width = ctx.measureText(emptyScope).width + 28;
@@ -2010,16 +2013,12 @@ export class HeatPane {
     const moreScripts = unlisted > 0 ? tn(unlisted, '+{n} more script', '+{n} more scripts') : '';
     const scriptsW = Math.max(0, ...listed.map((_, k) => 18 + wide(scriptNames[k]!) + 6 + toolsW[k]! + (scriptValues[k] ? 6 + wide(scriptValues[k]!) : 0)), moreScripts ? wide(moreScripts) : 0);
     const textH = (detail ? 36 : 22) + (detail2 ? 14 : 0) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
-    // Where the map's recorded depth begins, while the view starts before it (`depthStartLines`): the plate's last row, so nothing above it
-    // moves when it comes or goes, with a sample of the dashed line that marks the moment on the map where the scripts have their swatches.
-    // The plate is one rectangle from the title down, so beside the corner buttons the row keeps to the legend's room and stops short of them
-    // (a phone's Draw key too, which `room` does not know): a row wider than the others would carry the plate's top edge behind them. Where
-    // the plate stands under the buttons it has the plot's width, as every row has. Left out of `#legendNeed`, so the corner tools never
-    // change their look as a drag brings the line in or out.
-    const scriptsH = scriptRows ? scriptRows * lineH + 2 : 0, depthTop = 6 + textH + scriptsH, cornerBox = this.#cornerTools(this.plotW);
-    const depthRoom = Math.max(40, (cornerBox && !dy ? Math.min(room, cornerBox.x0 - 20) : room) - 12);
-    const depthLines = depthStartLines(wide, this.hub.depthSince(), this.view.t0, pageNow(), depthRoom);
-    const depthW = depthLines.length ? 12 + Math.max(...depthLines.map(wide)) : 0;
+    // Where the map's recorded depth begins, while the view starts before it (`depthStartShown`, `#depthRow`): the plate's last row, so nothing
+    // above it moves when it comes or goes, with a sample of the dashed line that marks the moment on the map where the scripts have their
+    // swatches. Left out of `#legendNeed`, so the corner tools never change their look as a drag brings the line in or out.
+    const scriptsH = scriptRows ? scriptRows * lineH + 2 : 0, depthTop = 6 + textH + scriptsH, since = this.hub.depthSince();
+    const depth = depthStartShown(since, this.view.t0, this.view.t1) ? this.#depthRow(wide, since, room, dy) : null;
+    const depthLines = depth?.lines ?? [], depthW = depth?.width ?? 0;
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     const shownTitle = fitText(wide, phone ? `${name}  ${state.timeframe}` : title, room - tailW), titleW = wide(shownTitle);
     // The room the legend wants beside the corner tools, in steps (a candle's figures a pixel wider must not judge the tools again).
@@ -2059,6 +2058,24 @@ export class HeatPane {
     // The buttons are page elements over this canvas, placed in the pane's own pixels (the plot starts after the columns left of it).
     const canvas = ctx.canvas as HTMLCanvasElement;
     this.onScriptLegend(places.map(q => ({ id: q.id, x: canvas.offsetLeft + this.#left + q.x, y: canvas.offsetTop + dy + q.y })));
+  }
+
+  /**
+   * The legend's depth row (`#paintLegend`) for a start `since`, in the legend's `room` (`dy` its drop under the corner buttons): its lines
+   * and the width it takes in the plate. The plate is one rectangle from the title down, so beside the corner buttons the row keeps to the
+   * legend's room and stops short of them (a phone's Draw key too, which `room` does not know): a row wider than the others would carry the
+   * plate's top edge behind them; where the plate stands under the buttons it has the legend's whole room, as every row has. Asked only while
+   * the row shows, and worked out again only when the start, whether it falls on today, the room, the language or the zone change: the
+   * pointer's layer draws the legend on every move.
+   */
+  #depthRow(wide: (words: string) => number, since: number, room: number, dy: number): { lines: readonly string[]; width: number } {
+    const cornerBox = this.#cornerTools(this.plotW), depthRoom = Math.round(Math.max(40, (cornerBox && !dy ? Math.min(room, cornerBox.x0 - 20) : room) - 12));
+    const now = pageNow(), key = `${since}|${dayNumber(since) === dayNumber(now)}|${depthRoom}|${language()}|${timeZone()}`;
+    if (this.#depthHeld?.key !== key) {
+      const lines = depthStartLines(wide, since, now, depthRoom);
+      this.#depthHeld = { key, lines, width: lines.length ? 12 + Math.max(...lines.map(wide)) : 0 };
+    }
+    return this.#depthHeld;
   }
 
   /** Plan only when the data or a whole minute of the view changes; pointer redraws never scan coverage or start a read. */
