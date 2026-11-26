@@ -41,12 +41,48 @@ test('coins kept from a loaded history equal coins kept second by second', () =>
   assert.equal(loaded.coins, undefined);
 });
 
-test('minutes in coins: each minute over its own last price, minutes before the first price over that first price', () => {
+test('a price revised on a second is the price of the unpriced seconds after it: theirs follow (review 1)', () => {
+  const s = new FlowSeries(); s.keepCoins(true);
+  s.set(10, 100, 0, 100); s.set(11, 100, 0, 0); s.set(12, 50, 0, 0);
+  close(s.coins!.delta(11, 12), 1.5);
+  s.set(10, 100, 0, 200);   // the same dollars, another price
+  close(s.coins!.delta(10, 10), 0.5); close(s.coins!.delta(11, 12), 0.75, 'the seconds without a price of their own follow');
+  const again = new FlowSeries(); again.load(10, [100, 100, 50], [0, 0, 0], [200, 0, 0]); again.keepCoins(true);
+  for (let a = 10; a <= 12; a++) close(again.coins!.delta(a, 12), s.coins!.delta(a, 12), `from ${a}`);
+});
+
+test('seconds as they come and a series worked out again agree to the bit on a price a float32 rounds (review 1)', () => {
+  const live = new FlowSeries(); live.keepCoins(true);
+  live.set(500, 1_005_000.09, 0, 100_000.01);
+  const rebuilt = new FlowSeries(); rebuilt.set(500, 1_005_000.09, 0, 100_000.01); rebuilt.keepCoins(true);
+  assert.equal(live.coins!.delta(500, 500), rebuilt.coins!.delta(500, 500));
+});
+
+test('a history longer than the ring keeps the price before its first second held, within reach (review 1)', () => {
+  const n = 131_072 + 1, buy = new Float64Array(n), sell = new Float64Array(n), px = new Float32Array(n);
+  buy[0] = 100; px[0] = 100;          // skipped, but its price stands for the next second
+  buy[1] = 100;                       // no price of its own
+  buy[2] = 200; px[2] = 200;
+  const s = new FlowSeries(); s.load(0, buy, sell, px); s.keepCoins(true);
+  close(s.coins!.delta(1, 1), 1, 'over the skipped second\'s price, not the next one');
+  close(s.coins!.delta(2, 2), 1);
+});
+
+test('the coins stay one object across a load, and are let go with keepCoins(false) (review 1)', () => {
+  const s = new FlowSeries(); s.keepCoins(true);
+  const twin = s.coins!;
+  s.load(0, [100, 100], [0, 0], [100, 50]);
+  assert.equal(s.coins, twin); close(twin.delta(0, 1), 3);
+  s.keepCoins(false); assert.equal(s.coins, undefined);
+});
+
+test('minutes in coins: each minute over its own last price or the last before it; a minute before any price has none (as the seconds)', () => {
   const m = new FlowMinutes({ id: 'x', t0: 0, buy: Float32Array.from([200, 300, 0, 400]), sell: Float32Array.from([100, 0, 0, 100]), px: Float32Array.from([0, 100, 0, 50]),
     lo: Float32Array.from([0, 0, 0, -100]), hi: Float32Array.from([100, 300, 0, 300]) });
   const c = m.coins();
-  close(c.deltaAt(0), 1); close(c.deltaAt(1), 1 + 3); close(c.deltaAt(2), 4); close(c.deltaAt(3), 4 + 6);
-  close(c.grossAt(3), 3 + 3 + 0 + 10); close(c.lowAt(3), 4 - 2); close(c.highAt(3), 4 + 6);
+  close(c.deltaAt(0), 0); close(c.deltaAt(1), 3); close(c.deltaAt(2), 3); close(c.deltaAt(3), 3 + 6);
+  close(c.grossAt(3), 0 + 3 + 0 + 10); close(c.lowAt(3), 3 - 2); close(c.highAt(3), 3 + 6);
   assert.equal(m.coins(), c, 'made once');
+  m.dropCoins(); assert.notEqual(m.coins(), c, 'let go, then made again');
   close(m.deltaAt(3), 100 + 300 + 300, 'the dollars stay the dollars');
 });

@@ -28,14 +28,14 @@ test('a fraction of a coin is never written 0', () => {
 test('the page units: dollars as the page always wrote them, coins with the ticker', () => {
   setUnits('usd');
   assert.equal(inCoins(), false); assert.equal(unitName(), 'USD');
-  assert.equal(figure(1_234_567), '1.2M'); assert.equal(figure(999.4), '999'); assert.equal(amount(1_234_567), '$1.2M'); assert.equal(amount(-2500), '−$2.5K');
+  assert.equal(figure(1_234_567), '1.2M'); assert.equal(figure(999.4), '999'); assert.equal(amount(1_234_567), '$1.2M'); assert.equal(amount(-2500), '$-2.5K', 'as `$${usd(x)}` wrote it'); assert.equal(amount(Number.NaN), '$–');
   assert.equal(signedAmount(12_300_000), '+$12.3M'); assert.equal(signedAmount(-4_100_000), '−$4.1M'); assert.equal(signedAmount(0), '$0');
   assert.equal(signedFigure(1_200_000), '+1.2M'); assert.equal(signedFigure(-4_100_000), '−4.1M'); assert.equal(signedFigure(0), '0');
   assert.equal(inUnits(9000, 90_000), 9000); assert.equal(unitFloor(90_000), 1);
   setUnits('coin');
   assert.equal(inCoins(), true); assert.equal(unitName(), 'BTC');
   assert.equal(figure(13.25), intl.format(13.25)); assert.equal(figure(0.35), '0.35'); assert.equal(figure(5514), '5.51K');
-  assert.equal(amount(0.35), '0.35 BTC'); assert.equal(amount(-0.35), '−0.35 BTC');
+  assert.equal(amount(0.35), '0.35 BTC'); assert.equal(amount(-0.35), '-0.35 BTC');
   assert.equal(signedAmount(13.2), '+13.2 BTC'); assert.equal(signedAmount(-0.35), '−0.35 BTC'); assert.equal(signedAmount(0), '0 BTC');
   assert.equal(signedFigure(13.2), '+13.2'); assert.equal(signedFigure(-0.0125), '−0.0125');
   assert.equal(inUnits(9000, 90_000), 0.1); assert.equal(unitFloor(100_000), 1e-5);

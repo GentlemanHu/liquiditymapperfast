@@ -276,11 +276,13 @@ export class FlowSeries {
   /** Seconds that were too old to place. */
   tooOld = 0;
   /**
-   * The same seconds in coins while they are asked for (`keepCoins`; app/units.ts): each second's buys and sells over its own volume-weighted
-   * price, or the last price before it where it has none (a second set again is worked out again from its new totals). A series of its own,
-   * read as this one is, that shares this one's prices; null while not kept, so the dollars cost nothing more.
+   * The same seconds in coins while they are asked for (`keepCoins`; app/units.ts): each second's dollars over its price (`#coinPrice`), a
+   * second set again worked out again from its new totals. A series of its own that shares this one's price ring; read it, never set or load
+   * it (this one keeps it, the same object across loads). Null while not kept, so the dollars cost nothing more.
    */
   #coins: FlowSeries | null = null;
+  /** The last price before the first second held, and its second: a load's seconds older than the ring hold it for the coins (`#coinPrice`). */
+  #basePx = 0; #basePxAt = 0;
 
   /** `prices`: the price ring of the series this one is the coins of (shared, never a copy). */
   constructor(prices?: Float32Array) { this.#px = prices ?? new Float32Array(FLOW_RING); }
@@ -289,39 +291,50 @@ export class FlowSeries {
   get span(): { first: number; last: number } | null { return this.#last < this.#first ? null : { first: this.#first, last: this.#last }; }
   get empty(): boolean { return this.#last < this.#first; }
 
-  clear(): void { this.#first = 0; this.#last = -1; this.#baseDelta = 0; this.#baseGross = 0; this.#coins?.clear(); }
+  clear(): void { this.#first = 0; this.#last = -1; this.#baseDelta = 0; this.#baseGross = 0; this.#basePx = 0; this.#basePxAt = 0; this.#coins?.clear(); }
 
-  /** The series in coins (`keepCoins`), undefined while it is not kept. */
+  /** The series in coins (`keepCoins`), undefined while it is not kept. Read only. */
   get coins(): FlowSeries | undefined { return this.#coins ?? undefined; }
   /** Keep the series in coins beside the dollars from now on (worked out at once from the seconds held), or let it go. */
   keepCoins(on: boolean): void {
     if (!on) { this.#coins = null; return; }
-    if (!this.#coins) this.#coins = this.#coinsFromSeconds();
+    if (!this.#coins) { this.#coins = new FlowSeries(this.#px); this.#fillCoins(); }
   }
   /**
-   * The seconds held, in coins: each one's buys and sells over its own price, or the last price before it; the seconds before the first price
-   * held take that first price. Its running sums start from nothing (only differences mean anything, as here).
+   * The price a second's coins are worked out at: its own volume-weighted price, else the last one before it no more than `PRICE_REACH`
+   * seconds back (the seconds of a load older than the ring included), else none (its coins are 0: nothing says what they bought). One rule
+   * for the seconds as they come (`set`) and for a series worked out again (`#fillCoins`), so both give the same coins.
    */
-  #coinsFromSeconds(): FlowSeries {
-    const coins = new FlowSeries(this.#px);
-    if (this.empty) return coins;
-    let price = 0;
-    for (let s = this.#first; s <= this.#last && !(price > 0); s++) price = this.#px[s & MASK]!;
-    let prevD = this.#baseDelta, prevG = this.#baseGross;
+  #coinPrice(sec: number): number {
+    for (let s = sec, stop = Math.max(this.#first, sec - PRICE_REACH); s >= stop; s--) { const v = this.#px[s & MASK]!; if (v > 0) return v; }
+    return this.#basePx > 0 && sec - this.#basePxAt <= PRICE_REACH ? this.#basePx : 0;
+  }
+  /** Second `sec`'s coins into the twin: its dollars (from the running sums) over `#coinPrice`. */
+  #coinSecond(sec: number): void {
+    const at = sec & MASK, first = sec === this.#first;
+    const d = this.#delta[at]! - (first ? this.#baseDelta : this.#delta[(sec - 1) & MASK]!), g = this.#gross[at]! - (first ? this.#baseGross : this.#gross[(sec - 1) & MASK]!);
+    const p = this.#coinPrice(sec), k = p > 0 ? 1 / p : 0;
+    this.#coins!.#put(sec, (g + d) / 2 * k, (g - d) / 2 * k, this.#px[at]!);
+  }
+  /** Work the twin out again from the seconds held (its running sums start from nothing: only differences mean anything, as here). */
+  #fillCoins(): void {
+    const coins = this.#coins!;
+    coins.clear();
+    if (this.empty) return;
+    let price = this.#basePx, at = this.#basePxAt, prevD = this.#baseDelta, prevG = this.#baseGross;
     for (let s = this.#first; s <= this.#last; s++) {
-      const at = s & MASK, d = this.#delta[at]! - prevD, g = this.#gross[at]! - prevG, own = this.#px[at]!;
-      prevD = this.#delta[at]!; prevG = this.#gross[at]!;
-      if (own > 0) price = own;
-      const k = price > 0 ? 1 / price : 0;
+      const i = s & MASK, d = this.#delta[i]! - prevD, g = this.#gross[i]! - prevG, own = this.#px[i]!;
+      prevD = this.#delta[i]!; prevG = this.#gross[i]!;
+      if (own > 0) { price = own; at = s; }
+      const k = price > 0 && s - at <= PRICE_REACH ? 1 / price : 0;
       coins.#put(s, (g + d) / 2 * k, (g - d) / 2 * k, own);
     }
-    return coins;
   }
 
   /** Replace the whole series with `buy` and `sell` (and `px`, when there are prices), one entry per second from `t0Sec`. */
   load(t0Sec: number, buy: ArrayLike<number>, sell: ArrayLike<number>, px?: ArrayLike<number>): void {
     this.#load(t0Sec, buy, sell, px);
-    if (this.#coins) this.#coins = this.#coinsFromSeconds();
+    if (this.#coins) this.#fillCoins();
   }
   #load(t0Sec: number, buy: ArrayLike<number>, sell: ArrayLike<number>, px?: ArrayLike<number>): void {
     this.clear();
@@ -333,16 +346,28 @@ export class FlowSeries {
     for (let i = 0; i < n; i++) {
       const b = buy[i]!, s = sell[i]!;
       d += b - s; g += b + s;
-      if (i < skip) { this.#baseDelta = d; this.#baseGross = g; } else { const at = (t0Sec + i) & MASK; this.#delta[at] = d; this.#gross[at] = g; this.#px[at] = px?.[i] ?? 0; }
+      if (i < skip) {
+        this.#baseDelta = d; this.#baseGross = g;
+        const p = px?.[i] ?? 0;
+        if (p > 0) { this.#basePx = Math.fround(p); this.#basePxAt = t0Sec + i; }
+      } else { const at = (t0Sec + i) & MASK; this.#delta[at] = d; this.#gross[at] = g; this.#px[at] = px?.[i] ?? 0; }
     }
     this.#first = t0Sec + skip; this.#last = t0Sec + n - 1;
   }
 
   /** Set the totals (and the price, 0 for none) of whole second `sec`. Returns false when the second is older than the ring holds. */
   set(sec: number, buy: number, sell: number, px = 0): boolean {
+    const held = this.#coins !== null && sec >= this.#first && sec <= this.#last, before = held ? this.#px[sec & MASK]! : 0;
     const placed = this.#put(sec, buy, sell, px);
-    // The coins are this second's new totals over its new price (a second set again may bring another price with the same dollars).
-    if (placed && this.#coins) { const p = px > 0 ? px : this.priceAt(sec), k = p > 0 ? 1 / p : 0; this.#coins.#put(sec, buy * k, sell * k, px); }
+    if (placed && this.#coins) {
+      // The coins are this second's new totals over its price (as the ring keeps it, so they equal a series worked out again)...
+      this.#coinSecond(sec);
+      // ...and a second whose price changed is the price of the seconds after it that have none of their own (up to the next price, within
+      // reach): theirs are worked out again too.
+      if (held && this.#px[sec & MASK] !== before) {
+        for (let s = sec + 1; s <= this.#last && s - sec <= PRICE_REACH && !(this.#px[s & MASK]! > 0); s++) this.#coinSecond(s);
+      }
+    }
     return placed;
   }
   #put(sec: number, buy: number, sell: number, px: number): boolean {
@@ -450,35 +475,37 @@ export class FlowMinutes {
   /** The first minute's start (ms), and per minute: running sums at its end, the lowest and highest the running delta reached in it, its last price. */
   readonly t0: number;
   readonly #delta: Float64Array; readonly #gross: Float64Array; readonly #lo: Float64Array; readonly #hi: Float64Array; readonly #px: Float32Array;
-  /** The answer the minutes were made from, for their coins (`coins`), and those once made. */
-  readonly #source: FlowMinutesSeries;
+  /** The same minutes in coins, once asked for (`coins`) and until let go (`dropCoins`). */
   #coins: FlowMinutes | null = null;
 
   constructor(s: FlowMinutesSeries) {
     const n = Math.min(s.buy.length, s.sell.length, s.px.length, s.lo.length, s.hi.length);
     this.t0 = s.t0; this.#delta = new Float64Array(n); this.#gross = new Float64Array(n); this.#lo = new Float64Array(n); this.#hi = new Float64Array(n); this.#px = s.px.slice(0, n);
-    this.#source = s;
     let d = 0, g = 0;
     for (let i = 0; i < n; i++) { this.#lo[i] = d + s.lo[i]!; this.#hi[i] = d + s.hi[i]!; d += s.buy[i]! - s.sell[i]!; g += s.buy[i]! + s.sell[i]!; this.#delta[i] = d; this.#gross[i] = g; }
   }
 
   /**
-   * The same minutes in coins (app/units.ts), made once when first asked: each minute's buys, sells and running extremes over its price (the
-   * last traded in it, or the last before it; minutes before the first price take that first price). A minute keeps no prices of its seconds,
-   * so this is to within the minute's own range of prices; the seconds the page holds are converted second by second (`FlowSeries.coins`).
+   * The same minutes in coins (app/units.ts), made from what is held when first asked: each minute's buys, sells and running extremes over
+   * its price, the last traded in it or the last one before it no more than `PRICE_REACH` back (else none, and no coins), as the seconds'
+   * rule is. A minute keeps no prices of its seconds, so this is to within the minute's own range of prices; the seconds the page holds are
+   * converted second by second (`FlowSeries.coins`).
    */
   coins(): FlowMinutes {
     if (this.#coins) return this.#coins;
-    const s = this.#source, n = this.length, buy = new Float32Array(n), sell = new Float32Array(n), lo = new Float32Array(n), hi = new Float32Array(n);
-    let price = 0;
-    for (let i = 0; i < n && !(price > 0); i++) price = s.px[i]!;
+    const n = this.length, buy = new Float32Array(n), sell = new Float32Array(n), lo = new Float32Array(n), hi = new Float32Array(n);
+    let prevD = 0, prevG = 0, price = 0, at = -Infinity;
     for (let i = 0; i < n; i++) {
-      if (s.px[i]! > 0) price = s.px[i]!;
-      const k = price > 0 ? 1 / price : 0;
-      buy[i] = s.buy[i]! * k; sell[i] = s.sell[i]! * k; lo[i] = s.lo[i]! * k; hi[i] = s.hi[i]! * k;
+      const d = this.#delta[i]! - prevD, g = this.#gross[i]! - prevG, own = this.#px[i]!;
+      if (own > 0) { price = own; at = i; }
+      const k = price > 0 && (i - at) * 60 <= PRICE_REACH ? 1 / price : 0;
+      buy[i] = (g + d) / 2 * k; sell[i] = (g - d) / 2 * k; lo[i] = (this.#lo[i]! - prevD) * k; hi[i] = (this.#hi[i]! - prevD) * k;
+      prevD = this.#delta[i]!; prevG = this.#gross[i]!;
     }
-    return this.#coins = new FlowMinutes({ id: s.id, t0: s.t0, buy, sell, px: this.#px, lo, hi });
+    return this.#coins = new FlowMinutes({ id: '', t0: this.t0, buy, sell, px: this.#px, lo, hi });
   }
+  /** Let the coins go (the page writes dollars again). */
+  dropCoins(): void { this.#coins = null; }
 
   get length(): number { return this.#delta.length; }
   /** Where the minutes end (ms): the start of the minute after the last. */

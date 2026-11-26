@@ -48,13 +48,17 @@ export class FlowBook {
     if (seconds && !seconds.coins) seconds.keepCoins(true);
     return seconds?.coins;
   }
-  /** Whether new and held series keep their coins beside their dollars (app/units.ts: while the page writes sizes in coins). */
+  /**
+   * Whether new and held series keep their coins beside their dollars (app/units.ts: while the page writes sizes in coins). Back in dollars
+   * every series lets its coins go, the minutes' too, whoever asked for them.
+   */
   #coins = false;
   setCoins(on: boolean): void {
-    if (this.#coins === on) return;
+    const changed = this.#coins !== on;
     this.#coins = on;
     for (const series of this.#series.values()) series.keepCoins(on);
-    this.version++; this.loads++;
+    if (!on) for (const minutes of this.#minutes.values()) minutes.dropCoins();
+    if (changed) { this.version++; this.loads++; }
   }
   #made(id: string): FlowSeries {
     let series = this.#series.get(id);

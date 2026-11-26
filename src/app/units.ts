@@ -73,17 +73,16 @@ const trimZeros = (s: string): string => s.includes('.') ? s.replace(/0+$/, '').
 
 /** A size already in the page's units, bare, as narrow places write sizes: "1.2M" in dollars, "13.2" or "0.0125" in coins. */
 export const figure = (value: number): string => current === 'coin' ? coinText(value) : usd(value);
-/** A size already in the page's units with its unit: "$1.2M", or "13.2 BTC". A negative one is written with a minus before the unit. */
-export function amount(value: number): string {
-  if (!Number.isFinite(value)) return '–';
-  const minus = value < 0 ? '−' : '', a = Math.abs(value);
-  return current === 'coin' ? `${minus}${coinText(a)} ${currentCoin().coin}` : `${minus}$${usd(a)}`;
-}
-/** A signed size with its unit: "+$12.3M", "−$4.1M", "$0"; in coins "+13.2 BTC", "−0.35 BTC", "0 BTC". */
+/**
+ * A size already in the page's units with its unit: "$1.2M", or "13.2 BTC". In dollars exactly what `$${usd(value)}` wrote ("$–" for no
+ * figure, "$-2.5K" for a negative one: say a sign with `signedAmount`).
+ */
+export const amount = (value: number): string => current === 'coin' ? `${coinText(value)} ${currentCoin().coin}` : `$${usd(value)}`;
+/** A signed size with its unit, as the flow column writes one: "+$12.3M", "−$4.1M", "$0", "–" for none; in coins "+13.2 BTC", "−0.35 BTC", "0 BTC". */
 export function signedAmount(value: number): string {
   if (!Number.isFinite(value)) return '–';
   if (value === 0) return current === 'coin' ? `0 ${currentCoin().coin}` : '$0';
   return `${value < 0 ? '−' : '+'}${amount(Math.abs(value))}`;
 }
-/** A signed size bare: "+1.2M", "−4.1M", "0"; in coins "+13.2", "−0.35". */
-export const signedFigure = (value: number): string => !Number.isFinite(value) ? '–' : `${value > 0 ? '+' : value < 0 ? '−' : ''}${figure(Math.abs(value))}`;
+/** A signed size bare, as the order book writes one: "+1.2M", "−4.1M", "0"; in coins "+13.2", "−0.35". */
+export const signedFigure = (value: number): string => `${value > 0 ? '+' : value < 0 ? '−' : ''}${figure(Math.abs(value))}`;
