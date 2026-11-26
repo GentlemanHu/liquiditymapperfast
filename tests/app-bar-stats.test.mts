@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const MIN = 60_000;
 const bar = (t: number, rows: [number, number, number][], stats?: Bar['stats']): Bar => ({ t, rows, buyUsd: rows.reduce((s, r) => s + r[1], 0), sellUsd: rows.reduce((s, r) => s + r[2], 0), ...(stats ? { stats } : {}) });
@@ -318,8 +319,6 @@ test('a click pins a candle alone, a Shift+click adds it to the pinned ones or t
 });
 
 test('coins (issue 9): each size is its parts at their own prices, the candle\'s own natively; shares stay; titles and CSV heads say the coin', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
-  const { csvHead, statTitle, barPrice } = await import('../src/app/panes/bar-stats.ts');
   const close = (a: number | null | undefined, b: number, what: string) => assert.ok(a !== null && a !== undefined && Math.abs(a - b) < 1e-12 * Math.max(1, Math.abs(b)), `${what}: ${a} vs ${b}`);
   // Bar 0's rows at their middles (step 5): 102.5 and 107.5.
   const buy0 = 30 / 102.5 + 5 / 107.5, sell0 = 10 / 102.5 + 20 / 107.5, vwap0 = 65 / (buy0 + sell0);

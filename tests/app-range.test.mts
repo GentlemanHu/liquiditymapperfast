@@ -4,6 +4,7 @@ import { MINUTE, draftOf, follow, refreshMs, rowStep, selects, snap, type RangeS
 import { draftLabel, priceOf, pricePieces, rangeLines, type RangeInput, type RangeLine } from '../src/app/range/stats.ts';
 import type { RangeAnswer, RangeInstrument } from '../src/shared/footprint.ts';
 import type { AbsorptionMark } from '../src/app/absorption.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const T0 = Date.UTC(2026, 9, 8, 14, 0, 0);
 
@@ -200,7 +201,6 @@ test('coverage is the instrument that recorded the most minutes, in whatever ord
 });
 
 test('coins (issue 9): the map\'s summary writes each size in the coin at the price it traded at; shares, settings and open interest as in dollars', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   // Two rows of step 10: 99,995 + 5 = 100,000 and 100,005 + 5 = 100,010 a coin.
   const rows: RangeAnswer['rows'] = [[99_995, 200_000, 100_000, 2, 1], [100_005, 100_010, 0, 1, 0]];
   const ans = answer([inst('a:BTC', { band: { buy: 300_010, sell: 100_000, buyN: 3, sellN: 1 }, countedUsd: { buy: 300_010, sell: 100_000 }, all: { buy: 300_010, sell: 100_000 } })], rows);

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DepthRangeSummary, depthHeldKey, depthLiqStretch, depthStretch, type DepthLiqRow, type DepthPaneHeld } from '../src/app/range/depth-lines.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const M = 60_000, T = Date.UTC(2026, 10, 13, 0), NOW = T + 600 * M;
 const IDS = ['binance:BTCUSDT', 'bybit:BTCUSDT'], RADII = [0.005, 0.02];
@@ -141,7 +142,6 @@ test('a selection whose columns all lack a price centre says so', () => {
 });
 
 test('coins (issue 9): the page\'s units decide, read from the snapshot\'s coin bands, and a toggle is never answered from the memo', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   const h = book(flat(3, 100_000, 50_000)), summary = new DepthRangeSummary();
   try {
     const usd = summary.lines(sel(0, 3), h, true, KEY, NOW);

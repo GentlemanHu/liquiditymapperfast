@@ -7,6 +7,7 @@ import type { NlnsCandle } from '../src/app/delta/nlns.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
 import { readFileSync } from 'node:fs';
+import { setUnits } from '../src/app/units.ts';
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 12, 0), KEY = 'binance:BTCUSDT|1h|cvd|net|day|UTC|a,b';
 const sel = (t0: number, t1: number, extra: Partial<RangeSelection> = {}): RangeSelection => ({ t0, t1, p0: null, p1: null, live: false, draft: false, pane: 'delta', step: H, ...extra });
@@ -199,7 +200,6 @@ test('review dcr4: only a first reaching back drops a kept result (not one movin
 });
 
 test('coins (issue 9): a snapshot with its candles in coins is written in the coin (the candles the dollars counted); without them, dollars', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   const rows: [number, number][] = [[5, 50], [10, 100], [-4, 40], [20, 200]];
   const base = held(rows), starts = base.starts, coinFlows = rows.map(([d, g]) => flow(d / 100, g / 100));
   const coins = { flows: coinFlows, candles: new Map(deltaCandles(starts, coinFlows, rows.map(() => 0)).map(c => [c.t, c] as const)) };

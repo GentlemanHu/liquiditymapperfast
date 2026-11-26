@@ -7,6 +7,7 @@ import type { CandleRow, OiBar } from '../src/app/store.ts';
 import type { NlnsCandle } from '../src/app/delta/nlns.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 12, 0), KEY = 'binance:BTCUSDT|1h|all';
 const bars = (values: number[], from = T): OiBar[] => values.map((v, i) => [from + i * H, v, v, v, v]);
@@ -144,7 +145,6 @@ test('a covered part and its span in one unit: hours with hours, days with days,
 });
 
 test('coins (issue 9): open interest is the coin\'s in either units; in coins its dollar line goes and liquidations are at their reported prices', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   const oi = bars([100, 102, 105, 103]), candles = oi.map(b => [b[0], 50_000, 50_000, 50_000, 50_000, 1] as CandleRow);
   const held = one(oi, { candles, ownPrice: true });
   const items = [{ t: T + 2 * H, id: 'binance:BTCUSDT', side: 'long', price: 100, usd: 5_000_000, reported: 50_000, kind: 'fill' } as Liquidation];

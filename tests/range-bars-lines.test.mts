@@ -6,6 +6,7 @@ import { volText, type Bar } from '../src/app/panes/footprint.ts';
 import { price as fmtPrice } from '../src/app/format.ts';
 import type { CandleRow } from '../src/app/store.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const M5 = 300_000, T = Date.UTC(2026, 10, 12, 0), NOW = T + 1000 * M5;
 const zeros = (): number[] => [0, 0, 0, 0, 0, 0, 0, 0];
@@ -243,7 +244,6 @@ test('review: a kept result is not replaced by one the pane holds fewer executio
 });
 
 test('coins (issue 9): a table worked out in coins is written in the coin, never with a dollar sign; oi chg in the coin whatever its option', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   setUnits('coin');
   try {
     // Step 1: rows at 99.5 + 0.5 = 100 a coin, so 950 bought is 9.5 coins.

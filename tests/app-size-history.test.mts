@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BANDS, PLAIN_ALPHA, QUIET_ALPHA, SHARE_MIN_SLOTS, alphaOf, bandLabel, buildHistory, cardLines, emphasis, heightOf, judge, preRollMs, rowCap, shareDot, shareMarks, unusualRows, type HistoryInput } from '../src/app/size-history/model.ts';
+import { BANDS, PLAIN_ALPHA, QUIET_ALPHA, SHARE_MIN_SLOTS, alphaOf, bandLabel, buildHistory, cardLines, emphasis, heightOf, judge, preRollMs, rowCap, shareDot, shareMarks, unusualRows, type HistoryInput, historyCoins, slotPrices } from '../src/app/size-history/model.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { DEFAULT_HIGHLIGHT } from '../src/app/anomaly.ts';
 import { sizeTableRows } from '../src/app/panes/size-history-pane.ts';
@@ -425,7 +425,6 @@ test('the card gives the pane\'s table what its row does not say: how unusual, i
 });
 
 test('coins (issue 9): the card and the table write the coin\'s figures (sizes at the candle\'s typical price, liquidations at their own); the bars stay the dollars\'', async () => {
-  const { historyCoins, slotPrices } = await import('../src/app/size-history/model.ts');
   const bars = [bar(0, boxes({ 0: 2000, 1: 30_000 }), boxes({ 0: 1000 })), bar(1, boxes({ 0: 4000 }), boxes({ 0: 500 })), null];
   const liquidations = { buy: new Map([[T0, 1000]]), sell: new Map([[T0, 200]]), buyCoin: new Map([[T0, 10]]), sellCoin: new Map([[T0, 2]]), cut: false };
   const model = buildHistory(input(bars, { highlight: { ...H, on: false }, liquidations, oi: new Map([[T0 + TF, 5000]]) }));

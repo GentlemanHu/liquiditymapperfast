@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LT_DEFAULTS, imbalanceAxis, ltPartAt, ltSeries, ltWeight, shownBy, type LtParams, type LtStore } from '../src/app/lt.ts';
+import { LT_DEFAULTS, imbalanceAxis, ltPartAt, ltSeries, ltWeight, shownBy, type LtParams, type LtStore, ltInCoins, ltPrices } from '../src/app/lt.ts';
 import { LT_LENGTH, ltIndex } from '../src/shared/lt-sample.ts';
 
 const MIN = 60_000;
@@ -148,7 +148,6 @@ test('each window says whether a column of it was worked out from an average boo
 });
 
 test('coins (issue 9): each window at the chart candles\' typical price there, its parts too; nothing to value it by is NaN', async () => {
-  const { ltInCoins, ltPrices } = await import('../src/app/lt.ts');
   // 5-minute candles; windows of 1 minute (inside a candle) and of 10 minutes (holding two).
   const c = (t: number, high: number, low: number, close: number): [number, number, number, number, number, number] => [t, low, high, low, close, 1];
   const candles = [c(0, 103, 97, 100), c(5 * MIN, 113, 107, 110), c(10 * MIN, 123, 117, 120)];

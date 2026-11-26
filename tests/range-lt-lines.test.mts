@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LtRangeSummary, ltHeldKey, ltStretch, type LtPaneHeld } from '../src/app/range/lt-lines.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const M = 60_000, T = Date.UTC(2026, 10, 13, 0), NOW = T + 600 * M;
 const SET = { halfLifeBp: 10, minUsd: 0, maxUsd: 0, average: false };
@@ -134,7 +135,6 @@ test('time with each side heavier shares one denominator with its label: equal s
 });
 
 test('coins (issue 9): a snapshot drawn in coins is summed in its coins and said in the coin; its key holds the units, so the other units\' is stale', async () => {
-  const { setUnits } = await import('../src/app/units.ts');
   const usd = held({ bid: [100, 200], ask: [50, 100] });
   setUnits('coin');
   try {
