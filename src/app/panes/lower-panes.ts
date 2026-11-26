@@ -2283,8 +2283,9 @@ export class BarStatsPane extends TimePane {
     if (!table || table.key.length !== key.length || table.key.some((k, i) => k !== key[i])) {
       const candles = new Map(state.candles.map(c => [c[0], c] as const));
       const input: StatInput = { bars: times.map(start => sums.bars.get(start) ?? null), times, tfMs, now, ...(taker ? { taker } : {}), ...(liquidations ? { liquidations } : {}), ...(restart ? { restart } : {}),
-        step: rowData.step, options, cuts: sums.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
-      const rowInput: StatInput | null = anyRows ? { ...input, bars: times.map(start => rowData.bars.get(start) ?? null), cuts: rowData.cuts } : null;
+        step: anyRows ? rowData.step : 0, options, cuts: sums.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
+      // (The rows' size is said only where a statistic reads rows: the Range summary names it from `step`.)
+      const rowInput: StatInput | null = anyRows ? { ...input, bars: times.map(start => rowData.bars.get(start) ?? null), cuts: rowData.cuts, step: rowData.step } : null;
       const inputs = defs.map((_, i) => fromRows[i] && rowInput ? rowInput : input);
       table = this.#table = { key, times, defs, values: defs.map((def, i) => def.compute(inputs[i]!)), input, inputs, cover: input.bars.map((bar, i) => bar ?? rowInput?.bars[i] ?? null), view: null };
     }

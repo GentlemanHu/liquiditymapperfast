@@ -2,8 +2,8 @@ import { usd, clock, price as fmtPrice } from '../format.ts';
 import type { InfoLine } from '../infobox.ts';
 import { venueLabel } from '../venues.ts';
 import { t, tn } from '../i18n.ts';
-import { bandLabel } from '../size-history/model.ts';
-import { tfMinutes, type SizeRow } from './sizes.ts';
+// Types alone from the Sizes model: it reads the size bands, whose module reads this one (no import cycle at run time).
+import type { SizeRow } from './sizes.ts';
 import { scaledUsd } from '../coin.ts';
 import type { Kind } from '../scope.ts';
 import type { CvdModel, FamilyRow, LaneLine } from './model.ts';
@@ -44,7 +44,7 @@ export function rowLabel(row: FamilyRow, window: string, height: number, showQui
  * in its line's colour, and the band's share of the volume of all six bands, folded the same way into a short row.
  */
 export function sizeRowLabel(row: SizeRow, height: number): LabelLine[] {
-  return foldLabel({ text: bandLabel(row.band), tone: 'text', bold: true }, row.lanes, row.share, row.gross, height);
+  return foldLabel({ text: row.label, tone: 'text', bold: true }, row.lanes, row.share, row.gross, height);
 }
 
 /** A row's head, its lanes' nets and its share, in lines that fit `height` px at 12 px a line (the two lanes on one line in a short row). */
@@ -114,7 +114,7 @@ export function rowHover(row: FamilyRow, column: number, timeMs: number, window:
  * many of them hold no order sizes (where the lines break).
  */
 export function sizeRowHover(row: SizeRow, column: number, timeMs: number, window: string, tfMs: number): InfoLine[] {
-  const out: InfoLine[] = [{ text: t('Orders {band}', { band: bandLabel(row.band) }), bold: true }, { text: clock(timeMs, true), color: 'muted' }];
+  const out: InfoLine[] = [{ text: t('Orders {band}', { band: row.label }), bold: true }, { text: clock(timeMs, true), color: 'muted' }];
   for (const lane of row.lanes) {
     const v = lane.last[column];
     out.push({ label: t('{kind} CVD here', { kind: lanePhrase(lane.kind) }), text: v !== undefined && Number.isFinite(v) ? signedUsd(v) : '–', color: leanColor(v), rule: out.length === 2 });
@@ -124,7 +124,7 @@ export function sizeRowHover(row: SizeRow, column: number, timeMs: number, windo
     out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(lane.kind) }), text: `${plainUsd(lane.buy)} / ${plainUsd(lane.sell)}` });
   }
   out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
-  out.push({ text: tn(tfMinutes(tfMs), 'Read from bars of {n} minute: order sizes are kept a minute at a time.', 'Read from bars of {n} minutes: order sizes are kept a minute at a time.'), color: 'muted', wrap: true });
+  out.push({ text: tn(Math.round(tfMs / 60_000), 'Read from bars of {n} minute: order sizes are kept a minute at a time.', 'Read from bars of {n} minutes: order sizes are kept a minute at a time.'), color: 'muted', wrap: true });
   if (row.unknown > 0) out.push({ text: tn(row.unknown, '{n} bar here holds no order sizes: the lines break there.', '{n} bars here hold no order sizes: the lines break there.'), color: 'muted', wrap: true });
   return out;
 }

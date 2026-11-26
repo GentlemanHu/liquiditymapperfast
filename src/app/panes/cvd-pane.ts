@@ -166,6 +166,8 @@ export class CvdPane {
    * draws at once and a window whose timeframe changed is drawn from the one before until the new bars cover it.
    */
   #sizeBars = new Map<string, { spot: FootprintData; perp: FootprintData }>();
+  /** The minutes of the ranking window the rows' figures are read from, where the bars drawn are not those (another timeframe, or a window behind now). */
+  #rankBars = { spot: new FootprintData(true), perp: new FootprintData(true) };
   #sizeTf: string | null = null; #sizeShownTf: string | null = null;
   #sizeModel: SizeModel | null = null; #sizeKey = '';
   readonly #sizeLoad: FootprintLoad = (inst, tf, from, to, rows, lines, budget, venues, sums) => this.hub.footprint(inst, tf, from, to, rows, lines, budget, venues, sums);
@@ -262,6 +264,8 @@ export class CvdPane {
     this.onVisibility();
     if (view === this.#shownView) { this.#fitName(); if (flow && visible) this.invalidate(); return; }
     this.#shownView = view;
+    // Leaving the Sizes view lets its timeframe go (review 2026-11-25): back on it, the window chooses one afresh.
+    if (view !== 'sizes') this.#sizeTf = null;
     // The view on the pane itself, for the stylesheet (a phone gives Trades' header one row of keys, the Flow view two).
     this.root.dataset.view = view;
     this.#panel?.close(); this.#panel = null;
@@ -682,31 +686,41 @@ export class CvdPane {
     const tf = this.#sizeTf = sizeTf(model.t1 - model.t0, model.columns, this.#sizeTf);
     const lanes = aggregateFamilies(this.hub.flow, flowIds(s, this.hub.flow.ids), id => kindOf(s.markets, id)).aggregate.flatMap(f => f.lanes);
     const ids = { spot: lanes.filter(l => l.kind === 'spot').map(l => l.id).sort().slice(0, MAX_PROFILE_INSTRUMENTS), perp: lanes.filter(l => l.kind === 'perp').map(l => l.id).sort().slice(0, MAX_PROFILE_INSTRUMENTS) };
+    // Held by last use: the one asked now goes last, so the oldest other goes first when more than three are held.
     let held = this.#sizeBars.get(tf);
-    if (!held) {
-      held = { spot: new FootprintData(true), perp: new FootprintData(true) };
-      this.#sizeBars.set(tf, held);
-      // Three timeframes at most (each holds at most a few thousand bars): the oldest other one goes.
-      for (const key of this.#sizeBars.keys()) { if (this.#sizeBars.size <= 3) break; if (key !== tf) this.#sizeBars.delete(key); }
-    }
-    const rankMs = RANK_MS[s.cvd.rank], from = Math.min(model.t0, now - rankMs), to = Math.max(model.t1, now), view = { t0: from, t1: to, p0: 0, p1: 1 };
-    for (const kind of ['spot', 'perp'] as const) {
-      const data = held[kind], list = ids[kind];
-      if (!list.length) data.clear();
-      else data.ensure(list.join(','), tf, view, 0, this.#sizeLoad, () => { this.#sizeKey = ''; this.invalidate(); }, [], this.hub.sourceNow());
-    }
+    if (held) this.#sizeBars.delete(tf);
+    else held = { spot: new FootprintData(true), perp: new FootprintData(true) };
+    this.#sizeBars.set(tf, held);
+    for (const key of this.#sizeBars.keys()) { if (this.#sizeBars.size <= 3) break; if (key !== tf) this.#sizeBars.delete(key); }
+    // The figures are over the ranking window ending now, read from its minutes. Minutes drawn up to now are those: one question serves both,
+    // asked from the ranking window's start where it is earlier. Otherwise the window drawn is asked alone and the ranking window apart (review
+    // 2026-11-25: the window and the ranking window asked as one, a map panned back days asked every minute from there to now).
+    const rankMs = RANK_MS[s.cvd.rank], rankFrom = now - rankMs, joint = tf === '1m' && model.t1 >= now - 60_000;
+    const view = { t0: joint ? Math.min(model.t0, rankFrom) : model.t0, t1: joint ? Math.max(model.t1, now) : model.t1, p0: 0, p1: 1 };
+    const ask = (bars: { spot: FootprintData; perp: FootprintData }, at: string, window: { t0: number; t1: number; p0: number; p1: number }): void => {
+      for (const kind of ['spot', 'perp'] as const) {
+        const data = bars[kind], list = ids[kind];
+        if (!list.length) data.clear();
+        else data.ensure(list.join(','), at, window, 0, this.#sizeLoad, () => { this.#sizeKey = ''; this.invalidate(); }, [], this.hub.sourceNow());
+      }
+    };
+    ask(held, tf, view);
+    const counted = joint ? held : this.#rankBars;
+    if (!joint) ask(this.#rankBars, '1m', { t0: rankFrom, t1: now, p0: 0, p1: 1 });
     // Whether a timeframe's bars are those of these markets and cover the window drawn (to the newest moment it shows).
     const ready = (at: string, bars: { spot: FootprintData; perp: FootprintData }): boolean => (['spot', 'perp'] as const).every(kind => {
       const list = ids[kind], data = bars[kind], span = data.answered;
       return !list.length || (data.holds(list, at) && span !== null && span.from <= model.t0 && span.to >= Math.min(model.t1, now));
     });
+    // Until they do, the window is drawn from the latest used of the others that does.
     let shown = held, shownTf = tf;
-    if (!ready(tf, held)) for (const [at, bars] of this.#sizeBars) if (at !== tf && ready(at, bars)) { shown = bars; shownTf = at; break; }
+    if (!ready(tf, held)) for (const [at, bars] of [...this.#sizeBars].reverse()) if (at !== tf && ready(at, bars)) { shown = bars; shownTf = at; break; }
     const tfMs = SIZE_TFS.find(x => x.tf === shownTf)?.ms ?? 60_000;
-    const key = [shown.spot.version, shown.perp.version, shownTf, ids.spot.length, ids.perp.length, model.t0, model.t1, model.columns, Math.floor(now / 1000), rankMs, replaying()].join('|');
+    const key = [shown.spot.version, shown.perp.version, counted.spot.version, counted.perp.version, shownTf, joint, ids.spot.length, ids.perp.length, model.t0, model.t1, model.columns, Math.floor(now / 1000), rankMs, replaying()].join('|');
     if (key !== this.#sizeKey || !this.#sizeModel) {
-      const side = (kind: 'spot' | 'perp') => ids[kind].length && shown[kind].holds(ids[kind], shownTf) ? { bars: shown[kind].bars, answered: shown[kind].answered } : null;
-      this.#sizeModel = buildSizeModel({ spot: side('spot'), perp: side('perp'), tfMs, t0: model.t0, t1: model.t1, columns: model.columns, now, rankMs, replay: replaying() });
+      const side = (bars: { spot: FootprintData; perp: FootprintData }, at: string, kind: 'spot' | 'perp') => ids[kind].length && bars[kind].holds(ids[kind], at) ? { bars: bars[kind].bars, answered: bars[kind].answered } : null;
+      this.#sizeModel = buildSizeModel({ spot: side(shown, shownTf, 'spot'), perp: side(shown, shownTf, 'perp'), tfMs, t0: model.t0, t1: model.t1, columns: model.columns, now, rankMs, replay: replaying(),
+        figures: { spot: side(counted, '1m', 'spot'), perp: side(counted, '1m', 'perp'), tfMs: 60_000 } });
       this.#sizeKey = key; this.#sizeShownTf = shownTf;
     }
     return this.#sizeModel;
@@ -715,7 +729,10 @@ export class CvdPane {
   #sizeEmpty(sizes: SizeModel): string | null {
     if (sizes.rows.some(r => r.lanes.length)) return null;
     const held = this.#sizeBars.get(this.#sizeTf ?? '');
-    if (held && (held.spot.busy || held.perp.busy || (held.spot.answered === null && held.perp.answered === null))) return t('Reading the order sizes…');
+    const unanswered = !!held && held.spot.answered === null && held.perp.answered === null;
+    // A source that fails is asked again every few seconds: said so, rather than reading for ever (review 2026-11-25).
+    if (unanswered && held.spot.tally.answers + held.perp.tally.answers === 0 && held.spot.tally.failures + held.perp.tally.failures > 0) return t('The order sizes could not be read: asked again in a few seconds.');
+    if (held && (held.spot.busy || held.perp.busy || unanswered)) return t('Reading the order sizes…');
     return t('No order sizes recorded for this window.');
   }
 
@@ -761,9 +778,12 @@ export class CvdPane {
     const plotW = Math.max(20, this.#w - this.#gutter - (phone ? PRICE_AXIS_W : PAD)), columns = Math.max(24, Math.min(900, Math.floor(plotW)));
     // The lines' ends flash only in a window that ends now (within a column): not in a replay, nor on a map moved back into the past.
     this.#atLive = !replaying() && t1 >= Date.now() - Math.max(2_000, (t1 - t0) / columns);
-    const key = [this.hub.flow.version, columns, Math.floor(t0 / Math.max(1000, spanMs / columns)), Math.floor(now / 1000), span, cfg.rank, cfg.top, cfg.heights, cfg.auto, cfg.refreshMin, cfg.pinned.join(','), cfg.quietFlag, cfg.rebase, s.scope, s.disabledVenues.join(','), ids.length, this.#price.length, priceId ?? ''].join('|');
+    // In the Sizes view the top row starts at zero at the left edge whatever the setting, as the size rows under it do, so the six add up to it
+    // there (review 2026-11-25).
+    const lineCfg = this.#view() === 'sizes' && !cfg.rebase ? { ...cfg, rebase: true } : cfg;
+    const key = [this.hub.flow.version, columns, Math.floor(t0 / Math.max(1000, spanMs / columns)), Math.floor(now / 1000), span, cfg.rank, cfg.top, cfg.heights, cfg.auto, cfg.refreshMin, cfg.pinned.join(','), cfg.quietFlag, lineCfg.rebase, s.scope, s.disabledVenues.join(','), ids.length, this.#price.length, priceId ?? ''].join('|');
     if (key !== this.#modelKey || !this.#model) {
-      this.#model = buildModel({ flow: this.hub.flow, ids, kindOf: id => kindOf(s.markets, id), t0, t1, columns, now, settings: cfg, ranker: this.#ranker });
+      this.#model = buildModel({ flow: this.hub.flow, ids, kindOf: id => kindOf(s.markets, id), t0, t1, columns, now, settings: lineCfg, ranker: this.#ranker });
       this.#priceId = priceId; this.#priceCols = this.#priceColumns(this.#model);
       this.#strip.setCounted(this.#model.counted); this.#strip.wake();
       this.#modelKey = key;
@@ -807,7 +827,7 @@ export class CvdPane {
     ctx.fillStyle = p.panel; ctx.fillRect(0, 0, this.#w, top);
     if (phone) this.#paintHero(ctx, p, colors, plot, layout.agg, model, cfg);
     else {
-      this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), false, cfg.rebase);
+      this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), false, lineCfg.rebase);
       this.#paintPrice(ctx, p, plot, layout.agg, layout.price, model);
     }
     // On a phone the chart marks where the flow begins and the readout says since when; the note over the lines is for the desktop column.

@@ -95,6 +95,8 @@ export interface StatDef {
    * dollars without rows (an older server), so one such statistic never holds up the others.
    */
   reads?: 'rows' | 'parts' | 'totals';
+  /** A running sum (cvd and its retail and whale kinds): with CVD from each day's start, its bars are read from the start of the day the view begins in. */
+  running?: true;
   /** The View column's figure for the visible slots `at`, from the row's `values`; none when absent or null. */
   view?: (input: StatInput, at: readonly number[], values: readonly (number | null)[]) => ViewCell | null;
   /** Its column in Export CSV when the number as computed is not what it means (a logarithm): the column's name and its cell. */
@@ -345,7 +347,7 @@ const markTone = (up: boolean | null): StatTone | null => up === null ? null : u
 export const BAR_STATS: readonly StatDef[] = [
   { id: 'vol', label: 'vol', group: 'volume', source: 'executions', reads: 'totals', title: t('Executed volume of the bar (USD, buy + sell)'), scale: 'sequential', format: volText, compute: input => perBar(input, total), view: sumView(volText, false) },
   { id: 'delta', label: 'delta', group: 'volume', source: 'executions', reads: 'totals', title: t('Buy minus sell volume of the bar (USD)'), scale: 'diverging', format: signedVol, compute: input => perBar(input, bar => bar.buyUsd - bar.sellUsd), view: sumView(signedVol, true) },
-  { id: 'cvd', label: 'cvd', group: 'volume', source: 'executions', reads: 'totals', title: t('Cumulative delta: running sum of delta over the bars loaded for the view'), scale: 'diverging', format: signedVol,
+  { id: 'cvd', label: 'cvd', group: 'volume', source: 'executions', reads: 'totals', running: true, title: t('Cumulative delta: running sum of delta over the bars loaded for the view'), scale: 'diverging', format: signedVol,
     compute: input => running(perBar(input, bar => bar.buyUsd - bar.sellUsd), input.restart), view: lastView(signedVol) },
   { id: 'deltaPct', label: t('delta %'), group: 'volume', source: 'executions', reads: 'totals', title: t('Delta as a share of the bar\'s volume (+100 % all buying, -100 % all selling)'), scale: 'diverging', format: signedPct,
     compute: input => perBar(input, bar => total(bar) > 0 ? (bar.buyUsd - bar.sellUsd) / total(bar) * 100 : null),
@@ -424,9 +426,9 @@ export const BAR_STATS: readonly StatDef[] = [
     approx: approxLine('whale'), view: (input, at) => { let whale = 0, all = 0; for (const i of at) { const bar = input.bars[i], line = bar ? lineOf(bar, input, 'whale') : null; if (!bar?.stats || !line) continue; whale += line.buy + line.sell; all += orderUsd(bar.stats); } return all > 0 ? { value: pctText(whale / all * 100), tone: 'text', how: t('Worked out from the candles in view added together.') } : null; } },
   { ...tradeStat('deltaRetail', t('delta retail'), t('Delta of market orders under the retail size (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'retail'), sumView(signedVol, true)), approx: approxLine('retail') },
   { ...tradeStat('deltaWhales', t('delta whales'), t('Delta of market orders from the whale size up (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'whale'), sumView(signedVol, true)), approx: approxLine('whale') },
-  { id: 'cvdRetail', label: t('cvd retail'), group: 'trades', source: 'executions', title: t('Cumulative delta of retail-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
+  { id: 'cvdRetail', label: t('cvd retail'), group: 'trades', source: 'executions', running: true, title: t('Cumulative delta of retail-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
     compute: input => running(input.bars.map(bar => bar ? sizeDelta(bar, input, 'retail') : null), input.restart), approx: approxLine('retail'), view: lastView(signedVol) },
-  { id: 'cvdWhales', label: t('cvd whales'), group: 'trades', source: 'executions', title: t('Cumulative delta of whale-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
+  { id: 'cvdWhales', label: t('cvd whales'), group: 'trades', source: 'executions', running: true, title: t('Cumulative delta of whale-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
     compute: input => running(input.bars.map(bar => bar ? sizeDelta(bar, input, 'whale') : null), input.restart), approx: approxLine('whale'), view: lastView(signedVol) },
   { id: 'range', label: 'range', group: 'market', source: 'market', title: t('High minus low of the candle'), scale: 'sequential', format: value => fmtPrice(value),
     compute: input => perCandle(input, c => c[2] - c[3]),

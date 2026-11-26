@@ -1,6 +1,6 @@
 import type { Bar } from '../panes/footprint.ts';
 import type { Kind } from '../scope.ts';
-import { BANDS } from '../size-history/model.ts';
+import { BANDS, bandLabel } from '../size-history/model.ts';
 import type { LaneLine } from './model.ts';
 
 /**
@@ -18,7 +18,9 @@ import type { LaneLine } from './model.ts';
  *   no order statistics (a minute recorded before they were kept) the band's share is not known: the line breaks there and goes on after it
  *   from where it stood. A candle without a bar traded nothing that was recorded: the line holds flat there, as the Flow view's does.
  * - The figures beside a row are over the ranking window (ending now), as the Flow view's are: each kind's net, buys and sells, and the
- *   band's share of the volume of all six.
+ *   band's share of the volume of all six, read from minutes of their own (`SizeInput.figures`) whatever the timeframe drawn, the minute the
+ *   window starts in counted for its part (review 2026-11-25: counted by whole bars of the timeframe drawn, an hour's figures on half-hour
+ *   bars covered 31 to 60 minutes, and on bars as long as the window none).
  */
 
 /** The timeframes the bars may be asked on, shortest first (the footprint's). */
@@ -38,9 +40,10 @@ export function sizeTf(spanMs: number, columns: number, current: string | null =
   const target = SIZE_TFS.find(t => bars(t.ms) <= most) ?? SIZE_TFS[SIZE_TFS.length - 1]!;
   const held = current === null ? undefined : SIZE_TFS.find(t => t.tf === current);
   if (!held || held.tf === target.tf) return target.tf;
-  // Finer than the target: kept until it gives half again too many. Coarser: kept until the target's bars are under a quarter of the most.
+  // Finer than the target: kept until it gives half again too many. Coarser: kept while its own bars are a quarter of the most or more (a
+  // finer target is there as soon as it fits, so going back up waits for half again too many: no timeframe flips at the edge of the band).
   if (held.ms < target.ms) return bars(held.ms) <= 1.5 * most ? held.tf : target.tf;
-  return bars(target.ms) >= most / 4 ? held.tf : target.tf;
+  return bars(held.ms) >= most / 4 ? held.tf : target.tf;
 }
 
 /** One kind's bars as the loader holds them: by start, and the span they were answered for ([from, to): a bar missing inside it traded nothing). */
@@ -54,12 +57,14 @@ export interface SizeInput {
   t0: number; t1: number; columns: number; now: number;
   /** The ranking window's length (ms, ending at `now`): the figures beside the rows are over it. */
   rankMs: number;
+  /** The bars the figures are read from (minutes over the ranking window, `tfMs` theirs); absent: the bars drawn. */
+  figures?: { spot: SizeBars | null; perp: SizeBars | null; tfMs: number };
   /** In a replay only the bars that ended by its moment count (the one under way would hold trades from after it). */
   replay: boolean;
 }
 
-/** A band's row: its lines (spot first), its volume over the ranking window and its share of all six bands', and the bars without sizes in the window. */
-export interface SizeRow { band: number; key: string; lanes: LaneLine[]; gross: number; share: number; unknown: number }
+/** A band's row: its sizes' name, its lines (spot first), its volume over the ranking window and its share of all six bands', and the bars without sizes in the window. */
+export interface SizeRow { band: number; key: string; label: string; lanes: LaneLine[]; gross: number; share: number; unknown: number }
 export interface SizeModel {
   t0: number; t1: number; columns: number; tfMs: number;
   rows: SizeRow[];
@@ -71,11 +76,15 @@ export interface SizeModel {
 
 const sumBox = (values: readonly number[], lo: number, hi: number): number => { let s = 0; for (let i = lo; i <= hi; i++) s += values[i]!; return s; };
 
-/** The points of a band's line for one kind: time, running delta (NaN: not known there, the line breaks), from zero at the first slot. */
-function bandPoints(held: SizeBars, band: number, input: SizeInput, from: number, to: number): { t: number[]; v: number[] } {
+/**
+ * The points of a band's line for one kind: time, running delta (NaN: not known there, the line breaks), from zero at the first slot, which is
+ * the first bar held (`firstBar`) where the window starts before it: before the recording, or before anything traded, the line has nothing to
+ * say, as the top row starts where the flow does (review 2026-11-25: every line was drawn flat from the left edge there).
+ */
+function bandPoints(held: SizeBars, band: number, input: SizeInput, from: number, to: number, firstBar: number): { t: number[]; v: number[] } {
   const { tfMs } = input, [lo, hi] = BANDS[band]!, t: number[] = [], v: number[] = [], answered = held.answered;
-  if (!answered) return { t, v };
-  const first = Math.max(Math.floor(from / tfMs) * tfMs, Math.ceil(answered.from / tfMs) * tfMs), last = Math.min(to, answered.to);
+  if (!answered || !Number.isFinite(firstBar)) return { t, v };
+  const first = Math.max(Math.floor(from / tfMs) * tfMs, Math.ceil(answered.from / tfMs) * tfMs, firstBar), last = Math.min(to, answered.to);
   let run = 0, open = false;
   for (let s = first; s < last; s += tfMs) {
     const end = s + tfMs;
@@ -152,37 +161,48 @@ export function rasterise(points: { t: readonly number[]; v: readonly number[] }
   return min <= max ? { lo, hi, last, min, max } : { lo, hi, last, min: NaN, max: NaN };
 }
 
-/** One kind's figures for a band over the ranking window: bought and sold dollars of the bars inside it. */
-function bandFigures(held: SizeBars, band: number, input: SizeInput): { buy: number; sell: number } {
+/**
+ * One kind's figures for a band over the ranking window [now - rankMs, now): bought and sold dollars of the bars (`tfMs` long) inside it, the
+ * bar the window starts in for its part of it (its trades taken as spread evenly over it), none after now (in a replay, none still under way).
+ */
+function bandFigures(held: SizeBars, band: number, input: SizeInput, tfMs: number): { buy: number; sell: number } {
   const [lo, hi] = BANDS[band]!, from = input.now - input.rankMs;
   let buy = 0, sell = 0;
   for (const [s, bar] of held.bars) {
-    if (s < from || s >= input.now || !bar.stats || (input.replay && s + input.tfMs > input.now)) continue;
-    buy += sumBox(bar.stats.buy, lo, hi); sell += sumBox(bar.stats.sell, lo, hi);
+    if (s + tfMs <= from || s >= input.now || !bar.stats || (input.replay && s + tfMs > input.now)) continue;
+    const part = s < from ? (s + tfMs - from) / tfMs : 1;
+    buy += part * sumBox(bar.stats.buy, lo, hi); sell += part * sumBox(bar.stats.sell, lo, hi);
   }
   return { buy, sell };
+}
+
+/** The first bar held from `from` on (Infinity: none). */
+function firstHeld(held: SizeBars, from: number): number {
+  let first = Infinity;
+  for (const s of held.bars.keys()) if (s >= from && s < first) first = s;
+  return first;
 }
 
 /** Everything the Sizes view draws besides the top row and the price strip: a row per band, each kind's line and figures. */
 export function buildSizeModel(input: SizeInput): SizeModel {
   const { t0, t1, columns, tfMs } = input, through: number[] = [];
-  const kinds: [Kind, SizeBars | null][] = [['spot', input.spot], ['perp', input.perp]];
+  const kinds: [Kind, SizeBars | null, SizeBars | null][] = [['spot', input.spot, input.figures ? input.figures.spot : input.spot], ['perp', input.perp, input.figures ? input.figures.perp : input.perp]];
+  const figuresMs = input.figures?.tfMs ?? tfMs;
+  // Where each kind's lines start: its first bar held in the window (the slot the window starts in, or later).
+  const starts = kinds.map(([, held]) => held ? firstHeld(held, Math.floor(t0 / tfMs) * tfMs) : Infinity);
   const rows: SizeRow[] = BANDS.map((_, band) => {
     let gross = 0, unknown = 0;
-    const lanes = kinds.flatMap(([kind, held]): LaneLine[] => {
+    const lanes = kinds.flatMap(([kind, held, counted], k): LaneLine[] => {
       if (!held || !held.bars.size) return [];
-      const points = bandPoints(held, band, input, t0, t1), line = rasterise(points, input), { buy, sell } = bandFigures(held, band, input);
+      const points = bandPoints(held, band, input, t0, t1, starts[k]!), line = rasterise(points, input), { buy, sell } = counted ? bandFigures(counted, band, input, figuresMs) : { buy: 0, sell: 0 };
       if (band === 0) { const end = points.t[points.t.length - 1]; if (end !== undefined) through.push(end); for (const [s, bar] of held.bars) if (!bar.stats && s + tfMs > t0 && s < t1) unknown++; }
       gross += buy + sell;
       return [{ id: `size${band}`, kind, series: null, ...line, before: 0, delta: buy - sell, gross: buy + sell, buy, sell, quiet: false }];
     });
-    return { band, key: `size${band}`, lanes, gross, share: 0, unknown };
+    return { band, key: `size${band}`, label: bandLabel(band), lanes, gross, share: 0, unknown };
   });
   // Bars without sizes are the same for every band (the bar has no statistics at all): counted once, on the first band, said on each.
   const unknown = rows[0]?.unknown ?? 0, gross = rows.reduce((s, r) => s + r.gross, 0);
   for (const row of rows) { row.unknown = unknown; row.share = gross > 0 ? row.gross / gross : 0; }
   return { t0, t1, columns, tfMs, rows, gross, through: through.length ? Math.max(...through) : null };
 }
-
-/** The bars' timeframe in words for the hover ("1-minute bars"). */
-export const tfMinutes = (tfMs: number): number => Math.round(tfMs / 60_000);

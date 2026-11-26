@@ -1368,14 +1368,16 @@ export class HeatPane {
   /**
    * What the footprint's bars are asked for while the footprint shows or a Bar stats statistic reads rows (`statsReadRows`): the markets, the
    * rows the footprint would draw at this zoom whether it shows or not (so the table's rows, point of control and imbalances, are the
-   * footprint's own when both are on), and the window: the view, from the start of the day its left edge falls in for the table's running sums
-   * from each day's start. No size lines: the table reads them from its bars without rows (`#statSumsAsk`).
+   * footprint's own when both are on), and the window: the view, from the start of the day its left edge falls in for a running sum read from
+   * rows (from each day's start). No size lines: the table reads them from its bars without rows (`#statSumsAsk`).
    */
   #footprintAsk(state: AppState): { markets: string[]; window: Bounds; rowStep: number } {
     const v = this.view, ph = this.plotH, fine = this.#footprint.fine;
     const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
     const rowStep = fine > 0 ? fine * 2 ** this.#lod.level(fineRowPx) : 0;
-    const from = this.statsReadRows(state) && state.barStatOptions.cvdFrom === 'day' ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
+    // From the start of the day only for a running sum read from rows (cvd from an older source): the row statistics read the view alone.
+    const dayRows = state.show.stats && state.barStatOptions.cvdFrom === 'day' && enabledStats(state.barStats).some(def => def.running && readsRows(def, this.#statSums.totals));
+    const from = dayRows ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
     return { markets: this.footprintMarkets(state), window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, rowStep };
   }
 
