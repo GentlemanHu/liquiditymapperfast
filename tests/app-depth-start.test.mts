@@ -113,8 +113,10 @@ test('the map prints the words as the legend\'s last row, never beside the line,
   assert.doesNotMatch(need, /depth/i, 'the corner tools never change their look as the row comes or goes');
   const hover = body('#paintHoverLayer');
   // A young recording's first load has the row, the levels' note ("Liquidation levels are loading.") and "Collecting depth history…" at once:
-  // that line stands under the legend and under the note while the levels are on (their box is kept from an earlier frame when they are off).
-  assert.match(hover, /fillText\(t\('Collecting depth history…'\), 12, Math\.max\(50, this\.#legendBox\.bottom \+ 8, state\.liqLevels\.on && this\.#liqNoteBox \? this\.#liqNoteBox\.bottom \+ 8 : 0\)\)/);
+  // that line stands under the legend and under the note while the levels are on (their box is kept from an earlier frame when they are off),
+  // and is left out where it would reach the volume strip's names (a phone held sideways: a 138 px map).
+  assert.match(hover, /const y = Math\.max\(50, this\.#legendBox\.bottom \+ 8, state\.liqLevels\.on && this\.#liqNoteBox \? this\.#liqNoteBox\.bottom \+ 8 : 0\);/);
+  assert.match(hover, /const foot = state\.show\.volume && this\.candlesDrawn\(state\)\.length \? stripNamesTop\(ph, volumeBand\(ph\)\) : ph;\s+if \(y \+ 6 <= foot\) \{[^}]*fillText\(t\('Collecting depth history…'\), 12, y\)/);
   // The overlay is drawn by the legend's last foot: where this one differs, the map is drawn again, in a whole frame too (a whole frame used to
   // check only a band, so without one the levels' note stood a frame under the new row).
   assert.match(hover, /if \(this\.#legendBox\.bottom !== legendBottom \|\| this\.#bands\.misplaced\(this\.#legendBox\.bottom\)\) this\.invalidate\(\);/);
