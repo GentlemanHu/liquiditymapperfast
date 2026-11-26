@@ -12,8 +12,9 @@ export interface Grouped {
   totalBid: Float32Array;
   totalAsk: Float32Array;
   /**
-   * The same rows in coins, each row's dollars over the price in the row's middle (units.ts): present on a grouping asked for in coins. The
-   * dollars stay the grouping's own, so what judges or compares (the cues, Highlights, the venues' order) reads them in either units.
+   * The same rows in coins (units.ts): each level's dollars over its own price (a band of prices over its middle), spread over the rows as the
+   * dollars are. Present on a grouping asked for in coins. The dollars stay the grouping's own, so what judges or compares (the cues,
+   * Highlights, the venues' order) reads them in either units.
    */
   coins?: Grouped;
 }
@@ -48,7 +49,8 @@ export function groupLevels(kernels: Kernels, frame: LevelsFrame, ids: string[],
   const key = `${ids.join('\u0001')}\u0002${step}\u0002${bin0}\u0002${nBins}${coins ? '\u0002coins' : ''}`;
   const hit = grouped.get(frame)?.get(key);
   if (hit) return hit;
-  const made = coins ? withCoins(groupLevels(kernels, frame, ids, step, p0, p1)) : groupFresh(kernels, frame, ids, step, bin0, nBins);
+  // In coins: the dollars' grouping of the same frame (shared with whoever asks in dollars), carrying its coins beside it.
+  const made = coins ? { ...groupLevels(kernels, frame, ids, step, p0, p1), coins: groupFresh(kernels, frame, ids, step, bin0, nBins, true) } : groupFresh(kernels, frame, ids, step, bin0, nBins);
   let memo = grouped.get(frame);
   if (!memo) { memo = new Map(); grouped.set(frame, memo); }
   if (memo.size >= GROUP_MEMO) memo.delete(memo.keys().next().value!);
@@ -56,24 +58,13 @@ export function groupLevels(kernels: Kernels, frame: LevelsFrame, ids: string[],
   return made;
 }
 
-/**
- * A grouping with its rows in coins beside its dollars: each row's dollars over the price in the middle of the row (a level sits somewhere in
- * its row, so this is the level's own price to within half a row). The totals are the venues' coins added up.
- */
-function withCoins(g: Grouped): Grouped {
-  const toCoins = (rows: Float32Array): Float32Array => {
-    const out = new Float32Array(rows.length);
-    for (let i = 0; i < rows.length; i++) { const price = (g.bin0 + i + 0.5) * g.step; out[i] = price > 0 ? rows[i]! / price : 0; }
-    return out;
-  };
-  return { ...g, coins: { ids: g.ids, step: g.step, bin0: g.bin0, nBins: g.nBins, bid: g.bid.map(toCoins), ask: g.ask.map(toCoins), totalBid: toCoins(g.totalBid), totalAsk: toCoins(g.totalAsk) } };
-}
-
-function groupFresh(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, bin0: number, nBins: number): Grouped {
+/** With `coins`, each level is its dollars over its own price (a band of prices, `lo` < `hi`, over its middle) before it is spread over the rows. */
+function groupFresh(kernels: Kernels, frame: LevelsFrame, ids: string[], step: number, bin0: number, nBins: number, coins = false): Grouped {
   const books = ids.map(id => frame.books.find(book => book.id === id)).filter((book): book is NonNullable<typeof book> => !!book);
   const totalBid = new Float32Array(nBins), totalAsk = new Float32Array(nBins);
   const run = (pick: (book: (typeof books)[number]) => SideArrays, total: Float32Array): Float32Array[] => {
     const c = concat(books.map(pick));
+    if (coins) for (let i = 0; i < c.usd.length; i++) { const price = (c.lo[i]! + c.hi[i]!) / 2; c.usd[i] = price > 0 ? c.usd[i]! / price : 0; }
     const grid = kernels.spreadLevels(c.lo, c.hi, c.usd, c.inst, books.length, step, bin0, nBins);
     const rows = books.map((_, k) => grid.subarray(k * nBins, (k + 1) * nBins));
     for (const row of rows) for (let i = 0; i < nBins; i++) total[i]! += row[i]!;

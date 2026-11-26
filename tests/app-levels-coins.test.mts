@@ -35,3 +35,11 @@ test('a grouping asked in coins carries each row over the price in its middle, b
   assert.ok(Math.abs(cumulative(c, 100_000).maxAsk - (10 + 2_003_000 / 100_150)) < 1e-4);
   assert.equal(groupLevels(kernels, frame, ['a:X', 'b:X'], 100, 99_800, 100_200, true), g, 'kept for the frame');
 });
+
+test('each level is its own dollars over its own price before it is spread: two levels in one wide row add their own coins (review 2)', () => {
+  const wide: LevelsFrame = { asOf: 0, books: [{ id: 'a:X', venue: 'a', timestamp: 0, coarse: false, bids: side([[90_000, 900_000], [99_000, 99_000]]), asks: side([]) }] };
+  const g = groupLevels(kernels, wide, ['a:X'], 10_000, 90_000, 100_000, true);
+  const row = Math.floor(95_000 / 10_000) - g.bin0;
+  assert.ok(Math.abs(g.coins!.totalBid[row]! - 11) < 1e-6, `11 coins, not the row's middle's ${999_000 / 95_000}: ${g.coins!.totalBid[row]}`);
+  assert.equal(g.totalBid[row], 999_000, 'the dollars as they were');
+});

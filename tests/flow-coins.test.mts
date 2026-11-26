@@ -68,6 +68,16 @@ test('a history longer than the ring keeps the price before its first second hel
   close(s.coins!.delta(2, 2), 1);
 });
 
+test('a price that rolls off the ring stays the price of the unpriced seconds after it: a twin worked out again agrees (review 2)', () => {
+  const s = new FlowSeries(); s.keepCoins(true);
+  s.set(0, 100, 0, 100);       // priced
+  s.set(1, 100, 0, 0);         // no price: 100's, 1 coin
+  s.set(131_072, 1, 0, 1);     // the ring moves on: second 0 rolls off, second 1 stays
+  const live = s.coins!.delta(1, 1);
+  s.keepCoins(false); s.keepCoins(true);
+  close(live, 1); close(s.coins!.delta(1, 1), live);
+});
+
 test('the coins stay one object across a load, and are let go with keepCoins(false) (review 1)', () => {
   const s = new FlowSeries(); s.keepCoins(true);
   const twin = s.coins!;

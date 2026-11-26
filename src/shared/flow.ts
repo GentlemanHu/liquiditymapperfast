@@ -284,8 +284,10 @@ export class FlowSeries {
   /** The last price before the first second held, and its second: a load's seconds older than the ring hold it for the coins (`#coinPrice`). */
   #basePx = 0; #basePxAt = 0;
 
+  /** Whether this is another series' coins (`prices` given). */
+  readonly #twin: boolean;
   /** `prices`: the price ring of the series this one is the coins of (shared, never a copy). */
-  constructor(prices?: Float32Array) { this.#px = prices ?? new Float32Array(FLOW_RING); }
+  constructor(prices?: Float32Array) { this.#px = prices ?? new Float32Array(FLOW_RING); this.#twin = prices !== undefined; }
 
   /** First and last second held (whole seconds since the epoch), or null when empty. */
   get span(): { first: number; last: number } | null { return this.#last < this.#first ? null : { first: this.#first, last: this.#last }; }
@@ -376,12 +378,17 @@ export class FlowSeries {
     if (sec > this.#last) {
       const carryD = this.#delta[this.#last & MASK]!, carryG = this.#gross[this.#last & MASK]!;
       if (sec - this.#last >= FLOW_RING) {
-        // A gap longer than the ring restarts it where the series stood, so the running sums stay continuous.
-        this.#baseDelta = carryD; this.#baseGross = carryG; this.#first = sec;
+        // A gap longer than the ring restarts it where the series stood, so the running sums stay continuous (no price of before is in reach).
+        this.#baseDelta = carryD; this.#baseGross = carryG; this.#first = sec; this.#basePx = 0; this.#basePxAt = 0;
       } else {
-        // Forget what the new seconds will take the room of before they are written over it.
+        // Forget what the new seconds will take the room of before they are written over it (the last price among them stays for the coins,
+        // `#coinPrice`, as it does for seconds a load leaves out).
         const keep = Math.max(this.#first, sec - FLOW_RING + 1);
-        if (keep > this.#first) { this.#baseDelta = this.#delta[(keep - 1) & MASK]!; this.#baseGross = this.#gross[(keep - 1) & MASK]!; this.#first = keep; }
+        if (keep > this.#first) {
+          // (A twin reads no prices of its own: the series it is the coins of has written over the shared ring by now.)
+          if (!this.#twin) for (let s = this.#first; s < keep; s++) { const p = this.#px[s & MASK]!; if (p > 0) { this.#basePx = p; this.#basePxAt = s; } }
+          this.#baseDelta = this.#delta[(keep - 1) & MASK]!; this.#baseGross = this.#gross[(keep - 1) & MASK]!; this.#first = keep;
+        }
         for (let s = this.#last + 1; s < sec; s++) { this.#delta[s & MASK] = carryD; this.#gross[s & MASK] = carryG; this.#px[s & MASK] = 0; }
       }
       this.#delta[sec & MASK] = carryD + d; this.#gross[sec & MASK] = carryG + g; this.#px[sec & MASK] = px;
