@@ -10,13 +10,16 @@ import { STRIDE } from '../tape/ring.ts';
  * Kept batch by batch: each call reads only the writes the ring took since the last (a late order lands in its own second, however old,
  * while the tally still holds it). A new filter, a cleared ring or another ring starts over: the ring is read back from its newest order in
  * steps (`fill`), so a list that opens on hours of orders never blocks a frame. Memory is fixed: a ring of `cap` seconds, a few typed arrays
- * per market met (about 28 bytes a market a second).
+ * per market met (about 20 bytes a market a second).
  *
- * Coins (units.ts, issue 9): beside the dollars bought and sold, the coins they bought and sold, each order's dollars over its own
- * volume-weighted price (exact: the ring's price of an order is its own). Kept in both units, always: 8 bytes a market a second (6.9 MB for
- * 40 markets over a desktop's six hours, 2.3 MB over a phone's two, beside the ring's 48 or 12 MiB), so the page can switch its units without
- * starting the tally over (a start-over reads the ring back in steps, and the blocks before its covered start would change source meanwhile).
+ * Coins (units.ts, issue 9): the tally keeps none, so dollars mode does its old work and nothing more, and the page switches units without
+ * starting it over. In coin mode a second's coins are worked out when read (`buyCoins`, `sellCoins`): the dollars the filter let in over
+ * that second's own volume-weighted price, every order of the market in it (`vwap`), so to within the second's range of prices rather than
+ * order by order; dollars with no price are NaN (written '–').
  */
+
+/** Dollars at a price, in coins: 0 for none, NaN for some with no price (units.ts writes it '–'). */
+const toCoins = (usd: number, price: number): number => usd === 0 ? 0 : price > 0 ? usd / price : Number.NaN;
 
 /** What the tally reads of the tape ring (the ring itself in the page; a plain object in the tests). */
 export interface TallyRing {
@@ -42,9 +45,8 @@ export class SecondTally {
   /** The second each slot holds (NaN: none), its orders counted, and a change count (a block caches by it). */
   readonly #stamp: Float64Array; readonly #n: Uint32Array; readonly #rev: Uint32Array;
   readonly #topBuy: Float32Array; readonly #topBuyK: Float64Array; readonly #topSell: Float32Array; readonly #topSellK: Float64Array;
-  /** Per market index of the ring: dollars bought, sold (filtered), the price sums of every order (unfiltered), and the coins bought and sold (filtered). */
+  /** Per market index of the ring: dollars bought, sold (filtered), and the price sums of every order (unfiltered). */
   readonly #buy: Float32Array[] = []; readonly #sell: Float32Array[] = []; readonly #pv: Float64Array[] = []; readonly #v: Float32Array[] = [];
-  readonly #cBuy: Float32Array[] = []; readonly #cSell: Float32Array[] = [];
   #ring: TallyRing | null = null; #generation = -1;
   #filter: TallyFilter = { minUsd: 0, side: 'both', shown: () => true };
   /** Whether each market index passes `shown` (built once per filter, extended as the ring meets new markets). */
@@ -115,7 +117,6 @@ export class SecondTally {
     if (this.#buy[m]) return;
     for (let i = this.#buy.length; i <= m; i++) {
       this.#buy.push(new Float32Array(this.cap)); this.#sell.push(new Float32Array(this.cap)); this.#pv.push(new Float64Array(this.cap)); this.#v.push(new Float32Array(this.cap));
-      this.#cBuy.push(new Float32Array(this.cap)); this.#cSell.push(new Float32Array(this.cap));
     }
   }
   /** The slot of second `sec`, emptied for it when it held another; -1 when the second is older than the tally keeps. */
@@ -125,7 +126,7 @@ export class SecondTally {
     const s = sec % this.cap;
     if (this.#stamp[s] !== sec) {
       this.#stamp[s] = sec; this.#n[s] = 0; this.#topBuy[s] = 0; this.#topSell[s] = 0; this.#topBuyK[s] = -1; this.#topSellK[s] = -1;
-      for (let m = 0; m < this.#buy.length; m++) { this.#buy[m]![s] = 0; this.#sell[m]![s] = 0; this.#pv[m]![s] = 0; this.#v[m]![s] = 0; this.#cBuy[m]![s] = 0; this.#cSell[m]![s] = 0; }
+      for (let m = 0; m < this.#buy.length; m++) { this.#buy[m]![s] = 0; this.#sell[m]![s] = 0; this.#pv[m]![s] = 0; this.#v[m]![s] = 0; }
     }
     return s;
   }
@@ -145,9 +146,8 @@ export class SecondTally {
     const f = this.#filter;
     if (a >= f.minUsd && !(f.side === 'buy' && usd < 0) && !(f.side === 'sell' && usd > 0)) {
       this.#n[s]++;
-      const coins = price > 0 ? a / price : 0;
-      if (usd > 0) { this.#buy[m]![s] += usd; this.#cBuy[m]![s] += coins; if (usd > this.#topBuy[s]!) { this.#topBuy[s] = usd; this.#topBuyK[s] = k; } }
-      else { this.#sell[m]![s] += a; this.#cSell[m]![s] += coins; if (a > this.#topSell[s]!) { this.#topSell[s] = a; this.#topSellK[s] = k; } }
+      if (usd > 0) { this.#buy[m]![s] += usd; if (usd > this.#topBuy[s]!) { this.#topBuy[s] = usd; this.#topBuyK[s] = k; } }
+      else { this.#sell[m]![s] += a; if (a > this.#topSell[s]!) { this.#topSell[s] = a; this.#topSellK[s] = k; } }
       if (live && this.#fence !== null && k >= this.#fence) this.#newSince++;
     }
     this.#rev[s]++;
@@ -196,11 +196,14 @@ export class SecondTally {
   rev(s: number): number { return this.#rev[s]!; }
   buy(m: number, s: number): number { return this.#buy[m]?.[s] ?? 0; }
   sell(m: number, s: number): number { return this.#sell[m]?.[s] ?? 0; }
-  /** The coins market `m` bought and sold at market in slot `s` (what the filter lets in): each order's dollars over its own price. */
-  buyCoins(m: number, s: number): number { return this.#cBuy[m]?.[s] ?? 0; }
-  sellCoins(m: number, s: number): number { return this.#cSell[m]?.[s] ?? 0; }
   /** The second's VWAP of market `m` over every order (0: it did not trade). */
   vwap(m: number, s: number): number { const v = this.#v[m]?.[s] ?? 0; return v > 0 ? this.#pv[m]![s]! / v : 0; }
+  /**
+   * The coins market `m` bought and sold at market in slot `s` (what the filter lets in), worked out when read (coin mode): its dollars over
+   * the second's own volume-weighted price (`vwap`, every order of the market in that second); 0 for none, NaN for dollars with no price.
+   */
+  buyCoins(m: number, s: number): number { return toCoins(this.buy(m, s), this.vwap(m, s)); }
+  sellCoins(m: number, s: number): number { return toCoins(this.sell(m, s), this.vwap(m, s)); }
   topBuy(s: number): number { return this.#topBuy[s]!; }
   topBuyK(s: number): number { return this.#topBuyK[s]!; }
   topSell(s: number): number { return this.#topSell[s]!; }

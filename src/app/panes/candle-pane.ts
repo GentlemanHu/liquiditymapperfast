@@ -49,8 +49,8 @@ const MAX_TRAIL_MARKS = 10;
  * a canvas of their own between the trail and the book, at the trail's pace, so the book and the tape are not redrawn for them.
  *
  * Units (units.ts, issue 9): in coins the figures are written in coins and nothing else changes: each price row's bought and sold are its
- * orders' coins (`TapeTally.coinRows`), the book's two largest rows' labels the grouping's coins (`groupLevels` with coins: each row over the
- * price in its middle). The shapes, bars, emphasis, point of control, which rows say a number, and the waves, pulses, flashes, marks and
+ * coins (`TapeTally.coinRows`: each fine bin's dollars over the price in its middle, to within half a bin of each order's own price), the
+ * book's two largest rows' labels the grouping's coins (`groupLevels` with coins: each row over the price in its middle). The shapes, bars, emphasis, point of control, which rows say a number, and the waves, pulses, flashes, marks and
  * dots are laid out by the dollars.
  */
 /** A palette's colours as the trail's renderer takes them (0-1 RGB). */
@@ -285,7 +285,8 @@ export class CandlePane {
     const scale = M.priceSpan(lo, hi, mark > 0 ? mark : (lo + hi) / 2, l.plotY0, l.plotY1, this.#zoom, this.#pan); this.#scale = scale;
     const markets = this.markets(state); this.#marketsNow = markets;
     const fine = this.#tape.fine, step = fine > 0 ? M.rowStepFor(fine, scale) : niceStep(scale.p1 - scale.p0, (scale.y1 - scale.y0) / 18); this.#step = step;
-    // In coins the rows' figures are their coins (each order over its own price, `TapeTally.coinRows`); every length and judgment the dollars'.
+    // In coins the rows' figures are their coins (each fine bin's dollars over its middle price, `TapeTally.coinRows`, worked out only in
+    // coins); every length and judgment is the dollars'.
     const rows = this.#tape.rows(step, markets), coinRows = inCoins() ? this.#tape.coinRows(step, markets) : null;
     this.#paintRuler(ctx, l, p);
     ctx.save(); ctx.beginPath(); ctx.rect(0, l.plotY0, l.axisX0, l.plotY1 - l.plotY0); ctx.clip();

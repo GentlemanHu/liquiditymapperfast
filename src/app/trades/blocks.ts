@@ -19,8 +19,10 @@ import { liqCoins, liqSideMatches, lowerBoundLiq, summarizeLiqsIn } from './liqu
  * holds zeros for seconds nobody recorded); a block with nothing known is `unknown`.
  *
  * Coins (units.ts, issue 9): a reader in coins (`coinsOn`) adds each part's coins beside its dollars (`Block.cBuy`, `cSell`, `MarketRow.cBuy`,
- * `cSell`), each at its own price: the tally's per-order coins (exact), the flow's coin series (each second over its own price), a recorded
- * order's dollars over its own price, a liquidation's over its reported price, and a named order its coins. A reader in dollars does none of
+ * `cSell`), each part at the narrowest price it has: the tape's seconds each at that second's own volume-weighted price (the tally keeps
+ * no coins: `SecondTally.buyCoins`, to within a second's range of prices), the flow's coin series (each second over its own price), a
+ * recorded order's dollars over its own price, a liquidation's over its reported price, and a named order its coins (its dollars over its own
+ * price, exact). A second with dollars and no price makes its block's coins NaN (written '–'). A reader in dollars does none of
  * that work (dollars mode is the page as it was, its work included); its blocks' coin fields are not read. The bars, their venue pieces, the
  * size floor and the largest orders' choice stay the dollars'.
  */

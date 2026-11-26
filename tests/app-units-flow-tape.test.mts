@@ -104,18 +104,33 @@ function batch(seq: number, rows: [string, number, number, number][]): TapeBatch
 }
 const T0 = 1_800_000_000_000;
 
-test('the per-second tally keeps each order\'s coins beside its dollars, at its own price, for what the filter lets in', () => {
+/** How many typed arrays of a kind `body` makes (the class is swapped for a counting one while it runs). */
+function arraysMade(kind: 'Float32Array' | 'Float64Array', body: () => void): number {
+  const real = globalThis[kind] as unknown as new (...a: unknown[]) => object;
+  let made = 0;
+  (globalThis as Record<string, unknown>)[kind] = class extends real { constructor(...a: unknown[]) { super(...a); made++; } };
+  try { body(); } finally { (globalThis as Record<string, unknown>)[kind] = real; }
+  return made;
+}
+
+test('the per-second tally keeps no coins: a second\'s are its dollars over that second\'s own price, worked out when read', () => {
   const ring = new TapeRing(BLOCK);
   ring.add(batch(1, [[P, T0 + 100, 50_000, 100_000], [P, T0 + 200, 40_000, 80_000], [P, T0 + 300, 50_000, -25_000], [S, T0 + 400, 50_000, 500]]), 1, 0);
   const tally = new SecondTally(60);
-  tally.reset(ring, { minUsd: 1_000, side: 'both', shown: () => true }); while (tally.filling) tally.fill();
+  tally.reset(ring, { minUsd: 1_000, side: 'both', shown: () => true });
+  // A market met makes its dollars' arrays and no more (bought, sold and volume in Float32, the price sums in Float64), as it always did.
+  assert.equal(arraysMade('Float32Array', () => { while (tally.filling) tally.fill(); }), 2 * 3, 'two markets, three Float32 arrays each');
   const sl = tally.slot(T0 / 1000), m = ring.ids.indexOf(P), s = ring.ids.indexOf(S);
-  close(tally.buy(m, sl), 180_000); close(tally.buyCoins(m, sl), 2 + 2, '100K at 50K and 80K at 40K'); close(tally.sellCoins(m, sl), 0.5);
+  // The second's own volume-weighted price is every order of the market in it, filtered or not: 205K at 46,098.
+  close(tally.vwap(m, sl), (50_000 * 100_000 + 40_000 * 80_000 + 50_000 * 25_000) / 205_000);
+  close(tally.buy(m, sl), 180_000); close(tally.buyCoins(m, sl), 180_000 / tally.vwap(m, sl), 'to within the second\'s range of prices (exactly 4 order by order)');
+  close(tally.sellCoins(m, sl), 25_000 / tally.vwap(m, sl));
   assert.equal(tally.buyCoins(s, sl), 0, 'under the size floor: no dollars, no coins');
-  // The second a minute later takes the same slot (the tally holds 60): its coins start over.
-  ring.add(batch(2, [[P, T0 + 60_000, 20_000, 40_000]]), 1, 0); tally.update();
-  assert.equal(tally.slot(T0 / 1000), -1);
-  close(tally.buyCoins(m, tally.slot(T0 / 1000 + 60)), 2, 'a slot taken for a new second starts its coins over'); close(tally.sellCoins(m, tally.slot(T0 / 1000 + 60)), 0);
+  // Dollars with no price: not known.
+  const free = new TapeRing(BLOCK);
+  free.add(batch(1, [[P, T0 + 100, 0, 5_000]]), 1, 0);
+  const none = new SecondTally(60); none.reset(free, { minUsd: 0, side: 'both', shown: () => true }); while (none.filling) none.fill();
+  assert.ok(Number.isNaN(none.buyCoins(0, none.slot(T0 / 1000))));
 });
 
 test('a block read in coins adds each part at its own price: the tape\'s orders, the flow\'s coin series, the recording, liquidations', () => {
@@ -207,25 +222,34 @@ test('the inspector writes coins in coin mode: markets, largest orders, notes in
   });
 });
 
-test('the phone Tape keeps each row\'s coins beside its dollars, one for one, across a widening of its bins', () => {
+test('the phone Tape keeps no coins: a row\'s are its bins\' dollars each over the price in the bin\'s middle, worked out when read', () => {
   const tape = new TapeTally(0);
-  tape.add(P, 81_001, 81_001);      // one coin bought
-  tape.add(P, 81_002, -40_501);     // half a coin sold
-  tape.add(S, 81_008, 162_016);     // two coins bought
+  // Its first market makes its dollars' array; another market, one more; an order on a market met, none: no coins are kept.
+  assert.equal(arraysMade('Float64Array', () => tape.add(P, 81_001, 81_001)), 1);
+  assert.equal(arraysMade('Float64Array', () => tape.add(S, 81_008, 162_016)), 1);
+  assert.equal(arraysMade('Float64Array', () => tape.add(P, 81_002, -40_501)), 0);
+  // The fine step is 2 (a tenth of the grid's 20): 81,001 is in [81,000, 81,002), 81,002 in [81,002, 81,004), 81,008 in [81,008, 81,010).
+  assert.equal(tape.fine, 2);
   const rows = tape.rows(8, null), coins = tape.coinRows(8, null);
-  assert.equal(coins.length, rows.length);
-  close(coins[0]![1], 1); close(coins[0]![2], 0.5); close(coins[1]![1], 2); assert.equal(coins[1]![0], rows[1]![0]);
-  close(tape.coinRows(8, [S])[0]![1], 2, 'only the markets asked for');
-  // Far away prices make the bins twice as wide (and the arrays move): the coins move with the dollars.
+  assert.deepEqual(coins.map(r => r[0]), rows.map(r => r[0]), 'the rows the dollars list, one for one');
+  close(coins[0]![1], 81_001 / 81_001); close(coins[0]![2], 40_501 / 81_003); close(coins[1]![1], 162_016 / 81_009); assert.equal(coins[1]![2], 0);
+  close(tape.coinRows(8, [S])[0]![1], 162_016 / 81_009, 'only the markets asked for');
+  assert.equal(tape.coinRows(8, null), tape.coinRows(8, null), 'kept while no order came');
+  assert.deepEqual(tape.rows(8, null), rows, 'reading the coins leaves the dollars as they were');
+  // Far away prices make the bins wider (16 fine steps here): a bin's middle moves with them, within half a bin of each order's own price.
   tape.add(P, 120_000, 120_000);
   tape.add(P, 40_000, -40_000);
-  const wide = tape.binWidth * 4, all = tape.rows(wide, null), allCoins = tape.coinRows(wide, null);
+  const w = tape.binWidth, bin = (price: number): number => Math.floor(Math.floor(price / tape.fine * (1 + 1e-12)) / (w / tape.fine));
+  const inBin = (price: number, usd: number): number => usd / ((bin(price) + 0.5) * w);
+  const orders: [number, number][] = [[81_001, 81_001], [81_002, 40_501], [81_008, 162_016], [120_000, 120_000], [40_000, 40_000]];
+  const all = tape.rows(w * 4, null), allCoins = tape.coinRows(w * 4, null);
   assert.equal(allCoins.length, all.length);
-  close(allCoins.reduce((a, r) => a + r[1] + r[2], 0), 1 + 0.5 + 2 + 1 + 1);
-  const near = allCoins.find(r => r[0] <= 81_001 && r[0] + wide > 81_008)!;
-  close(near[1], 3); close(near[2], 0.5);
+  close(allCoins.reduce((a, r) => a + r[1] + r[2], 0), orders.reduce((a, [price, usd]) => a + inBin(price, usd), 0));
+  for (const [price, usd] of orders) assert.ok(Math.abs(inBin(price, usd) - usd / price) <= usd / price * (w / 2) / price, `${price}: within half a bin`);
+  const before = tape.coinRows(w * 4, null);
   tape.add(P, 81_001, 81_001);
-  close(tape.coinRows(wide, null).find(r => r[0] === near[0])![1], 4, 'an order added to the kept rows adds its coins');
+  assert.notEqual(tape.coinRows(w * 4, null), before, 'worked out again once an order came');
+  close(tape.coinRows(w * 4, null).reduce((a, r) => a + r[1] + r[2], 0), orders.reduce((a, [price, usd]) => a + inBin(price, usd), 0) + inBin(81_001, 81_001));
 });
 
 test('an alert keeps its coins from when it fired, written when the Recent list shows: in dollars as it fired, in coins its coins', () => {
