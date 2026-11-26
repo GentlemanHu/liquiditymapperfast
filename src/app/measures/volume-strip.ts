@@ -331,15 +331,16 @@ const pct = (x: number): string => `${(x * 100).toFixed(1)} %`;
 const signedPct = (x: number): string => `${x > 0 ? '+' : x < 0 ? '−' : ''}${(Math.abs(x) * 100).toFixed(1)} %`;
 /**
  * A bar's total, its two sides with their shares and its delta with its share of the total. The amounts as they print (`said`: in coins while
- * the page writes coins, app/units.ts), the shares, parts of the one candle, of the dollars.
+ * the page writes coins, app/units.ts); the sides' shares, parts of the one candle, of the dollars; the delta's signed share of the amounts it
+ * is said with, so the two never disagree in sign (a nearly even bar can lean the other way in coins).
  */
 function sideLines(buy: number, sell: number, said: { buy: number; sell: number } = { buy, sell }): InfoLine[] {
-  const total = buy + sell, net = buy - sell, share = (x: number): string => total > 0 ? pct(x / total) : '—', saidNet = said.buy - said.sell;
+  const total = buy + sell, share = (x: number): string => total > 0 ? pct(x / total) : '—', saidNet = said.buy - said.sell, saidTotal = said.buy + said.sell;
   return [
-    { label: t('Volume'), text: amount(said.buy + said.sell) },
+    { label: t('Volume'), text: amount(saidTotal) },
     { label: VOLUME_WORDS.buy, text: `${amount(said.buy)} · ${share(buy)}`, color: 'buy' },
     { label: VOLUME_WORDS.sell, text: `${amount(said.sell)} · ${share(sell)}`, color: 'sell' },
-    { label: VOLUME_WORDS.net, text: `${signedAmount(saidNet)} · ${total > 0 ? signedPct(net / total) : '—'}`, ...(saidNet > 0 ? { color: 'buy' as const } : saidNet < 0 ? { color: 'sell' as const } : {}) },
+    { label: VOLUME_WORDS.net, text: `${signedAmount(saidNet)} · ${saidTotal > 0 ? signedPct(saidNet / saidTotal) : '—'}`, ...(saidNet > 0 ? { color: 'buy' as const } : saidNet < 0 ? { color: 'sell' as const } : {}) },
   ];
 }
 

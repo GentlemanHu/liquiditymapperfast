@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import { setUnits } from '../src/app/units.ts';
 import { barCoins, barVwap, rowCellAt, rowCellLines, rowText, volText, type Bar } from '../src/app/panes/footprint.ts';
 import { detectSide, trapText } from '../src/app/traps.ts';
-import { levelsInCoins, liqProfile, liqRows, liqStanding, parseLiqLevels, profileMaxima, rowInCoins, standingBelow, standingInCoins, type LiqLevels } from '../src/app/liq-levels.ts';
+import { binsBetween, binsIn, levelsInCoins, liqProfile, liqRows, liqStanding, parseLiqLevels, profileMaxima, rowInCoins, standingBelow, standingInCoins, type LiqLevels } from '../src/app/liq-levels.ts';
 import { cumulate } from '../src/app/liq-history.ts';
 import { coinSplit, splitAmounts, splitText } from '../src/app/liq-words.ts';
 import { stripeBoxLines } from '../src/app/liq-box.ts';
 import { liqCardLines } from '../src/app/hover-rows.ts';
 import { rowBody, saidMax, saidNet, saidTotal, tradedHeader, tradedNetLine, tradedRows, VOLUME_WORDS } from '../src/app/traded.ts';
 import { eventRows, flowRows, oiRows, oiSpread, withFlowCoins } from '../src/app/measures/model.ts';
-import { candleCoins, joinRows } from '../src/app/measures/volume-strip.ts';
+import { candleCoins, joinRows, stripLines, type StripBar } from '../src/app/measures/volume-strip.ts';
+import { OI } from '../src/app/measures/defs/oi.ts';
 import { blocksOf } from '../src/app/tpo/model.ts';
 import type { ProfileAnswer } from '../src/shared/footprint.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
@@ -108,6 +109,18 @@ test('a stripe row, the column\'s maxima and the box in coins: the bins converte
   });
 });
 
+test('the largest position is the one with the most dollars, said in coins, so it never stands beside another bin\'s share', () => {
+  // Bin 18 [90, 95) holds a 70 position, bin 19 [95, 100) a 72 one: 72 has the most dollars, though 70 / 92.5 is more coins than 72 / 97.5.
+  const levels = levelsOf([[18, 70, 0, 0, 0, 1, 0, 70, 0], [19, 72, 0, 0, 0, 1, 0, 72, 0]]), coins = levelsInCoins(levels);
+  const [row] = liqRows(levels, null, 2, 90, 100);
+  near(rowInCoins(levels, null, row!).longTop, 72 / 97.5, 'the stripe row\'s');
+  assert.equal(rowInCoins(levels, null, row!).longOne, row!.longOne, 'one position holding half of it: the dollars\' call');
+  near(binsBetween(levels, 'long', 18, 20, coins).top, 72 / 97.5, 'the card\'s');
+  near(binsIn(levels, 'long', 90, 100, coins).top, 72 / 97.5, 'the finger\'s');
+  assert.equal(binsBetween(levels, 'long', 18, 20).top, 72, 'dollars as before');
+  assert.equal(binsIn(levels, 'long', 90, 100).positions, 2);
+});
+
 test('a total and its two parts in coins add up as printed, in the total\'s last figure and unit', () => {
   inCoinsMode(() => {
     for (const [total, a, b] of [[13.24, 9.1, 4.14], [0.01254, 0.004, 0.00854], [5514, 4000, 1514], [12.01, 7.5, 4.51], [551.4, 551.4, 0], [0.35, 0.1, 0.25]]) {
@@ -180,6 +193,28 @@ test('bands along the top in coins: flow from the coin tracks, events each over 
   near(inverse.parts.reduce((s, p) => s + p.usd, 0), 2 * 40, 'its own USD'); near(inverse.parts.reduce((s, p) => s + p.coins!, 0), 2 * 40 / 50, 'that USD over the price traded');
   const oi = oiRows([{ t: MIN, usd: 100, coins: 2 }, { t: MIN, usd: -50, coins: -1 }], [[0, 3 * MIN]], 0, 3 * MIN, MIN, 0, true);
   assert.deepEqual([...oi.coins!.buy], [0, 2, 0]); assert.deepEqual([...oi.coins!.sell], [0, 1, 0]);
+});
+
+test('a signed share beside a figure in coins is of the coins, so a nearly even bar or column never says two signs', () => {
+  // Sells low and buys high: $10 more bought than sold, yet fewer coins bought than sold.
+  const rows = tradedRows(answer([[100, 0, 1000], [200, 1010, 0]]), 100, 100, 300, true);
+  inCoinsMode(() => {
+    const line = tradedNetLine(rows);
+    assert.match(line, /^Δ −[\d.]+ BTC · -[\d.]+ %$/, line);
+    const bar: StripBar = { t: 0, x: 0, w: 1, source: 'candle', buy: 1010, sell: 1000, split: true, i: -1, gap: null, coins: { buy: 1010 / 205, sell: 1000 / 105 } };
+    const net = stripLines(bar, { rows: null, tf: 60_000, now: 120_000, market: 'X', tfName: '1m', reports: true, total: 0 }).find(l => l.label === VOLUME_WORDS.net)!;
+    assert.match(net.text, /^−[\d.]+ BTC · −[\d.]+ %$/, net.text); assert.equal(net.color, 'sell');
+  });
+  assert.match(tradedNetLine(rows), /^Δ \+\$10 · 0\.5 %$/, 'dollars as before');
+});
+
+test('open interest\'s change not placed is said in coins only where its coins are known, never over today\'s price', () => {
+  const rows = tradedRows(answer([[100, 10_000, 0]]), 10, 100, 110, true);
+  inCoinsMode(() => {
+    assert.equal(OI.header(rows, { cut: false, incomplete: false, unplaced: 5_000 }).sub, '– not placed');
+    assert.equal(OI.header(rows, { cut: false, incomplete: false, unplaced: 5_000, unplacedCoins: 0.05 }).sub, '+0.05 BTC not placed');
+  });
+  assert.equal(OI.header(rows, { cut: false, incomplete: false, unplaced: 5_000 }).sub, '+$5K not placed');
 });
 
 test('a candle\'s coins as the strip and TPO say them: its volume and taker buys read as they are', () => {

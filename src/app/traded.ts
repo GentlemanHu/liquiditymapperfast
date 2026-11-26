@@ -212,10 +212,10 @@ export function tradedNet(rows: TradedRows): number { let net = 0; for (let i = 
 
 const share = (x: number): string => `${(x * 100).toFixed(1)} %`;
 /**
- * The column header's line under its total: the difference of the two sides, and that as a share of the total. The difference in the page's
- * units (`saidNet`: in coins its sign is the coins', which the caller colours it by), the share of the dollars.
+ * The column header's line under its total: the difference of the two sides, and that as a share of the total, both in the page's units
+ * (`saidNet`, `saidTotal`: in coins the coins', so the share's sign is the difference's, which the caller colours it by).
  */
-export const tradedNetLine = (rows: TradedRows): string => `Δ ${signedAmount(saidNet(rows))} · ${share(rows.total > 0 ? tradedNet(rows) / rows.total : 0)}`;
+export const tradedNetLine = (rows: TradedRows): string => { const net = saidNet(rows), total = saidTotal(rows); return `Δ ${signedAmount(net)} · ${share(total > 0 ? net / total : 0)}`; };
 
 /**
  * What the box over the column's header says of its whole window: the two sides and their difference, the point of control and the value
@@ -227,14 +227,15 @@ export function tradedFigures(rows: TradedRows, levels: ValueLevels | null, mark
   const lines: InfoLine[] = [{ text: title, bold: true }];
   if (!(rows.total > 0)) { lines.push({ text: words.none, color: 'muted', wrap: true }); return lines; }
   const mid = (i: number): number => (rows.bin0 + i + 0.5) * rows.step, at = (price: number): string => fmtPrice(price, rows.step);
-  // The sizes in the page's units (`said`, app/units.ts); the shares, the weighted mean and the median from the dollars.
+  // The sizes in the page's units (`said`, app/units.ts), and the difference's signed share of them, so the two agree in sign; the other
+  // shares, the weighted mean and the median from the dollars.
   const said = saidSides(rows);
   let buy = 0, sell = 0, weighted = 0, saidBuy = 0, saidSell = 0;
   for (let i = 0; i < rows.buy.length; i++) { const b = rows.buy[i]!, s = rows.sell[i]!; buy += b; sell += s; weighted += mid(i) * (b + s); saidBuy += said.buy[i]!; saidSell += said.sell[i]!; }
   const net = buy - sell, saidNet = saidBuy - saidSell;
   if (split) {
     lines.push({ label: words.buy, text: amount(saidBuy), color: 'buy' }, { label: words.sell, text: amount(saidSell), color: 'sell' },
-      { label: words.net, text: `${signedAmount(saidNet)} · ${share(net / rows.total)}`, ...(saidNet > 0 ? { color: 'buy' as const } : saidNet < 0 ? { color: 'sell' as const } : {}) });
+      { label: words.net, text: `${signedAmount(saidNet)} · ${share(said === rows ? net / rows.total : saidNet / (saidBuy + saidSell))}`, ...(saidNet > 0 ? { color: 'buy' as const } : saidNet < 0 ? { color: 'sell' as const } : {}) });
   } else lines.push({ label: t('Volume'), text: amount(saidBuy + saidSell) });
   // The median: the row where the running total, from the lowest price up, first reaches half of it.
   let run = 0, median = mid(0);

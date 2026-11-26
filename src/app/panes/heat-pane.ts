@@ -1,7 +1,7 @@
 import type { HeatRenderer, HeatStyle } from '../heatmap/gl.ts';
 import { heatRenderer } from '../heatmap/canvas.ts';
 import { buildLut } from '../heatmap/lut.ts';
-import { colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
+import { baselineInUnits, colourWindow, nextBaseline, type Baseline } from '../heatmap/window.ts';
 import { gridRowPrice, rasterFloor } from '../heatmap/coins.ts';
 import { amount, figure, inCoins, inUnits, unitFloor } from '../units.ts';
 import { isCoarse, isPhone } from '../device.ts';
@@ -871,19 +871,35 @@ export class HeatPane {
   get sizesData(): FootprintData { return this.#sizes; }
 
   /**
-   * The window currently mapped onto the colour ramp: the percentile baseline shifted by the contrast slider, in dollars, or in coins where
-   * `coins` says so (the raster it was taken from was: app/units.ts; the legend writes it so). Until there is a baseline, a placeholder in
-   * the page's units.
+   * The window currently mapped onto the colour ramp: the percentile baseline shifted by the contrast slider, in the page's units (app/units.ts),
+   * which `coins` says (the legend writes it so). Until there is a baseline, a placeholder in the page's units.
    */
-  get window(): { lo: number; hi: number; coins: boolean } {
-    const b = this.#baseline, v = this.view;
-    return { ...colourWindow(b, this.store.state.heat.contrast, b?.floor ?? unitFloor((v.p0 + v.p1) / 2)), coins: b ? b.coins === true : inCoins() };
+  get window(): { lo: number; hi: number; coins: boolean } { return this.#windowIn(inCoins()); }
+
+  /**
+   * The baseline in the page's units: the one held, put into them (`baselineInUnits`, at the view's middle price, its timers kept) the first
+   * time anything reads it after the units are switched (the legend reads the window at once, the next frame before it asks for a raster). So a
+   * switch never takes a new window, and a first raster in the new units that holds nothing leaves no baseline in the units the page left.
+   */
+  #baselineNow(): Baseline | null {
+    const b = this.#baseline, coins = inCoins(), v = this.view;
+    if (b && (b.coins === true) !== coins) this.#baseline = baselineInUnits(b, coins, (v.p0 + v.p1) / 2);
+    return this.#baseline;
+  }
+
+  /**
+   * The colour window in coins (`coins`) or dollars: the page's, or that of a grid still drawn in the units the page has just left, until its
+   * raster in the new units comes (the baseline put back into its units for drawing only), so the picture does not flash in between.
+   */
+  #windowIn(coins: boolean): { lo: number; hi: number; coins: boolean } {
+    const v = this.view, held = this.#baselineNow(), b = held && (held.coins === true) !== coins ? baselineInUnits(held, coins, (v.p0 + v.p1) / 2) : held;
+    return { ...colourWindow(b, this.store.state.heat.contrast, b?.floor ?? rasterFloor(coins, v.p0, v.p1)), coins: b ? b.coins === true : coins };
   }
 
   /** The colour window after a raster in coins (`coins`) or dollars, with a dollar in its units `floor` (heatmap/coins.ts). */
   #updateBaseline(coins: boolean, floor: number): void {
     if (!(this.stats.p96 > 0)) return;
-    this.#baseline = nextBaseline(this.#baseline, this.stats, { auto: this.store.state.heat.auto, force: this.#forceBaseline, spanP: this.view.p1 - this.view.p0, now: performance.now(), coins, floor });
+    this.#baseline = nextBaseline(this.#baselineNow(), this.stats, { auto: this.store.state.heat.auto, force: this.#forceBaseline, spanP: this.view.p1 - this.view.p0, now: performance.now(), coins, floor });
     this.#forceBaseline = false;
   }
   invalidate(): void { this.#dirty = true; this.#schedule(); }
@@ -1149,7 +1165,7 @@ export class HeatPane {
 
   #onRaster(result: RasterResult): void {
     // An answer in the units the page has just stopped writing (app/units.ts: switched while it was being made) is let go before it touches
-    // the colour window, so the new units' first raster takes the new window; the next frame asks again (the raster's key holds the units).
+    // the colour window, which was put into the new units at the switch; the next frame asks again (the raster's key holds the units).
     if (result.coins !== inCoins()) { this.invalidate(); return; }
     this.stats = result.stats;
     const floor = rasterFloor(result.coins, result.bounds.p0, result.bounds.p1);
@@ -1173,8 +1189,9 @@ export class HeatPane {
     if (!(v.t1 > v.t0)) return;
     const ids = this.#enabledIds();
     const smooth = this.store.state.heat.smooth !== 'off', coins = inCoins();
-    // The units (app/units.ts) are in the key: a switch asks for the raster again, and takes a new colour window with it.
-    const key = `${ids.join(',')}|${this.plotW}x${this.plotH}|${smooth ? 's' : 'r'}|${coins ? 'coins' : 'usd'}`;
+    // The units (app/units.ts) are in the raster's key, not the colour window's: a switch asks for the raster again in the new units, and the
+    // window held is put into them (`#baselineNow`), so the colours stay where they were.
+    const view = `${ids.join(',')}|${this.plotW}x${this.plotH}|${smooth ? 's' : 'r'}`, key = `${view}|${coins ? 'coins' : 'usd'}`;
     const cov = this.gl.coverage;
     const outside = !cov || v.t0 < cov.t0 || v.t1 > cov.t1 || v.p0 < cov.p0 || v.p1 > cov.p1
       || (v.t1 - v.t0) / (cov.t1 - cov.t0) < 0.55 || (v.p1 - v.p0) / (cov.p1 - cov.p0) < 0.55;
@@ -1182,8 +1199,8 @@ export class HeatPane {
     // worker seven eighths of its time: there the live minute is a pixel or two at the edge, and a whole raster every 1.5-2 s of 0.5-0.7 s
     // kept a third of a core busy for it (Research_Findings.md). New columns, a pan or a zoom are drawn at once whatever this says.
     const stale = this.#rasteredVersion !== this.#dataVersion || this.#rasteredKey !== key || performance.now() - this.#lastRasterAt > Math.max(1_500, 8 * this.hub.busyMs);
-    // A new view of other venues or another size takes a new colour window; a pan or zoom only asks for a new raster (#rasteredKey).
-    if (this.#baselineKey !== key) { this.#baselineKey = key; this.#forceBaseline = true; }
+    // A new view of other venues or another size takes a new colour window; a pan, a zoom or a switch of the units only asks for a new raster.
+    if (this.#baselineKey !== view) { this.#baselineKey = view; this.#forceBaseline = true; }
     void this.hub.loadColumns(v, this.plotW).catch(error => console.error('column load failed', error));
     if (!ids.length || (!outside && !stale)) return;
     const spanT = v.t1 - v.t0, spanP = v.p1 - v.p0;
@@ -1194,7 +1211,8 @@ export class HeatPane {
   }
 
   #style(): HeatStyle {
-    const p = this.#palette, { heat } = this.store.state, w = this.window;
+    // The window in the units of the grid drawn: the page's, or for a moment after a switch those it was made in.
+    const p = this.#palette, { heat } = this.store.state, w = this.#windowIn(this.#grid?.coins ?? inCoins());
     const opacity = heat.style === 'size' ? this.#lodFrame.heatmapOpacity : (p.dark ? 0.95 : 1) * this.#lodFrame.heatmapOpacity;
     return { bid: rgb(p.bid), bidSoft: rgb(p.bidSoft), ask: rgb(p.ask), askSoft: rgb(p.askSoft), min: w.lo, max: w.hi, mode: heat.style, opacity, floor: this.#grid?.floor ?? 1 };
   }
@@ -4147,9 +4165,9 @@ export class HeatPane {
     ctx.fillText(measure(def.name()) <= headRoom ? def.name() : fitText(measure, def.short(), headRoom), x0 + HEAD_INSET, rowNameTop(look, nameSize));
     ctx.fillStyle = p.muted; ctx.font = bodyFont(headSize);
     const held = this.hub.profile(metric), flags = held && answer ? held.flags : { cut: false, incomplete: false };
-    // Open interest's change not placed, from a source that says it in dollars only: in coins at the price now (app/units.ts), an estimate.
-    const unplacedCoins = flags.unplacedCoins ?? (flags.unplaced !== undefined && state.mark.price > 0 ? flags.unplaced / state.mark.price : undefined);
-    const measured = measureDef(metric).header(rows, { ...flags, ...(unplacedCoins !== undefined ? { unplacedCoins } : {}) });
+    // Open interest's change not placed is said in coins only where the source gives its coins (app/units.ts): a total in dollars is never put
+    // over today's price, so in coins a source that says dollars only leaves it unsaid ('–').
+    const measured = measureDef(metric).header(rows, flags);
     let { head, sub } = measured;
     // An estimate from the candles says so, in the profile colour, where a recording's window says "since" in amber.
     const anchored = this.anchoredWindow(), fromText = anchored ? (anchored.from < startOfDay(Date.now()) ? clockYear(anchored.from) : clock(anchored.from)) : '';
@@ -4785,7 +4803,8 @@ export class HeatPane {
     const whole = levels ? liqStanding(levels, null) : null;
     const level = row.kLo !== null ? standingBins(s, side, row.kLo, row.kHi) : Math.max(0, standingBelow(s, side, hi) - standingBelow(s, side, lo));
     const total = whole && row.kLo !== null ? Math.max(level, standingBins(whole, side, row.kLo, row.kHi)) : level;
-    const bins = levels && row.kLo !== null ? binsBetween(levels, side, row.kLo, row.kHi) : { positions: 0, top: 0 };
+    // The largest one is the one with the most dollars, said in the page's units (`binsBetween`'s `said`).
+    const bins = set.levels && levels && row.kLo !== null ? binsBetween(set.levels, side, row.kLo, row.kHi, levels) : { positions: 0, top: 0 };
     const ry0 = v.yOf(hi, ph), ry1 = v.yOf(lo, ph);
     ctx.save(); ctx.globalAlpha = 0.9; ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.strokeRect(x0 + 1.5, Math.round(ry0) - 0.5, W - 3, Math.max(2, Math.round(ry1 - ry0) + 1)); ctx.restore();
     const lines = liqCardLines({ kind, side, lo, hi, step, level, total, split: parts ? partsBetween(parts, side, lo, hi) : null, positions: bins.positions, top: bins.top,

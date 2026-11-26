@@ -597,7 +597,8 @@ export class LiqPane {
     const other = side === 'short' ? standingBelow(cs, 'long', price) - standingBelow(cs, 'long', price - d) : standingBelow(cs, 'short', price + d) - standingBelow(cs, 'short', price);
     const r = Math.floor(at / step) - prof.row0, a = (prof.row0 + r) * step;
     const level = r < 0 || r >= prof.long.length ? 0 : !coins ? (side === 'long' ? prof.long[r]! : prof.short[r]!) : Math.max(0, standingBelow(cs, side, a + step) - standingBelow(cs, side, a));
-    const { positions, top } = binsIn(coins ? levelsInCoins(levels) : levels, side, a, a + step);
+    // The largest one is the one with the most dollars, said in the page's units (`binsIn`'s `said`).
+    const { positions, top } = binsIn(levels, side, a, a + step, coins ? levelsInCoins(levels) : levels);
     // The line across and the price's tag on the axis, once a frame (`decorate`: the first half of a split that reads draws them).
     if (decorate) {
       ctx.save();

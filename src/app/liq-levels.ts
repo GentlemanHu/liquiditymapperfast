@@ -401,27 +401,36 @@ export function dollarPriceOf(state: Pick<AppState, 'markets' | 'marketId' | 'ma
   return market && DOLLARS.test(market.quote ?? '') ? state.mark.price : NaN;
 }
 
-/** How many positions of a side the bins in [lo, hi) hold, and the largest of them (a position sits in one bin). */
-export function binsIn(levels: LiqLevels, side: 'long' | 'short', lo: number, hi: number): { positions: number; top: number } {
-  let positions = 0, top = 0;
+/**
+ * How many positions of a side the bins in [lo, hi) hold, and the largest of them (a position sits in one bin). `said`: the same levels in
+ * the page's units (`levelsInCoins`, app/units.ts): the largest is still the one with the most dollars, as the bars and the shares beside it
+ * read them, said in those units.
+ */
+export function binsIn(levels: LiqLevels, side: 'long' | 'short', lo: number, hi: number, said: LiqLevels = levels): { positions: number; top: number } {
+  let positions = 0, top = 0, at = -1;
   for (let i = lowerBound(levels.k, Math.floor(lo / levels.step)); i < levels.k.length && levels.k[i]! * levels.step < hi; i++) {
     positions += side === 'long' ? levels.longWallets[i]! : levels.shortWallets[i]!;
-    top = Math.max(top, side === 'long' ? levels.longTop[i]! : levels.shortTop[i]!);
+    const v = side === 'long' ? levels.longTop[i]! : levels.shortTop[i]!;
+    if (v > top) { top = v; at = i; }
   }
-  return { positions, top };
+  return { positions, top: topSaid(said, side, at, top, levels) };
 }
+/** The largest one as it is said: from `said` at the bin the dollars found it in (`at`), or the dollars themselves. */
+const topSaid = (said: LiqLevels, side: 'long' | 'short', at: number, top: number, levels: LiqLevels): number =>
+  said === levels || at < 0 ? top : side === 'long' ? said.longTop[at]! : said.shortTop[at]!;
 
 /**
  * `binsIn` by bin number: the positions of a side in the bins [kLo, kHi) and the largest. The liquidation card asks by number so a price that
  * divides back to 42.99999 never counts the bin before (Sol, review 2026-11-20).
  */
-export function binsBetween(levels: LiqLevels, side: 'long' | 'short', kLo: number, kHi: number): { positions: number; top: number } {
-  let positions = 0, top = 0;
+export function binsBetween(levels: LiqLevels, side: 'long' | 'short', kLo: number, kHi: number, said: LiqLevels = levels): { positions: number; top: number } {
+  let positions = 0, top = 0, at = -1;
   for (let i = lowerBound(levels.k, kLo); i < levels.k.length && levels.k[i]! < kHi; i++) {
     positions += side === 'long' ? levels.longWallets[i]! : levels.shortWallets[i]!;
-    top = Math.max(top, side === 'long' ? levels.longTop[i]! : levels.shortTop[i]!);
+    const v = side === 'long' ? levels.longTop[i]! : levels.shortTop[i]!;
+    if (v > top) { top = v; at = i; }
   }
-  return { positions, top };
+  return { positions, top: topSaid(said, side, at, top, levels) };
 }
 
 /**
@@ -467,11 +476,18 @@ const coinStandings = new WeakMap<LiqStanding, LiqStanding>();
 /** A standing in the page's units: as it is in dollars, in coins `standingInCoins` (app/units.ts). */
 export const standingSaid = (s: LiqStanding, coins: boolean): LiqStanding => coins ? standingInCoins(s) : s;
 
-/** A row of the stripe (grouped from `levels` by `liqRows`) in coins: the same bins, each over the price in its middle before they are added. */
+/**
+ * A row of the stripe (grouped from `levels` by `liqRows`) in coins: the same bins, each over the price in its middle before they are added.
+ * Its largest one is the dollar row's (the bin with the most dollars, whose share of the level the box gives), said in coins; whether one
+ * position holds half of it is the dollar row's too.
+ */
 export function rowInCoins(levels: LiqLevels, taken: { long: Taken; short: Taken } | null, row: LiqRow): LiqRow {
-  const per = Math.max(1, Math.round((row.p1 - row.p0) / levels.step));
-  const same = liqRows(levelsInCoins(levels), taken, per, row.p0, row.p1).find(r => Math.abs(r.p0 - row.p0) < levels.step / 2);
-  if (same) return same;
+  const coins = levelsInCoins(levels), per = Math.max(1, Math.round((row.p1 - row.p0) / levels.step));
+  const same = liqRows(coins, taken, per, row.p0, row.p1).find(r => Math.abs(r.p0 - row.p0) < levels.step / 2);
+  if (same) {
+    const kLo = Math.round(row.p0 / levels.step), kHi = Math.round(row.p1 / levels.step);
+    return { ...same, longTop: binsBetween(levels, 'long', kLo, kHi, coins).top, shortTop: binsBetween(levels, 'short', kLo, kHi, coins).top, longOne: row.longOne, shortOne: row.shortOne };
+  }
   // Not on the levels' own grid (never, for a row the stripe drew): the row over its middle price.
   const mid = (row.p0 + row.p1) / 2, k = mid > 0 ? 1 / mid : 0;
   return { ...row, long: row.long * k, longIso: row.longIso * k, short: row.short * k, shortIso: row.shortIso * k, longTop: row.longTop * k, shortTop: row.shortTop * k, longLeft: row.longLeft * k, shortLeft: row.shortLeft * k };

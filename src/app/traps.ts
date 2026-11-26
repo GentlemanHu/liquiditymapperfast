@@ -290,7 +290,10 @@ export function trapVerdict(scope?: { market: string; timeframe: string }): stri
  */
 export function trapText(trap: Trap, scope?: { market: string; timeframe: string }): string[] {
   const buyers = trap.side === 'buyers', multiple = trap.multiple >= 10 ? trap.multiple.toFixed(0) : trap.multiple.toFixed(1);
-  const net = Math.round(imbalanceOf(trap) * 100), share = Math.round(wickShareOf(trap) * 100);
+  // The net share is of the amounts said beside it (in coins the coins', so it agrees with them in sign); the wick's share of the candle stays
+  // the dollars'.
+  const coinGross = trap.zoneBuyCoins + trap.zoneSellCoins, share = Math.round(wickShareOf(trap) * 100);
+  const net = Math.round((!inCoins() ? imbalanceOf(trap) : coinGross > 0 ? trap.zoneDeltaCoins / coinGross : 0) * 100);
   const sizes = !inCoins()
     ? [buyers ? t("${amount} net aggressive buying in the upper wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }) : t("${amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }),
       t("Wick volume: ${buy} bought and ${sell} sold at market ({net}% net); {share}% of the candle's volume", { buy: usd(trap.zoneBuy), sell: usd(trap.zoneSell), net, share })]

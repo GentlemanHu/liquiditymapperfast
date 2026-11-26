@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gridInCoins, gridRowPrice, rasterFloor } from '../src/app/heatmap/coins.ts';
-import { colourWindow, nextBaseline } from '../src/app/heatmap/window.ts';
+import { baselineInUnits, colourWindow, nextBaseline } from '../src/app/heatmap/window.ts';
 import { cellColours } from '../src/app/heatmap/canvas.ts';
 import type { HeatStyle } from '../src/app/heatmap/gl.ts';
 import { buildLut } from '../src/app/heatmap/lut.ts';
@@ -47,6 +47,22 @@ test('the colour window in coins is the window in dollars over the price, floors
   const settled = nextBaseline(usd, { p15: 40_000, p96: 170_000 }, o(20_000, false))!;
   const switched = nextBaseline(settled, { p15: 0.4, p96: 1.7 }, { ...o(21_000, true), auto: false });
   assert.deepEqual([switched?.lo, switched?.hi, switched?.coins, switched?.since], [0.4, 1.7, true, 21_000]);
+});
+
+test('a switch of the units puts the colour window held into the new units at the view\'s middle: same colours, timers kept, no new window', () => {
+  const price = 100_000, held = nextBaseline(null, { p15: 40_000, p96: 170_000 }, { auto: false, force: false, spanP: 1_000, now: 0 })!;
+  const settled = { ...held, at: 5_000, since: 2_000 }, coins = baselineInUnits(settled, true, price);
+  assert.deepEqual([coins.lo, coins.hi, coins.coins, coins.floor, coins.at, coins.since, coins.spanP], [0.4, 1.7, true, 1 / price, 5_000, 2_000, 1_000]);
+  for (const contrast of [-100, 0, 50, 100]) {
+    const a = colourWindow(settled, contrast), b = colourWindow(coins, contrast);
+    assert.ok(Math.abs(b.lo * price - a.lo) < 1e-6 * a.lo && Math.abs(b.hi * price - a.hi) < 1e-6 * a.hi, `contrast ${contrast}: the same window, in coins`);
+  }
+  const back = baselineInUnits(coins, false, price);
+  assert.ok(Math.abs(back.lo - settled.lo) < 1e-6 && Math.abs(back.hi - settled.hi) < 1e-6 && back.coins === false && back.floor === 1, 'and back again');
+  assert.equal(baselineInUnits(coins, true, price), coins, 'already in those units');
+  assert.equal(baselineInUnits(settled, true, 0), settled, 'no price to put it at: left for the next raster to replace');
+  // Held through the switch, Auto off: a raster in the new units changes nothing, as one in the old units would not have.
+  assert.equal(nextBaseline(coins, { p15: 0.1, p96: 0.9 }, { auto: false, force: false, spanP: 1_000, now: 40_000, coins: true, floor: 1 / price }), coins);
 });
 
 /** A grid with cells of every size from a hundredth of a dollar's worth to ten billion. */

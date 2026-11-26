@@ -210,7 +210,8 @@ test('the map draws these boxes: the profile from its row and band, the band fro
   assert.match(body('#paintSeam'), /seamSpan\(v\.p0, v\.p1, price, d, step, Math\.min\(MAX_BINS, LIQ_PROFILE_ROWS\)\)/, 'the whole band, within what both groupings hold');
   assert.match(body('#paintSeam'), /const clipped = past && !span;/);
   assert.match(body('#paintLiqColumnMirror'), /standingBins\(s, side, row\.kLo, row\.kHi\)/);
-  assert.match(body('#paintLiqColumnMirror'), /binsBetween\(levels, side, row\.kLo, row\.kHi\)/);
+  // The largest is found by the dollars and said in the page's units (`binsBetween`'s last argument, the levels' coin twin in coins).
+  assert.match(body('#paintLiqColumnMirror'), /binsBetween\(set\.levels, side, row\.kLo, row\.kHi, levels\)/);
   // In coins the same bins over their own prices (app/units.ts): the levels the card counts are the set's, or their coin twin.
   assert.match(body('#paintLiqColumnMirror'), /levels = set\.levels && coins \? levelsInCoins\(set\.levels\) : set\.levels/);
   assert.match(body('#paintLiqSplit'), /mirrorFrame\(ctx, box\.lines, h => liqSubBoxFrame\(at, subs\[at\]\.x0, pw, ph, this\.#liqHeadH, h\)\)/, 'measured as drawn, wrapped to its frame');
