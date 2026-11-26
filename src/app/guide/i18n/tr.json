@@ -319,7 +319,7 @@
  "{n} min": "{n} dk",
  "Not recorded": "Kaydedilmedi",
  "Colour: recorded while the page was open": "Renk: sayfa açıkken kaydedilen",
- "depth recorded from here": "derinlik buradan itibaren kaydedildi",
+ "Depth recorded from {time}": "Derinlik {time} itibarıyla kaydedildi",
  "now": "şimdi",
  "{n} min ago": "{n} dk önce",
  "Wheel on the price scale": "Fiyat ölçeğinde tekerlek",

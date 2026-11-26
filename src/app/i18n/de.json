@@ -203,7 +203,7 @@
  "candles from {instrument}": "Kerzen von {instrument}",
  "Vol": "Vol",
  "({z}σ above its baseline)": "({z}σ über seiner Basislinie)",
- "depth recorded from {time}": "Tiefe aufgezeichnet ab {time}",
+ "Depth recorded from {time}": "Tiefe aufgezeichnet ab {time}",
  "LEVEL MAX {value}": "NIVEAU MAX {value}",
  "CUM MAX {value}": "KUM MAX {value}",
  "Asks": "Asks",

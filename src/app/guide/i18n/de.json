@@ -319,7 +319,7 @@
  "{n} min": "{n} Min.",
  "Not recorded": "Nicht aufgezeichnet",
  "Colour: recorded while the page was open": "Farbe: aufgezeichnet, während die Seite offen war",
- "depth recorded from here": "Tiefe aufgezeichnet ab hier",
+ "Depth recorded from {time}": "Tiefe aufgezeichnet ab {time}",
  "now": "jetzt",
  "{n} min ago": "vor {n} Min.",
  "Wheel on the price scale": "Mausrad auf der Preisskala",

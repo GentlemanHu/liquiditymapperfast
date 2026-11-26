@@ -319,7 +319,7 @@
  "{n} min": "{n} 分钟",
  "Not recorded": "未录制",
  "Colour: recorded while the page was open": "彩色：页面打开期间录下的",
- "depth recorded from here": "深度从这里开始记录",
+ "Depth recorded from {time}": "深度自 {time} 起录制",
  "now": "现在",
  "{n} min ago": "{n} 分钟前",
  "Wheel on the price scale": "在价格刻度上滚轮",

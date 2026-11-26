@@ -128,16 +128,15 @@ export function cornerSpan(els: readonly (CornerEl | null)[], left: number): Rec
 
 /**
  * What the stripe's caption plates keep clear of, each widened by the room it keeps: the corner buttons (`corner`, 4 px round them), the
- * legend and the room under it for the note (`legend`, its right edge and foot: 8 px beside it, 36 px under it), the "depth recorded from"
- * note (`history`, one 15 px row from its top), the volume strip's names (`names`, 2 px round them: the plates are painted after the strip,
- * so one over a name hid it, Sol, review 2026-11-20) and the note under the legend (`note`, 3 px under its last line), in that order (the
- * old rows check the last one again, `captionRows`).
+ * legend and the room under it for the note (`legend`, its right edge and foot: 8 px beside it, 36 px under it; the "depth recorded from"
+ * note is the legend's last row since 2026-11-26, so where the recording begins no longer moves a plate), the volume strip's names (`names`,
+ * 2 px round them: the plates are painted after the strip, so one over a name hid it, Sol, review 2026-11-20) and the note under the legend
+ * (`note`, 3 px under its last line), in that order (the old rows check the last one again, `captionRows`).
  */
-export function captionKeepOut(o: { corner: Rect | null; legend: { right: number; bottom: number }; history: { x0: number; x1: number; top: number } | null; note: { x0: number; x1: number; top: number; bottom: number } | null; names?: readonly Rect[] }): Rect[] {
+export function captionKeepOut(o: { corner: Rect | null; legend: { right: number; bottom: number }; note: { x0: number; x1: number; top: number; bottom: number } | null; names?: readonly Rect[] }): Rect[] {
   const out: Rect[] = [];
   if (o.corner) out.push({ x0: o.corner.x0 - 4, y0: -Infinity, x1: o.corner.x1 + 4, y1: o.corner.y1 + 4 });
   out.push({ x0: -Infinity, y0: -Infinity, x1: o.legend.right + 8, y1: o.legend.bottom + 36 });
-  if (o.history) out.push({ x0: o.history.x0 - 4, y0: o.history.top, x1: o.history.x1 + 4, y1: o.history.top + 15 });
   for (const n of o.names ?? []) out.push({ x0: n.x0 - 2, y0: n.y0 - 2, x1: n.x1 + 2, y1: n.y1 + 2 });
   if (o.note) out.push({ x0: o.note.x0 - 4, y0: o.note.top, x1: o.note.x1 + 4, y1: o.note.bottom + 3 });
   return out;
@@ -176,8 +175,9 @@ export function captionRows(items: readonly { x: number; w: number }[], keepOut:
  * they always stood in (`captionRows`) are clean, those: no plate over a keep-out (`captionKeepOut`) or over another, none past the plot's
  * foot, so a desktop map's captions stay where they were. Else each at the highest place where it lies over no keep-out and no plate placed
  * before it (`gap` px apart), moved down past whatever it lies over and checked against all of them again after every move, so one pushed
- * under the corner buttons never lands in a note. On a phone held sideways (a 138 px plot) the rows put the Liquidations plate over the
- * "depth recorded from" note, below a plate the legend had sent down; placed this way it stands under the Draw key, where it is free.
+ * under the corner buttons never lands in a note. On a phone held sideways (a 138 px plot) the rows put the Liquidations plate over a note
+ * under the legend (the "depth recorded from" note, which stood there until 2026-11-26), below a plate the legend had sent down; placed this
+ * way it stands under the Draw key, where it is free.
  * A plate whose highest free place ends past the plot's foot has no room (the time axis paints over the foot; Sol, review 2026-11-20): then
  * they are placed again in the order of `rank` (lowest first, the split's lanes before the take profits'), and a plate that still has no room
  * is left out (null): its lane still says what it holds under the pointer.

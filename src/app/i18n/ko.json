@@ -203,7 +203,7 @@
  "candles from {instrument}": "{instrument}의 캔들",
  "Vol": "거래량",
  "({z}σ above its baseline)": "(기준선보다 {z}σ 높음)",
- "depth recorded from {time}": "뎁스 {time}부터 기록",
+ "Depth recorded from {time}": "뎁스 {time}부터 기록",
  "LEVEL MAX {value}": "수준 최대 {value}",
  "CUM MAX {value}": "누적 최대 {value}",
  "Asks": "매도 호가",

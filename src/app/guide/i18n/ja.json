@@ -319,7 +319,7 @@
  "{n} min": "{n} 分",
  "Not recorded": "記録なし",
  "Colour: recorded while the page was open": "色：ページを開いている間に記録",
- "depth recorded from here": "ここからデプスを記録",
+ "Depth recorded from {time}": "デプスは {time} から記録",
  "now": "現在",
  "{n} min ago": "{n} 分前",
  "Wheel on the price scale": "価格スケール上のホイール",

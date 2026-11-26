@@ -319,7 +319,7 @@
  "{n} min": "{n} min",
  "Not recorded": "Non registrato",
  "Colour: recorded while the page was open": "Colore: registrato mentre la pagina era aperta",
- "depth recorded from here": "profondità registrata da qui",
+ "Depth recorded from {time}": "Profondità registrata da {time}",
  "now": "ora",
  "{n} min ago": "{n} min fa",
  "Wheel on the price scale": "Rotella sulla scala dei prezzi",

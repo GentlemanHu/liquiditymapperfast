@@ -203,7 +203,7 @@
  "candles from {instrument}": "velas de {instrument}",
  "Vol": "Vol",
  "({z}σ above its baseline)": "({z}σ sobre su referencia)",
- "depth recorded from {time}": "profundidad grabada desde {time}",
+ "Depth recorded from {time}": "Profundidad grabada desde {time}",
  "LEVEL MAX {value}": "NIVEL MÁX {value}",
  "CUM MAX {value}": "ACUM MÁX {value}",
  "Asks": "Asks",

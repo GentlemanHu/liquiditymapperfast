@@ -319,7 +319,7 @@
  "{n} min": "{n} мин",
  "Not recorded": "Не записано",
  "Colour: recorded while the page was open": "Цвет: записано, пока страница была открыта",
- "depth recorded from here": "глубина записана отсюда",
+ "Depth recorded from {time}": "Глубина записана с {time}",
  "now": "сейчас",
  "{n} min ago": "{n} мин назад",
  "Wheel on the price scale": "Колесо над шкалой цены",

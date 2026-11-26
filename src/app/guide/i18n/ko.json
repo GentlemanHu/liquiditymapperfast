@@ -319,7 +319,7 @@
  "{n} min": "{n}분",
  "Not recorded": "기록 없음",
  "Colour: recorded while the page was open": "색: 페이지가 열려 있는 동안 기록됨",
- "depth recorded from here": "뎁스는 여기서부터 기록됨",
+ "Depth recorded from {time}": "뎁스 {time}부터 기록",
  "now": "지금",
  "{n} min ago": "{n}분 전",
  "Wheel on the price scale": "가격 눈금에서 휠",

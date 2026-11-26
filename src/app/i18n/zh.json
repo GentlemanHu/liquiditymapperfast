@@ -203,7 +203,7 @@
  "candles from {instrument}": "来自 {instrument} 的 K 线",
  "Vol": "量",
  "({z}σ above its baseline)": "（比基线高 {z}σ）",
- "depth recorded from {time}": "深度自 {time} 起录制",
+ "Depth recorded from {time}": "深度自 {time} 起录制",
  "LEVEL MAX {value}": "价位最大值 {value}",
  "CUM MAX {value}": "累计最大值 {value}",
  "Asks": "卖盘",

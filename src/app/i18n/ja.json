@@ -203,7 +203,7 @@
  "candles from {instrument}": "{instrument} のローソク足",
  "Vol": "出来高",
  "({z}σ above its baseline)": "（基準線より {z}σ 上）",
- "depth recorded from {time}": "デプスは {time} から記録",
+ "Depth recorded from {time}": "デプスは {time} から記録",
  "LEVEL MAX {value}": "レベル最大 {value}",
  "CUM MAX {value}": "累計最大 {value}",
  "Asks": "売り板",

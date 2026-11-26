@@ -29,6 +29,7 @@ import { Held, ROW_HOLD_MS, booksReaching, depthBand, depthBandLines, depthHereL
 import { activeIds, emptyScopeMessage, heatmapSourceOf, kindOf, type Kind } from '../scope.ts';
 import { venueOfInstrument } from '../cvd/families.ts';
 import { fitText, wrapText } from '../text-fit.ts';
+import { depthStartLines } from '../depth-start.ts';
 import { LIQ_PROFILE_ROWS, binsBetween, captionPlace, dollarPriceOf, laneRows, levelsInCoins, liqCurves, liqProfile, liqStanding, onTheWay, partsBetween, partsSaid, profileMaxima, rowInCoins, seamStats, standingBelow, standingBins, standingSaid, TAKE_DASH, type CurvePoint, type LaneRows, type LiqLevels, type LiqRow, type LiqSet, type LiqStanding } from '../liq-levels.ts';
 import { SPLIT_COLUMN_W, captionKeepOut, cornerSpan, liqColumnWidth, ownScales, placeCaptions, splitHeads, splitScales, stripePlan, subAt, subColumns, whyLines, type Rect, type Sub, type SubScale } from '../liq-split.ts';
 import { MAP_PLOT_FLOOR } from '../layouts/dock-model.ts';
@@ -403,8 +404,6 @@ export class HeatPane {
   mirror: MirrorStats | null = null;
   /** The pointer on one of the columns beside the map (the liquidation column or the profile column), for its Mirror comparison. */
   #profileHover: { y: number; x?: number; column: 'liq' | 'book' | 'seam' } | null = null;
-  /** Where this frame's "depth recorded from" note was printed, so the liquidation levels' note can keep clear of it. */
-  #historyNote: { x0: number; x1: number; top: number } | null = null;
   /** Where this frame's note under the legend (Liquidation levels') stands, laid out before the stripe's captions so they keep clear of it. */
   #liqNoteBox: { x0: number; x1: number; top: number; bottom: number } | null = null;
   /** Each lane of the stripe's rows in view as last painted (the levels', the take profits', a split's right set's), kept by their keys (liq-stripe.ts). */
@@ -1356,7 +1355,7 @@ export class HeatPane {
   #renderHover(): void {
     this.#hoverDirty = false;
     if (this.#paneW <= 1 || this.#h <= 1) return;
-    this.#paintHoverLayer(this.#displayState(), true);
+    this.#paintHoverLayer(this.#displayState());
   }
 
   #footprintIds: { key: unknown[]; ids: string[] } | null = null;
@@ -1631,7 +1630,7 @@ export class HeatPane {
     for (const label of timeLabels) ctx.fillText(label.text, label.x, ph + TIME_H / 2);
     // Which clock the labels are on, under the price axis where no tick label goes (a screenshot says it too).
     ctx.textAlign = 'right'; ctx.fillText(zoneName(), w - 6, ph + TIME_H / 2); ctx.textAlign = 'center';
-    this.#paintHoverLayer(state, false);
+    this.#paintHoverLayer(state);
     // After the legend: the drawing tools' controls are placed under its foot (`onDrawFrame`).
     this.#paintDrawEdit();
   }
@@ -1640,7 +1639,7 @@ export class HeatPane {
    * The pointer's layer (`#hoverCanvas`): the overlay's last strokes before it had one, in their order (the legend, what the map says when it
    * has nothing to draw, the Range box, the book's row, the crosshair and its box). Drawn after the overlay, and alone for a pointer move.
    */
-  #paintHoverLayer(state: AppState, alone: boolean): void {
+  #paintHoverLayer(state: AppState): void {
     const ctx = this.#hoverCtx, pw = this.plotW, ph = this.plotH, p = this.#palette;
     ctx.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
     ctx.clearRect(0, 0, this.#paneW, this.#h);
@@ -1650,9 +1649,10 @@ export class HeatPane {
     ctx.fillStyle = p.muted; ctx.strokeStyle = p.line; ctx.lineWidth = 1; ctx.globalAlpha = 1; ctx.setLineDash([]);
     const legendBottom = this.#legendBox.bottom;
     this.#paintLegend(ctx, state);
-    // The legend changed height (a candle's figures on two lines, a script's line): the bands, the corner tools and the drawing tools are
-    // placed by its foot, so the map is drawn again under it (a whole frame places the drawing tools after this, `#paintOverlay`).
-    if (alone ? this.#legendBox.bottom !== legendBottom : this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate();
+    // The legend changed height (a candle's figures on two lines, a script's line, the row saying where the recorded depth begins): the
+    // bands, the note under it, the corner tools and the drawing tools are placed by its foot, and the overlay was drawn by the old one (in a
+    // whole frame as well: without a band, the levels' note stood a frame under the new row), so the map is drawn again under it.
+    if (this.#legendBox.bottom !== legendBottom || this.#bands.misplaced(this.#legendBox.bottom)) this.invalidate();
     if (!this.#wasLoaded && state.levels) { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(t('Collecting depth history…'), 12, 50); }
     const emptyScope = heatmapSourceOf(state) === 'aggregated' ? emptyScopeMessage(state) : null;
     if (emptyScope) { // the filter selected nothing: say so instead of drawing a blank map
@@ -2010,11 +2010,19 @@ export class HeatPane {
     const moreScripts = unlisted > 0 ? tn(unlisted, '+{n} more script', '+{n} more scripts') : '';
     const scriptsW = Math.max(0, ...listed.map((_, k) => 18 + wide(scriptNames[k]!) + 6 + toolsW[k]! + (scriptValues[k] ? 6 + wide(scriptValues[k]!) : 0)), moreScripts ? wide(moreScripts) : 0);
     const textH = (detail ? 36 : 22) + (detail2 ? 14 : 0) + (note ? 14 : 0), scriptRows = listed.length + (moreScripts ? 1 : 0);
+    // Where the map's recorded depth begins, while the view starts before it (`depthStartLines`): the plate's last row, so nothing above it
+    // moves when it comes or goes, with a sample of the dashed line that marks the moment on the map where the scripts have their swatches.
+    // Below the corner buttons it may run the plot's width; beside them it keeps clear of them (a phone's Draw key too, which `room` does not
+    // know). Left out of `#legendNeed`, so the corner tools never change their look as a drag brings the line in or out.
+    const scriptsH = scriptRows ? scriptRows * lineH + 2 : 0, depthTop = 6 + textH + scriptsH, cornerBox = this.#cornerTools(this.plotW);
+    const depthRoom = Math.max(40, (cornerBox && dy + depthTop < cornerBox.y1 + 4 - (ctx.canvas as HTMLCanvasElement).offsetTop ? Math.min(room, cornerBox.x0 - 20) : this.plotW - 20) - 12);
+    const depthLines = depthStartLines(wide, this.hub.depthSince(), this.view.t0, pageNow(), depthRoom);
+    const depthW = depthLines.length ? 12 + Math.max(...depthLines.map(wide)) : 0;
     ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
     const shownTitle = fitText(wide, phone ? `${name}  ${state.timeframe}` : title, room - tailW), titleW = wide(shownTitle);
     // The room the legend wants beside the corner tools, in steps (a candle's figures a pixel wider must not judge the tools again).
     this.#legendNeed = Math.min(LEGEND_NEED_PX, Math.ceil(Math.max(detailNatural, wide(phone ? `${name}  ${state.timeframe}` : title) + tailW) / 16) * 16);
-    const plateW = Math.max(titleW + tailW, detailW, noteW, scriptsW) + 14, plateH = textH + (scriptRows ? scriptRows * lineH + 2 : 0);
+    const plateW = Math.max(titleW + tailW, detailW, noteW, scriptsW, depthW) + 14, plateH = textH + scriptsH + 14 * depthLines.length;
     this.#legendBox = { right: 6 + plateW, bottom: 6 + dy + plateH };
     // Shifted by a translation alone, undone after: a save and restore here would also take back the font, alignment and colours this leaves set,
     // which what is drawn after the legend inherits (Sol: the crosshair's labels took the title's 600 12px).
@@ -2039,6 +2047,12 @@ export class HeatPane {
       y += lineH;
     });
     if (moreScripts) { ctx.fillStyle = p.muted; ctx.fillText(moreScripts, 12, y); }
+    if (depthLines.length) {
+      // The sample in the swatches' column, three dashes of the line's pattern; the pen given back as it was found.
+      const mid = depthTop + 4, pen = ctx.strokeStyle;
+      ctx.strokeStyle = p.muted; ctx.setLineDash([2, 4]); ctx.beginPath(); ctx.moveTo(16.5, mid - 7); ctx.lineTo(16.5, mid + 7); ctx.stroke(); ctx.setLineDash([]); ctx.strokeStyle = pen;
+      ctx.fillStyle = p.muted; depthLines.forEach((line, n) => ctx.fillText(line, 24, mid + 14 * n));
+    }
     if (dy) ctx.translate(0, -dy);
     // The buttons are page elements over this canvas, placed in the pane's own pixels (the plot starts after the columns left of it).
     const canvas = ctx.canvas as HTMLCanvasElement;
@@ -2431,26 +2445,18 @@ export class HeatPane {
     ctx.restore();
   }
 
+  /**
+   * Where the map's recorded depth begins (`Hub.depthSince`): a dashed line at the moment, nothing left of which has depth to draw. Its words
+   * are the legend's last row (`#paintLegend`, `depthStartLines`), which keeps its place whatever the line does (Karl, 2026-11-26: printed
+   * beside the line they moved with every drag and landed among the legend's lines).
+   */
   #paintHistoryStart(ctx: CanvasRenderingContext2D, pw: number, ph: number, p: Palette): void {
     const since = this.hub.depthSince(), v = this.view;
-    this.#historyNote = null;
     if (!(since > v.t0 && since < v.t1)) return;
-    const x = Math.round(v.xOf(since, pw)) + 0.5, text = t('depth recorded from {time}', { time: clock(since) });
+    const x = Math.round(v.xOf(since, pw)) + 0.5;
     ctx.save();
     ctx.strokeStyle = p.muted; ctx.globalAlpha = 0.55; ctx.setLineDash([2, 4]);
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ph); ctx.stroke(); ctx.setLineDash([]);
-    ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.fillStyle = p.muted; ctx.globalAlpha = 0.85; ctx.textBaseline = 'top';
-    // Left of the line where it fits (measured, so in any language), else on the side with more room, ending in "…" if even that is too short.
-    const wide = (words: string): number => ctx.measureText(words).width, room = Math.max(x - 12, pw - x - 12);
-    const label = wide(text) <= room ? text : fitText(wide, text, room);
-    // The legend plate takes the top-left corner of the map: a note that would run under it goes beneath it instead.
-    const w = ctx.measureText(label).width, right = x >= w + 12, left = right ? x - 6 - w : x + 6, box = this.#legendBox;
-    let top = left < box.right + 8 ? box.bottom + 6 : 6;
-    // Select and Recenter sit in the top-right corner of the map on the full toolbar: the note does not run under them.
-    const corner = this.root.querySelector<HTMLElement>('.map-tools');
-    if (top < 40 && corner && (right ? x - 6 : x + 6 + w) > this.#toolsRight(pw) - corner.offsetWidth - 8) top = 40;
-    if (right) { ctx.textAlign = 'right'; ctx.fillText(label, x - 6, top); } else { ctx.textAlign = 'left'; ctx.fillText(label, x + 6, top); }
-    this.#historyNote = { x0: left, x1: left + w, top };
     ctx.restore();
   }
 
@@ -2479,11 +2485,11 @@ export class HeatPane {
     // group's times) goes to the next line, cut only where a short map leaves no room for another: the parts are whole phrases (`noteLines`).
     ctx.save();
     ctx.font = '10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'top'; ctx.textAlign = 'left';
-    // Under the legend, a line lower where the "depth recorded from" note already stands there; on a short map in fewer lines, so the
-    // captions keep their room below it (`noteMostLines`), and never down to the volume strip's names (`layNote`).
+    // Under the legend (whose last row says where the recorded depth begins); on a short map in fewer lines, so the captions keep their
+    // room below it (`noteMostLines`), and never down to the volume strip's names (`layNote`).
     const under = this.#legendBox.bottom + 6, measure = (words: string): number => ctx.measureText(words).width;
     const foot = state.show.volume && this.candlesDrawn(state).length ? stripNamesTop(ph, volumeBand(ph)) : ph;
-    const { lines, top } = layNote(measure, note, Math.max(40, pw - 24), { ph, under, foot, history: this.#historyNote });
+    const { lines, top } = layNote(measure, note, Math.max(40, pw - 24), { ph, under, foot });
     ctx.restore();
     this.#liqNoteBox = { x0: 8, x1: 8 + Math.max(0, ...lines.map(measure)), top, bottom: top + 13 * lines.length };
     if (stands) {
@@ -2509,8 +2515,8 @@ export class HeatPane {
    * 2026-11-18, read that lane as the stops'; the levels' lane needs none, the column's button beside it names what it holds), and every
    * lane's under a split. Each is a plate with a small sample of its look (dashed for take profits, solid for levels), inside its lane where it
    * fits, else ending at the lane's right edge and reaching left over the map (`captionPlace`), never wider than the plot (a longer word ends
-   * in "…"), clear of the corner buttons the map shows (a phone's Draw key too), the legend, the "depth recorded from" note, the note under the
-   * legend and each other: in the rows they always stood in where those are clear, else each at the highest free place (`captionKeepOut`,
+   * in "…"), clear of the corner buttons the map shows (a phone's Draw key too), the legend (where the "depth recorded from" note is a row),
+   * the note under the legend and each other: in the rows they always stood in where those are clear, else each at the highest free place (`captionKeepOut`,
    * `placeCaptions`). Measured here; placed and painted by `#paintLiqPlates` once the map's lines and the volume strip are drawn.
    */
   #placeLiqCaptions(ctx: CanvasRenderingContext2D, items: readonly LaneCaption[], pw: number): void {
@@ -2539,7 +2545,7 @@ export class HeatPane {
     this.#liqPlates = null;
     if (!plates?.length) return;
     const look = document.documentElement.dataset.frame, size = rowNameSize(pw < NARROW_PLOT), SAMPLE = 12, warn = t('Out of date');
-    const keep = captionKeepOut({ corner: this.#cornerTools(pw), legend: this.#legendBox, history: this.#historyNote, note: this.#liqNoteBox, names: this.#stripNames });
+    const keep = captionKeepOut({ corner: this.#cornerTools(pw), legend: this.#legendBox, note: this.#liqNoteBox, names: this.#stripNames });
     ctx.save();
     ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     // Titled lanes out of date say so under their titles (Karl, 2026-11-24): one plate under them all where all are (one snapshot), else one under

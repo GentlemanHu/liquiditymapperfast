@@ -319,7 +319,7 @@
  "{n} min": "{n} хв",
  "Not recorded": "Не записано",
  "Colour: recorded while the page was open": "Колір: записано, поки сторінка була відкрита",
- "depth recorded from here": "глибину записано звідси",
+ "Depth recorded from {time}": "Глибину записано від {time}",
  "now": "зараз",
  "{n} min ago": "{n} хв тому",
  "Wheel on the price scale": "Колесо над шкалою цін",

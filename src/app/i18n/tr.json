@@ -203,7 +203,7 @@
  "candles from {instrument}": "{instrument} mumları",
  "Vol": "Vol",
  "({z}σ above its baseline)": "(taban çizgisinin {z}σ üzerinde)",
- "depth recorded from {time}": "derinlik {time} itibarıyla kaydedildi",
+ "Depth recorded from {time}": "Derinlik {time} itibarıyla kaydedildi",
  "LEVEL MAX {value}": "SEVİYE MAKS {value}",
  "CUM MAX {value}": "BİRİK MAKS {value}",
  "Asks": "Asks",

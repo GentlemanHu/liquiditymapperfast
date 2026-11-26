@@ -203,7 +203,7 @@
  "candles from {instrument}": "свечи с {instrument}",
  "Vol": "Объём",
  "({z}σ above its baseline)": "({z}σ выше базовой линии)",
- "depth recorded from {time}": "глубина записана с {time}",
+ "Depth recorded from {time}": "Глубина записана с {time}",
  "LEVEL MAX {value}": "УРОВЕНЬ МАКС {value}",
  "CUM MAX {value}": "НАКОПЛ МАКС {value}",
  "Asks": "Аски",
