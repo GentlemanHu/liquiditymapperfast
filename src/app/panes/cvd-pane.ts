@@ -716,11 +716,17 @@ export class CvdPane {
     let shown = held, shownTf = tf;
     if (!ready(tf, held)) for (const [at, bars] of [...this.#sizeBars].reverse()) if (at !== tf && ready(at, bars)) { shown = bars; shownTf = at; break; }
     const tfMs = SIZE_TFS.find(x => x.tf === shownTf)?.ms ?? 60_000;
-    const key = [shown.spot.version, shown.perp.version, counted.spot.version, counted.perp.version, shownTf, joint, ids.spot.length, ids.perp.length, model.t0, model.t1, model.columns, Math.floor(now / 1000), rankMs, replaying()].join('|');
+    const key = [shown.spot.version, shown.perp.version, counted.spot.version, counted.perp.version, shownTf, joint, ids.spot.length, ids.perp.length, model.t0, model.t1, model.columns, Math.floor(now / 1000), rankMs, replaying(), counted.spot.answered?.from, counted.perp.answered?.from].join('|');
     if (key !== this.#sizeKey || !this.#sizeModel) {
-      const side = (bars: { spot: FootprintData; perp: FootprintData }, at: string, kind: 'spot' | 'perp') => ids[kind].length && bars[kind].holds(ids[kind], at) ? { bars: bars[kind].bars, answered: bars[kind].answered } : null;
+      // A kind's bars, once answered (and, for the figures, answered back to the ranking window's start: an older source slices a day of many
+      // markets newest first, and figures over part of it would read short); until then null, and the figures are read from the bars drawn
+      // (review 2026-11-26: switched to minutes, the figures read $0 until the first answer).
+      const side = (bars: { spot: FootprintData; perp: FootprintData }, at: string, kind: 'spot' | 'perp', from = Infinity) => {
+        const data = bars[kind], span = data.answered;
+        return ids[kind].length && data.holds(ids[kind], at) && span !== null && span.from <= from ? { bars: data.bars, answered: span } : null;
+      };
       this.#sizeModel = buildSizeModel({ spot: side(shown, shownTf, 'spot'), perp: side(shown, shownTf, 'perp'), tfMs, t0: model.t0, t1: model.t1, columns: model.columns, now, rankMs, replay: replaying(),
-        figures: { spot: side(counted, '1m', 'spot'), perp: side(counted, '1m', 'perp'), tfMs: 60_000 } });
+        figures: { spot: side(counted, '1m', 'spot', rankFrom), perp: side(counted, '1m', 'perp', rankFrom), tfMs: 60_000 } });
       this.#sizeKey = key; this.#sizeShownTf = shownTf;
     }
     return this.#sizeModel;

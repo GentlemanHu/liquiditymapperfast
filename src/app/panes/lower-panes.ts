@@ -2431,9 +2431,15 @@ export class BarStatsPane extends TimePane {
       }
       this.#body = { key: bodyKey, paint: this.#rowPaint, options, view: table.view };
     }
-    ctx.drawImage(this.#bodyCanvas, 0, 0, this.w, this.h);
-    // A kind's header under the pointer is lit (a click folds or unfolds it).
-    for (const index of new Set([hoverBand, viewBand])) { const lit = index >= 0 ? layout[index] : undefined; if (lit?.band.kind === 'head') this.#head(ctx, lit.band, lit.y, lit.h, true); }
+    // Laid at its own pixels: at a fractional pixel ratio (125 %, 150 %) the picture's whole pixels are not the pane's w x dpr.
+    ctx.drawImage(this.#bodyCanvas, 0, 0, this.#bodyCanvas.width / this.dpr, this.#bodyCanvas.height / this.dpr);
+    // A kind's header under the pointer is lit (a click folds or unfolds it), the View column's edge kept across it.
+    for (const index of new Set([hoverBand, viewBand])) {
+      const lit = index >= 0 ? layout[index] : undefined;
+      if (lit?.band.kind !== 'head') continue;
+      this.#head(ctx, lit.band, lit.y, lit.h, true);
+      if (this.#viewSpan) { ctx.save(); ctx.globalAlpha = 0.6; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(Math.round(pw) + 0.5, lit.y); ctx.lineTo(Math.round(pw) + 0.5, lit.y + lit.h); ctx.stroke(); ctx.restore(); }
+    }
     const hovered = hoverBand >= 0 ? layout[hoverBand] : undefined;
     // The cell under the pointer: what its popup says.
     if (hoverIdx >= 0 && hovered?.band.kind === 'row') {
@@ -2453,6 +2459,9 @@ export class BarStatsPane extends TimePane {
         };
       }
     }
+    // The tints and boxes over the candles stay inside the plot: a candle cut by its right edge would mark the View column beside it (review
+    // 2026-11-26: drawn before the View column until the body became a picture of its own, which covered them).
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, this.h); ctx.clip();
     // The cell under the pointer: its column and row tinted, the cell itself boxed, and a popup beside the pointer.
     if (hoverIdx >= 0) {
       const x = v.xOf(times[hoverIdx]!, pw), w = Math.max(1, slot - 1);
@@ -2476,6 +2485,7 @@ export class BarStatsPane extends TimePane {
       pins.push({ lines: pinnedLines(clock(times[pinIdx]!, true), defs.map((def, r) => { const value = rowsValues[r]![pinIdx]; return { label: labelOf.get(def.id)!, value: shown(def, value), tone: value === null || value === undefined ? 'text' : toneOf(def, value) }; })),
         x: page.left + leftGutter(state) + x + w, y: page.top });
     }
+    ctx.restore();
     pins.sort((a, b) => a.x - b.x);
     // The View column's figure under the pointer: boxed, and its popup.
     if (this.#viewSpan && table.view) {

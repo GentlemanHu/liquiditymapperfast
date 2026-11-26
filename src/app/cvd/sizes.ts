@@ -14,7 +14,8 @@ import type { LaneLine } from './model.ts';
  *   without rows of the instruments of the ALL VENUES lines, one question per kind, on the shortest timeframe that gives at most about two
  *   bars a pixel column (`sizeTf`). The six bands of a bar add up to its bought and sold dollars (measured on 24 hours of the local recording,
  *   to the dollar), so the rows together are the top row, at the bars' resolution.
- * - A line is drawn through the bars' ends, from zero where the window begins, and ends at the newest moment the bars hold. Where a bar holds
+ * - A line is drawn through the bars' ends, from zero where the window begins (or at the first bar held, where that is later: before the
+ *   recording a line has nothing to say), and ends at the newest moment the bars hold. Where a bar holds
  *   no order statistics (a minute recorded before they were kept) the band's share is not known: the line breaks there and goes on after it
  *   from where it stood. A candle without a bar traded nothing that was recorded: the line holds flat there, as the Flow view's does.
  * - The figures beside a row are over the ranking window (ending now), as the Flow view's are: each kind's net, buys and sells, and the
@@ -57,7 +58,7 @@ export interface SizeInput {
   t0: number; t1: number; columns: number; now: number;
   /** The ranking window's length (ms, ending at `now`): the figures beside the rows are over it. */
   rankMs: number;
-  /** The bars the figures are read from (minutes over the ranking window, `tfMs` theirs); absent: the bars drawn. */
+  /** The bars the figures are read from (minutes over the ranking window, `tfMs` theirs); absent, or a kind's null (not answered yet): the bars drawn. */
   figures?: { spot: SizeBars | null; perp: SizeBars | null; tfMs: number };
   /** In a replay only the bars that ended by its moment count (the one under way would hold trades from after it). */
   replay: boolean;
@@ -186,15 +187,18 @@ function firstHeld(held: SizeBars, from: number): number {
 /** Everything the Sizes view draws besides the top row and the price strip: a row per band, each kind's line and figures. */
 export function buildSizeModel(input: SizeInput): SizeModel {
   const { t0, t1, columns, tfMs } = input, through: number[] = [];
-  const kinds: [Kind, SizeBars | null, SizeBars | null][] = [['spot', input.spot, input.figures ? input.figures.spot : input.spot], ['perp', input.perp, input.figures ? input.figures.perp : input.perp]];
-  const figuresMs = input.figures?.tfMs ?? tfMs;
+  // Each kind's bars drawn, the bars its figures are read from (its minutes, else the bars drawn) and their length.
+  const kinds: [Kind, SizeBars | null, SizeBars | null, number][] = (['spot', 'perp'] as const).map(kind => {
+    const counted = input.figures?.[kind] ?? null;
+    return [kind, input[kind], counted ?? input[kind], counted ? input.figures!.tfMs : tfMs];
+  });
   // Where each kind's lines start: its first bar held in the window (the slot the window starts in, or later).
   const starts = kinds.map(([, held]) => held ? firstHeld(held, Math.floor(t0 / tfMs) * tfMs) : Infinity);
   const rows: SizeRow[] = BANDS.map((_, band) => {
     let gross = 0, unknown = 0;
-    const lanes = kinds.flatMap(([kind, held, counted], k): LaneLine[] => {
+    const lanes = kinds.flatMap(([kind, held, counted, countedMs], k): LaneLine[] => {
       if (!held || !held.bars.size) return [];
-      const points = bandPoints(held, band, input, t0, t1, starts[k]!), line = rasterise(points, input), { buy, sell } = counted ? bandFigures(counted, band, input, figuresMs) : { buy: 0, sell: 0 };
+      const points = bandPoints(held, band, input, t0, t1, starts[k]!), line = rasterise(points, input), { buy, sell } = counted ? bandFigures(counted, band, input, countedMs) : { buy: 0, sell: 0 };
       if (band === 0) { const end = points.t[points.t.length - 1]; if (end !== undefined) through.push(end); for (const [s, bar] of held.bars) if (!bar.stats && s + tfMs > t0 && s < t1) unknown++; }
       gross += buy + sell;
       return [{ id: `size${band}`, kind, series: null, ...line, before: 0, delta: buy - sell, gross: buy + sell, buy, sell, quiet: false }];

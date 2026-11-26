@@ -109,6 +109,9 @@ test('the figures are read from minutes of their own, the minute the window star
   assert.equal(fromMinutes.buy, fromMinutes.delta);
   // Lines still from the bars drawn.
   assert.deepEqual([...fromMinutes.last].slice(0, 2), [1_000_000, 2_000_000]);
+  // Minutes not answered yet (null): the figures are the bars drawn, never $0 (review 2026-11-26).
+  const waiting = buildSizeModel({ ...base, figures: { spot: null, perp: null, tfMs: M } }).rows[0]!.lanes[0]!;
+  assert.equal(waiting.delta, fromDrawn.delta);
 });
 
 test('a window that starts before the first bar held draws nothing there: the lines start at it', () => {
