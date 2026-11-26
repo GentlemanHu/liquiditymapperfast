@@ -304,7 +304,7 @@ function liquidationLine(s: OiStretch, held: OiPaneHeld, liquidations: OiLiquida
   for (const l of liquidations.items) {
     if (l.t < s.t0 || l.t >= s.t1 || l.usd < min || !ids.has(l.id)) continue;
     const size = coins ? coinsAt(l.usd, l.reported) : l.usd;
-    if (!Number.isFinite(size)) continue;
+    if (coins && !Number.isFinite(size)) continue;
     if (l.side === 'long') longs += size; else shorts += size;
   }
   const from = `$${usd(min)}`, money = (x: number): string => coins ? unitAmount(x) : `$${usd(x)}`;

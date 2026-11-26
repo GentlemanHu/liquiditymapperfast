@@ -7,7 +7,7 @@ import { sumWho, type OiWho } from './oi-summary.ts';
 import { durationText, estimateNotes, estimateStacks, signedCoins, signedUsd, spanText } from './oi-lines.ts';
 import type { RangeSelection } from './selection.ts';
 import type { RangeLine } from './stats.ts';
-import { coinText, unitName, units as pageUnits } from '../units.ts';
+import { coinText, inCoins, unitName, units as pageUnits } from '../units.ts';
 
 /** The share of a stretch's volume its delta must reach before the summary reads it against the price (the Bar stats' "delta vs candle" rule). */
 export const DELTA_SHARE_MIN = 0.05;
@@ -258,18 +258,21 @@ export class DeltaRangeSummary {
     // The whole selection held: only then are the delta read against the price and the stretch before said as the selection's.
     const whole = s.bars >= s.expected && s.held === n;
     // In coins (the pane gave its candles in coins: `DeltaPaneHeld.coins`) the figures are the coin's; the shares and the colours stay the dollars'.
-    const c = s.coins, coin = unitName(), money = (v: number): string => c ? `${coinText(v)} ${coin}` : `$${usd(v)}`;
+    // The coin figures only while the page writes coins (a snapshot's coins are never written as dollars, nor its dollars as coins).
+    const c = inCoins() ? s.coins : undefined, coin = unitName(), money = (v: number): string => c ? `${coinText(v)} ${coin}` : `$${usd(v)}`;
     const signedMoney = (v: number): string => !c ? signedUsd(v) : v === 0 ? `0 ${coin}` : `${v > 0 ? '+' : '−'}${coinText(Math.abs(v))} ${coin}`;
-    const share = s.volume > 0 ? s.delta / s.volume : 0;
+    // In coins the delta's share of the volume and its colour are the coin amounts' (they agree in sign with the figure beside them); what decides
+    // (the note against the price below) reads the dollars.
+    const dollarShare = s.volume > 0 ? s.delta / s.volume : 0, delta = c ? c.delta : s.delta, share = c ? (c.volume > 0 ? c.delta / c.volume : 0) : dollarShare;
     if (s.volume > 0) lines.push({ key: 'dl-split', kind: 'split', share: s.bought / s.volume, cells: [t('Bought {value}', { value: money(c ? c.bought : s.bought) }), t('Sold {value}', { value: money(c ? c.sold : s.sold) })] });
-    lines.push({ key: 'dl-delta', kind: 'stat', ...(s.delta > 0 ? { tone: 'buy' as const } : s.delta < 0 ? { tone: 'sell' as const } : {}), cells: [t('Delta'), s.volume > 0 ? t('{value} · {share} of the volume', { value: signedMoney(c ? c.delta : s.delta), share: `${share > 0 ? '+' : share < 0 ? '−' : ''}${sharePct(share)}` }) : signedMoney(c ? c.delta : s.delta)] });
+    lines.push({ key: 'dl-delta', kind: 'stat', ...(delta > 0 ? { tone: 'buy' as const } : delta < 0 ? { tone: 'sell' as const } : {}), cells: [t('Delta'), s.volume > 0 ? t('{value} · {share} of the volume', { value: signedMoney(delta), share: `${share > 0 ? '+' : share < 0 ? '−' : ''}${sharePct(share)}` }) : signedMoney(delta)] });
     lines.push({ key: 'dl-volume', kind: 'stat', cells: [t('Recorded taker volume'), money(c ? c.volume : s.volume)] });
     if (s.price) {
       const move = (s.price.close - s.price.open) / s.price.open, sign = move > 0 ? '+' : move < 0 ? '−' : '';
       lines.push({ key: 'dl-price', kind: 'stat', ...(move > 0 ? { tone: 'buy' as const } : move < 0 ? { tone: 'sell' as const } : {}), cells: [t('Price, {market}', { market: priceMarket }), `${fmtPrice(s.price.open)} → ${fmtPrice(s.price.close)} · ${sign}${(Math.abs(move) * 100).toFixed(2)}%`] });
       // The delta against the price: said only where they went opposite ways and the delta is a real share of the volume, and as what it is.
-      if (Math.abs(share) >= DELTA_SHARE_MIN && move !== 0 && Math.sign(move) !== Math.sign(share) && whole) {
-        lines.push({ key: 'dl-against', kind: 'note', cells: [share > 0 ? t('Net buying while the price fell: taker flow against the price, not proof that resting orders absorbed it.') : t('Net selling while the price rose: taker flow against the price, not proof that resting orders absorbed it.')] });
+      if (Math.abs(dollarShare) >= DELTA_SHARE_MIN && move !== 0 && Math.sign(move) !== Math.sign(dollarShare) && whole) {
+        lines.push({ key: 'dl-against', kind: 'note', cells: [dollarShare > 0 ? t('Net buying while the price fell: taker flow against the price, not proof that resting orders absorbed it.') : t('Net selling while the price rose: taker flow against the price, not proof that resting orders absorbed it.')] });
       }
     }
     // The CVD before and after the selection, both in one unit so their difference reads as the delta (-$763.8M -> -$1,390.0M, not -$1.4B).

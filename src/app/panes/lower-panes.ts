@@ -1813,13 +1813,16 @@ export class LtPane extends TimePane {
       ? t("Weighted {unit} liquidity near the touch: each venue counted (Venues) measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders.", { unit: unitName() })
       : t("Weighted USD liquidity near the touch: each venue counted (Venues) measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders."));
   }
-  /** The series in coins (lt.ts `ltInCoins`, each window at its own price), worked out once per series and candles, and only in coins. */
-  #coinSeries: { series: object; candles: unknown; prices: Float64Array; value: ReturnType<typeof ltInCoins> } | null = null;
-  #inCoins(s: LtSeries & { stepMs: number }, candles: AppState['candles']): { prices: Float64Array; value: ReturnType<typeof ltInCoins> } {
+  /**
+   * The series in coins (lt.ts `ltInCoins`, each window at the chart candles overlapping it, `tfMs` long: none, no coin figure), worked out once
+   * per series, candles and timeframe, and only in coins.
+   */
+  #coinSeries: { series: object; candles: unknown; tfMs: number; prices: Float64Array; value: ReturnType<typeof ltInCoins> } | null = null;
+  #inCoins(s: LtSeries & { stepMs: number }, candles: AppState['candles'], tfMs: number): { prices: Float64Array; value: ReturnType<typeof ltInCoins> } {
     const held = this.#coinSeries;
-    if (held && held.series === s && held.candles === candles) return held;
-    const prices = ltPrices(s.times, s.stepMs, candles);
-    this.#coinSeries = { series: s, candles, prices, value: ltInCoins(s, prices) };
+    if (held && held.series === s && held.candles === candles && held.tfMs === tfMs) return held;
+    const prices = ltPrices(s.times, s.stepMs, candles, tfMs);
+    this.#coinSeries = { series: s, candles, tfMs, prices, value: ltInCoins(s, prices) };
     return this.#coinSeries;
   }
 
@@ -1864,16 +1867,18 @@ export class LtPane extends TimePane {
     if (replaying()) n = shownBy(s.times, s.stepMs, pageNow());
     // In coins (units.ts) the figures and the lines are each window's dollars over its price (lt.ts `ltInCoins`); the filters stay dollars, and
     // the imbalance is the same in either units.
-    const coins = inCoins(), inCoin = coins ? this.#inCoins(s, state.candles) : null, bidS = inCoin?.value.bid ?? s.bid, askS = inCoin?.value.ask ?? s.ask;
+    const coins = inCoins(), inCoin = coins ? this.#inCoins(s, state.candles, TIMEFRAMES[state.timeframe] ?? 3_600_000) : null, bidS = inCoin?.value.bid ?? s.bid, askS = inCoin?.value.ask ?? s.ask;
     {
       // The snapshot of what is drawn: a new one only for a new answer, a replay's cut moving, or its minute; in coins also new prices (the
       // candles), and either way other units (the key holds them).
       // No book to ask for (none yet, or the books counted away from the feed for a moment: book-markets.ts): nothing is asked and the old
       // series stays drawn, but it stands for no book now.
-      const replayAt = replaying() ? Math.floor(pageNow() / MINUTE) * MINUTE : null, was = this.#held, a = s.asked, key = ltHeldKey(s.ids, a);
+      // A toggle either way changes the coin arrays held (none in dollars), so it republishes, under the key of the units now.
+      const replayAt = replaying() ? Math.floor(pageNow() / MINUTE) * MINUTE : null, was = this.#held;
       if (!ids.length) this.#publish(null);
-      else if (!was || was.times !== s.times || was.shown !== n || was.replayAt !== replayAt || was.key !== key || (was.coins?.bid ?? null) !== (inCoin?.value.bid ?? null)) {
-        this.#publish({ key, ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
+      else if (!was || was.times !== s.times || was.shown !== n || was.replayAt !== replayAt || (was.coins?.bid ?? null) !== (inCoin?.value.bid ?? null)) {
+        const a = s.asked;
+        this.#publish({ key: ltHeldKey(s.ids, a), ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
           minApplied: scaledUsd(a.minUsd), maxApplied: scaledUsd(a.maxUsd), average: a.average,
           times: s.times, bid: s.bid, ask: s.ask, parts: s.parts ?? null, approx: s.approx ?? null, stepMs: s.stepMs, shown: n, replayAt, answeredAt: s.answeredAt,
           ...(inCoin ? { coins: { bid: inCoin.value.bid, ask: inCoin.value.ask, coin: unitName() } } : {}) });
@@ -1960,7 +1965,10 @@ export class LtPane extends TimePane {
     let at = n - 1;
     if (state.hover) { at = 0; for (let i = 0; i < n; i++) if (s.times[i]! <= state.hover.t) at = i; }
     // In coins the window's own figures, and the coin named after them (the header's numbers are bare, as the Depth header's are).
-    const b = bidS[at]!, a = askS[at]!, total = b + a, r = sideRatio(b, a), imb = total > 0 ? Math.round((b - a) / total * 100) : 0, unit = coins ? ` ${unitName()}` : '';
+    // The imbalance from the dollars: the same as from the window's coins (one price values both sides), and known where they are not (no candle
+    // overlaps the window: its figures are dashes, and no coin is named beside them).
+    const db = s.bid[at]!, da = s.ask[at]!, b = bidS[at]!, a = askS[at]!, total = db + da, r = sideRatio(b, a), imb = total > 0 ? Math.round((db - da) / total * 100) : 0;
+    const unit = coins && Number.isFinite(b) && Number.isFinite(a) ? ` ${unitName()}` : '';
     const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('bids') : t('asks')} ${ratioFigure(r.ratio)}</b>` : '';
     // ≈: part of the line was worked out from the minutes' average books (a size filter, or minutes recorded before the tracker was kept: see the help).
     setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${amountText(b, coins)}</b> ${t('Ask')} <b class="ask">${amountText(a, coins)}</b>${unit} Δ <b${leanClass(b - a)}>${signedText(b - a)}</b> ${t('imb')} <b${leanClass(imb)}>${imb > 0 ? '+' : imb < 0 ? '−' : ''}${Math.abs(imb)}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
@@ -2081,10 +2089,14 @@ export class BarStatsPane extends TimePane {
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #button = document.createElement('button');
   #panel: Panel | null = null;
-  /** The open interest's change in USD, worked out once per set of bars, parts and candles (the pane paints on every pointer move), and only in USD (never in coins: units.ts). */
+  /**
+   * The open interest's change in USD, worked out once per set of bars, parts and candles (the pane paints on every pointer move), and only with
+   * the option in USD. In coins too: the cells' look and ranks read the dollars' table in either units (the figures written are the coin's own
+   * change, bar-stats.ts).
+   */
   #usd: { oi: unknown; parts: unknown; candles: unknown; price: number; tfMs: number; map: Map<number, number> } | null = null;
   #oiUsd(state: AppState, parts: readonly OiPart[], tfMs: number, candles: ReadonlyMap<number, CandleRow>): Map<number, number> | undefined {
-    if (state.barStatOptions.oiUnits !== 'usd' || inCoins()) return undefined;
+    if (state.barStatOptions.oiUnits !== 'usd') return undefined;
     const held = this.#usd;
     if (held && held.oi === state.oi && held.parts === parts && held.candles === state.candles && held.price === state.oiPrice && held.tfMs === tfMs) return held.map;
     const map = oiUsdChangeByTime(state.oi, parts, tfMs, t => candles.get(t)?.[4], state.oiPrice);
@@ -2222,14 +2234,17 @@ export class BarStatsPane extends TimePane {
     this.invalidate();
   }
 
-  /** The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change). */
+  /**
+   * The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change), and in coins
+   * (only) their coins too (units.ts).
+   */
   #liquidationsFor(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
-    const held = this.liqDays;
+    const held = this.liqDays, coins = inCoins();
     if (ids.join(',') !== held.ids) return undefined;
     // By the minute too: the candle under way counts once the minute it starts in has been asked about.
-    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}${coins ? '|coins' : ''}`;
     if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now());
+    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now(), coins);
     this.#liqBuckets = { key, value };
     return value;
   }

@@ -147,14 +147,18 @@ test('each window says whether a column of it was worked out from an average boo
   assert.deepEqual([...out.approx!], [1, 0, 0]);
 });
 
-test('coins (issue 9): each window at the chart candles\' typical price there, its parts too; nothing to value it by is NaN', async () => {
-  // 5-minute candles; windows of 1 minute (inside a candle) and of 10 minutes (holding two).
+test('coins (issue 9): each window at the typical price of the chart candles overlapping it, its parts too; a window none overlaps is NaN', async () => {
+  // 5-minute candles; windows of 1 minute (inside a candle) and of 10 minutes (holding two), and a gap with no candle from 15 to 30 minutes.
   const c = (t: number, high: number, low: number, close: number): [number, number, number, number, number, number] => [t, low, high, low, close, 1];
-  const candles = [c(0, 103, 97, 100), c(5 * MIN, 113, 107, 110), c(10 * MIN, 123, 117, 120)];
-  assert.deepEqual([...ltPrices([MIN, 6 * MIN, 30 * MIN], MIN, candles)], [100, 110, 120], 'the candle holding the window; past the newest, the newest');
-  assert.deepEqual([...ltPrices([0], 10 * MIN, candles)], [105], 'the mean of the candles starting inside it');
-  assert.deepEqual([...ltPrices([-10 * MIN], MIN, candles)], [100], 'before the first candle: the first');
-  assert.ok(Number.isNaN(ltPrices([0], MIN, [])[0]!), 'no candle: not known');
+  const candles = [c(0, 103, 97, 100), c(5 * MIN, 113, 107, 110), c(10 * MIN, 123, 117, 120), c(30 * MIN, 133, 127, 130)];
+  const at = (times: number[], step: number, list = candles) => [...ltPrices(times, step, list, 5 * MIN)];
+  assert.deepEqual(at([MIN, 6 * MIN, 14 * MIN], MIN), [100, 110, 120], 'the candle holding the window');
+  assert.deepEqual(at([0], 10 * MIN), [105], 'the mean of the candles it overlaps');
+  assert.deepEqual(at([4.5 * MIN], MIN), [105], 'one across two candles: both');
+  // Never a price from another time: before the candles loaded, in a gap, past the newest candle's end.
+  assert.ok(at([-10 * MIN, 20 * MIN, 40 * MIN], MIN).every(Number.isNaN), 'no candle overlaps: not known');
+  assert.deepEqual(at([12 * MIN], 10 * MIN), [120], 'a window reaching into the gap: the candle it overlaps');
+  assert.ok(Number.isNaN(ltPrices([0], MIN, [], 5 * MIN)[0]!), 'no candle: not known');
   const parts = { bid: Float32Array.from([100, 220, 300, 440]), ask: Float32Array.from([50, 110, 0, 0]) };
   const coins = ltInCoins({ times: Float64Array.from([0, MIN]), bid: Float32Array.from([400, 660]), ask: Float32Array.from([50, 110]), parts }, Float64Array.from([100, 110]));
   near(coins.bid, [4, 6]); near(coins.ask, [0.5, 1]);

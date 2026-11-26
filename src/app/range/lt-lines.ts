@@ -60,8 +60,11 @@ export interface LtStretch {
   /** Per venue (the order of `ids`), the time of the selection's closed windows that lack it. */
   missing: number[];
   t0: number; t1: number;
-  /** The selection up to now, and how it splits: covered by eligible windows, by windows lacking venues, by the window under way, by none. */
-  span: number; covered: number; lacking: number; forming: number; none: number;
+  /**
+   * The selection up to now, and how it splits: covered by eligible windows, by windows lacking venues, by the window under way, in coins by
+   * windows no chart candle overlaps (no coin figure: lt.ts `ltPrices`; 0 in dollars), by none.
+   */
+  span: number; covered: number; lacking: number; forming: number; unpriced: number; none: number;
   windows: number;
   /** Time-weighted means of the drawn bids and asks; first and last eligible window; lowest and highest. Null without an eligible window. */
   bid: Side | null; ask: Side | null;
@@ -91,7 +94,7 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
   // a closed window's because time passed.
   const closedBy = Math.min(now, held.answeredAt), openStart = step > 0 ? Math.floor(closedBy / step) * step : closedBy;
   const forming = Math.max(0, Math.min(end, openStart + step) - Math.max(openStart, sel.t0)), missing = new Array<number>(owners).fill(0);
-  let covered = 0, lacking = 0, counted = 0, apx = 0;
+  let covered = 0, lacking = 0, unpriced = 0, counted = 0, apx = 0;
   let bSum = 0, aSum = 0, iSum = 0, iTime = 0, bidHeavier = 0, askHeavier = 0;
   let bFirst = NaN, bLast = NaN, aFirst = NaN, aLast = NaN, iFirst = NaN, iLast = NaN, firstT = NaN, lastT = NaN;
   let bLow = Infinity, bHigh = -Infinity, aLow = Infinity, aHigh = -Infinity;
@@ -106,8 +109,8 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
     }
     if (dt <= 0) continue;
     const b = bid[i]!, a = ask[i]!;
-    // In coins a window with no price to value it at (no candle at all) is not measured: left to the time no window covers.
-    if (Number.isNaN(b) || Number.isNaN(a)) continue;
+    // In coins a window no chart candle overlaps has no coin figure (lt.ts `ltPrices`): not measured, and said apart.
+    if (Number.isNaN(b) || Number.isNaN(a)) { unpriced += dt; continue; }
     covered += dt; counted++;
     if (approx?.[i]) apx += dt;
     bSum += dt * b; aSum += dt * a;
@@ -124,10 +127,10 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
       if (b > a) bidHeavier += dt; else if (a > b) askHeavier += dt;
     }
   }
-  const none = Math.max(0, span - covered - lacking - forming);
+  const none = Math.max(0, span - covered - lacking - forming - unpriced);
   const side = (sum: number, first: number, last: number, low: number, high: number): Side | null => covered > 0 ? { mean: sum / covered, first, last, low, high, firstT, lastT } : null;
   return {
-    unverified: owners > 1 && !parts, missing, t0: sel.t0, t1: sel.t1, span, covered, lacking, forming, none, windows: counted,
+    unverified: owners > 1 && !parts, missing, t0: sel.t0, t1: sel.t1, span, covered, lacking, forming, unpriced, none, windows: counted,
     bid: side(bSum, bFirst, bLast, bLow, bHigh), ask: side(aSum, aFirst, aLast, aLow, aHigh),
     imbalance: iTime > 0 ? { mean: iSum / iTime, first: iFirst, last: iLast, bidHeavier, askHeavier, defined: iTime } : null,
     approx: apx, settled: sel.t1 <= openStart,
@@ -249,6 +252,7 @@ export class LtRangeSummary {
       const parts = [
         ...(s.lacking > 0 ? [t('missing a venue: {time} ({venues})', { time: shortDuration(s.lacking), venues: lackingNames(s, h).join(', ') })] : []),
         ...(s.forming > 0 ? [t('open window excluded: {time}', { time: shortDuration(s.forming) })] : []),
+        ...(s.unpriced > 0 ? [t('no candle to price it in coins: {time}', { time: shortDuration(s.unpriced) })] : []),
         ...(s.none > 0 ? [t('no window held: {time}', { time: shortDuration(s.none) })] : []),
       ];
       const pair = durationPair(s.covered, s.span);

@@ -288,7 +288,8 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
  * (the page writes coins, units.ts) the figures are the coin's: the window's dollars over its price (lt.ts `ltInCoins`).
  */
 export function ltCardLines(h: { time: number; bid: number; ask: number; halfLifeBp: number; venues: number; coin?: string }): InfoLine[] {
-  const coin = h.coin, fmt = (v: number): string => coin ? `${coinText(v)} ${coin}` : money(v);
+  // A window no candle overlaps has no coin figure: a dash (lt.ts `ltPrices`).
+  const coin = h.coin, fmt = (v: number): string => !coin ? money(v) : Number.isFinite(v) ? `${coinText(v)} ${coin}` : '–';
   const signed = (v: number): string => !coin ? signedUsd(v) : !Number.isFinite(v) ? '–' : v === 0 ? `0 ${coin}` : `${v < 0 ? '−' : '+'}${coinText(Math.abs(v))} ${coin}`;
   const lines: InfoLine[] = [
     { text: t('Liquidity Tracker'), bold: true, table: false },

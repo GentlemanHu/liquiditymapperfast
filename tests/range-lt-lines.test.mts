@@ -150,7 +150,10 @@ test('coins (issue 9): a snapshot drawn in coins is summed in its coins and said
     assert.equal(tile(summary.lines(sel(0, 2), usd, false, coinKey, NOW), 'bid')!.value, '1 BTC', 'the settled coin result is kept for this selection in coins');
     assert.equal(text(new LtRangeSummary().lines(sel(0, 2), usd, false, coinKey, NOW), 'lt-stale')?.startsWith('The Liquidity Tracker last drew'), true, 'a hidden pane\'s dollars are not said as coins');
     const gap: LtPaneHeld = { ...h, coins: { bid: Float32Array.from([NaN, 1]), ask: Float32Array.from([NaN, 0.5]), coin: 'BTC' } };
-    assert.equal(ltStretch(gap, sel(0, 2), NOW).covered, M, 'a window with no price is not measured');
+    const g = ltStretch(gap, sel(0, 2), NOW);
+    assert.deepEqual([g.covered, g.unpriced, g.none], [M, M, 0], 'a window no candle prices is not measured, and said apart');
+    assert.match(text(new LtRangeSummary().lines(sel(0, 2), gap, true, coinKey, NOW), 'lt-cover') ?? '', /no candle to price it in coins: 1 min/);
+    assert.equal(ltStretch(usd, sel(0, 2), NOW).unpriced, 0, 'never in dollars');
   } finally { setUnits('usd'); }
   assert.equal(ltHeldKey(IDS, SET), KEY, 'and back in dollars the key is as it was');
 });

@@ -14,9 +14,10 @@
  * filter applies to the aggregated size of a bin on one venue, not to individual orders.
  *
  * In coins (the page's units, units.ts, issue 9): the tracker keeps dollars per window only (its levels' own prices are gone by then), so a
- * window's figures are its dollars over that window's price (`ltPrices`: the chart candles' typical price there, `ltInCoins`). That is accurate
- * to within how far the weighted levels sit from the touch (a few half-lives) and how far the price moved inside the window or its candle. The
- * size filters stay dollars, and so does everything that orders or judges (the table's order, the imbalance, which is the same either way).
+ * window's figures are its dollars over that window's price (`ltPrices`: the typical price of the chart candles overlapping it, `ltInCoins`).
+ * That is accurate to within how far the weighted levels sit from the touch (a few half-lives) and how far the price moved inside the window or
+ * its candle. A window no candle overlaps has no coin figure (not drawn, not measured, a dash where written). The size filters stay dollars,
+ * and so does everything that orders or judges (the table's order; the imbalance, which is the same either way).
  */
 import { LT_LENGTH, ltIndex, ltWeight } from '../shared/lt-sample.ts';
 import type { CandleRow } from './store.ts';
@@ -184,21 +185,20 @@ export function ltSeries(stores: LtStore[], t0: number, t1: number, stepMs: numb
 }
 
 /**
- * The price each window of a series is valued at in coins: the mean typical price, (high + low + close) / 3, of the chart's candles starting
- * inside the window, else that of the candle holding its middle (the last starting before the window), else of the first candle after it;
- * NaN with no candles. `times` and `candles` oldest first.
+ * The price each window of a series is valued at in coins: the mean typical price, (high + low + close) / 3, of the chart's candles (each
+ * `tfMs` long, the chart's timeframe) that overlap the window. NaN where none does (a window before the candles loaded, or in a gap of them):
+ * its coins are not known, never valued at a price from another time. `times` and `candles` oldest first.
  */
-export function ltPrices(times: ArrayLike<number>, stepMs: number, candles: readonly CandleRow[]): Float64Array {
+export function ltPrices(times: ArrayLike<number>, stepMs: number, candles: readonly CandleRow[], tfMs: number): Float64Array {
   const n = times.length, out = new Float64Array(n).fill(NaN), typical = (c: CandleRow): number => c[3] > 0 ? (c[2] + c[3] + c[4]) / 3 : NaN;
   let k = 0;
   for (let i = 0; i < n; i++) {
     const t0 = times[i]!, t1 = t0 + stepMs;
-    while (k < candles.length && candles[k]![0] < t0) k++;
+    // The first candle that can overlap: one that ends after the window starts (the windows come oldest first, so it only moves on).
+    while (k < candles.length && candles[k]![0] + tfMs <= t0) k++;
     let sum = 0, count = 0;
     for (let j = k; j < candles.length && candles[j]![0] < t1; j++) { const p = typical(candles[j]!); if (p > 0) { sum += p; count++; } }
-    if (count) { out[i] = sum / count; continue; }
-    const c = candles[k - 1] ?? candles[k];
-    if (c) out[i] = typical(c);
+    if (count) out[i] = sum / count;
   }
   return out;
 }

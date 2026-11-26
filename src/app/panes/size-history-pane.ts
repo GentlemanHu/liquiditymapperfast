@@ -138,13 +138,16 @@ export class SizeHistoryPane extends TimePane {
     return value;
   }
 
-  /** The liquidations by candle from the days the shared loader holds, kept while neither the days nor the candles change. */
+  /**
+   * The liquidations by candle from the days the shared loader holds, kept while neither the days nor the candles change, and in coins (only)
+   * their coins too (units.ts: the card and the table write them).
+   */
   #liquidations(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
-    const held = this.liqDays;
+    const held = this.liqDays, coins = inCoins();
     if (ids.join(',') !== held.ids) return undefined;
-    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}${coins ? '|coins' : ''}`;
     if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now());
+    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now(), coins);
     this.#liqBuckets = { key, value };
     return value;
   }

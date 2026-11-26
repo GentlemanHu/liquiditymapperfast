@@ -3671,5 +3671,6 @@
  "{amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta": "{amount} de venda agressiva líquida no pavio inferior, {multiple}x o delta líquido de uma vela típica",
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "Volume do pavio: {buy} comprados e {sell} vendidos a mercado ({net}% líquido); {share}% do volume da vela",
  "Both columns on one scale": "As duas colunas em uma única escala",
- "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Cada ordem conta uma vez, no minuto da sua primeira execução, com os seus próprios dólares em {coin} ao preço médio da vela: podem diferir um pouco dos da barra."
+ "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Cada ordem conta uma vez, no minuto da sua primeira execução, com os seus próprios dólares em {coin} ao preço médio da vela: podem diferir um pouco dos da barra.",
+ "no candle to price it in coins: {time}": "nenhuma vela para avaliá-lo em moedas: {time}"
 }

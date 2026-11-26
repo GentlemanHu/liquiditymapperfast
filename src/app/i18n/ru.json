@@ -3723,5 +3723,6 @@
  "{amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta": "{amount} чистых агрессивных продаж в нижней тени, в {multiple} раз больше обычной чистой дельты свечи",
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "Объём в тени: куплено {buy} и продано {sell} по рынку ({net}% нетто); {share}% объёма свечи",
  "Both columns on one scale": "Обе колонки на одной шкале",
- "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Каждый ордер считается один раз, в минуту своего первого исполнения, со своими долларами в {coin} по средней цене свечи: они могут немного отличаться от столбика."
+ "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Каждый ордер считается один раз, в минуту своего первого исполнения, со своими долларами в {coin} по средней цене свечи: они могут немного отличаться от столбика.",
+ "no candle to price it in coins: {time}": "нет свечи для пересчёта в монеты: {time}"
 }

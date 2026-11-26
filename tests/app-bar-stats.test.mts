@@ -337,15 +337,24 @@ test('coins (issue 9): each size is its parts at their own prices, the candle\'s
   close(c('takerDelta'), 2 * 30 - 55, 'candle delta: taker buys less the rest, in the candle\'s own coins');
   close(c('avgFill'), 55 / 7, 'avg fill: the candle\'s volume over its trades');
   close(c('effort'), 55 / ((112 - 99) / 100 * 10_000), 'vol / bp: the candle\'s volume');
-  close(c('oiChange', 2, { options: { ...DEFAULT_STAT_OPTIONS, oiUnits: 'usd' } }), -3, 'oi chg: the coin\'s change whatever the option');
-  assert.deepEqual(statDef('deltaPct')!.compute(coins), statDef('deltaPct')!.compute(input()), 'a share stays the dollars\'');
+  // oi chg with the option in USD: the dollars' table (the cells' look) reads the USD map in either units; the coin's figures its own change.
+  const usdOi = { options: { ...DEFAULT_STAT_OPTIONS, oiUnits: 'usd' as const }, oiUsd: new Map([[2 * MIN, -150_000]]) };
+  close(c('oiChange', 2, usdOi), -3, 'oi chg: the coin\'s change whatever the option');
+  assert.equal(statDef('oiChange')!.compute({ ...input(), ...usdOi })[2], -150_000, 'the dollars\' table: the USD map, not a close');
+  // delta %: in coins the share of the coin amounts beside it, so its sign is the coin delta's; in dollars as before.
+  close(statDef('deltaPct')!.compute(coins)[0], (buy0 - sell0) / (buy0 + sell0) * 100, 'delta % of the coins');
+  const skewed: Bar = bar(0, [[199_995, 200_000, 0], [99_995, 0, 150_000]]), pair: StatInput = { ...input(), bars: [skewed], step: 10 };
+  assert.ok(statDef('deltaPct')!.compute(pair)[0]! > 0 && statDef('delta')!.compute(pair)[0]! > 0, 'in dollars more was bought');
+  assert.ok(statDef('deltaPct')!.compute({ ...pair, coins: true })[0]! < 0 && statDef('delta')!.compute({ ...pair, coins: true })[0]! < 0, 'in coins more was sold: both say so');
+  assert.ok((statDef('deltaPct')!.view!({ ...pair, coins: true }, [0], []) ?? { value: '' }).value.startsWith('-'), 'the View column too');
   assert.deepEqual(statDef('trades')!.compute(coins), statDef('trades')!.compute(input()), 'counts stay');
   assert.deepEqual(statDef('poc')!.compute(coins), statDef('poc')!.compute(input()), 'prices stay');
-  // Liquidations: each one's dollars over its reported price.
+  // Liquidations: each one's dollars over its reported price, worked out only when asked for in coins.
   const liq = (t: number, side: 'short' | 'long', usd: number, reported: number) => ({ t, id: 'a', side, price: reported, usd, reported, kind: 'single' }) as unknown as Liquidation;
   const days = new Map([[0, { rows: [liq(5, 'short', 1000, 100), liq(9, 'short', 1100, 110), liq(20, 'long', 500, 50)], cut: false, to: DAY_MS }]]);
-  const l = liquidationBuckets(days, ['a'], [0, MIN, 2 * MIN], MIN, 0, DAY_MS);
-  assert.deepEqual([l.buy.get(0), l.buyCoin.get(0), l.sell.get(0), l.sellCoin.get(0)], [2100, 20, 500, 10]);
+  const l = liquidationBuckets(days, ['a'], [0, MIN, 2 * MIN], MIN, 0, DAY_MS, true);
+  assert.deepEqual([l.buy.get(0), l.buyCoin?.get(0), l.sell.get(0), l.sellCoin?.get(0)], [2100, 20, 500, 10]);
+  assert.equal('buyCoin' in liquidationBuckets(days, ['a'], [0, MIN, 2 * MIN], MIN, 0, DAY_MS), false, 'in dollars no coin is worked out');
   close(c('liq', 0, { liquidations: l }), 30, 'liq in coins'); close(c('liqNet', 0, { liquidations: l }), 10, 'liq Δ in coins');
   assert.equal(statDef('liq')!.compute({ ...input(), liquidations: l })[0], 2600, 'and in dollars as before');
   // What is written: the coin's figures, titles and CSV heads in coins; as before in dollars.

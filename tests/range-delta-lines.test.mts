@@ -220,3 +220,15 @@ test('coins (issue 9): a snapshot with its candles in coins is written in the co
     assert.equal(text(new DeltaRangeSummary().lines(sel(T + H, T + 4 * H), base, true, KEY, NOW), 'dl-delta'), 'Delta | +$26 · +7.6% of the volume');
   } finally { setUnits('usd'); }
 });
+
+test('coins (issue 9): the delta\'s share of the volume and its colour follow the coin delta written beside them', () => {
+  // Dollars: +5 of 50 bought; coins: the candle's coin flow leans the other way (bought dearer than sold).
+  const rows: [number, number][] = [[5, 50]], coinFlows = [flow(-0.01, 0.5)];
+  const h = held(rows, { coins: { flows: coinFlows, candles: new Map(deltaCandles([T], coinFlows, [0]).map(c => [c.t, c] as const)) } });
+  const delta = (): ReturnType<DeltaRangeSummary['lines']>[number] => new DeltaRangeSummary().lines(sel(T, T + H), h, true, KEY, NOW).find(l => l.key === 'dl-delta')!;
+  assert.deepEqual([delta().cells[1], delta().tone], ['+$5 · +10% of the volume', 'buy'], 'dollars (the snapshot\'s coins are not read)');
+  setUnits('coin');
+  try {
+    assert.deepEqual([delta().cells[1], delta().tone], ['−0.01 BTC · −2.0% of the volume', 'sell']);
+  } finally { setUnits('usd'); }
+});

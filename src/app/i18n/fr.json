@@ -3671,5 +3671,6 @@
  "{amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta": "{amount} de vente agressive nette dans la mèche basse, {multiple}x le delta net d'une bougie typique",
  "Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume": "Volume de la mèche : {buy} achetés et {sell} vendus au marché ({net} % net) ; {share} % du volume de la bougie",
  "Both columns on one scale": "Les deux colonnes sur une seule échelle",
- "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Chaque ordre compte une fois, à la minute de sa première exécution, avec ses propres dollars en {coin} au prix moyen de la bougie : ils peuvent un peu différer de ceux de la barre."
+ "Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle's average price: they can differ a little from the bar's.": "Chaque ordre compte une fois, à la minute de sa première exécution, avec ses propres dollars en {coin} au prix moyen de la bougie : ils peuvent un peu différer de ceux de la barre.",
+ "no candle to price it in coins: {time}": "aucune bougie pour l'évaluer en coins : {time}"
 }

@@ -28,7 +28,8 @@ import { coinText as coinFigure } from '../units.ts';
  *   judged among the liquidations it held (the largest), and said so.
  * - In coins (the page's units, units.ts, issue 9) only the figures change (`historyCoins`, written by the card and the table): the bars, their
  *   emphasis, the dots and every judgement keep reading the dollars, so the picture is the same in either units. The size bands' coins are
- *   their dollars at the candle's typical price (`slotPrices`): the pane loads the bars without their price rows, so this is an approximation,
+ *   their dollars at the candle's typical price (`slotPrices`; a slot without its candle has no coin figure, a dash): the pane loads the bars
+ *   without their price rows, so this is an approximation,
  *   as close as the candle's orders were to its typical price. Liquidations are each one's dollars over its reported price, and open interest's
  *   change is the coin's own. The band names ("$25K–100K") are the size boxes' edges, in dollars in either units.
  */
@@ -270,16 +271,17 @@ export function buildHistory(input: HistoryInput): HistoryModel {
 }
 
 /**
- * The price each slot's size bands are valued at in coins: the typical price, (high + low + close) / 3, of the candle starting there, else of
- * the nearest candle before it, else of the first after it; NaN with no candles. `candles` oldest first, as the store keeps them.
+ * The price each slot's size bands are valued at in coins: the typical price, (high + low + close) / 3, of the chart candle starting there (a
+ * slot is a candle of the chart's timeframe). NaN where there is none (a bar held where no candle is, the pre-roll before the candles loaded):
+ * its coins are not known, never valued at a price from another time. Both oldest first, as the store keeps them.
  */
 export function slotPrices(times: readonly number[], candles: readonly CandleRow[]): Float64Array {
   const out = new Float64Array(times.length).fill(NaN), typical = (c: CandleRow): number => c[3] > 0 ? (c[2] + c[3] + c[4]) / 3 : NaN;
   let k = 0;
   for (let i = 0; i < times.length; i++) {
-    while (k + 1 < candles.length && candles[k + 1]![0] <= times[i]!) k++;
+    while (k < candles.length && candles[k]![0] < times[i]!) k++;
     const c = candles[k];
-    if (c) out[i] = typical(c);
+    if (c && c[0] === times[i]) out[i] = typical(c);
   }
   return out;
 }

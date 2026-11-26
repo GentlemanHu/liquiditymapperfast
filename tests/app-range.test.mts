@@ -228,3 +228,15 @@ test('coins (issue 9): the map\'s summary writes each size in the coin at the pr
   } finally { setUnits('usd'); }
   assert.deepEqual(make(), dollars, 'back in dollars, the same lines');
 });
+
+test('coins (issue 9): the delta\'s share of the volume and its colour are the coin amounts\' beside it, which can lean the other way from the dollars\'', () => {
+  // Bought at 200,000 a coin and sold at 100,000: more dollars bought (+$50K), more coins sold (−0.5).
+  const rows: RangeAnswer['rows'] = [[199_995, 200_000, 0, 1, 0], [99_995, 0, 150_000, 0, 1]];
+  const ans = answer([inst('a:BTC', { band: { buy: 200_000, sell: 150_000, buyN: 1, sellN: 1 }, countedUsd: { buy: 200_000, sell: 150_000 }, all: { buy: 200_000, sell: 150_000 } })], rows);
+  const delta = (): RangeLine => line(rangeLines(input({ answer: ans })), 'delta')!;
+  assert.deepEqual([delta().cells[1], delta().tone], ['+$50K · +14% of the volume', 'buy'], 'dollars as before');
+  setUnits('coin');
+  try {
+    assert.deepEqual([delta().cells[1], delta().tone], ['−0.5 BTC · −20% of the volume', 'sell'], 'the share and the colour agree with the coin figure');
+  } finally { setUnits('usd'); }
+});
