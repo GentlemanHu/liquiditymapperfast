@@ -40,6 +40,7 @@ import { WAVE_STRENGTH_DEFAULT, readWaveStrength } from './glass/waves.ts';
 import type { ReplayView } from './replay/clock.ts';
 import { isFundingPick, type FundingPick } from './funding.ts';
 import { readUnits, type Units } from './units.ts';
+import type { DepthZone } from './depth-zone.ts';
 import { readFlowView, type FlowView } from './tns/model.ts';
 import { TRADES_DEFAULTS, readTrades, tradesRev5Default, type TradesSettings } from './trades/settings.ts';
 
@@ -270,6 +271,11 @@ export interface AppState {
    * the price. The map and the flow column's price strip draw its price, as the panes under the map follow the map's pointer. Not saved.
    */
   bookHover: { lo: number; step: number; side: 'ask' | 'bid' } | null;
+  /**
+   * The Depth band under the pointer in a Depth pane (Karl, 2026-11-27): the map shades where its money lies (depth-zone.ts). Shared by the pane
+   * that lights it after each of its drawings and let go of by that pane alone, as `bookHover` is by the book. Not saved.
+   */
+  depthHover: DepthZone | null;
   /** The Range tool's selection (a box on the map, or a stretch of time), being dragged or made; and whether the next drag selects (range/). Not saved. */
   range: RangeSelection | null;
   rangeTool: boolean;
@@ -490,7 +496,7 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   const state: AppState = {
     connected: false, status: t('connecting'), markets: [], marketId: '', seriesInstrument: '', mark: { price: 0, asOf: 0 }, levels: null, bookGone: {},
     layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, anchorMove: null, anchorPreview: null, profileAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
-    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', phoneTape: 'list', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', units: 'usd', hover: null, bookHover: null, range: null, rangeTool: false,
+    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', phoneTape: 'list', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', units: 'usd', hover: null, bookHover: null, depthHover: null, range: null, rangeTool: false,
     ...saved, ...readSettings(saved),
   };
   // A save's measure strip was read into the profile along the top (`readSettings`): it is no setting of its own any more.

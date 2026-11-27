@@ -778,6 +778,8 @@ async function main(): Promise<void> {
     if (['show', 'timeframe', 'oiFine', 'range', 'replay'].some(k => changed.has(k as never))) funding.invalidate();
     // The order book's row under the pointer: the map and the flow column's price strip draw its price.
     if (changed.has('bookHover')) { heat.invalidateHover(); cvd.syncBookHover(); }
+    // The Depth band under the pointer in a Depth pane: the map shades where its money lies (depth-zone.ts).
+    if (changed.has('depthHover')) heat.invalidateHover();
     if (changed.has('delta') || changed.has('deltaTable')) delta.settingsChanged();
     if ((changed.has('oi') || changed.has('oiParts')) && topShown(state)) heat.invalidate();
     if (changed.has('marketId')) candle.marketChanged();

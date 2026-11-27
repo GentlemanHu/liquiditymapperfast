@@ -36,7 +36,7 @@ export type WorkerOut =
   | { type: 'ready' }
   /** `coins`: the request's, so the page knows which units the grid and its percentiles are in. */
   | { type: 'raster'; id: number; w: number; h: number; data: Float32Array; stats: RasterStats; busyMs: number; coins: boolean }
-  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; stepMs: number; newest: DepthNow | null }
+  | { type: 'depth'; id: number; w: number; k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: Uint16Array; centred: Uint8Array; mid: Float64Array; stepMs: number; newest: DepthNow | null }
   | { type: 'lt'; id: number; times: Float64Array; bid: Float32Array; ask: Float32Array; estimated: boolean; stepMs: number; parts?: LtParts; approx?: Uint8Array }
   | { type: 'cell'; id: number; items: CellShare[] }
   | { type: 'error'; message: string };
@@ -146,13 +146,14 @@ function raster(message: Extract<WorkerIn, { type: 'raster' }>): void {
 function depth(message: Extract<WorkerIn, { type: 'depth' }>): void {
   const held = recorded.current;
   const stores = message.enabled.map(id => held.get(id)).filter((rec): rec is Store => rec !== undefined);
-  const { k, bid, ask, bidCoin, askCoin, present, centred } = depthBands(stores, recorded.stepMs, message.t0, message.t1, message.w, message.radii);
+  const { k, bid, ask, bidCoin, askCoin, present, centred, mid } = depthBands(stores, recorded.stepMs, message.t0, message.t1, message.w, message.radii);
   // The books as they stand now (their live columns), which the table reads at the live edge whatever the zoom: those the recorder would
   // sample, no older than its STALE_MS by the frame's own clock (a frame carries books up to four times that old).
   const lives = freshBooks(message.enabled, liveStamps, liveFrame.asOf, STALE_MS).map(id => live.get(id)).filter((rec): rec is Store & { minute: number } => rec !== undefined);
   const newest = lives.length ? depthNow(lives, Math.max(...lives.map(rec => rec.minute)), message.radii, liveFrame.now) : null;
   // `present` counts the books held (a market with none at all is not among the stores): the pane compares it with the markets it asked for.
-  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin, present, centred, stepMs: recorded.stepMs, newest }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer, present.buffer, centred.buffer]);
+  // `mid`, the price each pixel column's bands were centred on: the map shades the band under the pointer there (depth-zone.ts).
+  scope.postMessage({ type: 'depth', id: message.id, w: message.w, k, bid, ask, bidCoin, askCoin, present, centred, mid, stepMs: recorded.stepMs, newest }, [bid.buffer, ask.buffer, bidCoin.buffer, askCoin.buffer, present.buffer, centred.buffer, mid.buffer]);
 }
 
 /** Which instruments make up one cell of the map, so the popup can say where the liquidity under the pointer comes from. */
