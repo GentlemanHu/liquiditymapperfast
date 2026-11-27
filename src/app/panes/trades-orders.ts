@@ -14,6 +14,7 @@ import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { BOUNDARY, type TapeRing } from '../tape/ring.ts';
 import { TradeIndex, readRecord, type TradeRecord } from '../trades/index.ts';
 import { RetainedRows } from './retained-rows.ts';
+import { amount, coinText, inCoins, units } from '../units.ts';
 import { newestStep, scrolledBack } from '../trades/follow.ts';
 import { DIVIDER_ROW, InkCache, ORDER_TINT, ROW_GAP, ROW_MARK, ROW_PAD, TIERS, amountText, clockForm, orderBarFull, priceWidth, rowGeom, tierOf, type RowFontWidths, type RowGeom, type Tier } from '../trades/style.ts';
 import { GROUP_MS } from '../trades/settings.ts';
@@ -39,12 +40,12 @@ const reducedMotion = (): boolean => typeof matchMedia === 'function' && matchMe
 /** The widths the rows are laid out by (`rowGeom`), at the pixel ratio they were measured at. */
 interface FontWidths extends RowFontWidths { dpr: number }
 /** What an order row shows (one order, or the orders a row groups): its time, price, signed dollars, market and how many orders. */
-interface RowOrder { t: number; price: number; usd: number; id: string; orders: number; liq: boolean }
+interface RowOrder { t: number; price: number; usd: number; id: string; orders: number; liq: boolean; coins: number }
 /** A row of a frame (device pixels), laid out before anything is drawn: its signature and what draws it. */
-interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; liq: LiqRow | null; tier: (typeof TIERS)[number]; orders: number; usd: number; timeY: number; outlined: boolean; reasons: number; words: string }
+interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'row' | 'divider' | 'note'; rec: TradeRecord | null; shown: TradeRecord | null; liq: LiqRow | null; tier: (typeof TIERS)[number]; orders: number; usd: number; coins: number; timeY: number; outlined: boolean; reasons: number; words: string }
 /** A line the last frame drew: an order (or a burst of them when grouping is on), a liquidation, or a divider where orders may be missing. */
 type Drawn =
-  | { kind: 'row'; k: number; y: number; h: number; rec: TradeRecord; orders: number; usd: number; liq?: LiqRow }
+  | { kind: 'row'; k: number; y: number; h: number; rec: TradeRecord; orders: number; usd: number; coins: number; liq?: LiqRow }
   | { kind: 'divider'; y: number; h: number; reasons: number };
 
 /**
@@ -55,6 +56,10 @@ type Drawn =
  * once scrolled back (a key counts what arrived meanwhile, the rows not yet down included), a row pointed at sets the shared time cursor and
  * a click takes the map there. Forward only: the orders are the ring's, from when it started, never fetched. `panes/trades-view.ts` is the
  * shell around it (the menus, the status).
+ *
+ * Units (units.ts, issue 9): in coins a row writes its coins, bare: an order's dollars over its own volume-weighted price (exact), a grouped
+ * row's orders' coins added up, a recorded row's dollars over its volume-weighted price (which is its dollars over its coins), a liquidation's
+ * dollars over its reported price. The tiers, the bar and its scale, the whale size and the floor stay the dollars'.
  */
 export class OrderList {
   readonly root = el('div', { class: 'trades-wrap trades-orders' });
@@ -98,7 +103,7 @@ export class OrderList {
   /** The widest price of the recording's rows (characters) and the rows it was counted for (the shell sets a new list when they change). */
   #historyCharsOf: TnsLine[] | null = null; #historyCharsN = 0;
   /** The one row description the painter is handed, filled for each row (no object made for every row drawn). */
-  #order: RowOrder = { t: 0, price: 0, usd: 0, id: '', orders: 1, liq: false };
+  #order: RowOrder = { t: 0, price: 0, usd: 0, id: '', orders: 1, liq: false, coins: 0 };
   /** Cached filtered & grouped liquidation rows (rebuilt only when the liquidation book or filter changes). */
   #liqRows: LiqRow[] = []; #liqKey = '';
   /** Scroll and hold state for Liquidations-only mode (pixel offset from newest, key pinned at top while held, and new rows arrived since). */
@@ -242,10 +247,11 @@ export class OrderList {
     const book = this.liquidations(), s = this.store.state, tr = s.trades;
     if (!book) return this.#liqRows = [];
     const minUsd = scaledUsd(tr.liqMinUsd);
-    const key = `${book.version}|${minUsd}|${tr.side}|${tr.group}|${this.#filterKeyNow()}`;
+    // In coins the rows add up their coins too (units.ts): another units is another set of rows.
+    const coins = inCoins(), key = `${book.version}|${minUsd}|${tr.side}|${tr.group}|${this.#filterKeyNow()}|${coins}`;
     if (key === this.#liqKey) return this.#liqRows;
     this.#liqKey = key;
-    return this.#liqRows = buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group);
+    return this.#liqRows = buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group, undefined, coins);
   }
   #showLiqHeld(): void { this.#pill.hidden = this.#liqNew <= 0; if (this.#liqNew > 0) setText(this.#pill, t('Held · {n} new ↑', { n: String(this.#liqNew) })); }
 
@@ -497,7 +503,7 @@ export class OrderList {
 
   /** A row of this frame, laid out before anything is drawn: device-pixel top and height, and what draws it. */
   #item(sig: string, y: number, h: number, kind: Item['kind'], fixed = false): Item {
-    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, shown: null, liq: null, tier: TIERS[0]!, timeY: -1, outlined: false, reasons: 0, words: '' };
+    const it = this.#itemPool[this.#items.length] ??= { sig: '', y: 0, h: 0, fixed: false, kind: 'row', rec: null, orders: 1, usd: 0, coins: 0, shown: null, liq: null, tier: TIERS[0]!, timeY: -1, outlined: false, reasons: 0, words: '' };
     it.sig = sig; it.y = y; it.h = h; it.kind = kind; it.fixed = fixed; it.rec = null; it.shown = null; it.liq = null; it.timeY = -1; it.outlined = false; it.reasons = 0; it.words = '';
     this.#items.push(it);
     return it;
@@ -539,7 +545,7 @@ export class OrderList {
       const timeY = !showTime ? -1 : y < 0 ? Math.min(tier.row - 6, Math.max(tier.row / 2, -y + 7)) : tier.row / 2;
       visible.push({ idx: i, row: r, y, tier, rowH, timeY });
       const k = -1_000_000 - i;
-      drawn.push({ kind: 'row', k, y, h: rowH, rec: { k, t: r.t, price: r.price, usd: r.signedUsd, id: r.id, lo: r.lo, hi: r.hi }, orders: r.count, usd: r.signedUsd, liq: r });
+      drawn.push({ kind: 'row', k, y, h: rowH, rec: { k, t: r.t, price: r.price, usd: r.signedUsd, id: r.id, lo: r.lo, hi: r.hi }, orders: r.count, usd: r.signedUsd, coins: r.coins, liq: r });
       lastSecond = second; first = false; y += rowH;
     }
     const full = scaledUsd(liqBarFull(s.liqMinUsd));
@@ -548,7 +554,7 @@ export class OrderList {
     const hover = this.#hovered();
     for (const v of visible) {
       const k = -1_000_000 - v.idx, outlined = hover?.row.k === k;
-      this.#drawOrder(ctx, g, this.#fill(v.row.t, v.row.price, v.row.signedUsd, v.row.id, v.row.count, true), v.y, v.tier, v.rowH, fw, v.timeY, outlined, p);
+      this.#drawOrder(ctx, g, this.#fill(v.row.t, v.row.price, v.row.signedUsd, v.row.id, v.row.count, v.row.coins, true), v.y, v.tier, v.rowH, fw, v.timeY, outlined, p);
     }
     if (hover) {
       const row = hover.row, pt = hover.pinned ? { x: w / 2, y: row.y + row.h / 2 } : this.#pointer!;
@@ -616,8 +622,8 @@ export class OrderList {
       const lk = -2_000_000 - liqAt;
       const rec: TradeRecord = { k: lk, t: lr.t, price: lr.price, usd: lr.signedUsd, id: lr.id, lo: lr.lo, hi: lr.hi };
       const it = this.#item(`q|${lr.key}|${lr.count}|${Math.round(lr.usd)}|${timeY}`, yd, hd, 'row');
-      it.rec = rec; it.shown = rec; it.liq = lr; it.tier = tier; it.orders = lr.count; it.usd = lr.signedUsd; it.timeY = timeY;
-      drawn.push({ kind: 'row', k: lk, y: yd / dpr, h: hd / dpr, rec, orders: lr.count, usd: lr.signedUsd, liq: lr });
+      it.rec = rec; it.shown = rec; it.liq = lr; it.tier = tier; it.orders = lr.count; it.usd = lr.signedUsd; it.coins = lr.coins; it.timeY = timeY;
+      drawn.push({ kind: 'row', k: lk, y: yd / dpr, h: hd / dpr, rec, orders: lr.count, usd: lr.signedUsd, coins: lr.coins, liq: lr });
       lastSecond = second; first = false; yd += hd;
     };
     while (pos >= 0 && yd < H) {
@@ -656,8 +662,8 @@ export class OrderList {
       const second = clockSeconds(rec.t), showTime = clockW > 0 && (second !== lastSecond || first);
       const timeY = !showTime ? -1 : yd < 0 ? Math.min(tier.row - 6, Math.max(tier.row / 2, -yd / dpr + 7)) : tier.row / 2;
       const it = this.#item(`r|${k}|${orders}|${usd}|${timeY}`, yd, hd, 'row');
-      it.rec = rec; it.shown = shown; it.tier = tier; it.orders = orders; it.usd = signed; it.timeY = timeY;
-      drawn.push({ kind: 'row', k, y: yd / dpr, h: hd / dpr, rec: shown, orders, usd: signed });
+      it.rec = rec; it.shown = shown; it.tier = tier; it.orders = orders; it.usd = signed; it.coins = qty; it.timeY = timeY;
+      drawn.push({ kind: 'row', k, y: yd / dpr, h: hd / dpr, rec: shown, orders, usd: signed, coins: qty });
       lastSecond = second; first = false;
       above = lowest; yd += hd; pos = next;
     }
@@ -673,7 +679,7 @@ export class OrderList {
     // What the rows' pixels depend on beyond their own signatures (a cleared ring numbers its writes from 0 again): any change draws the
     // whole frame.
     const liqFull = both ? scaledUsd(liqBarFull(s.liqMinUsd)) : 0;
-    const look = `${w}|${h}|${dpr}|${ring.generation}|${this.#epoch}|${marksEpoch()}|${whale}|${form}|${clockW}|${s.group}|${s.mode}|${liqFull}|${replay}|${document.documentElement.lang}|${g.xBar}|${g.barRoom}|${g.full}`;
+    const look = `${w}|${h}|${dpr}|${ring.generation}|${this.#epoch}|${marksEpoch()}|${whale}|${form}|${clockW}|${s.group}|${s.mode}|${liqFull}|${replay}|${document.documentElement.lang}|${g.xBar}|${g.barRoom}|${g.full}|${units()}`;
     if (history) this.rows.reset();
     const items = this.#items, draw = this.rows.plan(ctx, look, items, 1, H, p.panel, Math.min(H, yd));
     const fw = this.#canvas.width / dpr;
@@ -683,7 +689,7 @@ export class OrderList {
       const it = items[i]!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, it.y);
       const fh = it.h / dpr;
-      if (it.kind === 'row') this.#drawOrder(ctx, it.liq ? lg : g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders, !!it.liq), 0, it.tier, fh, fw, it.timeY, it.outlined, p);
+      if (it.kind === 'row') this.#drawOrder(ctx, it.liq ? lg : g, this.#fill(it.rec!.t, it.shown!.price, it.usd, it.rec!.id, it.orders, it.coins, !!it.liq), 0, it.tier, fh, fw, it.timeY, it.outlined, p);
       else if (it.kind === 'divider') this.#paintDivider(ctx, 0, w, it.reasons, p, fh, fw);
       else { ctx.fillStyle = p.panel; ctx.fillRect(0, 0, fw, fh); this.#paintNote(ctx, 0, w, it.words, p, fh); }
     }
@@ -749,8 +755,8 @@ export class OrderList {
     return s;
   }
   /** The scratch row description filled with one row's parts (see `#order`). */
-  #fill(t: number, price: number, usd: number, id: string, orders: number, liq = false): RowOrder {
-    const o = this.#order; o.t = t; o.price = price; o.usd = usd; o.id = id; o.orders = orders; o.liq = liq;
+  #fill(t: number, price: number, usd: number, id: string, orders: number, coins: number, liq = false): RowOrder {
+    const o = this.#order; o.t = t; o.price = price; o.usd = usd; o.id = id; o.orders = orders; o.liq = liq; o.coins = coins;
     return o;
   }
   /** The font widths at this pixel ratio (see `#fontWidths`). */
@@ -795,23 +801,24 @@ export class OrderList {
     ctx.fillText(this.#priceText(o.price), g.xPrice, mid);
     ctx.textAlign = 'right';
     ctx.font = `${tier.weight} ${tier.amountPx}px ${MONO}`;
-    const amount = amountText(usd);
-    ctx.fillText(amount, g.xRight, mid);
-    if (o.orders > 1) { const aw = ctx.measureText(amount).width; ctx.font = `11px ${MONO}`; ctx.fillStyle = ink.muted; ctx.fillText(`×${o.orders}`, g.xRight - aw - GAP, mid); }
+    // In coins the row's coins, bare (units.ts `coinText`, three figures: it fits the amount's room as the dollars do).
+    const size = inCoins() ? coinText(o.coins) : amountText(usd);
+    ctx.fillText(size, g.xRight, mid);
+    if (o.orders > 1) { const aw = ctx.measureText(size).width; ctx.font = `11px ${MONO}`; ctx.fillStyle = ink.muted; ctx.fillText(`×${o.orders}`, g.xRight - aw - GAP, mid); }
     if (outlined) { ctx.strokeStyle = p.text; ctx.globalAlpha = 0.35; ctx.lineWidth = 1; ctx.strokeRect(0.5, y0 + 0.5, this.#w - 1, fh - 1); ctx.globalAlpha = 1; }
   }
 
   #lines(row: Extract<Drawn, { kind: 'row' }>): InfoLine[] {
     if (row.liq) {
       const lr = row.liq;
-      const lines = liquidationLines(lr.count > 1 ? { ...lr.rep, t: lr.t, price: lr.price, usd: lr.usd } : lr.rep);
+      const lines = liquidationLines(lr.count > 1 ? { ...lr.rep, t: lr.t, price: lr.price, usd: lr.usd } : lr.rep, lr.coins);
       if (lr.count > 1) lines.push({ label: t('Liquidations'), text: String(lr.count) });
       if (!replaying() && !isPhone() && !this.#lastTouch) lines.push({ text: t('Click to show it on the map'), color: 'muted' });
       return lines;
     }
     const r = row.rec, buy = row.usd > 0, ms = String(Math.round(((r.t % 1000) + 1000) % 1000)).padStart(3, '0');
     const lines: InfoLine[] = [
-      { text: `${buy ? t('BUY') : t('SELL')}  ${amountText(Math.abs(row.usd))}`, bold: true, color: buy ? 'buy' : 'sell', mark: r.id },
+      { text: `${buy ? t('BUY') : t('SELL')}  ${inCoins() ? (Number.isFinite(row.coins) ? amount(row.coins) : '–') : amountText(Math.abs(row.usd))}`, bold: true, color: buy ? 'buy' : 'sell', mark: r.id },
       { label: t('Venue'), text: `${venueLabel(r.id)} ${r.id.slice(r.id.indexOf(':') + 1)}` },
       { label: t('Price'), text: fmtPrice(r.price) },
     ];
@@ -855,9 +862,11 @@ export class OrderList {
       }
       const buy = l.side === 'buy', signed = buy ? l.usd : -l.usd, tier = TIERS[tierOf(signed, scaledUsd, whale)]!, rowH = tier.row, sec = Math.floor(l.t / 1000);
       if (y + rowH <= 0) { lastSec = sec; y += rowH; continue; }
-      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders), y, tier, rowH, fw, sec !== lastSec ? rowH / 2 : -1, false, p);
+      // In coins its dollars over its volume-weighted price (exact: that price is its dollars over its coins); in dollars none of that work.
+      const coins = inCoins() ? (l.price > 0 ? l.usd / l.price : Number.NaN) : 0;
+      this.#drawOrder(ctx, g, this.#fill(l.t, l.price, signed, l.id, l.orders, coins), y, tier, rowH, fw, sec !== lastSec ? rowH / 2 : -1, false, p);
       lastSec = sec;
-      drawn.push({ kind: 'row', k: -1 - i, y, h: rowH, rec: { k: -1 - i, t: l.t, price: l.price, usd: signed, id: l.id, lo: l.lo, hi: l.hi }, orders: l.orders, usd: signed });
+      drawn.push({ kind: 'row', k: -1 - i, y, h: rowH, rec: { k: -1 - i, t: l.t, price: l.price, usd: signed, id: l.id, lo: l.lo, hi: l.hi }, orders: l.orders, usd: signed, coins });
       y += rowH;
     }
   }

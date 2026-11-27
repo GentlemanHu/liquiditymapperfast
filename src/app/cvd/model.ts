@@ -6,22 +6,36 @@ import { buildFamilies, type Family } from './families.ts';
 import { Ranker, pickTop, quiet, rankAll, type RankInput } from './rank.ts';
 import { RANK_MS, type CvdSettings } from './settings.ts';
 
-/** One line of the column: a lane's running delta over the window, a value per pixel column. */
-export interface LaneLine {
+/** A lane's figures over the ranking window in one unit: buy minus sell, buy plus sell, buy and sell. */
+export interface LaneFigures { delta: number; gross: number; buy: number; sell: number }
+
+/**
+ * One line of the column: a lane's running delta over the window, a value per pixel column.
+ *
+ * Units (units.ts, issue 9): the line itself (`lo`, `hi`, `last`, `min`, `max`, `before`) is only drawn and read out, so it is made in the
+ * page's units: from the lane's coin track on a model built with `coins` (each second's dollars over that second's own volume-weighted price,
+ * each minute's over its last price before the seconds begin: `FlowBook.track`). The figures over the ranking window stay dollars, which the
+ * judgments read (the divergence note, the ranking, the quiet flag), with their coins beside them (`coins`) for the labels; `series` stays the
+ * dollars' series, which the line's end flash and its wave are judged on.
+ */
+export interface LaneLine extends LaneFigures {
   /** The instrument (empty for an aggregate). */
   id: string; kind: Kind; series: FlowSeries | null;
-  /** Per pixel column: the lowest, highest and last running delta inside it, NaN where the series holds nothing yet. */
+  /** Per pixel column: the lowest, highest and last running delta inside it, NaN where the series holds nothing yet (in the page's units). */
   lo: Float64Array; hi: Float64Array; last: Float64Array;
   /** The range of all of the above (NaN when the line has no value), for scaling. */
   min: number; max: number;
   /** The running delta as it stood just before the window's left edge (0 for a line that began inside it): what a line drawn without rebasing has behind it. */
   before?: number;
-  /** Over the ranking window: buy minus sell, buy plus sell, buy and sell. */
-  delta: number; gross: number; buy: number; sell: number;
+  /** The figures over the ranking window in coins, on a model built with `coins` (what its labels write then); the lane's own are dollars. */
+  coins?: LaneFigures;
   /** Nothing traded in the last five completed minutes. */
   quiet: boolean;
 }
-export interface FamilyRow { key: string; rank: number; share: number; gross: number; quiet: boolean; lanes: LaneLine[] }
+/** `gross` is the ranking's dollars; `coins` its coins (its lanes' added up), on a model built with `coins`. */
+export interface FamilyRow { key: string; rank: number; share: number; gross: number; quiet: boolean; lanes: LaneLine[]; coins?: { gross: number } }
+/** What a label writes of a lane over the ranking window: its coins on a model built in coins, else its dollars. */
+export const laneFigures = (lane: LaneLine): LaneFigures => lane.coins ?? lane;
 export interface CvdModel {
   /** The window drawn, in ms, and the number of pixel columns across it. */
   t0: number; t1: number; columns: number;
@@ -44,6 +58,8 @@ export interface ModelInput {
   t0: number; t1: number; columns: number; now: number;
   settings: CvdSettings;
   ranker: Ranker;
+  /** Draw the lines in coins and give the labels' figures their coins (units.ts): the page writes sizes in coins. */
+  coins?: boolean;
 }
 
 const nan = (n: number): Float64Array => new Float64Array(n).fill(NaN);
@@ -69,11 +85,18 @@ export function aggregateFamilies(flow: FlowBook, ids: readonly string[], kindOf
 export const aggregateIds = (flow: FlowBook, ids: readonly string[], kindOf: (id: string) => Kind | null): string[] =>
   aggregateFamilies(flow, ids, kindOf).aggregate.flatMap(f => f.lanes.map(l => l.id));
 
+/** A series' figures over whole seconds [from, to]. */
+function figures(series: FlowSeries, from: number, to: number): LaneFigures {
+  const delta = series.delta(from, to), gross = series.gross(from, to);
+  return { delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2 };
+}
+
 /**
- * A lane's line over [t0, t1) from its track (its seconds, and its minutes before them): the running delta from the window's left edge (or as
- * it stands, with `rebase` off), and its figures over the rank window from its seconds.
+ * A lane's line over [t0, t1) from its track (its seconds, and its minutes before them; in the page's units): the running delta from the
+ * window's left edge (or as it stands, with `rebase` off), and its figures over the rank window from its seconds (dollars, and with `coins`,
+ * the coin series' beside them).
  */
-function laneLine(id: string, kind: Kind, series: FlowSeries, track: FlowTrack, o: { t0Sec: number; t1Sec: number; columns: number; winStart: number; nowSec: number; now: number; rebase: boolean; quietFlag: boolean }): LaneLine {
+function laneLine(id: string, kind: Kind, series: FlowSeries, track: FlowTrack, o: { t0Sec: number; t1Sec: number; columns: number; winStart: number; nowSec: number; now: number; rebase: boolean; quietFlag: boolean }, coins?: FlowSeries): LaneLine {
   const out = new Float64Array(o.columns * 3);
   track.decimate(o.t0Sec, o.t1Sec, o.columns, out);
   const edge = track.cumDelta(o.t0Sec - 1), base = o.rebase ? edge : 0, before = track.first !== null && track.first <= o.t0Sec - 1 ? edge : 0;
@@ -81,14 +104,16 @@ function laneLine(id: string, kind: Kind, series: FlowSeries, track: FlowTrack, 
   for (let c = 0; c < o.columns; c++) { lo[c] = out[c * 3]! - base; hi[c] = out[c * 3 + 1]! - base; last[c] = out[c * 3 + 2]! - base; }
   const r = range(lo, hi);
   const delta = series.delta(o.winStart, o.nowSec), gross = series.gross(o.winStart, o.nowSec);
-  return { id, kind, series, lo, hi, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
+  const line: LaneLine = { id, kind, series, lo, hi, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: o.quietFlag && quiet((a, b) => series.gross(a, b), o.now) };
+  if (coins) line.coins = figures(coins, o.winStart, o.nowSec);
+  return line;
 }
 
 /**
  * Everything the column draws, worked out from the flow book: the families ranked over the ranking window (held steady by the ranker),
  * a line per lane, and the two aggregate lines. No canvas and no DOM, so it is tested alone.
  */
-export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, ranker }: ModelInput): CvdModel {
+export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, ranker, coins = false }: ModelInput): CvdModel {
   const nowSec = Math.floor(now / 1000), rankSec = Math.round(RANK_MS[settings.rank] / 1000), winStart = nowSec - rankSec + 1;
   const t0Sec = Math.floor(t0 / 1000), t1Sec = Math.max(t0Sec + 1, Math.ceil(t1 / 1000));
   // The aggregate lines also count an instrument that has only older minutes (see aggregateFamilies).
@@ -103,14 +128,17 @@ export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, 
   const top = settings.top > 0 ? settings.top : null;
   const everyone = rankAll(inputs), fresh = pickTop(everyone, { top, pin: settings.pinned });
   const held = ranker.apply(now, fresh, everyone);
-  const rows: FamilyRow[] = held.map((r, i) => ({
-    key: r.family.key, rank: i + 1, share: r.share, gross: r.gross, quiet: r.quiet,
-    lanes: [...r.family.lanes].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'spot' ? -1 : 1)).map(lane => laneLine(lane.id, lane.kind, flow.get(lane.id)!, flow.track(lane.id)!, common)),
-  }));
+  // The ranking (and the share and quiet flag beside it) is the dollars'; a row's figure of what it traded is written in coins in coin mode.
+  const rows: FamilyRow[] = held.map((r, i) => {
+    const lanes = [...r.family.lanes].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'spot' ? -1 : 1)).map(lane => laneLine(lane.id, lane.kind, flow.get(lane.id)!, flow.track(lane.id, coins)!, common, coins ? flow.coinsOf(lane.id) : undefined));
+    const row: FamilyRow = { key: r.family.key, rank: i + 1, share: r.share, gross: r.gross, quiet: r.quiet, lanes };
+    if (coins) row.coins = { gross: lanes.reduce((sum, lane) => sum + (lane.coins?.gross ?? 0), 0) };
+    return row;
+  });
   const volumeFamilies = everyone.length;
 
   const aggregate = (kind: Kind): LaneLine | null => {
-    const ids = aggregated.flatMap(f => f.lanes.filter(l => l.kind === kind)).map(l => l.id), lanes = ids.map(id => flow.get(id)), tracks = ids.map(id => flow.track(id)!);
+    const ids = aggregated.flatMap(f => f.lanes.filter(l => l.kind === kind)).map(l => l.id), lanes = ids.map(id => flow.get(id)), tracks = ids.map(id => flow.track(id, coins)!);
     if (!ids.length) return null;
     const last = nan(columns), span = t1Sec - t0Sec;
     let delta = 0, gross = 0;
@@ -125,7 +153,13 @@ export function buildModel({ flow, ids, kindOf, t0, t1, columns, now, settings, 
     }
     for (const s of lanes) if (s) { delta += s.delta(winStart, nowSec); gross += s.gross(winStart, nowSec); }
     const r = range(last);
-    return { id: '', kind, series: null, lo: last, hi: last, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: false };
+    const line: LaneLine = { id: '', kind, series: null, lo: last, hi: last, last, ...r, before, delta, gross, buy: (gross + delta) / 2, sell: (gross - delta) / 2, quiet: false };
+    if (coins) {
+      let cDelta = 0, cGross = 0;
+      for (const id of ids) { const s = flow.coinsOf(id); if (s && !s.empty) { cDelta += s.delta(winStart, nowSec); cGross += s.gross(winStart, nowSec); } }
+      line.coins = { delta: cDelta, gross: cGross, buy: (cGross + cDelta) / 2, sell: (cGross - cDelta) / 2 };
+    }
+    return line;
   };
   return { t0, t1, columns, rankSec, nowSec, rows, spot: aggregate('spot'), perp: aggregate('perp'), instruments: withFlow.length + olderOnly.length, hidden: Math.max(0, volumeFamilies - rows.length), counted: families.flatMap(f => f.lanes.map(l => l.id)) };
 }

@@ -68,9 +68,9 @@ test('every column\'s heading draws on the grid: its name on the tools\' row, it
   assert.match(heat, /measure\(def\.name\(\)\) <= headRoom \? def\.name\(\) : fitText\(measure, def\.short\(\), headRoom\), x0 \+ HEAD_INSET, rowNameTop\(look, nameSize\)\)/);
   assert.equal(heat.match(/const nameSize = rowNameSize\(pw < NARROW_PLOT\);/g)?.length, 2);
   // Their figures, and the liquidation column's, start on the first line; the split's sub-columns too, then the words across, then the notes.
-  assert.match(heat, /fit\(t\('LEVEL MAX \{value\}', \{ value: usd\(maxLevel\) \}\)\), x0 \+ HEAD_INSET, first\)/);
+  assert.match(heat, /fit\(t\('LEVEL MAX \{value\}', \{ value: figure\(levelSaid\) \}\)\), x0 \+ HEAD_INSET, first\)/);
   assert.match(heat, /ctx\.fillText\(head, x0 \+ HEAD_INSET, firstY\);/);
-  assert.match(heat, /t\('LEVEL MAX \{value\}', \{ value: usd\(maxLevel\) \}\), liqRoom\(W\)\), x0 \+ HEAD_INSET, heading\.first\)/);
+  assert.match(heat, /t\('LEVEL MAX \{value\}', \{ value: figure\(levelSaid\) \}\), liqRoom\(W\)\), x0 \+ HEAD_INSET, heading\.first\)/);
   assert.match(heat, /h\.scale\.forEach\(\(line, n\) => ctx\.fillText\(line, sub\.x0 \+ HEAD_INSET, top \+ HEAD_PITCH \* n\)\)/);
   // The split's button names both sub-columns, each over its own (no caption rows on the canvas).
   assert.match(heat, /splitHeads\(wide, \{ maxima:/);
@@ -95,7 +95,7 @@ test('every column\'s heading draws on the grid: its name on the tools\' row, it
   // A name with no room on the split's button gives way to its half of the split's short name, as the button said before.
   assert.match(heat, /const \[shortA, shortB\] = splitName\(pair\.split\)\.split\('\|'\)\.map\(half => half\.trim\(\)\);/);
   // A compact map's profile column (84 px, no corner tools' row above it) keeps its two figure lines at the top.
-  assert.match(heat, /if \(!strip && COMPACT\) \{[\s\S]{0,800}?x0 \+ 4, 4\); ctx\.fillText\(t\('CUM MAX \{value\}', \{ value: usd\(maxCum\) \}\), x0 \+ 4, 16\);/);
+  assert.match(heat, /if \(!strip && COMPACT\) \{[\s\S]{0,800}?x0 \+ 4, 4\); ctx\.fillText\(t\('CUM MAX \{value\}', \{ value: figure\(cumSaid\) \}\), x0 \+ 4, 16\);/);
   // The heading lines' warning ink is the theme's caution words colour, worked out once a palette.
   assert.match(heat, /caution: cautionInk\(p\)/);
   // A measure column's cut record says it in the same caution words colour, as the band's header does (measures/paint.ts).

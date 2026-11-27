@@ -22,6 +22,15 @@ export class History {
     this.#redo = [];
   }
 
+  /**
+   * Change every list the steps hold the same way. A bell that went off once switches itself off, which is no step of the person's: taking back
+   * a step made before it, or doing one again, must not switch it back on.
+   */
+  rewrite(change: (list: readonly Drawing[]) => readonly Drawing[]): void {
+    const map = (s: Step): Step => ({ before: change(s.before), after: change(s.after) });
+    this.#undo = this.#undo.map(map); this.#redo = this.#redo.map(map);
+  }
+
   /** What Undo and Redo would go to, without going there (the caller checks it fits first). */
   peekUndo(): readonly Drawing[] | null { return this.#undo[this.#undo.length - 1]?.before ?? null; }
   peekRedo(): readonly Drawing[] | null { return this.#redo[this.#redo.length - 1]?.after ?? null; }

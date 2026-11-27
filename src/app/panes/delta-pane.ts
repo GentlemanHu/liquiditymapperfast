@@ -6,6 +6,7 @@ import { setTip } from '../tip.ts';
 import { t, tn } from '../i18n.ts';
 import { addTune } from '../pane-tune.ts';
 import { clock, usd } from '../format.ts';
+import { inCoins, signedAmount, unitFloor, unitName } from '../units.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { flowLoadIds } from '../cvd/ids.ts';
@@ -42,17 +43,19 @@ function sameModel(a: ReadonlyMap<number, NlnsCandle> | null, b: ReadonlyMap<num
 
 /**
  * What the Delta pane's sums are of (the Range summary's snapshot must be of the same): the coin, the timeframe, what it shows and how, where
- * the CVD starts again and in which zone, the flow column's markets it counts, and (NL/NS) whose open interest.
+ * the CVD starts again and in which zone, the flow column's markets it counts, (NL/NS) whose open interest, and the page's units (a snapshot
+ * in coins carries its candles in coins too).
  */
 export function deltaHeldKey(state: AppState, ids: readonly string[]): string {
   const s = state.delta, zone = resolveZone(state.traded.zone, state.timeZone);
   const oi = s.style === 'nlns' ? `|${state.oiParts.length > 1 ? state.oiParts.map(part => part.id).join(',') : state.oiInstrument}` : '';
-  return `${state.marketId}|${state.timeframe}|${s.style}|${s.nlns}|${s.reset}|${zone}|${ids.join(',')}${oi}`;
+  return `${state.marketId}|${state.timeframe}|${s.style}|${s.nlns}|${s.reset}|${zone}|${ids.join(',')}${oi}${inCoins() ? '|coins' : ''}`;
 }
 
-const signed = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
+/** A signed size in the page's units (units.ts): in dollars as the pane always wrote it ("+$12.3M", "$–" for none), in coins "−0.35 BTC". */
+const signed = (v: number): string => inCoins() ? signedAmount(v) : `${v > 0 ? '+' : v < 0 ? '−' : ''}$${usd(Math.abs(v))}`;
 
-/** The popup for one candle of the pane: its time (the table's foot says it), its delta and the CVD it closed at. */
+/** The popup for one candle of the pane: its time (the table's foot says it), its delta and the CVD it closed at (a candle in the page's units). */
 export function deltaCardLines(c: DeltaCandle, tf: string): InfoLine[] {
   return [
     { text: `${clock(c.t, true)} · ${tf}`, bold: true, table: false },
@@ -66,11 +69,19 @@ export function deltaCardLines(c: DeltaCandle, tf: string): InfoLine[] {
  * The Delta pane: for each candle of the chart's timeframe, what the taker buys outweighed the sells by over the flow column's ALL VENUES
  * instruments, as bars, or the cumulative delta (CVD) as candles (see delta/candles.ts). The CVD starts at the chart's left edge or restarts
  * each day or week, in the zone the Volume profile uses.
+ *
+ * Units (units.ts, issue 9): in coins the candles, bars, axis, readout, card and table are drawn from the markets' coin tracks (each second's
+ * dollars over that second's own price, the minutes before the seconds over each minute's last price: `FlowBook.track`), with the dollars'
+ * candles left out where they are (a stretch taken as not recorded), so the runs match. The divergences are found on the dollars' candles (a
+ * judgment) and drawn at the coin candles' highs and lows; `candles` and the Range summary's snapshot stay the dollars'. The table's order (the
+ * most traded first) is the dollars'; its rows are the coins'. NL/NS is in coins already.
  */
 export class DeltaPane extends TimePane {
   #card = new HoverCard();
   #lines: InfoLine[] | null = null;
   #cache = new FlowCache();
+  /** The coin tracks' candle flows (coin mode only), kept apart from the dollars'. */
+  #coinCache = new FlowCache();
   #sync: (() => void)[] = [];
   #marketsPanel: Panel | null = null;
   readonly #tableBox = document.createElement('input');
@@ -156,6 +167,12 @@ export class DeltaPane extends TimePane {
   get rangeHeld(): DeltaPaneHeld | null { return this.#held; }
   #held: DeltaPaneHeld | null = null;
   /**
+   * In coins, the candles the pane drew last in coins (units.ts): their starts, each one's flow from the coin tracks as the pane counts it (on
+   * the dollars' mask of what was not recorded) and as read, and the CVD candles. The snapshot carries them (`DeltaPaneHeld.coins`) for a Range
+   * summary in coins. Null in dollars (and when the pane shows NL/NS).
+   */
+  #coinParts: { starts: readonly number[]; flows: readonly (CandleFlow | null)[]; raw: readonly (CandleFlow | null)[]; candles: readonly DeltaCandle[] } | null = null;
+  /**
    * Keep what this drawing is made of. The candles are worked out afresh on every drawing, so the snapshot is replaced only when what it
    * holds changed: the settings, the candle starts, any candle's flow (the closed ones are the cache's same objects), the price or the model.
    */
@@ -166,7 +183,8 @@ export class DeltaPane extends TimePane {
     const same = held !== null && held.key === next.key && held.mode === next.mode && held.reset === next.reset && held.replayAt === next.replayAt && held.earliest === next.earliest && held.firsts.length === next.firsts.length && held.firsts.every((f, i) => f === next.firsts[i])
       && held.tfMs === next.tfMs && held.markets === next.markets && held.coin === next.coin && held.ownPrice === next.ownPrice && held.priceMarket === next.priceMarket
       && held.candlesPrice === next.candlesPrice && sameModel(held.nlns, next.nlns) && held.whose === next.whose && held.starts.length === next.starts.length
-      && held.starts.every((s, i) => s === next.starts[i] && sameFlow(held.raw[i], next.raw[i]) && sameFlow(held.flows[i], next.flows[i]) && held.support[i] === next.support[i]);
+      && (held.coins === undefined) === (next.coins === undefined)
+      && held.starts.every((s, i) => s === next.starts[i] && sameFlow(held.raw[i], next.raw[i]) && sameFlow(held.flows[i], next.flows[i]) && held.support[i] === next.support[i] && sameFlow(held.coins?.flows[i], next.coins?.flows[i]));
     if (same) return;
     this.#held = { ...next, candles: new Map(next.candles.map(c => [c.t, c] as const)) };
   }
@@ -182,17 +200,28 @@ export class DeltaPane extends TimePane {
   /** Ask the flow book for what candles from `from` need (delta/flows.ts, shared with the volume profile along the top of the map). */
   #ensure(loadIds: string[], from: number, now: number): void { ensureDeltaFlow(this.hub, loadIds, from, now); }
 
-  /** The candles of the view: the flow book asked for what they need, the closed ones worked out once, the open one every time. */
-  #candles(state: AppState, now: number): { candles: DeltaCandle[]; starts: number[]; earliest: number | null; flows: (CandleFlow | null)[]; raw: (CandleFlow | null)[]; ids: string[]; support: number[]; firsts: (number | null)[] } {
+  /**
+   * The candles of the view: the flow book asked for what they need, the closed ones worked out once, the open one every time. In coins also
+   * `drawn`, the same candles from the coin tracks (on the dollars' mask of what was not recorded, so the runs are the same); null in dollars.
+   */
+  #candles(state: AppState, now: number): { candles: DeltaCandle[]; drawn: DeltaCandle[] | null; starts: number[]; earliest: number | null; flows: (CandleFlow | null)[]; raw: (CandleFlow | null)[]; ids: string[]; support: number[]; firsts: (number | null)[] } {
     const v = this.view, tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, s = state.delta, zone = resolveZone(state.traded.zone, state.timeZone), flow = this.hub.flow;
     const starts = candleStarts(v.t0, v.t1, now, tf, s.reset, zone, undefined, s.style !== 'bars');
     const ids = deltaIds(state, flow), firsts = ids.map(id => flow.track(id)?.first ?? null);
-    if (!starts.length) return { candles: [], starts, earliest: null, flows: [], raw: [], ids, support: [], firsts };
+    if (!starts.length) return { candles: [], drawn: null, starts, earliest: null, flows: [], raw: [], ids, support: [], firsts };
     this.#ensure(flowLoadIds(state, flow.ids), starts[0]!, Date.now());
     const { flows, raw, earliest } = deltaFlows(this.#cache, flow, ids, starts, tf, now);
     // How many of the markets each candle counts: a market counts from the candle whose start its flow reaches back to (candleFlow's rule).
     const support = starts.map(start => { const sec = Math.floor(start / 1000) - 1; return firsts.filter(f => f !== null && f <= sec).length; });
-    return { candles: deltaCandles(starts, flows, resetKeys(starts, s.reset, zone)), starts, earliest, flows, raw, ids, support, firsts };
+    const keys = resetKeys(starts, s.reset, zone);
+    let drawn: DeltaCandle[] | null = null;
+    this.#coinParts = null;
+    if (inCoins()) {
+      const coins = deltaFlows(this.#coinCache, { track: id => flow.track(id, true), loads: flow.loads }, ids, starts, tf, now), masked = coins.raw.map((f, i) => flows[i] === null ? null : f);
+      drawn = deltaCandles(starts, masked, keys);
+      this.#coinParts = { starts, flows: masked, raw: coins.raw, candles: drawn };
+    }
+    return { candles: deltaCandles(starts, flows, keys), drawn, starts, earliest, flows, raw, ids, support, firsts };
   }
 
   /** The chart's candles, whether they are the coin's own market's, and its name. */
@@ -313,14 +342,19 @@ export class DeltaPane extends TimePane {
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state, now = pageNow();
     const tf = TIMEFRAMES[state.timeframe] ?? 3_600_000, s = state.delta, readout = this.head.querySelector('.readout');
-    if (s.style === 'nlns') { this.candles = []; this.#setDivergences([]); this.#paintNlns(state, now, readout); return; }
-    const { candles, earliest, starts, flows, raw, ids, support, firsts } = this.#candles(state, now);
+    if (s.style === 'nlns') { this.candles = []; this.#coinParts = null; this.#setDivergences([]); this.#paintNlns(state, now, readout); return; }
+    const { candles, drawn: coinCandles, earliest, starts, flows, raw, ids, support, firsts } = this.#candles(state, now);
     this.candles = candles;
-    this.#keep({ key: deltaHeldKey(state, ids), mode: s.style === 'bars' ? 'bars' : 'cvd', tfMs: tf, tf: state.timeframe, reset: s.reset, starts, flows, raw, candles, support, markets: ids.length, earliest, firsts, ...this.#price(state), nlns: null, whose: '', coin: '', replayAt: replaying() ? Math.floor(now / tf) * tf : null });
-    // Divergences need the chart's candles to be this market's: a borrowed reference series is another market's price.
+    // In coins the snapshot carries the candles in coins too, for a Range summary in coins (range/delta-lines.ts `DeltaPaneHeld.coins`).
+    const held: Omit<DeltaPaneHeld, 'candles'> & { candles: readonly DeltaCandle[] } = { key: deltaHeldKey(state, ids), mode: s.style === 'bars' ? 'bars' : 'cvd', tfMs: tf, tf: state.timeframe, reset: s.reset, starts, flows, raw, candles, support, markets: ids.length, earliest, firsts, ...this.#price(state), nlns: null, whose: '', coin: '', replayAt: replaying() ? Math.floor(now / tf) * tf : null };
+    if (coinCandles && this.#coinParts) held.coins = { flows: this.#coinParts.flows, candles: new Map(coinCandles.map(c => [c.t, c] as const)) };
+    this.#keep(held);
+    // Divergences need the chart's candles to be this market's: a borrowed reference series is another market's price. They are found on the
+    // dollars' candles in either units (a judgment); what is drawn and written below is the candles in the page's units (`drawn`).
     const bars = state.seriesInstrument === state.marketId ? state.candles.map(c => ({ t: c[0], high: c[2], low: c[3] })) : [];
     this.#setDivergences(s.divergence && bars.length ? inView(divergences(bars, candles, tf, now, s.pivot), v.t0, v.t1) : []);
-    const visible = candles.filter(c => c.t + tf >= v.t0 && c.t <= v.t1);
+    const drawn = coinCandles ?? candles, floor = unitFloor(state.mark.price);
+    const visible = drawn.filter(c => c.t + tf >= v.t0 && c.t <= v.t1);
     if (!visible.length) {
       ctx.fillStyle = p.muted; ctx.textAlign = 'left';
       ctx.fillText(earliest === null ? t('No flow recorded for these candles yet.') : t('Flow is recorded from {time}: the candles before it have none.', { time: clock(earliest, true) }), 12, ph / 2);
@@ -329,17 +363,18 @@ export class DeltaPane extends TimePane {
     const asBars = s.style === 'bars';
     let lo = 0, hi = 0;
     for (const c of visible) { if (asBars) { lo = Math.min(lo, c.delta); hi = Math.max(hi, c.delta); } else { lo = Math.min(lo, c.low); hi = Math.max(hi, c.high); } }
-    if (asBars) { const m = Math.max(Math.abs(lo), Math.abs(hi)) || 1; lo = -m; hi = m; }
-    const pad = (hi - lo) * 0.08 || 1, min = lo - pad, max = hi + pad, top = 6, bottom = ph - 6;
+    // A flat view's floor is a dollar in the page's units (a dollar's worth of coin in coins: units.ts), so it is drawn alike in either.
+    if (asBars) { const m = Math.max(Math.abs(lo), Math.abs(hi)) || floor; lo = -m; hi = m; }
+    const pad = (hi - lo) * 0.08 || floor, min = lo - pad, max = hi + pad, top = 6, bottom = ph - 6;
     const y = (value: number): number => top + (1 - (value - min) / (max - min)) * (bottom - top);
     ctx.save(); ctx.beginPath(); ctx.rect(0, 0, pw, ph); ctx.clip();
     // Zero, and where the CVD starts again (a day or week, or after a stretch with nothing recorded).
     ctx.strokeStyle = p.line; ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.moveTo(0, Math.round(y(0)) + 0.5); ctx.lineTo(pw, Math.round(y(0)) + 0.5); ctx.stroke(); ctx.globalAlpha = 1;
     if (!asBars) {
       ctx.strokeStyle = p.muted; ctx.setLineDash([2, 4]); ctx.beginPath();
-      for (let i = 1; i < candles.length; i++) {
-        const c = candles[i]!;
-        if (c.run === candles[i - 1]!.run || c.t + tf < v.t0 || c.t > v.t1) continue;
+      for (let i = 1; i < drawn.length; i++) {
+        const c = drawn[i]!;
+        if (c.run === drawn[i - 1]!.run || c.t + tf < v.t0 || c.t > v.t1) continue;
         const x = Math.round(v.xOf(c.t, pw)) + 0.5; ctx.moveTo(x, 0); ctx.lineTo(x, ph);
       }
       ctx.stroke(); ctx.setLineDash([]);
@@ -357,15 +392,24 @@ export class DeltaPane extends TimePane {
         ctx.fillStyle = color; ctx.fillRect(xc - w / 2, Math.min(yo, yc), w, Math.max(1, Math.abs(yc - yo)));
       }
     }
-    // The divergences on the CVD candles (the bars do not show the CVD): its two swings joined.
-    if (!asBars) for (const d of this.divergences) paintDivergence(ctx, d, v.xOf(d.from + tf / 2, pw), y(d.cvdFrom), v.xOf(d.to + tf / 2, pw), y(d.cvdTo), d.kind === 'bear' ? p.ask : p.bid, null);
+    // The divergences on the CVD candles (the bars do not show the CVD): its two swings joined, at the drawn candles' highs or lows (the
+    // dollars' own in dollars, where they were found).
+    if (!asBars && this.divergences.length) {
+      // In coins the coin candles' own highs and lows (looked up once a drawing that has divergences); in dollars where they were found.
+      const at = coinCandles ? new Map(coinCandles.map(c => [c.t, c] as const)) : null;
+      for (const d of this.divergences) {
+        const a = at?.get(d.from), b = at?.get(d.to), bear = d.kind === 'bear';
+        const va = a ? (bear ? a.high : a.low) : d.cvdFrom, vb = b ? (bear ? b.high : b.low) : d.cvdTo;
+        paintDivergence(ctx, d, v.xOf(d.from + tf / 2, pw), y(va), v.xOf(d.to + tf / 2, pw), y(vb), bear ? p.ask : p.bid, null);
+      }
+    }
     ctx.restore();
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     ctx.fillText(signed(hi), this.w - AXIS_W + 6, 10); ctx.fillText(signed(lo), this.w - AXIS_W + 6, ph - 10);
     // Readout and popup: the candle under the pointer (past the newest, the newest), else the newest.
-    const hover = state.hover, newest = candles[candles.length - 1]!;
+    const hover = state.hover, newest = drawn[drawn.length - 1]!;
     let shown = newest;
-    if (hover) { const under = [...candles].reverse().find(c => c.t <= hover.t); if (under) shown = under; }
+    if (hover) { const under = [...drawn].reverse().find(c => c.t <= hover.t); if (under) shown = under; }
     if (hover && this.pointer && shown === newest && hover.t >= newest.t + tf) this.cursorT = newest.t + tf / 2;
     if (hover && this.pointer) this.#lines = deltaCardLines(shown, state.timeframe);
     const since = earliest !== null && earliest > v.t0 ? ` <span class="muted">${t('flow recorded since {time}', { time: clock(earliest, true) })}</span>` : '';
@@ -374,7 +418,7 @@ export class DeltaPane extends TimePane {
     // it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
     if (state.deltaTable && ids.length > 1) {
       const rows = this.#tableRows(state, ids, shown.t, tf, now, visible, ph);
-      const foot = `${hover ? clock(shown.t, true) : `${t('newest')} ${clock(shown.t)}`} · ${state.timeframe} · USD`, lines = headed(t('Total'), tableLines(this.#lines ?? deltaCardLines(shown, state.timeframe)));
+      const foot = `${hover ? clock(shown.t, true) : `${t('newest')} ${clock(shown.t)}`} · ${state.timeframe} · ${unitName()}`, lines = headed(t('Total'), tableLines(this.#lines ?? deltaCardLines(shown, state.timeframe)));
       if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 1, focus: -1, foot, rows: deltaTableRows(rows, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}` })?.complete) this.#lines = null;
     }
   }
@@ -385,7 +429,9 @@ export class DeltaPane extends TimePane {
    * (`tableRowCap`), the rest added up in the last row. A market that does not count in that candle has no row (and is not among the rest).
    */
   #tableRows(state: AppState, ids: readonly string[], start: number, tf: number, now: number, visible: readonly DeltaCandle[], h: number): DeltaRow[] {
-    const flow = this.hub.flow, tracks = ids.map(id => flow.track(id));
+    // The order (the most traded first) is the dollars'; each row's figures are its market's coin track's in coins (units.ts), so its
+    // buys, sells, Δ, share and × agree with each other.
+    const flow = this.hub.flow, tracks = ids.map(id => flow.track(id)), coins = inCoins(), shownTracks = coins ? ids.map(id => flow.track(id, true)) : tracks;
     const from = visible[0]!.t, to = Math.min(visible[visible.length - 1]!.t + tf, now), key = `${ids.join(',')}|${from}|${to - (to % tf)}|${tf}|${flow.loads}`;
     let rank = this.#rank;
     if (!rank || rank.key !== key) {
@@ -395,13 +441,14 @@ export class DeltaPane extends TimePane {
     const cap = tableRowCap(h);
     if (cap < 1) return [];
     const flows = new Map<number, CandleFlow>();
-    for (const m of rank.order) { const f = candleFlow([tracks[m]!], start, tf, now, 1); if (f) flows.set(m, f); }
+    for (const m of rank.order) { const track = shownTracks[m]; const f = track ? candleFlow([track], start, tf, now, 1) : null; if (f) flows.set(m, f); }
     const here = rank.order.filter(m => flows.has(m));
     if (!here.length) return [];
     let total = 0;
     for (const m of here) total += flows.get(m)!.gross;
-    const names = bookNames(ids, state.markets), shown = here.length <= cap ? here : here.slice(0, cap - 1), rest = here.slice(shown.length);
-    const row = (name: string, delta: number, gross: number): DeltaRow => deltaRow(name, delta, gross, total);
+    // Under half a cent a side is nothing: in coins, half a cent's worth.
+    const names = bookNames(ids, state.markets), shown = here.length <= cap ? here : here.slice(0, cap - 1), rest = here.slice(shown.length), floor = 0.005 * unitFloor(state.mark.price);
+    const row = (name: string, delta: number, gross: number): DeltaRow => deltaRow(name, delta, gross, total, floor);
     const rows = shown.map(m => { const f = flows.get(m)!; return row(names[m]!, f.delta, f.gross); });
     if (rest.length) { let delta = 0, gross = 0; for (const m of rest) { const f = flows.get(m)!; delta += f.delta; gross += f.gross; } rows.push(row(tn(rest.length, '{n} other', '{n} others'), delta, gross)); }
     return rows;
@@ -420,10 +467,11 @@ export interface DeltaRow { name: string; buys: number; sells: number; delta: nu
 
 /**
  * A Delta table row from a candle's delta and volume (`total`: the volume of every market read). Live seconds are added up in doubles, so a side
- * that traded nothing reads a residue (±1e-7 USD) rather than 0: under half a cent a side is nothing, so the cells and the × column say so.
+ * that traded nothing reads a residue (±1e-7 USD) rather than 0: under half a cent a side is nothing (`floor`, in the row's units: half a
+ * cent's worth of coin for a row in coins), so the cells and the × column say so.
  */
-export function deltaRow(name: string, delta: number, gross: number, total: number): DeltaRow {
-  const side = (value: number): number => (value < 0.005 ? 0 : value), buys = side((gross + delta) / 2), sells = side((gross - delta) / 2);
+export function deltaRow(name: string, delta: number, gross: number, total: number, floor = 0.005): DeltaRow {
+  const side = (value: number): number => (value < floor ? 0 : value), buys = side((gross + delta) / 2), sells = side((gross - delta) / 2);
   return { name, buys, sells, delta: buys - sells, share: total > 0 ? gross / total : 0 };
 }
 

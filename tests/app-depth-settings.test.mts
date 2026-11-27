@@ -13,8 +13,11 @@ test('the default is five doubling bands from ±0.31 % to ±5 %, drawn in full o
 });
 
 test('a save or a layout from anywhere: every field checked, anything else its default', () => {
+  // A save's or a layout's own Units (the pane's choice before the page had one, issue 9) is read no more: the page's units decide.
   assert.deepEqual(readDepthSettings({ preset: 'wide', scale: 'detail', units: 'coin', table: false, focus: 2, custom: [0.001, 0.01] }),
-    { preset: 'wide', scale: 'detail', units: 'coin', table: false, focus: 2, custom: [0.001, 0.01], lens: true, lensKind: 'log', lensStrength: 0.1 });
+    { preset: 'wide', scale: 'detail', table: false, focus: 2, custom: [0.001, 0.01], lens: true, lensKind: 'log', lensStrength: 0.1 });
+  assert.equal('units' in readDepthSettings({ units: 'coin' }), false, 'no units of its own');
+  assert.equal('units' in DEPTH_DEFAULT, false);
   const bad = readDepthSettings({ preset: 'huge', scale: 'log', units: 'eur', table: 'yes', focus: 1.5, custom: [0.01, 0.005] });
   assert.deepEqual(bad, DEPTH_DEFAULT, 'nothing it does not know survives');
   assert.equal(readDepthSettings({ preset: 'custom', custom: [0.01, 0.02], focus: 2 }).focus, null, 'a band past the list is not brought forward');

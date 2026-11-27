@@ -83,7 +83,7 @@ test('the split column\'s heading: each column\'s own maxima under the button th
   // The map feeds each heading its column's own figures (not the shared scale's), and says the one scale in words only where it is shared.
   const heat = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   assert.match(heat, /own = ownScales\(profs\[0\], tprof, profs\[1\]\)/);
-  assert.match(heat, /maxima: \[maxima\(own\[0\]\), maxima\(own\[1\]\)\], across: shared \? t\('Both columns on one dollar scale'\) : null/);
+  assert.match(heat, /maxima: \[maxima\(said\(0, own\[0\]\)\), maxima\(said\(1, own\[1\]\)\)\], across: shared \? \(coins \? t\('Both columns on one scale'\) : t\('Both columns on one dollar scale'\)\) : null/);
 });
 
 test('a sub-column\'s why-text never runs past the plot\'s foot under a taller heading (Sol, review 2026-11-21)', () => {

@@ -22,7 +22,8 @@ import { PaneTable, ratioCell, tableInk, tableLines, type TableCell, type TableR
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
 import { el } from '../dom.ts';
 import type { Palette } from '../theme.ts';
-import { alphaOf, buildHistory, cardLines, emphasis, heightOf, historyLoading, preRollMs, rowCap, shareDot, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
+import { alphaOf, buildHistory, cardLines, emphasis, heightOf, historyCoins, historyLoading, preRollMs, rowCap, shareDot, slotPrices, type HistoryCoins, type HistoryModel, type HistoryRow } from '../size-history/model.ts';
+import { inCoins, unitName } from '../units.ts';
 
 /** The gap between the two rows of context (liquidations, open interest) and the six size rows, in px. */
 const GROUP_GAP = 8;
@@ -33,19 +34,21 @@ const DOT_R = 1.75, DOT_R_MIN = 0.9, DOT_ROW_MIN = 12;
  * The pane's table at slot `i` (pane-table.ts): a row each of the pane's rows, in its order. The liquidations as forced buys and sells (shorts and
  * longs liquidated, which the pane draws up and down), ≈ where that candle's day was cut at 5,000; open interest's change in Δ alone; each size
  * band's buys and sells at market, their difference, its share of the candle's market orders and ×. A dash where an amount is not known, nothing
- * where a column does not apply. Dollars, as the foot says.
+ * where a column does not apply. Dollars, as the foot says; in coins (`coins`, units.ts) the figures are the coin's (`historyCoins`), each
+ * size's share of the candle still of its dollars.
  */
-export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'total' | 'liqCut'>, i: number, p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
+export function sizeTableRows(model: Pick<HistoryModel, 'rows' | 'sides' | 'total' | 'liqCut'>, i: number, p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>, coins: HistoryCoins | null = null): TableCell[][] {
   const dash: TableCell = { text: '–' }, none: TableCell = { text: '' };
   const signed = (v: number): TableCell => Number.isFinite(v) ? { text: tableSigned(v), color: v ? tableInk(v > 0 ? p.bid : p.ask, p) : undefined } : dash;
   const sides = (buy: number, sell: number, share: TableCell): TableCell[] => Number.isFinite(buy) && Number.isFinite(sell)
     ? [{ text: tableText(buy), color: tableInk(p.bid, p) }, { text: tableText(sell), color: tableInk(p.ask, p) }, signed(buy - sell), share, ratioCell(buy, sell, p)]
     : [dash, dash, dash, share.text ? dash : none, dash];
   return model.rows.map(row => {
-    if (row.kind === 'liq') return [{ text: model.liqCut[i] === 1 ? `≈${row.label}` : row.label }, ...sides(row.parts[0]!.values[i]!, row.parts[1]!.values[i]!, none)];
-    if (row.kind === 'oi') return [{ text: row.label }, none, none, signed(row.parts[0]!.values[i]!), none, none];
-    const side = model.sides[row.band!]!, buy = side.buy[i]!, sell = side.sell[i]!, all = model.total[i]!;
-    return [{ text: row.label }, ...sides(buy, sell, Number.isFinite(buy) && Number.isFinite(sell) && all > 0 ? { text: `${Math.round((buy + sell) / all * 100)}%`, color: p.muted } : dash)];
+    if (row.kind === 'liq') return [{ text: model.liqCut[i] === 1 ? `≈${row.label}` : row.label }, ...(coins ? sides(coins.liq.buy[i]!, coins.liq.sell[i]!, none) : sides(row.parts[0]!.values[i]!, row.parts[1]!.values[i]!, none))];
+    if (row.kind === 'oi') return [{ text: row.label }, none, none, signed(coins ? coins.oi[i]! : row.parts[0]!.values[i]!), none, none];
+    const side = model.sides[row.band!]!, buy = side.buy[i]!, sell = side.sell[i]!, all = model.total[i]!, shown = coins?.sides[row.band!];
+    const share: TableCell = Number.isFinite(buy) && Number.isFinite(sell) && all > 0 ? { text: `${Math.round((buy + sell) / all * 100)}%`, color: p.muted } : dash;
+    return [{ text: row.label }, ...(shown ? sides(shown.buy[i]!, shown.sell[i]!, share) : sides(buy, sell, share))];
   });
 }
 
@@ -70,6 +73,15 @@ export class SizeHistoryPane extends TimePane {
   #held: { key: unknown[]; times: number[]; model: HistoryModel } | null = null;
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #usd: { oi: unknown; parts: unknown; starts: string; price: number; tfMs: number; value: { usd: Map<number, number>; coins: Map<number, number> } } | null = null;
+  /** In coins (units.ts): the figures the card and the table write, worked out once per model, candles, liquidations and open interest. */
+  #coins: { model: HistoryModel; candles: unknown; liq: unknown; oi: unknown; value: HistoryCoins } | null = null;
+  #coinsFor(model: HistoryModel, times: readonly number[], state: AppState, liquidations: StatInput['liquidations'], oi: ReadonlyMap<number, number> | undefined): HistoryCoins {
+    const held = this.#coins;
+    if (held && held.model === model && held.candles === state.candles && held.liq === liquidations && held.oi === oi) return held.value;
+    const value = historyCoins(model, times, slotPrices(times, state.candles), liquidations, oi);
+    this.#coins = { model, candles: state.candles, liq: liquidations, oi, value };
+    return value;
+  }
   /** The share dot's radius as last drawn (0: none, the candles too narrow). */
   #dotR = 0;
   /** Whether a row this tall gets share dots as last drawn: the one rule for the drawing and the card. */
@@ -126,13 +138,16 @@ export class SizeHistoryPane extends TimePane {
     return value;
   }
 
-  /** The liquidations by candle from the days the shared loader holds, kept while neither the days nor the candles change. */
+  /**
+   * The liquidations by candle from the days the shared loader holds, kept while neither the days nor the candles change, and in coins (only)
+   * their coins too (units.ts: the card and the table write them).
+   */
   #liquidations(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
-    const held = this.liqDays;
+    const held = this.liqDays, coins = inCoins();
     if (ids.join(',') !== held.ids) return undefined;
-    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}${coins ? '|coins' : ''}`;
     if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now());
+    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now(), coins);
     this.#liqBuckets = { key, value };
     return value;
   }
@@ -181,6 +196,8 @@ export class SizeHistoryPane extends TimePane {
     }
     const { model } = held, visible = times.map((_, i) => i).filter(i => times[i]! + tfMs > v.t0 && times[i]! < v.t1);
     if (!visible.length) { this.#message(t('Flow history appears once market orders are recorded for these candles.')); return; }
+    // In coins the card and the table write the coin's figures; the bars and their emphasis stay the dollars' (size-history/model.ts).
+    const coins = inCoins() ? this.#coinsFor(model, held.times, state, liquidations, oiHeld?.coins) : null;
     // The rows share the height: two of context, a gap, the six size rows; in a short pane the gap and the margins give way first, then the
     // rows thin, so all eight always show (a phone held sideways with LT on gives the pane about 100 px).
     const rows = model.rows, top = ph < 110 ? 1 : 3, gap = ph < 140 ? 2 : GROUP_GAP, rowH = Math.max(2, (ph - 2 * top - gap) / rows.length);
@@ -248,26 +265,27 @@ export class SizeHistoryPane extends TimePane {
     }
     ctx.restore();
     // The card of the row and candle under this pane's pointer (or a finger's pin).
-    const card = hoverIdx >= 0 && hoverRow >= 0 && this.pointer ? this.#cardFor(model, hoverRow, hoverIdx, times, tfMs, now, live, perps, state, oiHeld?.coins) : null;
+    const card = hoverIdx >= 0 && hoverRow >= 0 && this.pointer ? this.#cardFor(model, hoverRow, hoverIdx, times, tfMs, now, live, perps, state, oiHeld?.coins, coins) : null;
     this.#lines = card;
     // Every row at the candle read (the pointer's, else the newest in view), the row pointed at lit, and under them what its card says that its row
     // does not (how unusual it is, its baseline, how the size rows stand together): a table that holds all of it takes the card's place, as on every
     // pane with one; beside a table that cannot, the card stays.
     if (state.sizesTable) {
       const read = hoverIdx >= 0 ? hoverIdx : last, room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hv };
-      const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} USD`;
+      const foot = `${!hv && read === times.length - 1 ? `${t('newest')} ${clock(times[read]!)}` : clock(times[read]!, true)} ${coins ? unitName() : 'USD'}`;
       // At rest no row is pointed at, so the table says no lines: the room under its rows is kept for the longest card a row of the newest candles
       // would bring (the one under way says it is, the one before is settled), so that pointing at one does not leave its lines hanging below.
       const restLines = !hv && !this.pointer ? [last, visible[visible.length - 2]].filter((i): i is number => i !== undefined)
-        .flatMap(i => rows.map((_, r) => tableLines(this.#cardFor(model, r, i, times, tfMs, now, live, perps, state, oiHeld?.coins)))) : undefined;
-      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}`, ...(restLines ? { restLines } : {}) });
+        .flatMap(i => rows.map((_, r) => tableLines(this.#cardFor(model, r, i, times, tfMs, now, live, perps, state, oiHeld?.coins, coins)))) : undefined;
+      const placed = this.#table.draw(ctx, p, room, { heads: ['', t('Buys'), t('Sells'), 'Δ', t('Share'), '×'], minCols: 4, plateMin: 5, cardCols: 5, focus: card ? hoverRow : -1, foot, rows: sizeTableRows(model, read, p, coins), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}`, ...(restLines ? { restLines } : {}) });
       if (placed?.complete) this.#lines = null;
     }
   }
 
-  #cardFor(model: HistoryModel, r: number, i: number, times: readonly number[], tfMs: number, now: number, live: boolean, perps: boolean, state: AppState, coins?: ReadonlyMap<number, number>): InfoLine[] {
+  #cardFor(model: HistoryModel, r: number, i: number, times: readonly number[], tfMs: number, now: number, live: boolean, perps: boolean, state: AppState, coins?: ReadonlyMap<number, number>, shown: HistoryCoins | null = null): InfoLine[] {
     const row: HistoryRow = model.rows[r]!, coin = state.markets.find(m => (m.instrumentId ?? m.id) === state.marketId)?.base ?? '', inCoins = coins?.get(times[i]!);
     return cardLines(model, r, i, {
+      ...(shown ? { coins: { figures: shown, coin: coin || unitName() } } : {}),
       time: clock(times[i]!, true), live: live && times[i]! + tfMs > now, judging: state.highlight.on, mult: state.highlight.mult,
       dots: this.#dotsOn(this.#layout.find(b => b.row === r)?.h ?? 0),
       oiSource: row.kind === 'oi' ? oiSourceText(state) : null, oiNote: row.kind !== 'oi' ? null : !perps ? 'spot' : tfMs <= 60_000 ? 'minute' : null,

@@ -18,6 +18,8 @@ export class Cooldowns {
     if (this.#at.size > 500) for (const [k, t] of this.#at) if (now - t > 3_600_000) this.#at.delete(k);
     return true;
   }
+  /** Give a key's cool-down back (what took it at `at` reached nobody), unless a newer firing has taken it since. */
+  release(key: string, at: number): void { if (this.#at.get(key) === at) this.#at.delete(key); }
 }
 
 /** At most `max` sounds in any `windowMs`, whatever their kind: a market that does everything at once is one busy moment, not twelve alarms. */

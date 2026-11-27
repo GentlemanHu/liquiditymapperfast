@@ -2,8 +2,9 @@ import { t } from '../../i18n.ts';
 import { VOLUME_WORDS, tradedHeader } from '../../traded.ts';
 import { ensureDeltaFlow } from '../../delta/flows.ts';
 import { flowLoadIds } from '../../cvd/ids.ts';
-import { bucketFor, flowRows, minuteFlowAt } from '../model.ts';
+import { bucketFor, flowRows, minuteFlowAt, withFlowCoins } from '../model.ts';
 import { NO_FLAGS, worked, type MeasureDef } from '../measure.ts';
+import { inCoins } from '../../units.ts';
 
 const MINUTE = 60_000;
 
@@ -30,12 +31,15 @@ export const VOLUME: MeasureDef<'volume'> = {
   byTime: {
     worker: () => ({
       work(q, last) {
-        const tracks = q.ids.flatMap(id => { const k = q.hub.flow.track(id); return k ? [k] : []; });
+        const tracks = q.ids.flatMap(id => { const k = q.hub.flow.track(id); return k ? [k] : []; }), coins = inCoins();
         const { step, limit } = bucketFor(q.span, q.pw, minuteFlowAt(tracks, q.from) ? MINUTE : 0);
-        const key = `v|${step}|${q.from}|${q.second}|${q.ids.join(',')}|${q.hub.flow.loads}`;
+        const key = `v|${step}|${q.from}|${q.second}|${q.ids.join(',')}|${q.hub.flow.loads}|${coins ? 'coins' : 'usd'}`;
         if (last?.key === key) return last;
         ensureDeltaFlow(q.hub, flowLoadIds(q.state, q.hub.flow.ids), q.from, Date.now());
-        return worked(q, key, [], flowRows(tracks, q.from, q.to, step, q.now), limit);
+        const rows = flowRows(tracks, q.from, q.to, step, q.now);
+        // In coins (app/units.ts) what the band prints, from the markets' coin tracks; its bars and levels stay on the dollars.
+        if (coins) withFlowCoins(rows, q.ids.flatMap(id => { const k = q.hub.flow.track(id, true); return k ? [k] : []; }));
+        return worked(q, key, [], rows, limit);
       },
     }),
   },

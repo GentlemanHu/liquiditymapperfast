@@ -345,7 +345,7 @@ export const SECTIONS: readonly Section[] = [
       { t: 'p', text: '**Draw** (in the map\'s corner, or [[D]]) brings out a rail of eight tools down the map\'s left edge (along its foot on a phone): a **level** (a line across at one price, or a ray), a **zone** (a box of prices over a stretch of time, which can run on to the right), a **trend line**, a **vertical line** (a moment), a **note**, a **Fib retracement**, a **parallel channel** and a **long / short position**. Each point is a click (a tap on a phone), and a drag still pans the map, so you can move around while a tool is armed. One drawing, then the tool is put away, unless *Keep the tool* is on.' },
       { t: 'list', items: [
         'A click **selects** a drawing. Its handles move its points and its stroke moves it whole. A zone has eight handles: the middle of its top or bottom moves a price alone, and the middle of a side a time alone.',
-        'A small bar beside the selected drawing sets its colour, width, dashes, how far it runs and a label, and has lock, copy and delete. It also gives the figures: a level\'s price, how far the price is from it and what rests in the book\'s row there. A level\'s **alert** sounds when the price reaches it, while Sounds is on.',
+        'A small bar beside the selected drawing sets its colour, width, dashes, how far it runs and a label, and has lock, copy and delete. It also gives the figures: a level\'s price, how far the price is from it and what rests in the book\'s row there. The **bell** of a level, a zone or a trend line alerts you once when the price reaches it: a sound while Sounds is on, and a pop-up or a message to your phone through Notify (see “Alerts on your phone”).',
         'A **long / short position** takes three clicks: the entry (its price, and where the position starts), the stop, and the target, which also sets where it ends. A stop below the entry makes it a long, above it a short. The target\'s side is shaded in the rising colour and the stop\'s in the falling one, and the labels give each price, how far it is from the entry and the risk/reward. Its handles move the entry, the stop, the target and the end; **Flip** in its bar turns a long into a short. It is a ruler: it places no order and follows no fill.',
         '**The magnet** (Off, Weak or Strong; Weak at first) snaps a point you place or drag to the open, high, low or close of the candle under the pointer, and to walls of resting liquidity in the map\'s column there. Hold [[Alt]] to place a point freely.',
         '**Drawings**, the list button on the rail, lists this coin\'s drawings and holds the magnet, *Show drawings*, *Lock all* and a file to save them all and read them back. [[Delete]] removes the selected drawing, and [[Ctrl]] + [[Z]] undoes.',
@@ -390,7 +390,7 @@ export const SECTIONS: readonly Section[] = [
   {
     id: 'depth', title: 'Depth',
     blocks: [
-      { t: 'p', text: 'For every moment, **Depth** adds up the bids and the asks within several distances of the price and draws them as nested rings: asks up in the sell colour, bids down in the buy colour, the narrowest band strongest at the centre and the widest lightest. Each band holds the ones inside it. **Bands** chooses the distances (Balanced doubles from ±0.31% to ±5%; Near, Wide or your own); *Detail* draws the square root of the money so a thin inner band shows, and *Units* counts the coin instead of dollars.' },
+      { t: 'p', text: 'For every moment, **Depth** adds up the bids and the asks within several distances of the price and draws them as nested rings: asks up in the sell colour, bids down in the buy colour, the narrowest band strongest at the centre and the widest lightest. Each band holds the ones inside it. **Bands** chooses the distances (Balanced doubles from ±0.31% to ±5%; Near, Wide or your own); *Detail* draws the square root of the money so a thin inner band shows; it counts dollars or the coin as the whole page does (see “Dollars or coins”).' },
       { t: 'p', text: 'The **lens** (the magnifying glass at the plot\'s top left, on by default; it glows while on) draws the bands near the price larger, so a thin inner band has room. *Log curve* bends the heights on a logarithmic curve of the money; *Per % of price* and *Even room* weigh each band\'s ring instead, and then the outer edge is no longer the total. The slider sets how strongly; the table always says the money.' },
       { t: 'p', text: '**Venues** chooses whose order books it adds up: the exchanges switched on inside the Spot / Perp filter (the default), the chart market\'s own book, or markets you tick, whatever the chips and the filter say. The Depth pane and the Liquidity Tracker share the choice, and their sounds count the same books.' },
       { t: 'p', text: 'Click a row of the table to bring that band forward at its own scale. When one side of it is unusually larger than the other over a candle (see “What stands out”), that side\'s edge is drawn thick across the candle: is there more resting liquidity above or below, and is that changing? Its **Source** can also be the liquidation levels, which adds up the same bands for Hyperliquid\'s BTC positions.' },
@@ -462,6 +462,22 @@ export const SECTIONS: readonly Section[] = [
     ],
   },
   {
+    id: 'notify', title: 'Alerts on your phone',
+    blocks: [
+      { t: 'p', text: '**Notify** sends the page\'s alerts beyond a sound: a **pop-up** on this computer, and **messages to your phone** through your own Telegram bot, an ntfy topic or a Discord webhook. Your browser sends them itself, from the open tab: no server watches your alerts or holds your addresses. Its panel opens from the **bell** beside Highlights in the Alerts deck (on a phone, from Notify under Alerts in Settings).' },
+      { t: 'note', kind: 'warn', text: 'Alerts run in this tab. They stop when the tab is closed or the computer sleeps, so keep both on while you wait for one. Your phone only receives the messages; it does not watch the price itself.' },
+      { t: 'p', text: 'An alert starts with a **bell**. Select a level, a zone or a trend line on the map and press the bell in its bar, or **right-click** the chart or its price scale and choose **Alert at** the price under the pointer. A level goes off when the price reaches it, a zone when the price enters it, a trend line when the price crosses it. A new bell goes off **once** and then switches itself off; the list of bells in the Notify panel can make one go off every time instead.' },
+      { t: 'list', items: [
+        '**Pop-up on this computer**: switch it on in the Notify panel and allow notifications when the browser asks. The system shows it even when the page is behind other windows.',
+        '**Telegram**: in Telegram, open **@BotFather**, send `/newbot` and answer its two questions. Paste the token it gives into the Notify panel and press **Connect**, then open your new bot, press **Start**, and press **Find my chat**. A test message arrives.',
+        '**ntfy**: install the free ntfy app (Android or iPhone), press **Make a topic** in the Notify panel, and in the app add a subscription with that topic. Anyone who knows a topic can read it, so keep it to yourself.',
+        '**Discord**: in a channel you manage, open its settings, Integrations, Webhooks, **New Webhook**, copy its address and paste it into the Notify panel.',
+      ] },
+      { t: 'p', text: 'Under **What is sent**, bells are on at first. Your scripts\' `alert(...)` calls and the alerts you switched on in **Sounds** can be sent too. The open interest alert is never sent. Every channel has limits of its own, so a busy market cannot flood your phone, and **Send test** sends one message at once.' },
+      { t: 'note', kind: 'tip', text: 'To keep the tab awake in Chrome: pin it, and under Settings, Performance, add this site to **Always keep these sites active**. On a laptop running on battery, Energy Saver may pause busy background tabs. With two tabs open on the same coin, one of them sends and the other takes over when it closes. Your tokens and topics stay in this browser: a backup never holds them.' },
+    ],
+  },
+  {
     id: 'layouts', title: 'Make it yours', part: 'Your page',
     blocks: [
       { t: 'p', text: 'Every panel can be closed, moved and resized, and the whole arrangement can be saved under a name. None of it changes what the page shows, only where things stand.' },
@@ -513,6 +529,18 @@ export const SECTIONS: readonly Section[] = [
         '**Not every coin has recorded history.** The recorder keeps Bitcoin\'s books and what was traded on twenty more coins. The others start empty and record in your browser while the page is open (see “Where the map\'s history comes from”).',
         '**Liquidation levels** are Bitcoin only.',
         'A market that does not list the coin shows as such in the **Venues** picker and cannot be ticked.',
+      ] },
+    ],
+  },
+  {
+    id: 'units', title: 'Dollars or coins',
+    blocks: [
+      { t: 'p', text: 'Every size on the page can be read in **dollars** or in the **coin** itself (BTC on Bitcoin). The button beside the clock (**Local** or **UTC**) says which one the page is in, and a click switches it; on a phone it is in Settings, under Appearance (**Units**). This browser remembers the choice.' },
+      { t: 'list', items: [
+        '**Each amount over its own price.** A level of the book is its dollars over its own price, an order over the price it filled at, a second of flow over that second\'s price, a liquidation over the price it was valued at. A total adds up those coins: a day\'s volume is the coins traded that day, not the day\'s dollars over today\'s price.',
+        '**Where only a coarser price is known, that one is used**: a minute\'s last price for flow older than what the page holds second by second, a candle\'s price for sizes kept without prices (the Flow history\'s bands, the Liquidity Tracker), a bar\'s average price for the order sizes in Bar stats.',
+        '**Bars and the map look the same.** Bars are laid out as before and the map\'s colours come from the coins at each price, so switching changes the numbers. Lines and bands drawn over time (the flow column, Delta, Depth, the Liquidity Tracker) are drawn in coins, and can bend a little differently where the price moved a lot.',
+        '**What you set stays in dollars**: the smallest bubble, the Tape\'s sizes, the whale size, sounds and every other size setting, and what Highlights judges.',
       ] },
     ],
   },

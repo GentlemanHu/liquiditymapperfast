@@ -10,11 +10,22 @@ import type { InfoLine } from '../infobox.ts';
 import { oiDeltaByTime } from '../oi-change.ts';
 import { windowsOf } from '../keylevels/levels.ts';
 import type { Liquidation } from '../../shared/liquidations.ts';
+import { coinText, inCoins, unitName } from '../units.ts';
 
 /**
  * Per-candle statistics, the Bar stats table under the map. Each definition computes one number per candle from the executions recorded
  * for it (buy and sell USD by price row, trade counts and size buckets), the candle itself and the open-interest bar of the same period.
  * The table shows the stats the user enabled, in the order chosen; adding a statistic means adding one entry here.
+ *
+ * In coins (`StatInput.coins`, the page's units: units.ts, issue 9) a size is each part's dollars over the price that part traded at, added up
+ * after converting: vol, delta, cvd, buy and sell vol from the bar's price rows, each row at its middle (`low + step / 2`, so to within half a
+ * row of where it traded); max buy and max sell the largest row in coins, each at its own price; candle delta, vol / bp and avg fill read the
+ * exchange's candle natively (its volume and taker buys are in the coin); liq and liq Δ each liquidation's dollars over its reported price;
+ * oi chg is the open interest's own change, in the coin whatever the OI change option. The size boxes keep only dollars, so avg order, avg buy,
+ * avg sell and the retail and whale deltas (and cvds) are converted at the bar's volume-weighted price from its rows (where a bar has no rows,
+ * its candle's typical price): an approximation, as close as the bar's orders are to its average price. delta % is the share of the coin amounts
+ * it is written beside (so the two agree in sign); other shares, ratios, counts and prices stay as they are, and what decides (the imbalance
+ * minimum, the retail and whale sizes, the order of the rows) keeps reading dollars. Nothing in coins is worked out in dollars mode.
  */
 export type { StatOptions } from '../stat-options.ts';
 export { DEFAULT_STAT_OPTIONS } from '../stat-options.ts';
@@ -40,9 +51,12 @@ export interface StatInput {
   taker?: ReadonlyMap<number, CandleRow>;
   /**
    * Liquidations reported on the markets counted, by candle start: shorts liquidated (forced buys) and longs liquidated (forced sells), USD, 0 in
-   * a candle the loaded window covers with none; `cut` when the source answered only its largest. Absent where the source has none.
+   * a candle the loaded window covers with none; `cut` when the source answered only its largest. Absent where the source has none. `buyCoin`
+   * and `sellCoin`: the same in coins, each liquidation's dollars over its reported price (`liquidationBuckets` gives both).
    */
-  liquidations?: { buy: ReadonlyMap<number, number>; sell: ReadonlyMap<number, number>; cut: boolean; cutStarts?: ReadonlySet<number> };
+  liquidations?: { buy: ReadonlyMap<number, number>; sell: ReadonlyMap<number, number>; buyCoin?: ReadonlyMap<number, number>; sellCoin?: ReadonlyMap<number, number>; cut: boolean; cutStarts?: ReadonlySet<number> };
+  /** The sizes in coins (the page's units, units.ts), each part at its own price; dollars when absent or false. */
+  coins?: boolean;
   /** Where the running sums start again: a key per slot (the start of its day), a new key a new start. Absent: they run from the first slot. */
   restart?: readonly number[];
   /** Price step of the loaded rows. */
@@ -68,8 +82,10 @@ export interface StatDef {
   id: string;
   label: string;
   group: StatGroup;
-  /** One line shown as a tooltip and in the configuration list. */
+  /** One line shown as a tooltip and in the configuration list (`statTitle` says it in the page's units). */
   title: string;
+  /** The line in coins where `title` names dollars (asked where it is shown: the units are the page's at that moment). */
+  coinTitle?: () => string;
   /**
    * sequential: pale to strong by magnitude; diverging: the theme's falling / rising candle colours by sign around `center`; plain: no colour scale; category: a mark per
    * candle (`format` says it, `tone` colours it), empty where the value is 0.
@@ -100,6 +116,13 @@ export function csvCell(def: StatDef, value: number | null | undefined): string 
   return def.csv ? def.csv.cell(value) : def.scale === 'category' ? def.format(value) : String(value);
 }
 
+/** What a statistic is, in the page's units: its coin line in coins where it has one. */
+export const statTitle = (def: StatDef): string => inCoins() && def.coinTitle ? def.coinTitle() : def.title;
+/** The statistics whose figures are sizes: dollars, or in coins the coin (the open interest's change is the coin's in coins whatever its option). */
+export const SIZE_STATS: ReadonlySet<string> = new Set(['vol', 'delta', 'cvd', 'buyVol', 'sellVol', 'takerDelta', 'maxBuy', 'maxSell', 'avgTrade', 'avgBuy', 'avgSell', 'avgFill', 'deltaRetail', 'deltaWhales', 'cvdRetail', 'cvdWhales', 'effort', 'liq', 'liqNet', 'oiChange']);
+/** A statistic's column head in Export CSV: as it always was in dollars; in coins a size's head names the coin ("vol_BTC"). */
+export const csvHead = (def: StatDef): string => { const head = def.csv?.head ?? def.id; return inCoins() && SIZE_STATS.has(def.id) ? `${head}_${unitName()}` : head; };
+
 /** The kinds' names on the table's headers (the panel's are longer). */
 export const GROUP_SHORT: Readonly<Record<StatGroup, string>> = { volume: t('Volume'), footprint: t('Footprint rows'), trades: t('Trades'), market: t('Candle, OI and liquidations') };
 /** The start of the day `t` falls in, in `zone` (where the running sums start again, from each day's start). */
@@ -109,7 +132,9 @@ export const GROUP_TITLES: Readonly<Record<StatGroup, string>> = {
   volume: t('Volume'), footprint: t('Footprint rows'), trades: t('Trades (recorded since the server started recording them)'), market: t('Candle, open interest and liquidations'),
 };
 
-export const signedVol = (value: number): string => (value < 0 ? '-' : '') + volText(Math.abs(value));
+/** A size as the cells write it: the footprint's figures in dollars (`volText`), three significant figures in coins (units.ts `coinText`). */
+export const vol = (value: number): string => inCoins() ? coinText(value) : volText(value);
+export const signedVol = (value: number): string => (value < 0 ? '-' : '') + vol(Math.abs(value));
 const signedPct = (value: number): string => `${value > 0 ? '+' : ''}${value.toFixed(1)}%`;
 const pctText = (value: number): string => `${Math.round(value)}%`;
 const signedPrice = (value: number): string => `${value > 0 ? '+' : value < 0 ? '-' : ''}${fmtPrice(Math.abs(value))}`;
@@ -118,6 +143,54 @@ const count = (value: number): string => String(Math.round(value));
 const clampPct = (value: number): number => Math.min(100, Math.max(0, value));
 /** A candle's dollars: its volume at its typical price, as the volume strip and the candle-based profiles value it. */
 const candleUsd = (c: CandleRow): number => c[5] > 0 && c[3] > 0 ? c[5] * (c[2] + c[3] + c[4]) / 3 : 0;
+
+/**
+ * A bar's market orders in coins from its price rows (each row's dollars over the price in its middle, then added up) and the dollars they
+ * hold, with its largest buy and sell rows in coins (max buy and max sell in coins are the largest in coins). Kept per bar and row step: a bar
+ * is never changed in place.
+ */
+interface BarCoins { step: number; buy: number; sell: number; usd: number; maxBuy: number; maxSell: number }
+const coinsHeld = new WeakMap<Bar, BarCoins>();
+function barCoins(bar: Bar, step: number): BarCoins {
+  const held = coinsHeld.get(bar);
+  if (held && held.step === step) return held;
+  let buy = 0, sell = 0, usd = 0, maxBuy = 0, maxSell = 0;
+  for (const [low, b, s] of bar.rows) {
+    const mid = low + step / 2; if (!(mid > 0)) continue;
+    buy += b / mid; sell += s / mid; usd += b + s;
+    maxBuy = Math.max(maxBuy, b / mid); maxSell = Math.max(maxSell, s / mid);
+  }
+  const made = { step, buy, sell, usd, maxBuy, maxSell };
+  coinsHeld.set(bar, made);
+  return made;
+}
+/**
+ * The price a bar's orders are valued at where only their dollars are known (the size boxes): the bar's volume-weighted price from its rows,
+ * else its candle's typical price; NaN where neither is known.
+ */
+export function barPrice(input: Pick<StatInput, 'step' | 'candles'>, bar: Bar): number {
+  const c = barCoins(bar, input.step);
+  if (c.buy + c.sell > 0) return c.usd / (c.buy + c.sell);
+  const k = input.candles.get(bar.t);
+  return k && k[3] > 0 ? (k[2] + k[3] + k[4]) / 3 : Number.NaN;
+}
+/** A bar's dollar figure in the input's units: as it is in dollars; in coins at the bar's price (`barPrice`), null where that is not known. */
+function inBarUnits(input: StatInput, bar: Bar, usd: number): number | null {
+  if (!input.coins) return usd;
+  const p = barPrice(input, bar);
+  return p > 0 ? usd / p : null;
+}
+/** A bar's market buys and sells in the input's units: its dollars, or in coins each price row at its middle (a bar without rows: at its candle's typical price). */
+function sidesOf(input: StatInput, bar: Bar): { buy: number; sell: number } | null {
+  if (!input.coins) return { buy: bar.buyUsd, sell: bar.sellUsd };
+  if (bar.rows.length) { const c = barCoins(bar, input.step); return { buy: c.buy, sell: c.sell }; }
+  if (!(total(bar) > 0)) return { buy: 0, sell: 0 };
+  const p = barPrice(input, bar);
+  return p > 0 ? { buy: bar.buyUsd / p, sell: bar.sellUsd / p } : null;
+}
+const volumeOf = (input: StatInput, bar: Bar): number | null => { const s = sidesOf(input, bar); return s ? s.buy + s.sell : null; };
+/** A bar's delta (buys less sells) in the input's units. */
+export const barDelta = (input: StatInput, bar: Bar): number | null => { const s = sidesOf(input, bar); return s ? s.buy - s.sell : null; };
 
 /** A slot's candle start. */
 export const slotTime = (input: Pick<StatInput, 'bars' | 'times'>, i: number): number => input.times?.[i] ?? input.bars[i]?.t ?? NaN;
@@ -163,8 +236,8 @@ const lastView = (format: (v: number) => string) => (input: StatInput, at: reado
   return { value: format(last), tone: signTone(last), how: input.restart ? t('The newest candle in view: the running sum from the start of its day.') : t('The newest candle in view: the running sum already adds up the candles loaded.') };
 };
 /** Two sums over the visible bars put against each other, as the statistic puts them for one bar. */
-const ratioView = (format: (v: number) => string, tone: (v: number) => StatTone, ratio: (bars: Bar[]) => number | null) => (input: StatInput, at: readonly number[]): ViewCell | null => {
-  const value = ratio(at.flatMap(i => { const bar = input.bars[i]; return bar ? [bar] : []; }));
+const ratioView = (format: (v: number) => string, tone: (v: number) => StatTone, ratio: (bars: Bar[], input: StatInput) => number | null) => (input: StatInput, at: readonly number[]): ViewCell | null => {
+  const value = ratio(at.flatMap(i => { const bar = input.bars[i]; return bar ? [bar] : []; }), input);
   return value === null || !Number.isFinite(value) ? null : { value: format(value), tone: tone(value), how: t('Worked out from the candles in view added together.') };
 };
 /** A category's figure: the mark seen most among the candles in view, and on how many. */
@@ -175,15 +248,16 @@ const markView = (def: () => StatDef) => (_input: StatInput, at: readonly number
   for (const [v, n] of counts) if (n > most) { most = n; top = v; }
   return top === null ? null : { value: `${def().format(top)} ${most}`, tone: def().tone?.(top) ?? 'text', how: t('The mark seen most among the candles in view, and on how many of them.') };
 };
-/** The visible candles' range: their highest high and lowest low, with the first open and the last close. */
-function viewCandle(input: StatInput, at: readonly number[]): { open: number; high: number; low: number; close: number; usd: number } | null {
-  let open = NaN, high = -Infinity, low = Infinity, close = NaN, usd = 0;
+/** The visible candles' range: their highest high and lowest low, with the first open and the last close; their dollars and their volume (the coin's). */
+function viewCandle(input: StatInput, at: readonly number[]): { open: number; high: number; low: number; close: number; usd: number; vol: number } | null {
+  let open = NaN, high = -Infinity, low = Infinity, close = NaN, usd = 0, vol = 0;
   for (const i of at) {
     const c = input.candles.get(slotTime(input, i)); if (!c) continue;
     if (Number.isNaN(open)) open = c[1];
     high = Math.max(high, c[2]); low = Math.min(low, c[3]); close = c[4]; usd += candleUsd(c);
+    if (input.coins && candleUsd(c) > 0) vol += c[5];
   }
-  return Number.isNaN(open) ? null : { open, high, low, close, usd };
+  return Number.isNaN(open) ? null : { open, high, low, close, usd, vol };
 }
 /** The point of control of the visible bars' rows added together. */
 function viewPoc(input: StatInput, at: readonly number[]): number | null {
@@ -201,6 +275,17 @@ export function orderPool(bars: readonly Bar[]): { buyUsd: number; sellUsd: numb
   for (const b of bars) if (b.stats) { buyUsd += sumBuckets(b.stats.buy, 0, 7); sellUsd += sumBuckets(b.stats.sell, 0, 7); buyN += b.stats.buyN; sellN += b.stats.sellN; }
   return { buyUsd, sellUsd, buyN, sellN };
 }
+/** `orderPool` in the input's units: in coins each bar's dollars at its price (`barPrice`), a bar whose price is not known left out (its orders too). */
+export function orderPoolIn(bars: readonly Bar[], input: StatInput): { buyUsd: number; sellUsd: number; buyN: number; sellN: number } {
+  if (!input.coins) return orderPool(bars);
+  let buyUsd = 0, sellUsd = 0, buyN = 0, sellN = 0;
+  for (const b of bars) {
+    const p = b.stats ? barPrice(input, b) : NaN;
+    if (!b.stats || !(p > 0)) continue;
+    buyUsd += sumBuckets(b.stats.buy, 0, 7) / p; sellUsd += sumBuckets(b.stats.sell, 0, 7) / p; buyN += b.stats.buyN; sellN += b.stats.sellN;
+  }
+  return { buyUsd, sellUsd, buyN, sellN };
+}
 
 /** A bar's buys and sells by market, from its rows' parts; null for a bar without them (one market, or a source that does not say). */
 function venueSums(bar: Bar, into = new Map<string, [number, number]>()): Map<string, [number, number]> | null {
@@ -216,9 +301,9 @@ export function agreement(by: ReadonlyMap<string, readonly [number, number]>): n
   for (const [buy, sell] of by.values()) if (Math.sign(buy - sell) === Math.sign(delta)) same += buy + sell;
   return same / all * 100;
 }
-/** A slot's liquidations, shorts liquidated and longs liquidated; null where the loaded window does not cover it. */
+/** A slot's liquidations, shorts liquidated and longs liquidated, in the input's units; null where the loaded window does not cover it. */
 const liquidated = (input: StatInput, i: number): [number, number] | null => {
-  const start = slotTime(input, i), buy = input.liquidations?.buy.get(start), sell = input.liquidations?.sell.get(start);
+  const start = slotTime(input, i), l = input.liquidations, buy = (input.coins ? l?.buyCoin : l?.buy)?.get(start), sell = (input.coins ? l?.sellCoin : l?.sell)?.get(start);
   return buy === undefined || sell === undefined ? null : [buy, sell];
 };
 const liquidationNote = (): string => t('≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.');
@@ -228,25 +313,28 @@ export interface LiquidationDay { rows: readonly Liquidation[]; cut: boolean; to
 export const DAY_MS = 86_400_000;
 
 /**
- * Liquidations of `ids` by candle start: shorts liquidated (forced buys) and longs liquidated (forced sells), USD. A candle counts (0 where
+ * Liquidations of `ids` by candle start: shorts liquidated (forced buys) and longs liquidated (forced sells), USD, and with `coins` the same in
+ * coins (`buyCoin`, `sellCoin`: each liquidation's dollars over the price it was reported at, then added up; units.ts). A candle counts (0 where
  * none) where its UTC day is answered over all of it (the candle under way at `now`: over its start, and as far as the answer reaches) and
  * the record reaches back to it (`coverFrom`: the source's retention, and only since the recording started); `cut` where one of those days
  * held more than the source answers.
  */
-export function liquidationBuckets(days: ReadonlyMap<number, LiquidationDay>, ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number, now: number): NonNullable<StatInput['liquidations']> {
+export function liquidationBuckets(days: ReadonlyMap<number, LiquidationDay>, ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number, now: number, coins = false): NonNullable<StatInput['liquidations']> & { buyCoin?: Map<number, number>; sellCoin?: Map<number, number> } {
   const buy = new Map<number, number>(), sell = new Map<number, number>(), wanted = new Set(ids), used = new Set<number>(), cutStarts = new Set<number>();
+  const buyCoin = coins ? new Map<number, number>() : null, sellCoin = coins ? new Map<number, number>() : null;
   let cut = false;
   for (const start of times) {
     const day = Math.floor(start / DAY_MS) * DAY_MS, held = days.get(day);
     if (!held || start < coverFrom || !(start + tfMs <= held.to || (start < held.to && start + tfMs > now))) continue;
-    buy.set(start, 0); sell.set(start, 0); used.add(day); if (held.cut) { cut = true; cutStarts.add(start); }
+    buy.set(start, 0); sell.set(start, 0); buyCoin?.set(start, 0); sellCoin?.set(start, 0); used.add(day); if (held.cut) { cut = true; cutStarts.add(start); }
   }
   for (const day of used) for (const l of days.get(day)!.rows) {
     if (!wanted.has(l.id)) continue;
     const start = Math.floor(l.t / tfMs) * tfMs, side = l.side === 'short' ? buy : sell, sum = side.get(start);
     if (sum !== undefined) side.set(start, sum + l.usd);
+    if (buyCoin && sellCoin && l.reported > 0) { const into = l.side === 'short' ? buyCoin : sellCoin, held = into.get(start); if (held !== undefined) into.set(start, held + l.usd / l.reported); }
   }
-  return { buy, sell, cut, cutStarts };
+  return { buy, sell, cut, cutStarts, ...(buyCoin && sellCoin ? { buyCoin, sellCoin } : {}) };
 }
 
 /** A row flagged by `diagonalImbalances`: its low price, the heavier side, and how many times the opposite volume it is (Infinity against an empty row). */
@@ -326,6 +414,11 @@ export function sizeDelta(bar: Bar, input: Pick<StatInput, 'options' | 'cuts'>, 
   if (!sums || !stats) return null;
   return line === 'whale' ? sums.buy - sums.sell : (sumBuckets(stats.buy, 0, 7) - sums.buy) - (sumBuckets(stats.sell, 0, 7) - sums.sell);
 }
+/** `sizeDelta` in the input's units: in coins at the bar's price (`barPrice`: the size boxes keep only dollars). */
+export function sizeDeltaIn(bar: Bar, input: StatInput, line: 'retail' | 'whale'): number | null {
+  const d = sizeDelta(bar, input, line);
+  return d === null ? null : inBarUnits(input, bar, d);
+}
 /** The average market buy against the average market sell of pooled orders, as log2 of their ratio; null without both sides. */
 export function pooledSkew(o: { buyUsd: number; sellUsd: number; buyN: number; sellN: number }): number | null {
   return o.buyN > 0 && o.sellN > 0 && o.buyUsd > 0 && o.sellUsd > 0 ? Math.log2((o.buyUsd / o.buyN) / (o.sellUsd / o.sellN)) : null;
@@ -336,20 +429,28 @@ const QUADRANTS = ['', '+▲', '+▼', '−▲', '−▼'] as const;
 const markTone = (up: boolean | null): StatTone | null => up === null ? null : up ? 'buy' : 'sell';
 
 export const BAR_STATS: readonly StatDef[] = [
-  { id: 'vol', label: 'vol', group: 'volume', source: 'executions', title: t('Executed volume of the bar (USD, buy + sell)'), scale: 'sequential', format: volText, compute: input => perBar(input, total), view: sumView(volText, false) },
-  { id: 'delta', label: 'delta', group: 'volume', source: 'executions', title: t('Buy minus sell volume of the bar (USD)'), scale: 'diverging', format: signedVol, compute: input => perBar(input, bar => bar.buyUsd - bar.sellUsd), view: sumView(signedVol, true) },
+  { id: 'vol', label: 'vol', group: 'volume', source: 'executions', title: t('Executed volume of the bar (USD, buy + sell)'), coinTitle: () => t('Executed volume of the bar ({unit}, buy + sell)', { unit: unitName() }), scale: 'sequential', format: vol, compute: input => perBar(input, input.coins ? bar => volumeOf(input, bar) : total), view: sumView(vol, false) },
+  { id: 'delta', label: 'delta', group: 'volume', source: 'executions', title: t('Buy minus sell volume of the bar (USD)'), coinTitle: () => t('Buy minus sell volume of the bar ({unit})', { unit: unitName() }), scale: 'diverging', format: signedVol, compute: input => perBar(input, input.coins ? bar => barDelta(input, bar) : bar => bar.buyUsd - bar.sellUsd), view: sumView(signedVol, true) },
   { id: 'cvd', label: 'cvd', group: 'volume', source: 'executions', title: t('Cumulative delta: running sum of delta over the bars loaded for the view'), scale: 'diverging', format: signedVol,
-    compute: input => running(perBar(input, bar => bar.buyUsd - bar.sellUsd), input.restart), view: lastView(signedVol) },
+    compute: input => running(perBar(input, input.coins ? bar => barDelta(input, bar) : bar => bar.buyUsd - bar.sellUsd), input.restart), view: lastView(signedVol) },
   { id: 'deltaPct', label: t('delta %'), group: 'volume', source: 'executions', title: t('Delta as a share of the bar\'s volume (+100 % all buying, -100 % all selling)'), scale: 'diverging', format: signedPct,
-    compute: input => perBar(input, bar => total(bar) > 0 ? (bar.buyUsd - bar.sellUsd) / total(bar) * 100 : null),
-    view: ratioView(signedPct, signTone, bars => { const all = bars.reduce((s, b) => s + total(b), 0); return all > 0 ? bars.reduce((s, b) => s + b.buyUsd - b.sellUsd, 0) / all * 100 : null; }) },
-  { id: 'buyVol', label: t('buy vol'), group: 'volume', source: 'executions', title: t('Volume bought at the ask (market buys, USD)'), scale: 'sequential', format: volText, compute: input => perBar(input, bar => bar.buyUsd), view: sumView(volText, false) },
-  { id: 'sellVol', label: t('sell vol'), group: 'volume', source: 'executions', title: t('Volume sold at the bid (market sells, USD)'), scale: 'sequential', format: volText, compute: input => perBar(input, bar => bar.sellUsd), view: sumView(volText, false) },
+    // In coins the share of the coin amounts written beside it (delta and vol), so the two always agree in sign; in dollars as it always was.
+    compute: input => perBar(input, input.coins ? bar => { const s = sidesOf(input, bar); return s && s.buy + s.sell > 0 ? (s.buy - s.sell) / (s.buy + s.sell) * 100 : null; }
+      : bar => total(bar) > 0 ? (bar.buyUsd - bar.sellUsd) / total(bar) * 100 : null),
+    view: ratioView(signedPct, signTone, (bars, input) => {
+      if (input.coins) { let all = 0, net = 0; for (const b of bars) { const s = sidesOf(input, b); if (s) { all += s.buy + s.sell; net += s.buy - s.sell; } } return all > 0 ? net / all * 100 : null; }
+      const all = bars.reduce((s, b) => s + total(b), 0); return all > 0 ? bars.reduce((s, b) => s + b.buyUsd - b.sellUsd, 0) / all * 100 : null;
+    }) },
+  { id: 'buyVol', label: t('buy vol'), group: 'volume', source: 'executions', title: t('Volume bought at the ask (market buys, USD)'), coinTitle: () => t('Volume bought at the ask (market buys, {unit})', { unit: unitName() }), scale: 'sequential', format: vol, compute: input => perBar(input, input.coins ? bar => sidesOf(input, bar)?.buy ?? null : bar => bar.buyUsd), view: sumView(vol, false) },
+  { id: 'sellVol', label: t('sell vol'), group: 'volume', source: 'executions', title: t('Volume sold at the bid (market sells, USD)'), coinTitle: () => t('Volume sold at the bid (market sells, {unit})', { unit: unitName() }), scale: 'sequential', format: vol, compute: input => perBar(input, input.coins ? bar => sidesOf(input, bar)?.sell ?? null : bar => bar.sellUsd), view: sumView(vol, false) },
   { id: 'takerDelta', label: t('candle delta'), group: 'volume', source: 'market', scale: 'diverging', format: signedVol,
     title: t('Delta from the exchange\'s own candles: taker buys minus the rest of the candle\'s volume, in USD at its typical price. Binance reports taker buys, so the row fills for a Binance chart market, before the recording too, and stays empty for others. One market, where delta counts the markets chosen.'),
+    coinTitle: () => t('Delta from the exchange\'s own candles: taker buys minus the rest of the candle\'s volume, in {unit}. Binance reports taker buys, so the row fills for a Binance chart market, before the recording too, and stays empty for others. One market, where delta counts the markets chosen.', { unit: unitName() }),
     // Buys, volume and price of one snapshot, the exchange's own candle: the chart's candle under way moves on between the minutes it is read.
+    // In coins the candle's own volume and taker buys, which the exchange counts in the coin.
     compute: input => input.bars.map((_, i) => {
       const c = input.taker?.get(slotTime(input, i)), bought = c?.[7], usd = c ? candleUsd(c) : 0;
+      if (input.coins) return c && bought !== undefined && c[5] > 0 ? (2 * Math.min(1, Math.max(0, bought / c[5])) - 1) * c[5] : null;
       return c && bought !== undefined && c[5] > 0 && usd > 0 ? (2 * Math.min(1, Math.max(0, bought / c[5])) - 1) * usd : null;
     }),
     view: sumView(signedVol, true) },
@@ -371,8 +472,10 @@ export const BAR_STATS: readonly StatDef[] = [
       const share = agreement(by);
       return share === null ? null : { value: pctText(share), tone: 'text', how: t('Worked out from the candles in view added together.') };
     } },
-  { id: 'maxBuy', label: t('max buy'), group: 'footprint', source: 'executions', title: t('Largest single price row of market buys in the bar (USD)'), scale: 'sequential', format: volText, compute: input => perBar(input, bar => bar.rows.reduce((m, r) => Math.max(m, r[1]), 0)), view: maxView(volText) },
-  { id: 'maxSell', label: t('max sell'), group: 'footprint', source: 'executions', title: t('Largest single price row of market sells in the bar (USD)'), scale: 'sequential', format: volText, compute: input => perBar(input, bar => bar.rows.reduce((m, r) => Math.max(m, r[2]), 0)), view: maxView(volText) },
+  { id: 'maxBuy', label: t('max buy'), group: 'footprint', source: 'executions', title: t('Largest single price row of market buys in the bar (USD)'), coinTitle: () => t('Largest single price row of market buys in the bar ({unit})', { unit: unitName() }), scale: 'sequential', format: vol,
+    compute: input => perBar(input, bar => input.coins ? barCoins(bar, input.step).maxBuy : bar.rows.reduce((m, r) => Math.max(m, r[1]), 0)), view: maxView(vol) },
+  { id: 'maxSell', label: t('max sell'), group: 'footprint', source: 'executions', title: t('Largest single price row of market sells in the bar (USD)'), coinTitle: () => t('Largest single price row of market sells in the bar ({unit})', { unit: unitName() }), scale: 'sequential', format: vol,
+    compute: input => perBar(input, bar => input.coins ? barCoins(bar, input.step).maxSell : bar.rows.reduce((m, r) => Math.max(m, r[2]), 0)), view: maxView(vol) },
   { id: 'poc', label: 'poc', group: 'footprint', source: 'executions', title: t('Point of control: the price row with the most executed volume in the bar'), scale: 'plain', format: value => fmtPrice(value),
     compute: input => perBar(input, bar => pocOf(bar.rows, input.step)),
     view: (input, at) => { const poc = viewPoc(input, at); return poc === null ? null : { value: fmtPrice(poc), tone: 'text', how: t('The busiest row of the candles in view added together.') }; } },
@@ -390,23 +493,29 @@ export const BAR_STATS: readonly StatDef[] = [
   tradeStat('trades', 'orders', t('Number of market orders in the bar (all the fills of one order count once)'), 'sequential', count, stats => stats.buyN + stats.sellN, sumView(count, false)),
   tradeStat('buys', 'buys', t('Number of market buys in the bar'), 'sequential', count, stats => stats.buyN, sumView(count, false)),
   tradeStat('sells', 'sells', t('Number of market sells in the bar'), 'sequential', count, stats => stats.sellN, sumView(count, false)),
-  tradeStat('avgTrade', t('avg order'), t('Average market order size: volume divided by the number of market orders (USD)'), 'sequential', volText, stats => stats.buyN + stats.sellN > 0 ? orderUsd(stats) / (stats.buyN + stats.sellN) : null,
-    ratioView(volText, () => 'text', bars => { const o = orderPool(bars), n = o.buyN + o.sellN; return n > 0 ? (o.buyUsd + o.sellUsd) / n : null; })),
-  tradeStat('avgBuy', t('avg buy'), t('Average market buy: the dollars of the market buys divided by their number (USD)'), 'sequential', volText, stats => stats.buyN > 0 ? sumBuckets(stats.buy, 0, 7) / stats.buyN : null,
-    ratioView(volText, () => 'text', bars => { const o = orderPool(bars); return o.buyN > 0 ? o.buyUsd / o.buyN : null; })),
-  tradeStat('avgSell', t('avg sell'), t('Average market sell: the dollars of the market sells divided by their number (USD)'), 'sequential', volText, stats => stats.sellN > 0 ? sumBuckets(stats.sell, 0, 7) / stats.sellN : null,
-    ratioView(volText, () => 'text', bars => { const o = orderPool(bars); return o.sellN > 0 ? o.sellUsd / o.sellN : null; })),
+  // The size boxes keep dollars only: in coins at the bar's volume-weighted price (`barPrice`, an approximation: see the header).
+  { ...tradeStat('avgTrade', t('avg order'), t('Average market order size: volume divided by the number of market orders (USD)'), 'sequential', vol, (stats, input, bar) => stats.buyN + stats.sellN > 0 ? inBarUnits(input, bar, orderUsd(stats) / (stats.buyN + stats.sellN)) : null,
+    ratioView(vol, () => 'text', (bars, input) => { const o = orderPoolIn(bars, input), n = o.buyN + o.sellN; return n > 0 ? (o.buyUsd + o.sellUsd) / n : null; })),
+    coinTitle: () => t('Average market order size: volume divided by the number of market orders ({unit})', { unit: unitName() }) },
+  { ...tradeStat('avgBuy', t('avg buy'), t('Average market buy: the dollars of the market buys divided by their number (USD)'), 'sequential', vol, (stats, input, bar) => stats.buyN > 0 ? inBarUnits(input, bar, sumBuckets(stats.buy, 0, 7) / stats.buyN) : null,
+    ratioView(vol, () => 'text', (bars, input) => { const o = orderPoolIn(bars, input); return o.buyN > 0 ? o.buyUsd / o.buyN : null; })),
+    coinTitle: () => t('Average market buy: the volume of the market buys divided by their number ({unit})', { unit: unitName() }) },
+  { ...tradeStat('avgSell', t('avg sell'), t('Average market sell: the dollars of the market sells divided by their number (USD)'), 'sequential', vol, (stats, input, bar) => stats.sellN > 0 ? inBarUnits(input, bar, sumBuckets(stats.sell, 0, 7) / stats.sellN) : null,
+    ratioView(vol, () => 'text', (bars, input) => { const o = orderPoolIn(bars, input); return o.sellN > 0 ? o.sellUsd / o.sellN : null; })),
+    coinTitle: () => t('Average market sell: the volume of the market sells divided by their number ({unit})', { unit: unitName() }) },
   // The exchange's own candle (Binance's) counts trades, not orders: a fill each, so one market order is often several. One market, the chart's.
   { id: 'fills', label: t('fills'), group: 'trades', source: 'market', scale: 'sequential', format: count,
     title: t('Trades in the chart market\'s own candle as the exchange counts them: every fill counts, so one market order filled against several resting orders counts several times. Binance reports them, so the row fills for a Binance chart market, before the recording too, and stays empty for others.'),
     compute: input => input.bars.map((_, i) => input.taker?.get(slotTime(input, i))?.[8] ?? null), view: sumView(count, false) },
-  { id: 'avgFill', label: t('avg fill'), group: 'trades', source: 'market', scale: 'sequential', format: volText,
+  { id: 'avgFill', label: t('avg fill'), group: 'trades', source: 'market', scale: 'sequential', format: vol,
     title: t('Average fill in the chart market\'s own candle: its quote volume divided by its trades (USDT for a USDT market). A fill, not an order: on one market an order is often several fills, so a fill averages less than an order there; avg order may count other markets too.'),
-    compute: input => input.bars.map((_, i) => { const c = input.taker?.get(slotTime(input, i)), q = c?.[9], n = c?.[8]; return q !== undefined && n !== undefined && n > 0 ? q / n : null; }),
+    coinTitle: () => t('Average fill in the chart market\'s own candle: its volume divided by its trades ({unit}). A fill, not an order: on one market an order is often several fills, so a fill averages less than an order there; avg order may count other markets too.', { unit: unitName() }),
+    // In coins the candle's own volume, which the exchange counts in the coin, over the same trades.
+    compute: input => input.bars.map((_, i) => { const c = input.taker?.get(slotTime(input, i)), q = input.coins ? c?.[5] : c?.[9], n = c?.[8]; return q !== undefined && n !== undefined && n > 0 ? q / n : null; }),
     view: (input, at) => {
       let q = 0, n = 0;
-      for (const i of at) { const c = input.taker?.get(slotTime(input, i)); if (c?.[9] !== undefined && c[8] !== undefined) { q += c[9]; n += c[8]; } }
-      return n > 0 ? { value: volText(q / n), tone: 'text', how: t('Worked out from the candles in view added together.') } : null;
+      for (const i of at) { const c = input.taker?.get(slotTime(input, i)), v = input.coins ? c?.[5] : c?.[9]; if (c && v !== undefined && c[8] !== undefined) { q += v; n += c[8]; } }
+      return n > 0 ? { value: vol(q / n), tone: 'text', how: t('Worked out from the candles in view added together.') } : null;
     } },
   { ...tradeStat('sizeSkew', t('size skew'), t('The average market buy against the average market sell: ×2 in the rising colour, buy orders were twice the size of sell orders; in the falling colour, sell orders were'), 'diverging', v => `×${(2 ** Math.abs(v)).toFixed(1)}`,
     stats => { const buy = sumBuckets(stats.buy, 0, 7), sell = sumBuckets(stats.sell, 0, 7); return stats.buyN > 0 && stats.sellN > 0 && buy > 0 && sell > 0 ? Math.log2((buy / stats.buyN) / (sell / stats.sellN)) : null; },
@@ -415,22 +524,24 @@ export const BAR_STATS: readonly StatDef[] = [
     csv: { head: 'sizeSkew_buy_over_sell', cell: v => String(2 ** v) } },
   { ...tradeStat('whaleShare', t('whale %'), t('Share of the market-order volume in orders from the whale size up (set in the options)'), 'sequential', pctText, (stats, input, bar) => { const whale = lineOf(bar, input, 'whale'), all = orderUsd(stats); return whale && all > 0 ? (whale.buy + whale.sell) / all * 100 : null; }),
     approx: approxLine('whale'), view: (input, at) => { let whale = 0, all = 0; for (const i of at) { const bar = input.bars[i], line = bar ? lineOf(bar, input, 'whale') : null; if (!bar?.stats || !line) continue; whale += line.buy + line.sell; all += orderUsd(bar.stats); } return all > 0 ? { value: pctText(whale / all * 100), tone: 'text', how: t('Worked out from the candles in view added together.') } : null; } },
-  { ...tradeStat('deltaRetail', t('delta retail'), t('Delta of market orders under the retail size (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'retail'), sumView(signedVol, true)), approx: approxLine('retail') },
-  { ...tradeStat('deltaWhales', t('delta whales'), t('Delta of market orders from the whale size up (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDelta(bar, input, 'whale'), sumView(signedVol, true)), approx: approxLine('whale') },
+  { ...tradeStat('deltaRetail', t('delta retail'), t('Delta of market orders under the retail size (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDeltaIn(bar, input, 'retail'), sumView(signedVol, true)), approx: approxLine('retail') },
+  { ...tradeStat('deltaWhales', t('delta whales'), t('Delta of market orders from the whale size up (set in the options)'), 'diverging', signedVol, (_stats, input, bar) => sizeDeltaIn(bar, input, 'whale'), sumView(signedVol, true)), approx: approxLine('whale') },
   { id: 'cvdRetail', label: t('cvd retail'), group: 'trades', source: 'executions', title: t('Cumulative delta of retail-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
-    compute: input => running(input.bars.map(bar => bar ? sizeDelta(bar, input, 'retail') : null), input.restart), approx: approxLine('retail'), view: lastView(signedVol) },
+    compute: input => running(input.bars.map(bar => bar ? sizeDeltaIn(bar, input, 'retail') : null), input.restart), approx: approxLine('retail'), view: lastView(signedVol) },
   { id: 'cvdWhales', label: t('cvd whales'), group: 'trades', source: 'executions', title: t('Cumulative delta of whale-size market orders over the bars loaded'), scale: 'diverging', format: signedVol,
-    compute: input => running(input.bars.map(bar => bar ? sizeDelta(bar, input, 'whale') : null), input.restart), approx: approxLine('whale'), view: lastView(signedVol) },
+    compute: input => running(input.bars.map(bar => bar ? sizeDeltaIn(bar, input, 'whale') : null), input.restart), approx: approxLine('whale'), view: lastView(signedVol) },
   { id: 'range', label: 'range', group: 'market', source: 'market', title: t('High minus low of the candle'), scale: 'sequential', format: value => fmtPrice(value),
     compute: input => perCandle(input, c => c[2] - c[3]),
     view: (input, at) => { const c = viewCandle(input, at); return c ? { value: fmtPrice(c.high - c.low), tone: 'text', how: t('The highest high less the lowest low of the candles in view.') } : null; } },
   { id: 'closePos', label: t('close in range'), group: 'market', source: 'market', title: t('Where the candle closed in its range: 0 % at the low, 100 % at the high'), scale: 'diverging', center: 50, format: pctText,
     compute: input => perCandle(input, c => c[2] > c[3] ? clampPct((c[4] - c[3]) / (c[2] - c[3]) * 100) : null),
     view: (input, at) => { const c = viewCandle(input, at); return c && c.high > c.low ? { value: pctText(clampPct((c.close - c.low) / (c.high - c.low) * 100)), tone: (c.close - c.low) / (c.high - c.low) >= 0.5 ? 'buy' : 'sell', how: t('The newest close in the whole range of the candles in view.') } : null; } },
-  { id: 'effort', label: t('vol / bp'), group: 'market', source: 'market', scale: 'sequential', format: volText,
+  { id: 'effort', label: t('vol / bp'), group: 'market', source: 'market', scale: 'sequential', format: vol,
     title: t('Effort against result: the candle\'s volume (USD, at its typical price) per basis point of its range. High: much traded for little movement, as where a ceiling or a floor holds; low: price moved easily. The chart\'s candle, one market.'),
-    compute: input => perCandle(input, c => { const bp = c[1] > 0 ? (c[2] - c[3]) / c[1] * 10_000 : 0, usd = candleUsd(c); return bp > 0 && usd > 0 ? usd / bp : null; }),
-    view: (input, at) => { const c = viewCandle(input, at), bp = c && c.open > 0 ? (c.high - c.low) / c.open * 10_000 : 0; return c && bp > 0 && c.usd > 0 ? { value: volText(c.usd / bp), tone: 'text', how: t('The volume of the candles in view over the basis points of their whole range.') } : null; } },
+    coinTitle: () => t('Effort against result: the candle\'s volume ({unit}) per basis point of its range. High: much traded for little movement, as where a ceiling or a floor holds; low: price moved easily. The chart\'s candle, one market.', { unit: unitName() }),
+    // In coins the candle's own volume (the coin's), not valued at any price.
+    compute: input => perCandle(input, c => { const bp = c[1] > 0 ? (c[2] - c[3]) / c[1] * 10_000 : 0, usd = candleUsd(c), size = input.coins ? (usd > 0 ? c[5] : 0) : usd; return bp > 0 && size > 0 ? size / bp : null; }),
+    view: (input, at) => { const c = viewCandle(input, at), bp = c && c.open > 0 ? (c.high - c.low) / c.open * 10_000 : 0, size = c ? (input.coins ? c.vol : c.usd) : 0; return c && bp > 0 && size > 0 ? { value: vol(size / bp), tone: 'text', how: t('The volume of the candles in view over the basis points of their whole range.') } : null; } },
   { id: 'divergence', label: t('delta vs candle'), group: 'market', source: 'executions', scale: 'category',
     title: t('A candle that fell on net market buying (▲) or rose on net market selling (▼), with delta at least 5 % of its volume: taker flow against the price, which does not by itself show who absorbed it'),
     format: v => v > 0 ? '▲' : v < 0 ? '▼' : '', tone: v => markTone(v === 0 ? null : v > 0),
@@ -440,7 +551,9 @@ export const BAR_STATS: readonly StatDef[] = [
       return Math.abs(share) < 0.05 ? 0 : share > 0 && c[4] < c[1] ? 1 : share < 0 && c[4] > c[1] ? -1 : 0;
     }), view: markView(() => statDef('divergence')!) },
   { id: 'oiChange', label: t('oi chg'), group: 'market', source: 'market', title: t('Open-interest change over the bar (its close minus the close of the bar before); USD or base coin in the options'), scale: 'diverging', format: signedVol,
-    compute: input => { const { oi, oiChange, oiUsd, candles, options } = input, delta = oiChange ?? oiDeltaByTime(oi.values()); return input.bars.map((_, i) => { const start = slotTime(input, i), change = delta.get(start); if (change === undefined) return null; if (options.oiUnits === 'base') return change; if (oiUsd) return oiUsd.get(start) ?? null; const c = candles.get(start); return c ? change * c[4] : null; }); },
+    coinTitle: () => t('Open-interest change over the bar (its close minus the close of the bar before), in {unit}', { unit: unitName() }),
+    // In coins the open interest's own change (it is kept in the coin), whatever the option, which is the dollars mode's.
+    compute: input => { const { oi, oiChange, oiUsd, candles, options } = input, delta = oiChange ?? oiDeltaByTime(oi.values()); return input.bars.map((_, i) => { const start = slotTime(input, i), change = delta.get(start); if (change === undefined) return null; if (options.oiUnits === 'base' || input.coins) return change; if (oiUsd) return oiUsd.get(start) ?? null; const c = candles.get(start); return c ? change * c[4] : null; }); },
     view: sumView(signedVol, true) },
   { id: 'oiQuad', label: t('oi × delta'), group: 'market', source: 'executions', scale: 'category',
     title: t('Open interest against delta: + OI rose, − OI fell; ▲ net market buying, ▼ net market selling. +▲ is often read as buyers opening positions and −▲ as sellers closing theirs (shorts covering): a reading, not proof. The OI is the OI pane\'s markets.'),
@@ -449,12 +562,14 @@ export const BAR_STATS: readonly StatDef[] = [
     // interest moved: blank, never their buying read against the perpetuals' change.
     compute: input => { if (input.perps === false) return input.bars.map(() => null); const delta = input.oiChange ?? oiDeltaByTime(input.oi.values()); return perBar(input, (bar, i) => { const change = delta.get(slotTime(input, i)), d = bar.buyUsd - bar.sellUsd; if (change === undefined) return null; return change === 0 || d === 0 ? 0 : change > 0 ? (d > 0 ? 1 : 2) : (d > 0 ? 3 : 4); }); },
     view: markView(() => statDef('oiQuad')!) },
-  { id: 'liq', label: t('liq'), group: 'market', source: 'market', scale: 'sequential', format: volText,
+  { id: 'liq', label: t('liq'), group: 'market', source: 'market', scale: 'sequential', format: vol,
     title: t('Liquidations reported in the candle on the perpetuals counted (USD; the Spot filter does not hide them): shorts liquidated and longs liquidated together. Only the venues that publish them count, so it is what was reported, not all there was.'),
+    coinTitle: () => t('Liquidations reported in the candle on the perpetuals counted ({unit}; the Spot filter does not hide them): shorts liquidated and longs liquidated together. Only the venues that publish them count, so it is what was reported, not all there was.', { unit: unitName() }),
     compute: input => input.bars.map((_, i) => { const l = liquidated(input, i); return l ? l[0] + l[1] : null; }),
-    approx: input => !!input.liquidations?.cut, approxNote: liquidationNote, view: sumView(volText, false) },
+    approx: input => !!input.liquidations?.cut, approxNote: liquidationNote, view: sumView(vol, false) },
   { id: 'liqNet', label: t('liq Δ'), group: 'market', source: 'market', scale: 'diverging', format: signedVol,
     title: t('Shorts liquidated less longs liquidated in the candle (USD): above 0 the forced buying of a squeeze, below 0 the forced selling of a flush.'),
+    coinTitle: () => t('Shorts liquidated less longs liquidated in the candle ({unit}): above 0 the forced buying of a squeeze, below 0 the forced selling of a flush.', { unit: unitName() }),
     compute: input => input.bars.map((_, i) => { const l = liquidated(input, i); return l ? l[0] - l[1] : null; }),
     approx: input => !!input.liquidations?.cut, approxNote: liquidationNote, view: sumView(signedVol, true) },
 ];

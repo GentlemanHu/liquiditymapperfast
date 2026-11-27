@@ -310,7 +310,16 @@ const recording: Scene = {
     note(g, tg('Page open for'), 10, 12, th, 'left', th.muted, 11); note(g, tg('{n} min', { n: Math.round(e) }), 88, 12, th, 'left', th.text, 12, 700);
     if (since > 0.3) note(g, tg('Not recorded'), b.x + since * b.w * 0.5, b.y + b.h / 2, th, 'center', th.muted, 11, 600);
     if (since < 0.7) note(g, tg('Colour: recorded while the page was open'), Math.max(b.x + 150, sx + (b.x + b.w - sx) / 2), b.y + b.h - 12, th, 'center', th.text, 11, 600);
-    if (e < 6) note(g, tg('depth recorded from here'), Math.min(sx + 8, b.x + b.w - 130), b.y - 8, th, 'left', th.text, 10);
+    // Where the map says when the recording began: the legend's last row in the corner, a sample of the dashed line and the moment, standing
+    // still while the line moves (until 2026-11-26 the map printed it beside the line, which carried it along). Gone where the map takes it
+    // away: once the line reaches the left edge, the whole view is recorded.
+    if (since > 0) {
+      const said = tg('Depth recorded from {time}', { time: '14:05' }), size = fitSize(g, said, b.w - 44, 10.5);
+      font(g, size); const sw = g.measureText(said).width;
+      g.save(); g.globalAlpha = 0.9; g.fillStyle = th.bg; g.beginPath(); g.roundRect(b.x + 6, b.y + 6, sw + 24, 20, 5); g.fill(); g.restore();
+      g.strokeStyle = th.muted; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(b.x + 14.5, b.y + 9); g.lineTo(b.x + 14.5, b.y + 23); g.stroke(); g.setLineDash([]);
+      note(g, said, b.x + 22, b.y + 16.5, th, 'left', th.muted, size);
+    }
     note(g, tg('now'), b.x + b.w, b.y + b.h + 12, th, 'right'); note(g, tg('{n} min ago', { n: 75 }), b.x, b.y + b.h + 12, th, 'left');
   },
 };

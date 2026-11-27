@@ -5,8 +5,9 @@ import type { InfoLine } from '../infobox.ts';
 import type { Scope } from '../store.ts';
 import { t } from '../i18n.ts';
 import { RANK_MS, type CvdSettings } from './settings.ts';
-import { plainUsd, signedUsd, windowName } from './text.ts';
+import { plainAmount, windowName } from './text.ts';
 import { scaledUsd, sizeScale } from '../coin.ts';
+import { inCoins, signedAmount } from '../units.ts';
 
 /**
  * The strip of dot rows above the exchanges. Everything it says, worked out here without a canvas: four rows of taker buys against sells over
@@ -14,6 +15,12 @@ import { scaledUsd, sizeScale } from '../coin.ts';
  * trade sizes over the column's ranking window (from the footprint recorder's per-minute statistics, which is the only place the sizes are kept).
  * Each row says which share of its window was recorded, because the recorder is not always running and a row that covers 47 of its 60 minutes
  * must not look like one that covers all of them.
+ *
+ * Units (units.ts, issue 9): the dots, the shares and the bands are the dollars' in either units (the bands are size thresholds, their heading
+ * says USD); built with `coins`, a row also carries its buys and sells in coins (`StripRow.coins`), which the box under the pointer writes. A
+ * flow row's coins are its instruments' coin series (each second over its own price). A size row's window has dollars per size box and no
+ * price at all, so it is converted at the flow's own volume-weighted price over that window: the counted instruments' coins traded over it
+ * against their dollars (`windowCoins`), or, with no flow in it, the newest price; nothing finer is known of the sizes.
  */
 
 /** The windows of the taker-flow rows, in minutes. */
@@ -90,6 +97,8 @@ export interface StripRow {
   /** `pulse:5` or `size:2`: the same row keeps its key. `range` is what a sentence calls a size row (the dollar range with its signs). */
   key: string; label: string; range: string;
   buy: number; sell: number;
+  /** The buys and sells in coins, on a strip built with `coins` (what the box under the pointer writes then); absent where no price is known. */
+  coins?: { buy: number; sell: number };
   /** A size row whose line between box edges had no sums of its own here (an older server, or minutes not yet filled in): taken at the nearest edge. */
   approx?: boolean;
   /** Buys' share of the row's own volume (0 to 1), or null when nothing traded. */
@@ -105,23 +114,50 @@ export function isPartial(covered: number | null, minutes: number): boolean { re
 
 const shareOf = (buy: number, sell: number): number | null => buy + sell > 0 ? buy / (buy + sell) : null;
 
-/** The four taker-flow rows: buys and sells of the instruments over the last N minutes up to the second `nowSec`, as the ALL VENUES row counts its window. */
-export function pulseRows(flow: FlowBook, ids: readonly string[], nowSec: number, recorded: (minutes: number) => number | null): StripRow[] {
+/**
+ * The four taker-flow rows: buys and sells of the instruments over the last N minutes up to the second `nowSec`, as the ALL VENUES row counts
+ * its window; with `coins`, their coins beside them (each instrument's coin series: every second over its own price).
+ */
+export function pulseRows(flow: FlowBook, ids: readonly string[], nowSec: number, recorded: (minutes: number) => number | null, coins = false): StripRow[] {
   return PULSE_MINUTES.map(minutes => {
     const from = nowSec - minutes * 60 + 1;
-    let buy = 0, sell = 0;
-    for (const id of ids) { const series = flow.get(id); if (series && !series.empty) { buy += series.buy(from, nowSec); sell += series.sell(from, nowSec); } }
+    let buy = 0, sell = 0, cBuy = 0, cSell = 0;
+    for (const id of ids) {
+      const series = flow.get(id); if (!series || series.empty) continue;
+      buy += series.buy(from, nowSec); sell += series.sell(from, nowSec);
+      if (coins) { const c = flow.coinsOf(id); if (c && !c.empty) { cBuy += c.buy(from, nowSec); cSell += c.sell(from, nowSec); } }
+    }
     const covered = recorded(minutes);
     const label = PULSE_LABELS[minutes] ?? `${minutes}m`;
-    return { key: `pulse:${minutes}`, label, range: label, buy, sell, share: shareOf(buy, sell), weight: null, covered, minutes, partial: isPartial(covered, minutes) };
+    const row: StripRow = { key: `pulse:${minutes}`, label, range: label, buy, sell, share: shareOf(buy, sell), weight: null, covered, minutes, partial: isPartial(covered, minutes) };
+    if (coins) row.coins = { buy: cBuy, sell: cSell };
+    return row;
   });
 }
 
 /**
- * The size rows from the recorder's window (null: nothing known yet, the rows are idle): each band is the orders from its bottom line less
- * those from its top line, with `cuts` the lines the window was asked for (see `overIn`).
+ * The coins a dollar of the instruments' flow bought over the last `minutes` up to `nowSec`: their coins traded over it against their dollars
+ * (the flow's own volume-weighted price over the window, inverted), or with no flow in it one over the newest price any of them holds; NaN
+ * when there is none. What a size row's dollars, which carry no price, are converted at.
  */
-export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null, minutes: number, cuts: readonly number[] = []): StripRow[] {
+export function windowCoins(flow: FlowBook, ids: readonly string[], nowSec: number, minutes: number): number {
+  const from = nowSec - minutes * 60 + 1;
+  let usd = 0, coins = 0, price = Number.NaN;
+  for (const id of ids) {
+    const series = flow.get(id), c = series && !series.empty ? flow.coinsOf(id) : undefined;
+    if (!series || !c) continue;
+    usd += series.gross(from, nowSec); coins += c.gross(from, nowSec);
+    if (!(price > 0)) price = series.priceAt(nowSec);
+  }
+  return usd > 0 && coins > 0 ? coins / usd : price > 0 ? 1 / price : Number.NaN;
+}
+
+/**
+ * The size rows from the recorder's window (null: nothing known yet, the rows are idle): each band is the orders from its bottom line less
+ * those from its top line, with `cuts` the lines the window was asked for (see `overIn`). `perUsd`: the coins a dollar of the window bought
+ * (`windowCoins`), for the rows' coins (none where it is not a number).
+ */
+export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null, minutes: number, cuts: readonly number[] = [], perUsd = Number.NaN): StripRow[] {
   const sums = bands.map(b => {
     if (!window) return { buy: 0, sell: 0, approx: false };
     const from = overIn(window, b.lo, cuts), to = b.hi === null ? { buy: 0, sell: 0, exact: true } : overIn(window, b.hi, cuts);
@@ -130,7 +166,9 @@ export function sizeRows(bands: readonly SizeBand[], window: SizesWindow | null,
   const total = sums.reduce((a, s) => a + s.buy + s.sell, 0), covered = window ? window.stats : null;
   return bands.map((b, i) => {
     const { buy, sell, approx } = sums[i]!;
-    return { key: `size:${i}`, label: approx ? `≈${b.label}` : b.label, range: b.range, buy, sell, ...(approx ? { approx } : {}), share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
+    const row: StripRow = { key: `size:${i}`, label: approx ? `≈${b.label}` : b.label, range: b.range, buy, sell, ...(approx ? { approx } : {}), share: shareOf(buy, sell), weight: window && total > 0 ? (buy + sell) / total : null, covered, minutes, partial: isPartial(covered, minutes) };
+    if (perUsd > 0) row.coins = { buy: buy * perUsd, sell: sell * perUsd };
+    return row;
   });
 }
 
@@ -147,6 +185,8 @@ export interface StripInput {
   settings: CvdSettings; scope: Scope;
   /** The last sizes answer for exactly these instruments and windows (null: none), and how asking went. */
   sizes: SizesAnswer | null; state: 'ready' | 'loading' | 'unavailable';
+  /** The rows' coins beside their dollars (units.ts: the page writes sizes in coins). */
+  coins?: boolean;
 }
 
 /** The words over the strip, as the aggregate row says them: which kind of market the filter leaves in. */
@@ -155,9 +195,10 @@ export const heading = (scope: Scope): string => scope === 'all' ? t('ALL VENUES
 export function buildStrip(i: StripInput): StripData {
   const rank = rankMinutes(i.settings), bands = sizeBands(i.settings);
   const at = (minutes: number): SizesWindow | null => i.sizes?.windows.find(w => w.minutes === minutes) ?? null;
-  const pulse = pulseRows(i.flow, i.counted, i.nowSec, minutes => at(minutes)?.seen ?? null);
+  const pulse = pulseRows(i.flow, i.counted, i.nowSec, minutes => at(minutes)?.seen ?? null, i.coins === true);
   const window = at(rank), state: SizeState = !i.counted.length ? 'empty' : i.state === 'ready' && !window ? 'loading' : i.state;
-  const rows = sizeRows(bands, state === 'ready' ? window : null, rank, bandCuts(bands)), covered = state === 'ready' && window ? window.stats : null;
+  const perUsd = i.coins && state === 'ready' && window ? windowCoins(i.flow, i.counted, i.nowSec, rank) : Number.NaN;
+  const rows = sizeRows(bands, state === 'ready' ? window : null, rank, bandCuts(bands), perUsd), covered = state === 'ready' && window ? window.stats : null;
   return { heading: heading(i.scope), window: windowName(rank * 60), pulse, size: { state, rows, covered, minutes: rank, partial: isPartial(covered, rank) } };
 }
 
@@ -218,7 +259,10 @@ export function rowAt(y: number, sizeRows: number): { group: 'pulse' | 'size'; i
 
 // ---- words ------------------------------------------------------------------------------------------------------------------------------
 
-/** The box under the pointer on a row: its figures in dollars, and what the recording of its window covers. Pure, so a test reads the words. */
+/**
+ * The box under the pointer on a row: its figures in the page's units (its coins in coins, '–' where they are not known), and what the
+ * recording of its window covers. Pure but for the units, so a test reads the words.
+ */
 export function rowLines(row: StripRow, data: StripData): InfoLine[] {
   const pulse = row.key.startsWith('pulse:');
   const out: InfoLine[] = [
@@ -227,9 +271,9 @@ export function rowLines(row: StripRow, data: StripData): InfoLine[] {
   ];
   if (row.share === null) out.push({ text: t('Nothing traded in this window.'), color: 'muted', wrap: true, rule: true });
   else {
-    const net = row.buy - row.sell;
-    out.push({ label: t('Buys / sells'), text: `${plainUsd(row.buy)} / ${plainUsd(row.sell)}`, rule: true });
-    out.push({ label: t('Net'), text: signedUsd(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text' });
+    const f = inCoins() ? row.coins ?? { buy: Number.NaN, sell: Number.NaN } : row, net = f.buy - f.sell;
+    out.push({ label: t('Buys / sells'), text: `${plainAmount(f.buy)} / ${plainAmount(f.sell)}`, rule: true });
+    out.push({ label: t('Net'), text: signedAmount(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text' });
     out.push({ label: t('Buy share'), text: percent(row.share) });
     if (row.weight !== null) out.push({ label: t('Share of volume'), text: weightText(row.weight) });
   }

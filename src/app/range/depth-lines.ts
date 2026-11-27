@@ -8,6 +8,7 @@ import type { GridItem, RangeLine } from './stats.ts';
 import { curveOf, groupTitle, takesBeside, type LiqView } from '../liq-view.ts';
 import { ordersAbsent, sideTitle } from '../liq-words.ts';
 import { levelsOrderSide } from '../order-side.ts';
+import { inCoins, units as pageUnits } from '../units.ts';
 
 /** One snapshot of the tracked liquidation levels as the Depth pane holds it: when its positions stood, when it was fetched, its buckets. */
 export interface DepthLiqRow { asOf: number; fetchedAt: number; long: ArrayLike<number>; short: ArrayLike<number>; longCoin: ArrayLike<number>; shortCoin: ArrayLike<number> }
@@ -55,7 +56,10 @@ export interface DepthPaneHeld {
    * the pane drew holds none of them (Liq + stops: their liquidations alone), and that is said.
    */
   ordersAbsent?: boolean;
-  /** The units the pane draws in (coins: the chart coin), and the band it watches (its index). */
+  /**
+   * The units the pane drew in (a change republishes the snapshot, which wakes the summary), the chart coin and the band it watches (its index).
+   * The summary writes the page's units (units.ts) whatever these say: the snapshot carries every band in dollars and in coins.
+   */
   coins: boolean; coin: string; focus: number;
 }
 
@@ -86,7 +90,7 @@ const colSpan = (h: Pick<DepthPaneHeld, 't0' | 't1' | 'w'>, x: number): [number,
 const outsideOf = (held: Pick<DepthPaneHeld, 't0' | 't1'>, a: number, b: number): number => Math.max(0, b - a) - Math.max(0, Math.min(b, held.t1) - Math.max(a, held.t0));
 
 export function depthStretch(held: DepthPaneHeld, sel: Pick<RangeSelection, 't0' | 't1'>, now: number): DepthStretch {
-  const k = held.radii.length, want = held.ids.length, step = held.stepMs, coins = held.coins, closedBy = Math.min(now, held.answeredAt);
+  const k = held.radii.length, want = held.ids.length, step = held.stepMs, coins = inCoins(), closedBy = Math.min(now, held.answeredAt);
   const bid = coins ? held.bidCoin : held.bid, ask = coins ? held.askCoin : held.ask;
   const end = Math.min(sel.t1, Math.max(sel.t0, now)), span = Math.max(0, end - sel.t0);
   let covered = 0, lacking = 0, uncentred = 0, open = 0, columns = 0, first = NaN, last = NaN, unsettled = false;
@@ -155,7 +159,7 @@ export function depthLiqStretch(held: DepthPaneHeld, sel: Pick<RangeSelection, '
     const overlap = open.reduce((sum, [x, y]) => sum + Math.max(0, Math.min(to, y) - Math.max(from, x)), 0);
     if (overlap > 0) { inForce += overlap; rows.push(row); }
   });
-  const coins = held.coins, buckets = held.buckets ?? [], fst = rows[0], lst = rows[rows.length - 1];
+  const coins = inCoins(), buckets = held.buckets ?? [], fst = rows[0], lst = rows[rows.length - 1];
   const at = (row: DepthLiqRow | undefined, side: 'long' | 'short', j: number): number | null => {
     const bk = buckets[j] ?? -1; if (!row || bk < 0) return null;
     const v = (coins ? (side === 'long' ? row.longCoin : row.shortCoin) : (side === 'long' ? row.long : row.short))[bk];
@@ -195,15 +199,15 @@ function bandMoney(values: readonly number[], changes: readonly number[], coins:
  * force and each band's first and last.
  */
 export class DepthRangeSummary {
-  #last: { held: DepthPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; second: number; zone: string; empty: string; replay: boolean; lines: RangeLine[] } | null = null;
+  #last: { held: DepthPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; second: number; zone: string; empty: string; replay: boolean; units: string; lines: RangeLine[] } | null = null;
 
   /** `empty`: why the pane holds nothing (no venue, liquidation levels for another coin or beyond their reach), or ''. */
   lines(sel: RangeSelection, held: DepthPaneHeld | null, shown: boolean, current: string, now: number, zone = '', empty = '', replay = false): RangeLine[] {
     // To the second: a snapshot's start or a book minute's end can fall at any moment of a replay, which also runs backwards.
-    const last = this.#last, second = Math.floor(now / 1000);
-    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.second === second && last.zone === zone && last.empty === empty && last.replay === replay) return last.lines;
+    const last = this.#last, second = Math.floor(now / 1000), units = pageUnits();
+    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.second === second && last.zone === zone && last.empty === empty && last.replay === replay && last.units === units) return last.lines;
     const lines = this.#lines(sel, held, shown, current, now, empty, replay);
-    this.#last = { held, sel, shown, current, second, zone, empty, replay, lines };
+    this.#last = { held, sel, shown, current, second, zone, empty, replay, units, lines };
     return lines;
   }
 
@@ -229,7 +233,7 @@ export class DepthRangeSummary {
       const f = s.bands[focus]!;
       if (f.imbalance !== null) lines.push({ key: 'dp-focus', kind: 'stat', ...toneOf(f.imbalance), cells: [t('Watched band {band}: mean imbalance', { band: band(f.r) }), pct(f.imbalance)] });
       const items: GridItem[] = s.bands.map((b, j) => {
-        const fmt = bandMoney([b.bid, b.ask, b.firstBid, b.lastBid, b.firstAsk, b.lastAsk], [b.lastBid - b.firstBid, b.lastAsk - b.firstAsk], held.coins, held.coin);
+        const fmt = bandMoney([b.bid, b.ask, b.firstBid, b.lastBid, b.firstAsk, b.lastAsk], [b.lastBid - b.firstBid, b.lastAsk - b.firstAsk], inCoins(), held.coin);
         return {
           key: `dp-${j}`, label: band(b.r), value: '',
           tip: t('Each column is weighted by its overlap with the selection. Each band holds the ones inside it.'),
@@ -263,7 +267,7 @@ export class DepthRangeSummary {
   }
 
   #liq(lines: RangeLine[], held: DepthPaneHeld, sel: RangeSelection, now: number, note: (key: string, text: string) => RangeLine): RangeLine[] {
-    const s = depthLiqStretch(held, sel, now), c = held.coins, coin = held.coin, kind = held.view ? curveOf(held.view) : 'liq', group = held.view?.group ?? 'all';
+    const s = depthLiqStretch(held, sel, now), c = inCoins(), coin = held.coin, kind = held.view ? curveOf(held.view) : 'liq', group = held.view?.group ?? 'all';
     // Which levels are summed up, and whose: the pane shows what the page's one choice says (`liq-view.ts`).
     const what = kind === 'takes' ? t('Tracked take-profit orders') : kind === 'stops' ? t('Tracked stop orders') : kind === 'both' ? t('Tracked liquidations and stops') : t('Tracked liquidation levels');
     lines.push(note('dp-status', [what, ...(group !== 'all' ? [groupTitle(group)] : []), tn(s.rows.length, '{n} snapshot in force', '{n} snapshots in force')].join(' · ')));

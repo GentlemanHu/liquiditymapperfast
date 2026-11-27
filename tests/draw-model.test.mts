@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ANCHORS, DRAW_FILE_FORMAT, MAX_PER_COIN, MAX_TEXT, MAX_UNDO, capReached, duplicate, exportText, fits, flipped, importInto, moved, newDrawing, newId, positionFigures, positionFromClicks, positionSide, readDoc, readDrawing, totalOf, type DrawDoc } from '../src/app/draw/model.ts';
+import { ANCHORS, DRAW_FILE_FORMAT, MAX_PER_COIN, MAX_TEXT, MAX_UNDO, capReached, duplicate, exportText, fits, flipped, importInto, moved, newDrawing, newId, positionFigures, positionFromClicks, positionSide, readDoc, readDrawing, totalOf, versionOf, type DrawDoc } from '../src/app/draw/model.ts';
 import { History } from '../src/app/draw/history.ts';
 
 const T = Date.UTC(2026, 9, 28, 12);
@@ -29,8 +29,14 @@ test('a saved drawing is read field by field: wrong points drop it, a wrong look
   const odd = readDrawing({ ...good, style: { color: 'chartreuse', width: 7, dashed: 'yes' }, text: 'x'.repeat(MAX_TEXT + 50), alert: true })!;
   assert.deepEqual(odd.style, { color: 'blue', width: 2, dashed: false }, 'the zone\'s own look');
   assert.equal(odd.text.length, MAX_TEXT, 'a long text is cut');
-  assert.equal(odd.alert, false, 'only a level sounds');
+  assert.equal(odd.alert, true, 'a zone carries a bell');
+  assert.equal(odd.alertOnce, false, 'a bell kept before bells could go off once goes off every time');
   assert.equal(readDrawing({ ...newDrawing('level', [at(0, 1)], T), alert: true })!.alert, true);
+  assert.equal(readDrawing({ ...newDrawing('trend', [at(0, 1), at(1, 2)], T), alert: true, alertOnce: true })!.alertOnce, true, 'a trend line\'s bell, once');
+  for (const kind of ['vline', 'note', 'fib'] as const) {
+    const d = readDrawing({ ...newDrawing(kind, [at(0, 1), at(1, 2), at(2, 3)], T), alert: true, alertOnce: true })!;
+    assert.deepEqual([d.alert, d.alertOnce], [false, false], `a ${kind} never carries a bell`);
+  }
 });
 
 test('a document keeps each coin\'s valid drawings once, at most a coin\'s cap, and a newer document is not read at all', () => {
@@ -38,7 +44,7 @@ test('a document keeps each coin\'s valid drawings once, at most a coin\'s cap, 
   const doc = readDoc({ version: 1, coins: { BTC: [b, a, a, { junk: true }], 'bad coin!': [a], ETH: 'no' } })!;
   assert.deepEqual(doc.coins.BTC!.map(d => d.id), [a.id, b.id], 'oldest first, each once, junk dropped');
   assert.deepEqual(Object.keys(doc.coins), ['BTC']);
-  assert.equal(readDoc({ version: 3, coins: {} }), null, 'a newer page wrote it: left alone');
+  assert.equal(readDoc({ version: 4, coins: {} }), null, 'a newer page wrote it: left alone');
   assert.deepEqual(readDoc(null), { version: 1, coins: {} });
   const many = Array.from({ length: MAX_PER_COIN + 5 }, (_, i) => newDrawing('level', [at(i, 1)], T + i));
   assert.equal(readDoc({ version: 1, coins: { BTC: many } })!.coins.BTC!.length, MAX_PER_COIN, 'the newest kept');
@@ -116,7 +122,21 @@ test('a document holding a position is version 2, which pages from before positi
   const olderPageReads = (raw: { version?: unknown }): boolean => !(typeof raw.version === 'number' && raw.version > 1);
   assert.equal(olderPageReads(JSON.parse(exportText(doc))), false);
   assert.equal(olderPageReads(JSON.parse(exportText({ version: 1, coins: { BTC: [level] } }))), true);
-  assert.equal(readDoc({ version: 3, coins: {} }), null, 'a version above this page\'s still is not read');
+  assert.equal(readDoc({ version: 4, coins: {} }), null, 'a version above this page\'s still is not read');
   const read = importInto({ version: 1, coins: {} }, exportText(doc), T + 5);
   assert.equal(read.error, null); assert.equal(read.added, 2); assert.equal(read.doc.version, 2);
+});
+
+test('a document with a bell an older page would lose is version 3; a drawing read in from a file brings no bell', () => {
+  const at = (k: number, p: number): { t: number; p: number } => ({ t: Date.UTC(2026, 10, 26) + k * 3_600_000, p });
+  const level = newDrawing('level', [at(0, 100)]), zone = newDrawing('zone', [at(0, 100), at(1, 110)]), positionPoints = positionFromClicks([at(0, 100), at(1, 95), at(1, 110)], 3_600_000), pos = positionPoints ? newDrawing('position', positionPoints) : null;
+  assert.equal(versionOf({ BTC: [{ ...level, alert: true }] }), 1, 'a level\'s bell every time: every page reads it');
+  assert.equal(versionOf({ BTC: [{ ...level, alert: true, alertOnce: true }] }), 3, 'once: only a newer page keeps that');
+  assert.equal(versionOf({ BTC: [{ ...zone, alert: true }] }), 3, 'a zone\'s bell');
+  if (pos) assert.equal(versionOf({ BTC: [pos] }), 2, 'a position alone stays version 2');
+  assert.equal(readDoc({ version: 3, coins: {} }) !== null, true, 'this page reads version 3');
+  const file = exportText({ version: 3, coins: { BTC: [{ ...zone, alert: true, alertOnce: true }] } });
+  const read = importInto({ version: 1, coins: {} }, file);
+  assert.equal(read.added, 1);
+  assert.deepEqual([read.doc.coins.BTC![0]!.alert, read.doc.coins.BTC![0]!.alertOnce], [false, false], 'someone else\'s drawing never sends to this phone');
 });

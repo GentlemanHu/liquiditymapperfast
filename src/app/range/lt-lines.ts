@@ -1,4 +1,5 @@
 import { clock, usd } from '../format.ts';
+import { coinText, inCoins } from '../units.ts';
 import type { LtParts } from '../lt.ts';
 import { sizeText } from '../sizes.ts';
 import { t, tn } from '../i18n.ts';
@@ -21,8 +22,13 @@ export interface LtPaneHeld {
   minUsd: number; maxUsd: number; minApplied: number; maxApplied: number;
   /** Per level (`average`): each side's weighted size divided by its levels' summed weights. */
   average: boolean;
-  /** The windows' starts, oldest first, each `stepMs` long; bids and asks as drawn (USD). */
+  /** The windows' starts, oldest first, each `stepMs` long; bids and asks in dollars. */
   times: Float64Array; bid: Float32Array; ask: Float32Array;
+  /**
+   * In coins (units.ts): the bids and asks as drawn, each window's dollars over its price (lt.ts `ltInCoins`; NaN where it has none), and the
+   * coin. Absent in dollars: the key says which (`ltHeldKey`).
+   */
+  coins?: { bid: Float32Array; ask: Float32Array; coin: string };
   /**
    * Each venue's part of each window (`LtParts`, in the order of `ids`), NaN where it had nothing: a window holds every venue asked for where
    * none is NaN. Null for one venue (the window is its), or an answer read without them.
@@ -39,9 +45,13 @@ export interface LtPaneHeld {
   answeredAt: number;
 }
 
-/** What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode. */
-export const ltHeldKey = (ids: readonly string[], lt: { halfLifeBp: number; minUsd: number; maxUsd: number; average: boolean }): string =>
-  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}`;
+/**
+ * What a tracker snapshot stands for: the venues, the half-life, the size filters and the mode, and in coins the units (its figures are the
+ * coin's) and `pricedBy`, the timeframe of the candles that price its windows (lt.ts `ltPrices`): figures priced by another timeframe's candles
+ * are not this snapshot's, nor a result kept from them.
+ */
+export const ltHeldKey = (ids: readonly string[], lt: { halfLifeBp: number; minUsd: number; maxUsd: number; average: boolean }, pricedBy = ''): string =>
+  `${ids.join(',')}|${lt.halfLifeBp}|${lt.minUsd}|${lt.maxUsd}|${lt.average}${inCoins() ? `|coins|${pricedBy}` : ''}`;
 
 /**
  * The tracker over a selection, on the windows that overlap it, each counting for the time it overlaps (ms). Only closed windows holding
@@ -54,8 +64,11 @@ export interface LtStretch {
   /** Per venue (the order of `ids`), the time of the selection's closed windows that lack it. */
   missing: number[];
   t0: number; t1: number;
-  /** The selection up to now, and how it splits: covered by eligible windows, by windows lacking venues, by the window under way, by none. */
-  span: number; covered: number; lacking: number; forming: number; none: number;
+  /**
+   * The selection up to now, and how it splits: covered by eligible windows, by windows lacking venues, by the window under way, in coins by
+   * windows no chart candle overlaps (no coin figure: lt.ts `ltPrices`; 0 in dollars), by none.
+   */
+  span: number; covered: number; lacking: number; forming: number; unpriced: number; none: number;
   windows: number;
   /** Time-weighted means of the drawn bids and asks; first and last eligible window; lowest and highest. Null without an eligible window. */
   bid: Side | null; ask: Side | null;
@@ -70,7 +83,8 @@ export interface Side { mean: number; first: number; last: number; low: number; 
 
 /** The tracker over `sel` from what the pane holds; `now` is the clock's or a replay's moment. */
 export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1'>, now: number): LtStretch {
-  const { times, bid, ask, parts, approx, stepMs: step } = held, owners = held.ids.length, windows = times.length;
+  // The figures as drawn: in coins each window's own (a window without a price is measured as not held). The imbalance is the same in either.
+  const { times, parts, approx, stepMs: step } = held, owners = held.ids.length, windows = times.length, bid = held.coins?.bid ?? held.bid, ask = held.coins?.ask ?? held.ask;
   // Every venue asked for has a part in window i (a lane gap or a venue not recorded then is NaN there).
   const full = (i: number): boolean => {
     if (!parts || owners < 2) return true;
@@ -84,7 +98,7 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
   // a closed window's because time passed.
   const closedBy = Math.min(now, held.answeredAt), openStart = step > 0 ? Math.floor(closedBy / step) * step : closedBy;
   const forming = Math.max(0, Math.min(end, openStart + step) - Math.max(openStart, sel.t0)), missing = new Array<number>(owners).fill(0);
-  let covered = 0, lacking = 0, counted = 0, apx = 0;
+  let covered = 0, lacking = 0, unpriced = 0, counted = 0, apx = 0;
   let bSum = 0, aSum = 0, iSum = 0, iTime = 0, bidHeavier = 0, askHeavier = 0;
   let bFirst = NaN, bLast = NaN, aFirst = NaN, aLast = NaN, iFirst = NaN, iLast = NaN, firstT = NaN, lastT = NaN;
   let bLow = Infinity, bHigh = -Infinity, aLow = Infinity, aHigh = -Infinity;
@@ -99,6 +113,8 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
     }
     if (dt <= 0) continue;
     const b = bid[i]!, a = ask[i]!;
+    // In coins a window no chart candle overlaps has no coin figure (lt.ts `ltPrices`): not measured, and said apart.
+    if (Number.isNaN(b) || Number.isNaN(a)) { unpriced += dt; continue; }
     covered += dt; counted++;
     if (approx?.[i]) apx += dt;
     bSum += dt * b; aSum += dt * a;
@@ -115,19 +131,23 @@ export function ltStretch(held: LtPaneHeld, sel: Pick<RangeSelection, 't0' | 't1
       if (b > a) bidHeavier += dt; else if (a > b) askHeavier += dt;
     }
   }
-  const none = Math.max(0, span - covered - lacking - forming);
+  const none = Math.max(0, span - covered - lacking - forming - unpriced);
   const side = (sum: number, first: number, last: number, low: number, high: number): Side | null => covered > 0 ? { mean: sum / covered, first, last, low, high, firstT, lastT } : null;
   return {
-    unverified: owners > 1 && !parts, missing, t0: sel.t0, t1: sel.t1, span, covered, lacking, forming, none, windows: counted,
+    unverified: owners > 1 && !parts, missing, t0: sel.t0, t1: sel.t1, span, covered, lacking, forming, unpriced, none, windows: counted,
     bid: side(bSum, bFirst, bLast, bLow, bHigh), ask: side(aSum, aFirst, aLast, aLow, aHigh),
     imbalance: iTime > 0 ? { mean: iSum / iTime, first: iFirst, last: iLast, bidHeavier, askHeavier, defined: iTime } : null,
     approx: apx, settled: sel.t1 <= openStart,
   };
 }
 
-const money = (x: number): string => `$${usd(x)}`;
+/** A figure of the tracker as drawn: dollars, or with `coin` (a snapshot drawn in coins) the coin's ("13.2 BTC"). */
+const money = (x: number, coin: string | null = null): string => coin !== null ? `${coinText(x)} ${coin}` : `$${usd(x)}`;
 /** A signed figure: a sign only where the written figure is not zero. */
-const signedMoney = (x: number): string => { const v = usd(Math.abs(x)); return `${v === '0' ? '' : x > 0 ? '+' : '−'}$${v}`; };
+const signedMoney = (x: number, coin: string | null = null): string => {
+  const v = coin !== null ? coinText(Math.abs(x)) : usd(Math.abs(x)), sign = v === '0' ? '' : x > 0 ? '+' : '−';
+  return coin !== null ? `${sign}${v} ${coin}` : `${sign}$${v}`;
+};
 /** Decimals for a set of shares (0..1) written as percentages: one, or two where every one of them is under a tenth of a percent. */
 const digitsOf = (...xs: number[]): number => xs.every(x => Math.abs(x) * 100 < 0.1) ? 2 : 1;
 /** A share as a signed percentage; one written as zero has no sign. */
@@ -200,17 +220,22 @@ export class LtRangeSummary {
       // Several venues and no parts: which venues each window holds is unknown, so no figure can claim a set of venues that stays the same.
       lines.push(note('lt-unverified', t('This answer does not say which venues each window holds, so its windows cannot be compared: nothing is summed up.')));
     } else if (!s.bid || !s.ask) {
-      lines.push(note('lt-empty', s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
+      // In coins the closed windows holding every venue may all be ones no candle prices: that is the reason, not an empty selection, and it
+      // comes first, as some window does hold every venue then (the cover note below says what lacked a venue too).
+      lines.push(note('lt-empty', s.unpriced > 0 ? t('No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.')
+        : s.lacking > 0 ? t('No window of this selection holds every venue asked for ({venues} missing).', { venues: lackingNames(s, h).join(', ') }) : t('No closed window of the tracker lies in this selection.')));
     } else {
+      // In the units the pane drew in (the key holds them): in coins each window's own figures.
+      const coin = h.coins?.coin ?? null;
       const sideTile = (key: 'bid' | 'ask', x: Side): GridItem => ({
         key, label: key === 'bid' ? (h.average ? t('Time mean of bid size per level') : t('Time mean of weighted bids')) : (h.average ? t('Time mean of ask size per level') : t('Time mean of weighted asks')),
-        value: money(x.mean), tone: key === 'bid' ? 'buy' : 'sell',
+        value: money(x.mean, coin), tone: key === 'bid' ? 'buy' : 'sell',
         tip: t('Each included window is weighted by its overlap with the selection.'),
         // One window: its value is all there is (no first and last, no range).
         rows: s.windows < 2 ? [] : [
-          { label: t('First → last included window'), value: `${money(x.first)} → ${money(x.last)}` },
-          { label: t('Last − first'), value: signedMoney(x.last - x.first) },
-          { label: t('Lowest – highest window values'), value: `${money(x.low)} – ${money(x.high)}` },
+          { label: t('First → last included window'), value: `${money(x.first, coin)} → ${money(x.last, coin)}` },
+          { label: t('Last − first'), value: signedMoney(x.last - x.first, coin) },
+          { label: t('Lowest – highest window values'), value: `${money(x.low, coin)} – ${money(x.high, coin)}` },
         ],
       });
       lines.push({ key: 'lt-grid', kind: 'grid', cells: [], grid: [sideTile('bid', s.bid), sideTile('ask', s.ask)] });
@@ -234,6 +259,7 @@ export class LtRangeSummary {
       const parts = [
         ...(s.lacking > 0 ? [t('missing a venue: {time} ({venues})', { time: shortDuration(s.lacking), venues: lackingNames(s, h).join(', ') })] : []),
         ...(s.forming > 0 ? [t('open window excluded: {time}', { time: shortDuration(s.forming) })] : []),
+        ...(s.unpriced > 0 ? [t('no candle to price it in coins: {time}', { time: shortDuration(s.unpriced) })] : []),
         ...(s.none > 0 ? [t('no window held: {time}', { time: shortDuration(s.none) })] : []),
       ];
       const pair = durationPair(s.covered, s.span);

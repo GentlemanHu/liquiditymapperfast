@@ -1,3 +1,5 @@
+import { notifyKey } from './notify/settings.ts';
+
 /**
  * A backup: everything this page keeps in this browser's storage, in one file a person can keep or carry to another browser or computer:
  * the settings, the saved layouts, the scripts, the drawings, their own themes, the coin and the venues (every key `ownKey` lets through:
@@ -17,12 +19,13 @@
  */
 export const plusKey = (key: string): boolean => key === 'lmf.plus' || key.startsWith('lmf.plus.');
 /**
- * One of the page's own keys (`hlm-…`, `lmf.…`), never the cached coin list, a Plus key, the stale-build marks or the mark the old
- * address's hand-over left in the browsers that took one (`hlm-handover-v1`; the hand-over ended with that address on 2026-11-21).
+ * One of the page's own keys (`hlm-…`, `lmf.…`), never the cached coin list, a Plus key, Notify's (notify/settings.ts: a bot's token, a
+ * webhook's address and an ntfy topic, which let whoever holds a backup file send messages to that phone), the stale-build marks or the mark
+ * the old address's hand-over left in the browsers that took one (`hlm-handover-v1`; the hand-over ended with that address on 2026-11-21).
  */
 export function ownKey(key: string): boolean {
   if (!/^(?:hlm-[a-z0-9][a-z0-9:._-]{0,79}|lmf\.[a-z0-9][a-z0-9._-]{0,79})$/.test(key)) return false;
-  return key !== 'lmf.coins' && !plusKey(key) && key !== 'hlm-stale' && key !== 'hlm-stale-reload' && key !== 'hlm-handover-v1';
+  return key !== 'lmf.coins' && !plusKey(key) && !notifyKey(key) && key !== 'hlm-stale' && key !== 'hlm-stale-reload' && key !== 'hlm-handover-v1';
 }
 
 export const BACKUP_FORMAT = 'liquiditymapperfast-backup', BACKUP_VERSION = 1;
@@ -85,6 +88,8 @@ export function readBackup(text: string): BackupRead {
   for (const [key, value] of Object.entries(r.items)) {
     // A Plus key never travels; a backup made before 2026-11-20 may hold `lmf.plus.gen`, and is read without it rather than refused.
     if (plusKey(key) && typeof value === 'string') continue;
+    // Nor does Notify's (a file made by hand may hold it): read without it, and this browser's own stays as it is.
+    if (notifyKey(key) && typeof value === 'string') continue;
     if (!ownKey(key) || typeof value !== 'string') return { error: 'not-backup' };
     // This browser's own bookkeeping in a file from another one is left out, never written.
     if (!backedKey(key)) continue;

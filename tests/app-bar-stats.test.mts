@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const MIN = 60_000;
 const bar = (t: number, rows: [number, number, number][], stats?: Bar['stats']): Bar => ({ t, rows, buyUsd: rows.reduce((s, r) => s + r[1], 0), sellUsd: rows.reduce((s, r) => s + r[2], 0), ...(stats ? { stats } : {}) });
@@ -315,4 +316,55 @@ test('a click pins a candle alone, a Shift+click adds it to the pinned ones or t
   const before = [1, 2];
   pinsAfterClick(before, 3, true);
   assert.deepEqual(before, [1, 2], 'the pins given are not changed');
+});
+
+test('coins (issue 9): each size is its parts at their own prices, the candle\'s own natively; shares stay; titles and CSV heads say the coin', async () => {
+  const close = (a: number | null | undefined, b: number, what: string) => assert.ok(a !== null && a !== undefined && Math.abs(a - b) < 1e-12 * Math.max(1, Math.abs(b)), `${what}: ${a} vs ${b}`);
+  // Bar 0's rows at their middles (step 5): 102.5 and 107.5.
+  const buy0 = 30 / 102.5 + 5 / 107.5, sell0 = 10 / 102.5 + 20 / 107.5, vwap0 = 65 / (buy0 + sell0);
+  const taker = new Map<number, CandleRow>([[0, [0, 100, 112, 99, 105, 55, 1, 30, 7, 5800]]]);
+  const coins: StatInput = { ...input(), coins: true, taker };
+  const c = (id: string, i = 0, over: Partial<StatInput> = {}) => statDef(id)!.compute({ ...coins, ...over })[i];
+  close(c('vol'), buy0 + sell0, 'vol from the rows');
+  close(c('delta'), buy0 - sell0, 'delta');
+  close(c('buyVol'), buy0, 'buy vol'); close(c('sellVol'), sell0, 'sell vol');
+  close(statDef('cvd')!.compute(coins)[2], buy0 - sell0 + (40 / 112.5 + 10 / 117.5) - (40 / 112.5 + 2 / 117.5), 'cvd adds the coin deltas');
+  close(c('maxBuy'), 30 / 102.5, 'the largest buy row at its own price'); close(c('maxSell'), 20 / 107.5, 'the largest sell row at its own price');
+  assert.equal(c('vol', 1), 0, 'a bar with nothing traded is 0 coins, not unknown');
+  close(barPrice(coins, bars[0]!), vwap0, 'the bar\'s volume-weighted price');
+  close(c('avgTrade'), (100 + 5_000_000 + 60_000) / 3 / vwap0, 'avg order at the bar\'s price');
+  close(c('avgBuy'), (100 + 5_000_000) / 2 / vwap0, 'avg buy');
+  close(c('takerDelta'), 2 * 30 - 55, 'candle delta: taker buys less the rest, in the candle\'s own coins');
+  close(c('avgFill'), 55 / 7, 'avg fill: the candle\'s volume over its trades');
+  close(c('effort'), 55 / ((112 - 99) / 100 * 10_000), 'vol / bp: the candle\'s volume');
+  // oi chg with the option in USD: the dollars' table (the cells' look) reads the USD map in either units; the coin's figures its own change.
+  const usdOi = { options: { ...DEFAULT_STAT_OPTIONS, oiUnits: 'usd' as const }, oiUsd: new Map([[2 * MIN, -150_000]]) };
+  close(c('oiChange', 2, usdOi), -3, 'oi chg: the coin\'s change whatever the option');
+  assert.equal(statDef('oiChange')!.compute({ ...input(), ...usdOi })[2], -150_000, 'the dollars\' table: the USD map, not a close');
+  // delta %: in coins the share of the coin amounts beside it, so its sign is the coin delta's; in dollars as before.
+  close(statDef('deltaPct')!.compute(coins)[0], (buy0 - sell0) / (buy0 + sell0) * 100, 'delta % of the coins');
+  const skewed: Bar = bar(0, [[199_995, 200_000, 0], [99_995, 0, 150_000]]), pair: StatInput = { ...input(), bars: [skewed], step: 10 };
+  assert.ok(statDef('deltaPct')!.compute(pair)[0]! > 0 && statDef('delta')!.compute(pair)[0]! > 0, 'in dollars more was bought');
+  assert.ok(statDef('deltaPct')!.compute({ ...pair, coins: true })[0]! < 0 && statDef('delta')!.compute({ ...pair, coins: true })[0]! < 0, 'in coins more was sold: both say so');
+  assert.ok((statDef('deltaPct')!.view!({ ...pair, coins: true }, [0], []) ?? { value: '' }).value.startsWith('-'), 'the View column too');
+  assert.deepEqual(statDef('trades')!.compute(coins), statDef('trades')!.compute(input()), 'counts stay');
+  assert.deepEqual(statDef('poc')!.compute(coins), statDef('poc')!.compute(input()), 'prices stay');
+  // Liquidations: each one's dollars over its reported price, worked out only when asked for in coins.
+  const liq = (t: number, side: 'short' | 'long', usd: number, reported: number) => ({ t, id: 'a', side, price: reported, usd, reported, kind: 'single' }) as unknown as Liquidation;
+  const days = new Map([[0, { rows: [liq(5, 'short', 1000, 100), liq(9, 'short', 1100, 110), liq(20, 'long', 500, 50)], cut: false, to: DAY_MS }]]);
+  const l = liquidationBuckets(days, ['a'], [0, MIN, 2 * MIN], MIN, 0, DAY_MS, true);
+  assert.deepEqual([l.buy.get(0), l.buyCoin?.get(0), l.sell.get(0), l.sellCoin?.get(0)], [2100, 20, 500, 10]);
+  assert.equal('buyCoin' in liquidationBuckets(days, ['a'], [0, MIN, 2 * MIN], MIN, 0, DAY_MS), false, 'in dollars no coin is worked out');
+  close(c('liq', 0, { liquidations: l }), 30, 'liq in coins'); close(c('liqNet', 0, { liquidations: l }), 10, 'liq Δ in coins');
+  assert.equal(statDef('liq')!.compute({ ...input(), liquidations: l })[0], 2600, 'and in dollars as before');
+  // What is written: the coin's figures, titles and CSV heads in coins; as before in dollars.
+  const vol = statDef('vol')!;
+  assert.equal(statTitle(vol), 'Executed volume of the bar (USD, buy + sell)'); assert.equal(csvHead(vol), 'vol'); assert.equal(vol.format(0.25), '0');
+  setUnits('coin');
+  try {
+    assert.equal(statTitle(vol), 'Executed volume of the bar (BTC, buy + sell)');
+    assert.equal(csvHead(vol), 'vol_BTC'); assert.equal(csvHead(statDef('deltaPct')!), 'deltaPct', 'a share names no unit');
+    assert.equal(vol.format(0.25), '0.25'); assert.equal(statDef('delta')!.format(-0.0125), '-0.0125');
+    assert.equal(statTitle(statDef('trades')!), statDef('trades')!.title, 'a count says no unit');
+  } finally { setUnits('usd'); }
 });

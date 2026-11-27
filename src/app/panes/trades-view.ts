@@ -15,7 +15,8 @@ import { STRIDE, BOUNDARY, type TapeRing } from '../tape/ring.ts';
 import { SecondTally, tallySeconds, FILL_STEP } from '../trades/tally.ts';
 import { OrderScan, coincidences, copyBlock, emptyBlock, fullScale, olderFor, type Block, type FlowLike, type OlderPrints, type PrintLike, type RecordedPrints } from '../trades/blocks.ts';
 import { TRADES_LIQ_MINIMUMS, TRADES_MINIMUMS, TRADE_UNITS, UNIT_MAX_S, readUnit, type TapeMode, type TradesSettings } from '../trades/settings.ts';
-import { liqBlockFullScale, liqSideMatches, lowerBoundLiq } from '../trades/liquidations.ts';
+import { liqBlockFullScale, liqCoins, liqSideMatches, lowerBoundLiq } from '../trades/liquidations.ts';
+import { inCoins, units } from '../units.ts';
 import { SEAM_SLACK_MS, TNS_FLOOR_USD, TnsBook } from '../tns/model.ts';
 import { recordedDue, recordedSeam } from '../trades/asks.ts';
 import { BlockList, LIST_W, wideEnough } from './trades-blocks.ts';
@@ -62,6 +63,9 @@ export function unitLabel(unit: number): string {
  * (the bar scale, a hold, since when), the per-second tally the blocks read, the sources before the tape (the page's per-second flow, the
  * recording's large orders: nothing is fetched that the page would not read anyway) and the inspector (beside a list wide enough, else a
  * bottom sheet on a phone).
+ *
+ * Units (units.ts, issue 9): in coins the lists, the blocks and the inspector write coins (`BlockReader.coinsOn`, each part at its own price:
+ * trades/blocks.ts); the menus' sizes, the bar scale in the status and the notes on where a size's history starts stay dollars (settings).
  */
 export class TradesView {
   readonly root = el('div', { class: 'trades', hidden: true });
@@ -187,6 +191,8 @@ export class TradesView {
     this.blocks.reader.flowOf = id => this.flowOf(id);
     this.blocks.reader.knownFrom = id => Math.max(this.#sinceOf.get(id) ?? Infinity, this.flowHeldFrom(id));
     this.blocks.reader.flowVersion = () => this.flowLoads();
+    // The blocks carry their coins while the page writes sizes in coins (units.ts): read again when that changes (`dataKey`).
+    this.blocks.reader.coinsOn = inCoins;
     new ResizeObserver(() => this.#layout()).observe(this.root);
     this.#syncMenus();
   }
@@ -321,7 +327,7 @@ export class TradesView {
     body.append(
       selectRow(t('Show'), t('Market orders only, forced liquidations only, or both together (liquidations are never double-counted into trade block totals).'),
         [['trades', t('Trades')], ['both', t('Trades + Liq')], ['liquidations', t('Liquidations')]], s.mode, v => { this.#set({ mode: v === 'both' || v === 'liquidations' ? v : 'trades' }); this.#rebuildPanel(); }),
-      selectRow(t('Group by'), t('One row per order, or a block of time per row: its dollars bought and sold, the markets they came from and its largest orders. A block of time can be read live; each order can only be read held.'),
+      selectRow(t('Group by'), inCoins() ? t('One row per order, or a block of time per row: what it bought and sold, the markets it came from and its largest orders. A block of time can be read live; each order can only be read held.') : t('One row per order, or a block of time per row: its dollars bought and sold, the markets they came from and its largest orders. A block of time can be read live; each order can only be read held.'),
         [...TRADE_UNITS.map(u => [String(u), unitLabel(u)] as [string, string]), ...(TRADE_UNITS.includes(s.unit) ? [] : [[String(s.unit), unitLabel(s.unit)] as [string, string]])], String(s.unit), v => this.#set({ unit: readUnit(Number(v), s.unit) })),
       numberRow(t('Custom length (seconds)'), t('A block of this many seconds, from 1 to 900 (15 minutes).'), { min: 1, step: 1, max: UNIT_MAX_S, value: s.unit || 1 },
         v => { const unit = readUnit(Math.round(v), s.unit); if (unit > 0) this.#set({ unit }); }),
@@ -630,14 +636,14 @@ export class TradesView {
     if (read.unknown) { if (keyed) this.#inspected = ''; return null; }
     const unit = read.B, t0 = read.s * 1000, t1 = (read.s + unit) * 1000;
     if (keyed) {
-      const key = `${state}|${read.s}|${unit}|${reader.mode}|${reader.liqMinUsd}|${reader.liqVersion}|${this.#tally.resets}|${this.#revs(read.s, unit)}|${reader.version}|${this.flowLoads()}|${reader.minUsd}|${reader.side}|${isPhone()}|${document.documentElement.lang}|${read.partial}`;
+      const key = `${state}|${read.s}|${unit}|${reader.mode}|${reader.liqMinUsd}|${reader.liqVersion}|${this.#tally.resets}|${this.#revs(read.s, unit)}|${reader.version}|${this.flowLoads()}|${reader.minUsd}|${reader.side}|${isPhone()}|${document.documentElement.lang}|${read.partial}|${units()}`;
       if (key === this.#inspected) return null;
       this.#inspected = key;
     }
     const block = emptyBlock(reader.venues); copyBlock(read, block);
     const floor = reader.mode === 'liquidations' ? reader.liqMinUsd : reader.minUsd;
     const big = Math.max(scaledUsd(100_000), floor), scan = keyed ? this.#scan : this.#sheetScan;
-    scan.reset(isPhone() ? 4 : 9, floor, big);
+    scan.reset(isPhone() ? 4 : 9, floor, big, inCoins());
     return { block, state, unit, t0, t1, floor, big, scan, epoch: this.ring()?.epoch ?? -1, steps: this.#scanSteps(scan, t0, t1) };
   }
   /** The model once the pass is over. */
@@ -650,15 +656,16 @@ export class TradesView {
     const cut = Math.min(t1, this.#tally.coveredFrom()), unrecorded = !liqMode && floor === 0 ? reader.holes.filter(([a, b]) => a < cut && b > t0).map(([a, b]) => [Math.max(a, t0), Math.min(b, cut)] as [number, number]) : [];
     let blockLiqs: BlockLiquidations | null = null;
     if (reader.mode === 'both' && block.liqN > 0) {
-      const items = reader.liqItems, picked: BlockLiquidations['largest'] = [];
+      const items = reader.liqItems, picked: BlockLiquidations['largest'] = [], coins = inCoins();
       for (let i = lowerBoundLiq(items, t0); i < items.length; i++) {
         const l = items[i]!;
         if (l.t >= t1) break;
         if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
-        picked.push({ id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price });
+        picked.push(coins ? { id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price, coins: liqCoins(l) } : { id: l.id, side: l.side, usd: l.usd, t: l.t, price: l.price });
       }
       picked.sort((a, b) => b.usd - a.usd);
       blockLiqs = { buy: block.liqBuy, sell: block.liqSell, n: block.liqN, largest: picked.slice(0, isPhone() ? 4 : 6) };
+      if (coins) blockLiqs.coins = { buy: block.cLiqBuy, sell: block.cLiqSell };
     }
     return inspectorModel({
       block, state, time, marketCount: reader.markets.length, ref: reader.ref, minUsd: floor, recordedFloor: scaledUsd(TNS_FLOOR_USD),
@@ -676,11 +683,12 @@ export class TradesView {
   *#scanSteps(scan: OrderScan, t0: number, t1: number): Generator<void, void, void> {
     const reader = this.blocks.reader;
     if (reader.mode === 'liquidations') {
+      const coins = inCoins();
       for (let i = lowerBoundLiq(reader.liqItems, t0); i < reader.liqItems.length; i++) {
         const l = reader.liqItems[i]!;
         if (l.t >= t1) break;
         if (l.usd < reader.liqMinUsd || !liqSideMatches(l.side, reader.side) || !reader.liqShown(l.id)) continue;
-        scan.add(this.#group(l.id), l.id, l.t, l.side === 'short' ? l.usd : -l.usd, l.price, l.price, l.price);
+        scan.add(this.#group(l.id), l.id, l.t, l.side === 'short' ? l.usd : -l.usd, l.price, l.price, l.price, coins ? liqCoins(l) : undefined);
       }
       return;
     }

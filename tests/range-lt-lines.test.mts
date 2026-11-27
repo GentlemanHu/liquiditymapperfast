@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LtRangeSummary, ltHeldKey, ltStretch, type LtPaneHeld } from '../src/app/range/lt-lines.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const M = 60_000, T = Date.UTC(2026, 10, 13, 0), NOW = T + 600 * M;
 const SET = { halfLifeBp: 10, minUsd: 0, maxUsd: 0, average: false };
@@ -131,4 +132,55 @@ test('time with each side heavier shares one denominator with its label: equal s
   // Tiny imbalances get two decimals rather than 0.0 % -> 0.0 %.
   const tiny = new LtRangeSummary().lines(sel(0, 2), held({ bid: [100, 100.04], ask: [100, 100] }), true, KEY, NOW);
   assert.match(text(tiny, 'lt-imb-move') ?? '', /0\.00 % → \+0\.02 %/);
+});
+
+test('coins (issue 9): a snapshot drawn in coins is summed in its coins and said in the coin; its key holds the units, so the other units\' is stale', async () => {
+  const usd = held({ bid: [100, 200], ask: [50, 100] });
+  setUnits('coin');
+  try {
+    // Each window at its own price: 100 and 200 dollars at 100 and 200 a coin.
+    const coinKey = ltHeldKey(IDS, SET);
+    assert.notEqual(coinKey, KEY, 'the key says coins');
+    const h: LtPaneHeld = { ...usd, key: coinKey, coins: { bid: Float32Array.from([1, 1]), ask: Float32Array.from([0.5, 0.5]), coin: 'BTC' } };
+    const s = ltStretch(h, sel(0, 2), NOW);
+    assert.deepEqual([s.bid!.mean, s.ask!.mean, s.imbalance!.mean], [1, 0.5, 1 / 3]);
+    const summary = new LtRangeSummary(), lines = summary.lines(sel(0, 2), h, true, coinKey, NOW);
+    assert.equal(tile(lines, 'bid')!.value, '1 BTC');
+    assert.match(JSON.stringify(tile(lines, 'ask')), /0\.5 BTC → 0\.5 BTC/);
+    assert.equal(tile(summary.lines(sel(0, 2), usd, false, coinKey, NOW), 'bid')!.value, '1 BTC', 'the settled coin result is kept for this selection in coins');
+    assert.equal(text(new LtRangeSummary().lines(sel(0, 2), usd, false, coinKey, NOW), 'lt-stale')?.startsWith('The Liquidity Tracker last drew'), true, 'a hidden pane\'s dollars are not said as coins');
+    const gap: LtPaneHeld = { ...h, coins: { bid: Float32Array.from([NaN, 1]), ask: Float32Array.from([NaN, 0.5]), coin: 'BTC' } };
+    const g = ltStretch(gap, sel(0, 2), NOW);
+    assert.deepEqual([g.covered, g.unpriced, g.none], [M, M, 0], 'a window no candle prices is not measured, and said apart');
+    assert.match(text(new LtRangeSummary().lines(sel(0, 2), gap, true, coinKey, NOW), 'lt-cover') ?? '', /no candle to price it in coins: 1 min/);
+    assert.equal(ltStretch(usd, sel(0, 2), NOW).unpriced, 0, 'never in dollars');
+  } finally { setUnits('usd'); }
+  assert.equal(ltHeldKey(IDS, SET), KEY, 'and back in dollars the key is as it was');
+});
+
+test('coins (issue 9): the key holds the timeframe whose candles priced the windows; a selection none of whose closed windows a candle prices says so', () => {
+  assert.equal(ltHeldKey(IDS, SET, '1h'), KEY, 'in dollars no timeframe: the key is as it was');
+  assert.equal(ltHeldKey(IDS, SET, '1m'), KEY);
+  const usd = held({ bid: [100, 200], ask: [50, 100] });
+  setUnits('coin');
+  try {
+    const hourly = ltHeldKey(IDS, SET, '1h'), minutes = ltHeldKey(IDS, SET, '1m');
+    assert.notEqual(hourly, minutes, 'figures priced by other candles are not this snapshot\'s');
+    const h: LtPaneHeld = { ...usd, key: hourly, coins: { bid: Float32Array.from([1, 1]), ask: Float32Array.from([0.5, 0.5]), coin: 'BTC' } };
+    const summary = new LtRangeSummary();
+    assert.equal(tile(summary.lines(sel(0, 2), h, true, hourly, NOW), 'bid')!.value, '1 BTC', 'settled, so kept');
+    // Another timeframe's candles now: neither the snapshot the hourly ones priced nor the result kept from it.
+    const later = summary.lines(sel(0, 2), h, true, minutes, NOW);
+    assert.equal(tile(later, 'bid'), undefined, 'not the hourly figures under the minutes\' key');
+    assert.equal(text(later, 'lt-none'), 'Liquidity tracker is collecting…');
+    // Every closed window without a price: that is the reason given, not an empty selection.
+    const none: LtPaneHeld = { ...h, coins: { bid: Float32Array.from([NaN, NaN]), ask: Float32Array.from([NaN, NaN]), coin: 'BTC' } };
+    assert.equal(text(new LtRangeSummary().lines(sel(0, 2), none, true, hourly, NOW), 'lt-empty'), 'No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.');
+    // One window lacking a venue and the other, holding both, without a price: not "no window holds every venue".
+    const mixed: LtPaneHeld = { ...held({ bid: [100, 200], ask: [50, 100], missing: [[1, 0]] }), key: hourly, coins: { bid: Float32Array.from([1, NaN]), ask: Float32Array.from([0.5, NaN]), coin: 'BTC' } };
+    const both = new LtRangeSummary().lines(sel(0, 2), mixed, true, hourly, NOW);
+    assert.equal(text(both, 'lt-empty'), 'No window of this selection that holds every venue asked for has a chart candle to price it, so none has a coin figure.');
+    assert.match(text(both, 'lt-cover') ?? '', /missing a venue: 1 min \(bybit\) · no candle to price it in coins: 1 min/, 'each part said in the cover note');
+  } finally { setUnits('usd'); }
+  assert.equal(text(new LtRangeSummary().lines(sel(5, 7), usd, true, KEY, NOW), 'lt-empty'), 'No closed window of the tracker lies in this selection.', 'with no window in it, as before');
 });

@@ -12,7 +12,7 @@ import { FREE_DAYS } from './plus/config.ts';
  * button opens (Trades, Absorption, Highlights, Sounds) has it in its panel's tool strip; a settings window opened from a pane's header
  * shares that pane's. Windows that only do a job (About, Install, the venue menu, the venue and coin pickers) explain themselves and have none.
  */
-export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes';
+export type HelpId = 'profile' | 'traded' | 'absorption' | 'depth' | 'oi' | 'candles' | 'footprint' | 'lt' | 'mirror' | 'volume' | 'bubbles' | 'heatmap' | 'depthPane' | 'oiPane' | 'ltPane' | 'stats' | 'orderBook' | 'cvd' | 'trades' | 'book' | 'highlights' | 'sounds' | 'range' | 'liquidations' | 'liqLevels' | 'keyLevels' | 'vwap' | 'tpo' | 'delta' | 'deltaPane' | 'ls' | 'lsPane' | 'funding' | 'fundingPane' | 'replay' | 'candlePane' | 'script' | 'scriptPane' | 'sizes' | 'notify';
 
 export interface HelpTopic {
   title: string;
@@ -205,6 +205,11 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
     tip: t('Sounds for large market orders by size tier, a chime on unusual volume, and one rare event per pane if you choose it. Browsers play sound only after a click on the page.'),
     body: [],
   },
+  notify: {
+    title: t('Notify'), guide: 'notify',
+    tip: t('Alerts as a pop-up on this computer and as messages to your phone, through your own Telegram bot, an ntfy topic or a Discord webhook. This tab sends them while it is open: no server watches your alerts.'),
+    body: [],
+  },
   range: {
     title: t('Range'), guide: 'range',
     tip: t('Range: drag across the map or a pane under it to see what traded there: market buys and sells, the orders behind them, where they were filled, the absorption and the resting orders. Ctrl+drag (Cmd on a Mac) selects at any time.'),
@@ -231,7 +236,7 @@ export const HELP: Readonly<Record<HelpId, HelpTopic>> = {
   depthPane: {
     title: t('Depth pane'), guide: 'depth',
     tip: t('Total liquidity within nested distances of the price, over time: the narrowest band strongest at the centre, the widest lightest. Asks point up in the sell colour, bids point down in the buy colour.'),
-    body: [t('For every moment it adds up the bids and the asks within each band of the price (Bands: Balanced doubles from ±0.31 % to ±5 %; Near, Wide or your own) and draws them as rings, asks up and bids down: each band holds the ones inside it, and the widest band\'s edge is outlined. Scale Detail draws the square root of the money, so a thin inner band shows; Units counts the coin instead of dollars.'),
+    body: [t('For every moment it adds up the bids and the asks within each band of the price (Bands: Balanced doubles from ±0.31 % to ±5 %; Near, Wide or your own) and draws them as rings, asks up and bids down: each band holds the ones inside it, and the widest band\'s edge is outlined. Scale Detail draws the square root of the money, so a thin inner band shows; it counts dollars or the coin as the whole page does (the units button beside the clock).'),
       t('Lens (the magnifying glass at the plot\'s top left, on by default; it glows while on) draws the bands near the price larger than the far ones. Log curve, the default, draws the heights on a logarithmic curve of the money, so small amounts show and the scale stays the money; Per % of price draws each band\'s ring by its money per 1 % of price; Even room makes each ring as tall at its busiest in view. With those two the outer edge is no longer the total, so the scale keeps its zero and the crosshair reads the moment under it. The slider sets how strongly it magnifies; the table and the header always say the money.'),
       t('Venues chooses whose order books the pane adds up: every venue switched on inside the Spot / Perp filter (the default), the chart market\'s own book, or Chosen markets, ticked in its panel (Choose…) whatever the venue chips and the filter say. The Depth pane and the Liquidity Tracker share the choice, and their sounds count the same books.'),
       t('The table reads every band at the pointer\'s time, else the newest: beside the chart where there is room, else over its left end while you point at the pane. Click a row to bring that band forward: it is drawn with the bands inside it at its own scale, and the header and Highlights read it.'),

@@ -3,13 +3,19 @@ import type { InfoLine } from '../infobox.ts';
 import { venueLabel } from '../venues.ts';
 import { t } from '../i18n.ts';
 import { scaledUsd } from '../coin.ts';
+import { amount, signedAmount } from '../units.ts';
 import type { Kind } from '../scope.ts';
-import type { CvdModel, FamilyRow, LaneLine } from './model.ts';
+import { laneFigures, type CvdModel, type FamilyRow, type LaneLine } from './model.ts';
 import { laneNet } from './hero.ts';
 
-/** A signed dollar figure for a label: +$12.3M, −$4.1M, $0. */
+/**
+ * A signed dollar figure for a label: +$12.3M, −$4.1M, $0 (always dollars: other panes write dollar figures with it). The column's own
+ * labels write the page's units (units.ts): a lane's line and, on a model built in coins, its figures' coins (`laneFigures`).
+ */
 export const signedUsd = (value: number): string => !Number.isFinite(value) ? '–' : value === 0 ? '$0' : `${value < 0 ? '−' : '+'}$${usd(Math.abs(value))}`;
 export const plainUsd = (value: number): string => Number.isFinite(value) ? `$${usd(value)}` : '–';
+/** A size in the page's units with its unit, '–' for none: `plainUsd` in dollars, "13.2 BTC" in coins (units.ts `amount`). */
+export const plainAmount = (value: number): string => Number.isFinite(value) ? amount(value) : '–';
 
 /** One line of a row's label: its text, which colour it takes, and a coloured dot ahead of it (the lane's line colour). */
 /** `mark`: the exchange whose mark goes before the text (the row's name line). */
@@ -35,8 +41,8 @@ const letter = (kind: Kind): string => kind === 'spot' ? t('S') : t('P');
 export function rowLabel(row: FamilyRow, window: string, height: number, showQuiet: boolean): LabelLine[] {
   const lines = Math.max(2, Math.floor((height - 6) / 12));
   const head: LabelLine = { text: `#${row.rank} ${venueLabel(row.key).toUpperCase()}${showQuiet && row.quiet ? ' !5m' : ''}`, tone: 'text', bold: true, mark: row.key };
-  const lanes = row.lanes.map(l => ({ text: `${letter(l.kind)} ${signedUsd(l.delta)}`, tone: leanTone(l.delta), dot: l.kind }));
-  const share: LabelLine = { text: `${Math.round(row.share * 100)}% · ${plainUsd(row.gross)}`, tone: 'muted' };
+  const lanes = row.lanes.map(l => { const delta = laneFigures(l).delta; return { text: `${letter(l.kind)} ${signedAmount(delta)}`, tone: leanTone(delta), dot: l.kind }; });
+  const share: LabelLine = { text: `${Math.round(row.share * 100)}% · ${plainAmount(row.coins?.gross ?? row.gross)}`, tone: 'muted' };
   if (lines >= 2 + lanes.length) return [head, ...lanes, share];
   if (lines >= 3 && lanes.length === 2) return [head, { text: lanes.map(l => l.text).join('  '), tone: 'text' }, share];
   if (lines >= 3) return [head, ...lanes, share].slice(0, lines);
@@ -50,8 +56,8 @@ export function rowLabel(row: FamilyRow, window: string, height: number, showQui
 export function aggregateLabel(model: CvdModel, height: number, filter?: { kind: Kind; hidden: number }): LabelLine[] {
   const name = windowName(model.rankSec);
   const head: LabelLine = { text: !filter ? t('ALL VENUES') : filter.kind === 'spot' ? t('ALL SPOT VENUES') : t('ALL PERP VENUES'), tone: 'text', bold: true };
-  const lanes: LabelLine[] = ([['spot', model.spot], ['perp', model.perp]] as const).flatMap(([kind, line]) => line ? [{ text: `${letter(kind)} ${signedUsd(line.delta)}`, tone: leanTone(line.delta), dot: kind }] : []);
-  const total = (model.spot?.delta ?? 0) + (model.perp?.delta ?? 0), foot: LabelLine = { text: `Δ${name} ${signedUsd(total)}`, tone: leanTone(total) };
+  const lanes: LabelLine[] = ([['spot', model.spot], ['perp', model.perp]] as const).flatMap(([kind, line]) => line ? [{ text: `${letter(kind)} ${signedAmount(laneFigures(line).delta)}`, tone: leanTone(laneFigures(line).delta), dot: kind }] : []);
+  const total = (model.spot ? laneFigures(model.spot).delta : 0) + (model.perp ? laneFigures(model.perp).delta : 0), foot: LabelLine = { text: `Δ${name} ${signedAmount(total)}`, tone: leanTone(total) };
   const hidden: LabelLine[] = filter && filter.hidden > 0 ? [{ text: t('{n} filtered out', { n: filter.hidden }), tone: 'muted' }] : [];
   return height >= 80 ? [head, ...lanes, foot, ...hidden].slice(0, Math.max(3, Math.floor((height - 6) / 12))) : [head, ...lanes].slice(0, Math.max(2, Math.floor((height - 6) / 12)));
 }
@@ -64,9 +70,9 @@ export function aggregateLabel(model: CvdModel, height: number, filter?: { kind:
 export function heroLabel(model: CvdModel, span: string, rebase: boolean, price: number, filter?: { kind: Kind; hidden: number }): LabelLine[] {
   const head: LabelLine = { text: !filter ? t('ALL VENUES') : filter.kind === 'spot' ? t('ALL SPOT VENUES') : t('ALL PERP VENUES'), tone: 'text', bold: true };
   const nets = ([['spot', model.spot], ['perp', model.perp]] as const).map(([kind, line]) => [kind, laneNet(line, rebase)] as const);
-  const lanes: LabelLine[] = nets.flatMap(([kind, net]) => net === null ? [] : [{ text: `${letter(kind)} ${signedUsd(net)}`, tone: leanTone(net), dot: kind }]);
+  const lanes: LabelLine[] = nets.flatMap(([kind, net]) => net === null ? [] : [{ text: `${letter(kind)} ${signedAmount(net)}`, tone: leanTone(net), dot: kind }]);
   const total = nets.reduce((sum, [, net]) => sum + (net ?? 0), 0);
-  const foot: LabelLine[] = lanes.length ? [{ text: `Δ${span.toUpperCase()} ${signedUsd(total)}`, tone: leanTone(total) }] : [];
+  const foot: LabelLine[] = lanes.length ? [{ text: `Δ${span.toUpperCase()} ${signedAmount(total)}`, tone: leanTone(total) }] : [];
   const hidden: LabelLine[] = filter && filter.hidden > 0 ? [{ text: t('{n} filtered out', { n: filter.hidden }), tone: 'muted' }] : [];
   const line: LabelLine[] = Number.isFinite(price) ? [{ text: fmtPrice(price), tone: 'text', swatch: 'price' }] : [];
   return [head, ...lanes, ...foot, ...hidden, ...line];
@@ -82,11 +88,12 @@ export function rowHover(row: FamilyRow, column: number, timeMs: number, window:
   const out: InfoLine[] = [{ text: `${venueLabel(row.key)} · #${row.rank}`, bold: true }, { text: clock(timeMs, true), color: 'muted' }];
   for (const lane of row.lanes) {
     const v = lane.last[column];
-    out.push({ label: t('{kind} CVD here', { kind: lanePhrase(lane.kind) }), text: v !== undefined && Number.isFinite(v) ? signedUsd(v) : '–', color: leanColor(v), rule: out.length === 2 });
+    out.push({ label: t('{kind} CVD here', { kind: lanePhrase(lane.kind) }), text: v !== undefined && Number.isFinite(v) ? signedAmount(v) : '–', color: leanColor(v), rule: out.length === 2 });
   }
   for (const lane of row.lanes) {
-    out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(lane.kind), window }), text: signedUsd(lane.delta), color: leanColor(lane.delta), rule: lane === row.lanes[0] });
-    out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(lane.kind) }), text: `${plainUsd(lane.buy)} / ${plainUsd(lane.sell)}` });
+    const f = laneFigures(lane);
+    out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(lane.kind), window }), text: signedAmount(f.delta), color: leanColor(f.delta), rule: lane === row.lanes[0] });
+    out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(lane.kind) }), text: `${plainAmount(f.buy)} / ${plainAmount(f.sell)}` });
   }
   out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
   if (row.quiet) out.push({ text: t('No trades in the last five completed minutes.'), color: 'muted', wrap: true });
@@ -103,13 +110,15 @@ export function aggregateHover(model: CvdModel, column: number, timeMs: number, 
   for (const [kind, line] of lines) {
     if (!line) continue;
     const v = line.last[column];
-    out.push({ label: t('{kind} CVD here', { kind: lanePhrase(kind) }), text: v !== undefined && Number.isFinite(v) ? signedUsd(v) : '–', color: leanColor(v), rule: out.length === 2 });
+    out.push({ label: t('{kind} CVD here', { kind: lanePhrase(kind) }), text: v !== undefined && Number.isFinite(v) ? signedAmount(v) : '–', color: leanColor(v), rule: out.length === 2 });
   }
   for (const [kind, line] of lines) {
     if (!line) continue;
-    out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(kind), window }), text: signedUsd(line.delta), color: leanColor(line.delta), rule: out.at(-1)?.label?.includes('here') === true });
-    out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(kind) }), text: `${plainUsd(line.buy)} / ${plainUsd(line.sell)}` });
+    const f = laneFigures(line);
+    out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(kind), window }), text: signedAmount(f.delta), color: leanColor(f.delta), rule: out.at(-1)?.label?.includes('here') === true });
+    out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(kind) }), text: `${plainAmount(f.buy)} / ${plainAmount(f.sell)}` });
   }
+  // Judged on the dollars in either units (the lanes' own figures).
   const note = divergence(model);
   if (note) out.push({ text: note, wrap: true, rule: true });
   if (model.hidden > 0) out.push({ text: t('{n} more venues have traded but are not shown.', { n: model.hidden }), color: 'muted', wrap: true });

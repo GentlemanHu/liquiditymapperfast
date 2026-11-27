@@ -11,8 +11,11 @@ import { BAR_FRESH_MS } from './alerts.ts';
 import { scaledUsd, sizeScale } from '../coin.ts';
 import { replaying } from '../replay/clock.ts';
 
-/** What was decided for one event: kept for the test harness and for the panel's "last sounds" line. */
-export interface SoundLogEntry { at: number; kind: 'trade' | 'liquidation' | 'candle' | 'test'; side?: 'buy' | 'sell'; liqSide?: 'long' | 'short'; tier?: string; usd?: number; venues?: number; n?: number; audible: boolean }
+/**
+ * What was decided for one event: kept for the test harness and for the panel's "last sounds" line. `coins`: the event's coins (each print's
+ * dollars over its own price, a liquidation's over its reported price), so the line can say it in coins when the page writes coins (units.ts).
+ */
+export interface SoundLogEntry { at: number; kind: 'trade' | 'liquidation' | 'candle' | 'test'; side?: 'buy' | 'sell'; liqSide?: 'long' | 'short'; tier?: string; usd?: number; venues?: number; n?: number; audible: boolean; coins?: number }
 
 /** Prints older than this when they reach us (a throttled background tab catching up) are history, not news: a burst of old sounds is worse than silence. */
 const MAX_AGE_MS = 2_500;
@@ -101,13 +104,13 @@ export class Sounds {
     const usd = event.usd / sizeScale(), hit = tierOf(usd, tiers);
     if (!hit || !hit.tier.on) return;
     const audible = this.engine.play(notesFor(event.side, hit.index, usd, hit.tier.usd, volume));
-    this.#record({ at: this.clock(), kind, side: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible });
+    this.#record({ at: this.clock(), kind, side: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible, coins: event.coins });
   }
   #playLiq(event: LiqSoundEvent, tiers = this.store.state.sounds.liquidations.tiers, volume = this.store.state.sounds.volume): void {
     const usd = event.usd / sizeScale(), hit = tierOf(usd, tiers);
     if (!hit || !hit.tier.on) return;
     const audible = this.engine.play(liqNotesFor(event.side, hit.index, usd, hit.tier.usd, volume));
-    this.#record({ at: this.clock(), kind: 'liquidation', side: event.side === 'short' ? 'buy' : 'sell', liqSide: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible });
+    this.#record({ at: this.clock(), kind: 'liquidation', side: event.side === 'short' ? 'buy' : 'sell', liqSide: event.side, tier: hit.tier.id, usd: event.usd, venues: event.venues, n: event.n, audible, coins: event.coins });
   }
   /** Close every open window now (the harness and the Test buttons do not want to wait a quarter of a second). */
   drainNow(): void { this.#drain(true); }

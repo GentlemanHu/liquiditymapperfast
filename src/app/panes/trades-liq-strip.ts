@@ -9,6 +9,7 @@ import { isPhone } from '../device.ts';
 import { instrumentShown } from '../cvd/ids.ts';
 import { buildLiqRows, liqBarFull, type LiqRow } from '../trades/liquidations.ts';
 import { amountText } from '../trades/style.ts';
+import { amount, coinText, inCoins, units } from '../units.ts';
 import { setText } from './lower-panes.ts';
 import type { LiquidationBook } from '../liquidations.ts';
 import type { Store } from '../store.ts';
@@ -89,8 +90,8 @@ export class LiqStrip {
     setText(this.#soundBtn, soundOn ? t('Sound on') : t('Sound off'));
     this.#soundBtn.dataset.tip = soundOn ? t('Mute liquidation sounds') : t('Enable liquidation sounds');
     const maxRows = isPhone() ? MAX_ROWS_PHONE : MAX_ROWS_DESKTOP;
-    const rows: LiqRow[] = book ? buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group).slice(0, maxRows) : [];
-    const key = `${rows.map(r => `${r.key}:${r.count}:${Math.round(r.usd)}`).join('|')}|${minUsd}|${document.documentElement.lang}`;
+    const rows: LiqRow[] = book ? buildLiqRows(book.items, { minUsd, side: tr.side, shown: instrumentShown(s) }, tr.group, undefined, inCoins()).slice(0, maxRows) : [];
+    const key = `${rows.map(r => `${r.key}:${r.count}:${Math.round(r.usd)}`).join('|')}|${minUsd}|${document.documentElement.lang}|${units()}`;
     if (key === this.#lastKey) return;
     const topKey = rows[0]?.key ?? '';
     const isFresh = this.#seenTop !== '' && topKey !== '' && topKey !== this.#seenTop;
@@ -104,7 +105,9 @@ export class LiqStrip {
     const nodes = rows.map((row, idx) => {
       const short = row.side === 'short';
       const pct = Math.max(2, Math.min(100, Math.round(100 * Math.sqrt(row.usd / Math.max(1, full)))));
-      const tip = `${short ? t('SHORTS LIQUIDATED') : t('LONGS LIQUIDATED')} ${amountText(row.usd)} · ${venueLabel(row.id)} · ${fmtPrice(row.price)}${row.kind === 'bankruptcy' && Math.abs(row.reported - row.price) > 1e-9 * row.price ? ` (${t('Bankruptcy price')}: ${fmtPrice(row.reported)})` : ''}`;
+      // The row's size in the page's units (units.ts: its coins, each liquidation over its reported price); the bar stays on the dollars.
+      const coins = inCoins(), size = coins ? amount(row.coins) : amountText(row.usd);
+      const tip = `${short ? t('SHORTS LIQUIDATED') : t('LONGS LIQUIDATED')} ${size} · ${venueLabel(row.id)} · ${fmtPrice(row.price)}${row.kind === 'bankruptcy' && Math.abs(row.reported - row.price) > 1e-9 * row.price ? ` (${t('Bankruptcy price')}: ${fmtPrice(row.reported)})` : ''}`;
       const elRow = el('div', { class: `tls-row ${short ? 'tls-buy' : 'tls-sell'}${isFresh && idx === 0 ? ' tls-fresh' : ''}`, tip });
       elRow.style.setProperty('--bar-pct', `${pct}%`);
       const countEl = row.count > 1 ? el('span', { class: 'tls-count', textContent: `×${row.count}` }) : null;
@@ -115,7 +118,7 @@ export class LiqStrip {
         el('span', { class: 'tls-price', textContent: fmtPrice(row.price) }),
         el('span', { class: 'tls-bar-wrap' }, el('span', { class: 'tls-bar' })),
         ...(countEl ? [countEl] : []),
-        el('span', { class: 'tls-usd', textContent: amountText(row.usd) }),
+        el('span', { class: 'tls-usd', textContent: coins ? coinText(row.coins) : amountText(row.usd) }),
       );
       elRow.addEventListener('pointerenter', e => {
         if (e.pointerType === 'touch' || replaying()) return;

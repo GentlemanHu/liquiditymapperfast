@@ -1,7 +1,9 @@
 import { t } from '../../i18n.ts';
-import { usd } from '../../format.ts';
 import { binOf, type FootprintRow, type ProfileAnswer } from '../../../shared/footprint.ts';
 import { LIQUIDATIONS_PER_ANSWER, type Liquidation } from '../../../shared/liquidations.ts';
+import { figure, inCoins } from '../../units.ts';
+import { saidMax, saidTotal } from '../../traded.ts';
+import { liquidationCoins } from '../../liquidations.ts';
 import { bucketFor, eventRows, type TimeEvent } from '../model.ts';
 import { Asked, worked, type MeasureDef, type TimeWorker } from '../measure.ts';
 
@@ -20,9 +22,10 @@ export const LIQUIDATIONS: MeasureDef<'liquidations'> = {
   header(rows, flags) {
     const head = t('LIQUIDATED');
     if (!rows) return { head, sub: '', warn: false };
-    const total = t('LIQUIDATED {value}', { value: usd(rows.total) });
+    // In the page's units (app/units.ts); ROW MAX is what the row with the longest bar holds.
+    const total = t('LIQUIDATED {value}', { value: figure(saidTotal(rows)) });
     if (flags.cut) return { head: total, sub: t('the largest 5,000'), warn: true };
-    return { head: total, sub: t('ROW MAX {value}', { value: usd(rows.max) }), warn: false };
+    return { head: total, sub: t('ROW MAX {value}', { value: figure(saidMax(rows)) }), warn: false };
   },
   priceNotes: () => [t('Liquidations as the venues report them: shorts liquidated, forced buys (bid colour), and longs liquidated, forced sells (ask colour). Only Binance, Bybit, OKX and Deribit report them, Binance at most one a market a second, so this is what was reported, not all there was.')],
   timeNote: () => t('Liquidations as the column adds them up, every size the record keeps: shorts liquidated (bid colour) and longs liquidated (ask colour). Where the time on the chart holds more than 5,000, only the largest are counted, and the header says so.'),
@@ -60,15 +63,16 @@ function liquidationWorker(): TimeWorker {
     work(q, last) {
       const source = q.hub.source;
       if (source.liquidations) held.ensure('', q.from, q.to, q.live, () => source.liquidations!(q.from, q.to), q.loaded);
-      const { step, limit } = bucketFor(q.span, q.pw);
-      const key = `l|${step}|${q.from}|${q.second}|${q.ids.join(',')}|${held.version}`;
+      const { step, limit } = bucketFor(q.span, q.pw), coins = inCoins();
+      const key = `l|${step}|${q.from}|${q.second}|${q.ids.join(',')}|${held.version}|${coins ? 'coins' : 'usd'}`;
       if (last?.key === key) return last;
       const rows = held.held ?? [], wanted = new Set(q.ids), events: TimeEvent[] = [];
-      // Shorts liquidated are forced buys (bid colour), longs liquidated forced sells (ask colour), as in the column.
-      for (const l of rows) if (wanted.has(l.id)) events.push({ t: l.t, side: l.side === 'short' ? 0 : 1, usd: l.usd });
+      // Shorts liquidated are forced buys (bid colour), longs liquidated forced sells (ask colour), as in the column; each in coins over the
+      // price it was reported at (app/units.ts).
+      for (const l of rows) if (wanted.has(l.id)) events.push({ t: l.t, side: l.side === 'short' ? 0 : 1, usd: l.usd, ...(coins ? { coins: liquidationCoins(l) } : {}) });
       const got = held.held !== null;
       // Read only as far as the answer held reaches: a window grown since waits for its own answer, not counted as quiet.
-      return worked(q, key, [], eventRows(events, q.from, q.to, step, got ? held.answered : null), limit,
+      return worked(q, key, [], eventRows(events, q.from, q.to, step, got ? held.answered : null, coins), limit,
         { flags: { cut: rows.length >= LIQUIDATIONS_PER_ANSWER, incomplete: false }, unavailable: !source.liquidations || (held.failed && !got) });
     },
   };

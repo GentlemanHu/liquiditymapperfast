@@ -1,10 +1,11 @@
-import { lineOf, orderPool, pooledSkew, sizeDelta, slotTime, type StatDef, type StatInput, type StatTone } from '../panes/bar-stats.ts';
+import { barDelta, lineOf, orderPool, pooledSkew, sizeDeltaIn, slotTime, statTitle, type StatDef, type StatInput, type StatTone } from '../panes/bar-stats.ts';
 import { volText, type Bar } from '../panes/footprint.ts';
 import { clock, price as fmtPrice } from '../format.ts';
 import { t, tn } from '../i18n.ts';
 import { durationText, signedCoins, spanText } from './oi-lines.ts';
 import type { RangeSelection } from './selection.ts';
 import type { GridItem, RangeLine } from './stats.ts';
+import { coinText, unitName } from '../units.ts';
 
 /**
  * What the Bar stats pane worked out last, handed to its Range summary (provider.ts): its table's input, the statistics chosen (in their order)
@@ -35,7 +36,7 @@ export interface BarsPaneHeld {
 const LEADING = ['vol', 'delta', 'deltaPct', 'trades', 'oiChange'];
 /** The statistics whose sizes are set by the retail and whale lines (≈ where a bar's line was taken at a box edge). */
 const LINE_STATS: Readonly<Record<string, 'retail' | 'whale'>> = { whaleShare: 'whale', deltaWhales: 'whale', cvdWhales: 'whale', deltaRetail: 'retail', cvdRetail: 'retail' };
-/** The statistics in dollars: their figures say so. */
+/** The statistics in dollars (in coins, the coin's: the pane's figures are worked out in the page's units, `StatInput.coins`): their figures say so. */
 const USD = new Set(['vol', 'delta', 'cvd', 'buyVol', 'sellVol', 'takerDelta', 'maxBuy', 'maxSell', 'avgTrade', 'avgBuy', 'avgSell', 'deltaRetail', 'deltaWhales', 'cvdRetail', 'cvdWhales', 'effort', 'liq', 'liqNet']);
 /** The exchange's own candles (Binance's taker figures), the chart's candles. */
 const TAKER = new Set(['takerDelta', 'fills', 'avgFill']);
@@ -45,20 +46,28 @@ const CANDLE_MARKET = new Set([...TAKER, ...CANDLE, 'divergence', 'pocPos']);
 /** The counts: their figures get digit groups. */
 const COUNTS = new Set(['trades', 'buys', 'sells', 'fills', 'imbalances', 'stacked']);
 const usdText = (v: number, signed: boolean): string => v === 0 ? '$0' : `${signed && v > 0 ? '+' : v < 0 ? '−' : ''}$${volText(Math.abs(v))}`;
+/** A size as this panel writes it: dollars as above, or with `coin` (the figures are the coin's) "+13.2 BTC", "0 BTC". */
+const sizeText = (v: number, signed: boolean, coin: string | null): string => coin === null ? usdText(v, signed)
+  : v === 0 ? `0 ${coin}` : `${signed && v > 0 ? '+' : v < 0 ? '−' : ''}${coinText(Math.abs(v))} ${coin}`;
 const signTone = (v: number): StatTone => v > 0 ? 'buy' : v < 0 ? 'sell' : 'text';
 /** The statistics with a sign (their table cells write a minus only). */
 const SIGNED = new Set(['delta', 'takerDelta', 'deltaRetail', 'deltaWhales', 'liqNet']);
-/** A written figure that is zero (its sign, dollar and percent aside): it takes no side's colour. */
-const isZero = (value: string): boolean => /^[+\-−]?\$?0(\.0+)?%?$/.test(value);
-/** A View figure as this panel writes it: a plus or minus sign on the signed ones, a dollar sign on the dollars, digit groups on the counts. */
-const written = (id: string, value: string): string => /^[+\-−]?0(\.0+)?$/.test(value) ? `${USD.has(id) ? '$' : ''}0` : COUNTS.has(id) && /^\d{4,}$/.test(value) ? Number(value).toLocaleString('en-US') : value.replace(/^([+\-−]?)/, (_m, sign: string) =>
+/** A written figure that is zero (its sign, dollar, percent and coin aside): it takes no side's colour. */
+const isZero = (value: string): boolean => /^[+\-−]?\$?0(\.0+)?(%| \S+)?$/.test(value);
+/**
+ * A View figure as this panel writes it: a plus or minus sign on the signed ones, a dollar sign on the dollars (with `coin`, where the figures
+ * are the coin's, the coin after a size: "+13.2 BTC", "0 BTC"), digit groups on the counts.
+ */
+const written = (id: string, value: string, coin: string | null = null): string => coin !== null && USD.has(id)
+  ? (/^[+\-−]?0(\.0+)?$/.test(value) ? `0 ${coin}` : `${value.replace(/^([+\-−]?)/, (_m, sign: string) => sign === '-' ? '−' : sign || (SIGNED.has(id) ? '+' : ''))} ${coin}`)
+  : /^[+\-−]?0(\.0+)?$/.test(value) ? `${USD.has(id) ? '$' : ''}0` : COUNTS.has(id) && /^\d{4,}$/.test(value) ? Number(value).toLocaleString('en-US') : value.replace(/^([+\-−]?)/, (_m, sign: string) =>
   (sign === '-' ? '−' : sign || (SIGNED.has(id) ? '+' : '')) + (USD.has(id) ? '$' : ''));
 /** The summary's own tip where the table's describes something else (a running level, how cells are drawn). */
 function tipOf(def: StatDef): string {
   switch (def.id) {
     case 'cvd': case 'cvdRetail': case 'cvdWhales': return t('The running sum\'s change over the selection: each candle\'s own increment added up, whatever ran before it.');
     case 'cover': return t('The minutes with trades recorded on any market counted, over all the minutes of the selection\'s candles; unknown where the footprint was not asked about them.');
-    default: return def.title;
+    default: return statTitle(def);
   }
 }
 
@@ -150,15 +159,17 @@ function figure(def: StatDef, values: readonly (number | null)[], at: readonly n
   const input = held.input, known = supportOf(def, input, at, values);
   const base = { id: def.id, label: labelOf(def), title: tipOf(def), known, approx: approxIn(def.id, at, held) };
   const bars = at.flatMap(i => { const bar = input.bars[i]; return bar ? [bar] : []; });
+  // The pane's figures are in coins where its input says so (the page's units when it drew): written with the coin, never a dollar sign.
+  const coin = input.coins ? held.coin || unitName() : null;
   switch (def.id) {
     case 'cvd': case 'cvdRetail': case 'cvdWhales': {
       // The change over the selection: each candle's increment added up (the running level holds candles before it, or starts each day).
       let sum = 0, k = 0;
       for (const bar of bars) {
-        const d = def.id === 'cvd' ? bar.buyUsd - bar.sellUsd : sizeDelta(bar, input, def.id === 'cvdRetail' ? 'retail' : 'whale');
+        const d = def.id === 'cvd' ? barDelta(input, bar) : sizeDeltaIn(bar, input, def.id === 'cvdRetail' ? 'retail' : 'whale');
         if (d !== null) { sum += d; k++; }
       }
-      return { ...base, known: k, value: k ? usdText(sum, true) : null, tone: signTone(sum), ...(def.id === 'cvd' ? { note: t('The running sum\'s change over the selection: the same as its delta.') } : {}) };
+      return { ...base, known: k, value: k ? sizeText(sum, true, coin) : null, tone: signTone(sum), ...(def.id === 'cvd' ? { note: t('The running sum\'s change over the selection: the same as its delta.') } : {}) };
     }
     case 'cover':
       // The recording over every candle of the selection, a candle without executions counted as none (unknown minutes: no percentage).
@@ -180,7 +191,8 @@ function figure(def: StatDef, values: readonly (number | null)[], at: readonly n
     case 'oiChange': {
       let sum = 0;
       for (const i of at) { const v = values[i]; if (v !== null && v !== undefined) sum += v; }
-      return { ...base, value: known ? (input.options.oiUnits === 'usd' ? usdText(sum, true) : signedCoins(sum, held.coin)) : null, tone: signTone(sum) };
+      // In coins always the coin's (the table's oi chg is, whatever its option).
+      return { ...base, value: known ? (input.options.oiUnits === 'usd' && !input.coins ? usdText(sum, true) : signedCoins(sum, held.coin)) : null, tone: signTone(sum) };
     }
     case 'sizeSkew': {
       // Which side's orders were larger, in words: colour alone does not say it.
@@ -191,14 +203,15 @@ function figure(def: StatDef, values: readonly (number | null)[], at: readonly n
     }
     case 'avgFill': {
       const cell = def.view?.(input, at, values) ?? null;
-      return { ...base, value: cell ? `${written(def.id, cell.value)}${held.quote ? ` ${held.quote}` : ''}` : null, tone: cell?.tone ?? 'text' };
+      // A fill's quote volume in dollars mode (USDT for a USDT market); in coins the candle's own volume, the coin's.
+      return { ...base, value: cell ? `${written(def.id, cell.value)}${coin !== null ? ` ${coin}` : held.quote ? ` ${held.quote}` : ''}` : null, tone: cell?.tone ?? 'text' };
     }
     default: {
       // A point of control needs volume traded: rows that hold none have no busiest one.
       // (Its place in the range: on the slots with both rows and a candle, as the View reducer takes them.)
       const traded = (i: number): boolean => { const bar = input.bars[i]; return !!bar && bar.buyUsd + bar.sellUsd > 0 && (def.id === 'poc' || input.candles.has(slotTime(input, i))); };
       if ((def.id === 'poc' || def.id === 'pocPos') && !at.some(traded)) return { ...base, value: null, tone: 'text' };
-      const cell = def.view?.(input, at, values) ?? null, value = cell ? written(def.id, cell.value) : null;
+      const cell = def.view?.(input, at, values) ?? null, value = cell ? written(def.id, cell.value, coin) : null;
       // A signed figure at zero takes no side (a share of a range at 0 % keeps its colour: it is the low end, not "neither").
       return { ...base, value, tone: value === null || ((SIGNED.has(def.id) || def.id === 'deltaPct') && isZero(value)) ? 'text' : cell?.tone ?? 'text' };
     }

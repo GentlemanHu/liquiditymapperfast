@@ -2,6 +2,7 @@ import type { InfoLine } from '../infobox.ts';
 import type { Bar } from '../panes/footprint.ts';
 import { t } from '../i18n.ts';
 import { usd } from '../format.ts';
+import { amount, inCoins, signedAmount, unitName } from '../units.ts';
 import { overFromBoxes } from '../sizes.ts';
 import { sizeScale } from '../coin.ts';
 import { venueLabel } from '../venues.ts';
@@ -41,11 +42,16 @@ export function stripOrdersOf(bar: Bar, cut: { size: number; index: number }, tf
 }
 
 const pct = (x: number): string => `${(x * 100).toFixed(1)} %`;
-const signedUsd = (x: number): string => `${x > 0 ? '+' : x < 0 ? '−' : ''}$${usd(Math.abs(x))}`;
-const per = (dollars: number, n: number): string => n > 0 ? `$${usd(dollars / n)}` : '—';
 
-/** What the box says of a candle's orders: read (the figures), being read, none counted, or not readable; nothing where they are not asked (`undefined`). */
-export function orderLines(orders: StripOrders | 'loading' | 'failed' | null | undefined, whaleUsd: number): InfoLine[] {
+/**
+ * What the box says of a candle's orders: read (the figures), being read, none counted, or not readable; nothing where they are not asked
+ * (`undefined`). In coins (app/units.ts) the orders' dollars, which keep no price of their own (the size boxes and lines), are put in coins
+ * over `price`, the candle's own volume-weighted price (the strip's bar: its dollars over its coins), and are not said without one; the
+ * whale size, a setting, and the shares, parts of the one candle, stay as they are.
+ */
+export function orderLines(orders: StripOrders | 'loading' | 'failed' | null | undefined, whaleUsd: number, price = Number.NaN): InfoLine[] {
+  const k = !inCoins() ? 1 : price > 0 ? 1 / price : Number.NaN;
+  const per = (dollars: number, n: number): string => n > 0 && Number.isFinite(k) ? amount(dollars * k / n) : '—';
   if (orders === undefined) return [];
   if (orders === 'loading') return [{ text: t('Reading the market orders of this candle…'), color: 'muted', wrap: true, rule: true }];
   if (orders === 'failed') return [{ text: t('The market orders of this candle could not be read.'), color: 'muted', wrap: true, rule: true }];
@@ -59,12 +65,13 @@ export function orderLines(orders: StripOrders | 'loading' | 'failed' | null | u
     { label: t('Average sell order'), text: per(o.sellUsd, o.sellN), color: 'sell' },
     { label: t('Average order'), text: per(orderUsd, n) },
   ];
-  if (orderUsd > 0) lines.push({ label: t('Whale orders from {size}', { size: `$${usd(whaleUsd)}` }), text: `${o.whale.exact ? '' : '≈ '}${pct(whale / orderUsd)} · Δ ${signedUsd(o.whale.buy - o.whale.sell)}`,
+  if (orderUsd > 0) lines.push({ label: t('Whale orders from {size}', { size: `$${usd(whaleUsd)}` }), text: `${o.whale.exact ? '' : '≈ '}${pct(whale / orderUsd)} · Δ ${signedAmount((o.whale.buy - o.whale.sell) * k)}`,
     // Their buying less selling, in the colour of its sign (Karl, 2026-11-22: a leaning figure is never left in the plain text colour).
     ...(o.whale.buy > o.whale.sell ? { color: 'buy' as const } : o.whale.buy < o.whale.sell ? { color: 'sell' as const } : {}) });
   if (o.venues.length) lines.push({ label: t('Largest venues'), text: o.venues.map(v => `${venueLabel(v.id)} ${pct(v.share)}`).join(' · ') });
   if (o.minutes !== null && o.minutes < o.of) lines.push({ text: t('Orders are counted for {n} of the {total} minutes.', { n: o.minutes, total: o.of }), color: 'muted', wrap: true });
-  lines.push({ text: t('Each order counts once, at the minute its first fill came, with its own dollars: they can differ a little from the bar\'s.'), color: 'muted', wrap: true });
+  lines.push({ text: inCoins() ? t('Each order counts once, at the minute its first fill came, with its own dollars in {coin} at the candle\'s average price: they can differ a little from the bar\'s.', { coin: unitName() })
+    : t('Each order counts once, at the minute its first fill came, with its own dollars: they can differ a little from the bar\'s.'), color: 'muted', wrap: true });
   return lines;
 }
 

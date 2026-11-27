@@ -134,11 +134,11 @@ export const meanwhile = (from: number, to: number): { from: number; to: number 
 
 /**
  * The USD of the market orders of venue `id` that reached [lo, hi) between `from` and `to` (ms) on the side that takes from the depth there (a
- * buyer takes the asks), whole orders: an order that walked through the row counts at its full size. Null when it is not known: the interval does not lie
+ * buyer takes the asks), or with `coins` the coins they bought or sold (each order's dollars over its own price; app/units.ts), whole orders: an order that walked through the row counts at its full size. Null when it is not known: the interval does not lie
  * inside one stretch of the tape without a gap (a short one counts), reaches back to an order the ring has overwritten (`lostThrough`), ends too lately for its orders to have all
  * arrived (`now` is the page's clock), or the venue has no orders on the tape around then.
  */
-export function tradedInRow(ring: Pick<TapeRing, 'data' | 'capacity' | 'segments' | 'runs' | 'ids' | 't0' | 'p0' | 'lostThrough'>, o: { id: string; ask: boolean; lo: number; hi: number; from: number; to: number; now: number }): number | null {
+export function tradedInRow(ring: Pick<TapeRing, 'data' | 'capacity' | 'segments' | 'runs' | 'ids' | 't0' | 'p0' | 'lostThrough'>, o: { id: string; ask: boolean; lo: number; hi: number; from: number; to: number; now: number; coins?: boolean }): number | null {
   if (!(o.to >= o.from) || o.to > o.now - SETTLE_MS || o.from <= ring.lostThrough + LOST_SLACK_MS) return null;
   const last = ring.segments[ring.segments.length - 1];
   if (!ring.segments.some(s => s.from <= o.from && (s === last ? s.to + COVER_SLACK_MS >= o.to : s.to >= o.to))) return null;
@@ -155,7 +155,7 @@ export function tradedInRow(ring: Pick<TapeRing, 'data' | 'capacity' | 'segments
     const u = d[at + 2]!;
     if (t < o.from || (u > 0) !== o.ask) continue;
     const lo = ring.p0 + d[at + 4]!, hi = ring.p0 + d[at + 5]!, low = lo < hi ? lo : hi, high = lo < hi ? hi : lo;
-    if (high >= o.lo && low < o.hi) usd += u < 0 ? -u : u;
+    if (high >= o.lo && low < o.hi) usd += (u < 0 ? -u : u) / (o.coins ? ring.p0 + d[at + 1]! : 1);
   }
   return active ? usd : null;
 }

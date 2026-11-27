@@ -32,8 +32,9 @@ export interface DepthSettings {
   custom: number[];
   /** Linear: heights in proportion to the money. Detail: the square root of it, so a thin inner band shows; the figures stay in money. */
   scale: 'linear' | 'detail';
-  /** USD, or the coin (each price bin's USD over its own price, never today's price over old totals). */
-  units: 'usd' | 'coin';
+  // The units are the page's (units.ts, issue 9): the pane's own Units choice is gone, and a save's or a layout's `units` is ignored (store.ts
+  // reads a save that chose the coin here as the page's coin). In coins each price bin's dollars are over its own price, never today's price
+  // over old totals.
   /** The table of the bands' figures at the right of the pane. */
   table: boolean;
   /** The lens (panes/depth-lens.ts): the bands near the price drawn larger than the far ones; the figures stay the money. */
@@ -45,7 +46,7 @@ export interface DepthSettings {
   focus: number | null;
 }
 
-export const DEPTH_DEFAULT: DepthSettings = { preset: 'balanced', custom: [0.0025, 0.005, 0.01, 0.02, 0.05], scale: 'linear', units: 'usd', table: true, lens: true, lensKind: 'log', lensStrength: 0.1, focus: null };
+export const DEPTH_DEFAULT: DepthSettings = { preset: 'balanced', custom: [0.0025, 0.005, 0.01, 0.02, 0.05], scale: 'linear', table: true, lens: true, lensKind: 'log', lensStrength: 0.1, focus: null };
 
 /** What the Depth pane adds up: the order book's resting orders, or the liquidation levels of Hyperliquid's BTC positions (liq-history.ts). */
 export type DepthSource = 'book' | 'liq';
@@ -77,7 +78,6 @@ export function readDepthSettings(raw: unknown, fallback: DepthSettings = DEPTH_
   return {
     preset, custom, focus,
     scale: o.scale === 'detail' ? 'detail' : 'linear',
-    units: o.units === 'coin' ? 'coin' : 'usd',
     table: typeof o.table === 'boolean' ? o.table : fallback.table,
     lens: typeof o.lens === 'boolean' ? o.lens : fallback.lens,
     lensKind: (LENS_KINDS as readonly unknown[]).includes(o.lensKind) ? o.lensKind as LensKind : fallback.lensKind,

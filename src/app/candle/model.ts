@@ -334,6 +334,8 @@ export const TAPE_BINS = 4096;
 
 /** The rows of one step and set of markets, kept up to date as orders come (`add`), and the list made from them (null once an order changed them). */
 interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | null; base: number; sums: Float64Array; list: [number, number, number][] | null }
+/** No rows. */
+const NO_ROWS: readonly [number, number, number][] = [];
 
 /**
  * The Tape (Karl, 2026-10-17): every market order the page has seen since it opened, never fetched and never reset, so the view opens at
@@ -343,6 +345,11 @@ interface TapeRows { key: string; ratio: number; markets: ReadonlySet<string> | 
  * in width when the prices outgrow it. The rows last asked for are kept and each new order is added to them, so a paint while orders
  * flow does not add every bin up again. A page that was hidden or in the background got no orders meanwhile: what it covers is from
  * `since`, less the gaps the caller reports (`TapeGaps`).
+ *
+ * Coins (units.ts, issue 9): the tape keeps none, so dollars mode does its old work and nothing more. In coin mode `coinRows` works the rows'
+ * coins out when they are read: each bin's dollars over the price in the bin's middle, added up into the rows as the dollars are. A bin is a
+ * tenth of the price grid's step (doubled as the prices spread), so this is to within half a bin of each order's own price, about a
+ * thousandth of a percent for BTC, well inside the three figures a row writes.
  */
 export class TapeTally {
   /** When the tape began (the page's clock, ms), and the price step it counts at (set by its first order). */
@@ -357,6 +364,8 @@ export class TapeTally {
   #binLo = Infinity; #binHi = -Infinity;
   #lo = Infinity; #hi = -Infinity; #count = 0; #first = 0;
   #cache: TapeRows | null = null;
+  /** The rows last read in coins (`coinRows`) and the dollars' list they were made for: made again only once that list is another. */
+  #coinRows: { list: readonly [number, number, number][]; rows: readonly [number, number, number][] } | null = null;
 
   constructor(since: number) { this.since = since; }
 
@@ -412,6 +421,32 @@ export class TapeTally {
       c.list = list;
     }
     return c.list;
+  }
+
+  /**
+   * The coins of the rows `rows(step, markets)` lists, one for one (coin mode only): [the row's low price, bought coins, sold coins], each
+   * bin's dollars over the price in its middle, added up into the rows as `#group` adds the dollars. Kept while the dollars' list is the same
+   * (no order came since): it is worked out over the bins, not kept up order by order, so dollars mode does none of it.
+   */
+  coinRows(step: number, markets: readonly string[] | null): readonly [number, number, number][] {
+    const list = this.rows(step, markets), c = this.#cache;
+    if (!list.length || !c) return NO_ROWS;
+    if (this.#coinRows?.list === list) return this.#coinRows.rows;
+    const f = this.#factor, width = this.fine * f, sums = new Float64Array(c.sums.length);
+    for (const [market, m] of this.#markets) {
+      if (c.markets && !c.markets.has(market)) continue;
+      for (let bin = this.#binLo; bin <= this.#binHi; bin++) {
+        const at = 2 * (bin - this.#base), buy = m[at]!, sell = m[at + 1]!;
+        if (buy === 0 && sell === 0) continue;
+        const row = 2 * (Math.floor(bin * f / c.ratio) - c.base), mid = (bin + 0.5) * width;
+        if (row < 0 || row >= sums.length) continue;
+        sums[row]! += buy / mid; sums[row + 1]! += sell / mid;
+      }
+    }
+    const rows: [number, number, number][] = [];
+    for (let i = 0; i < c.sums.length; i += 2) if (c.sums[i]! + c.sums[i + 1]! > 0) rows.push([(c.base + i / 2) * c.ratio * this.fine, sums[i]!, sums[i + 1]!]);
+    this.#coinRows = { list, rows };
+    return rows;
   }
 
   /** Add the bins up into rows of `ratio` fine steps, over every bin the arrays hold (so an order there is added to them as it comes). */

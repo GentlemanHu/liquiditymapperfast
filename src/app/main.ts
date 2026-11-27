@@ -12,7 +12,7 @@ import { withProfileAnchor } from './traded/settings.ts';
 import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, anchorAt } from './traded/anchor.ts';
 import type { DataSource } from './source.ts';
 import { loadKernels } from './kernels.ts';
-import { Store, autoTheme, initialState, slotsFor, themeChange } from './store.ts';
+import { Store, autoTheme, initialState, slotsFor, themeChange, type AppState } from './store.ts';
 import { applyTheme, paletteOf, resolveThemeId } from './theme.ts';
 import { CUSTOM_THEMES_KEY, loadCustomThemes, registerCustomThemes } from './custom-themes.ts';
 import { RESTORED_KEY, restoreResult } from './backup.ts';
@@ -25,6 +25,7 @@ import { el } from './dom.ts';
 import { HeatCanvas } from './heatmap/canvas.ts';
 import { FpsMeter } from './fps/meter.ts';
 import { anchorDate, clock, clockYear, setTimeZone, zoneName } from './format.ts';
+import { setUnits } from './units.ts';
 import { installTips } from './tip.ts';
 import { installClassicSelects, installTouchSelects } from './touch-select.ts';
 import { lazy, preload } from './lazy.ts';
@@ -58,6 +59,8 @@ import { foldPatch, matchShortcut, togglePatch } from './shortcuts.ts';
 import { ReplayBar } from './replay/bar.ts';
 import { pageNow, replaying } from './replay/clock.ts';
 import { DrawController } from './draw/controller.ts';
+import type { PriceLook } from './draw/alerts.ts';
+import { Notify } from './notify/notify.ts';
 import { DrawBar } from './draw/bar.ts';
 import { browserStore } from './draw/storage.ts';
 import { openedSheet } from './sheet.ts';
@@ -91,6 +94,20 @@ async function serverAnswers(): Promise<boolean> {
     return response.ok && (response.headers.get('content-type') ?? '').includes('json');
   } catch { return false; }
 }
+/**
+ * The price as the bells judge it (draw/alerts.ts): the chart market's, read now, with the candle under way where the chart's candles are that
+ * market's own (a borrowed series says nothing of it). The candle before it is named too, so a reloaded history is not taken for a wick.
+ */
+function priceLook(state: Pick<AppState, 'marketId' | 'seriesInstrument' | 'candles' | 'candlesTimeframe' | 'timeframe' | 'mark'>, at: number): PriceLook {
+  const market = state.marketId, candles = state.candles, n = candles.length;
+  const own = n >= 2 && (!state.seriesInstrument || state.seriesInstrument === market);
+  const last = own ? candles[n - 1]! : null, before = own ? candles[n - 2]! : null;
+  return {
+    market, price: state.mark.price, at,
+    candle: last && before ? { key: `${market}|${state.candlesTimeframe ?? state.timeframe}|${last[0]}`, high: last[2], low: last[3], before: `${before[0]}|${before[1]}|${before[2]}|${before[3]}|${before[4]}` } : null,
+  };
+}
+
 /** A host that only serves files (GitHub Pages, Cloudflare Pages): no server answers there, so it is not asked (a round trip of every start, ~0.2 s). */
 const fileHost = (): boolean => /(?:\.github\.io|\.pages\.dev|(?:^|\.)liquiditymapper\.com)$/.test(location.hostname);
 
@@ -119,6 +136,7 @@ async function main(): Promise<void> {
   const store = new Store(forCoin(initialState(), choice.coin, choice.from));
   useMarkets(() => store.state.markets);
   setTimeZone(store.state.timeZone);
+  setUnits(store.state.units);
   applyTheme(store.state.theme);
   // A theme never picked follows the device's light or dark setting as it changes (a phone at dusk; `autoTheme`).
   if (typeof matchMedia === 'function') matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
@@ -132,6 +150,8 @@ async function main(): Promise<void> {
   keepCoinRecordings();
   const source = await chooseSource(params, choice, store.state.phoneHistory);
   const hub = new Hub(store, source, { paced: true });
+  // The flow keeps its coins beside its dollars while the page writes sizes in coins (units.ts).
+  hub.flow.setCoins(store.state.units === 'coin');
   const wake = new ScreenWake(); wake.set(store.state.keepAwake);
   // The browser tab says the price: in its title, and its icon is the candle under way (GitHub issue #7).
   new TabTitle(store);
@@ -379,6 +399,9 @@ async function main(): Promise<void> {
   const mapFirst = Promise.race([hub.columnsArrived, new Promise<void>(resolve => setTimeout(resolve, 15_000))]);
   const alerts = new Alerts(store, hub.flow, sounds.engine, Date.now, (ids, from) => { void hub.ensureFlow(ids, from); }, (ids, from, to) => mapFirst.then(() => hub.source.columns(ids, from, to, 60_000)));
   toolbar.attachAlerts(alerts); alerts.start();
+  // Notify (notify/): the alerts as a pop-up on this computer and as messages to a phone, sent by this tab while it holds the coin's role.
+  const notify = new Notify(currentCoin().coin, () => store.state.mark.price);
+  alerts.out = notify;
   // A script's alerts sound through the same Sounds switch, cap and list as the panels'.
   script.onAlert = a => alerts.script(Date.now(), a.text, a.sound, a.key);
   alerts.onChange = () => cvd.invalidate(); cvd.events = alerts.bursts;
@@ -396,6 +419,9 @@ async function main(): Promise<void> {
     redraw: () => heat.invalidate(),
   }, browserStore());
   heat.draw = draw;
+  toolbar.attachNotify(notify, draw);
+  /** The chart market's book's newest time seen: the bells' heartbeat moves on only when it does (`draw.alive`). */
+  let bookStamp = 0;
   const drawBar = new DrawBar(draw, {
     settings: () => store.state.draw, setSettings: patch => store.set({ draw: { ...store.state.draw, ...patch } }),
     palette: () => paletteOf(store.state.theme), mark: () => store.state.mark.price, restingAt: price => heat.restingAt(price), replaying, redraw: () => heat.invalidate(),
@@ -642,6 +668,9 @@ async function main(): Promise<void> {
     if (changed.has('keepAwake')) wake.set(state.keepAwake);
     // Every time on the page is written from the one setting: say it changed, and have what shows times draw again.
     if (changed.has('timeZone')) { setTimeZone(state.timeZone); heat.invalidate(); lower(); cvd.invalidate(); showStatus(); }
+    // Every size on the page is written in the one setting's units (units.ts): say they changed, and have whatever writes sizes draw again
+    // (the map asks for its raster in the new units; the Range reads what it holds again).
+    if (changed.has('units')) { setUnits(state.units); hub.flow.setCoins(state.units === 'coin'); heat.invalidate(); ladder.invalidate(); lower(); cvd.invalidate(); cvd.trades.redraw(); candle.invalidate(); liq.invalidate(); range.refreshHeld(); toolbar.refreshOpenPanel(); }
     if (changed.has('theme')) { glass.setPalette(applyTheme(state.theme)); for (const p of themed) p.setPalette(state.theme); }
     if (changed.has('material')) { applyMaterial(); hub.setTape(tapeWanted()); }
     // The page's glass draws its next frame with the new strength; the Tape's reads it with each frame it draws.
@@ -698,7 +727,17 @@ async function main(): Promise<void> {
     if (changed.has('draw') || changed.has('theme') || changed.has('replay')) { heat.invalidate(); drawBar.sync(); }
     // A drawing half placed belongs to the chart it was begun on; a level with an alert is watched as the price moves.
     if (changed.has('timeframe') || changed.has('marketId') || changed.has('chartType') || changed.has('replay')) draw.contextChanged();
-    if (changed.has('mark')) draw.markMoved(state.mark.price);
+    // The bells' price: another market or a replay starts it afresh; data that comes while the price stays put keeps the last reading current
+    // (a quiet market); a replay hands the sending of the coin's alerts to another open tab of it.
+    if (changed.has('marketId') || changed.has('replay')) draw.forgetPrice();
+    if (changed.has('replay')) notify.sender.pause(replaying());
+    if (changed.has('mark')) draw.markMoved(priceLook(state, pageNow()));
+    else if (changed.has('levels')) {
+      // Alive only on the chart market's own book: other venues' books or a reloaded history say nothing of its feed, and a crossing in its
+      // outage must start afresh, not come late.
+      const book = state.levels?.books.find(b => b.id === state.marketId);
+      if (book && book.timestamp !== bookStamp) { bookStamp = book.timestamp; draw.alive(pageNow()); }
+    }
     if (changed.has('chartType')) heat.invalidate();
     // The candles' own colours: the map, the book's price row and the Tape view's mark are drawn in them (Sol: nothing else asked for a frame).
     if (changed.has('candleColors')) { heat.invalidate(); ladder.invalidate(); candle.invalidate(); }
@@ -748,7 +787,7 @@ async function main(): Promise<void> {
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();
     if (['show', 'candles', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'traded', 'timeZone', 'range', 'oi', 'oiInstrument', 'oiParts', 'oiFine'].some(k => changed.has(k as never))) delta.invalidate();
-    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'tpo', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
+    if (['markets', 'marketId', 'timeframe', 'layer', 'show', 'heat', 'theme', 'status', 'connected', 'disabledVenues', 'heatmapSource', 'levels', 'scope', 'sounds', 'soundState', 'lastSound', 'waveStrength', 'timeZone', 'units', 'absorption', 'highlight', 'range', 'rangeTool', 'liquidations', 'keyLevels', 'vwap', 'tpo', 'footprint', 'tabPrice', 'tabIcon', 'chartType', 'phoneHistory'].some(k => changed.has(k as never))) toolbar.sync(state, heat.window);
   });
 
   // Plus coming or going changes what the liquidation column can be (a split is Plus's, and widens it): the columns are laid out again.
@@ -778,7 +817,7 @@ async function main(): Promise<void> {
     const offer = (): void => { if (!toolbar.inviteToTour() && ++asked < 12) window.setTimeout(offer, 5_000); };
     window.setTimeout(offer, 2500);
   }
-  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update };
+  (window as unknown as { __hlm: unknown }).__hlm = { store, hub, heat, ladder, cvd, candle, sounds, alerts, glass, script, update, notify, draw };
 }
 
 main().catch(error => {

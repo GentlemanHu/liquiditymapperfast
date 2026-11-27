@@ -14,7 +14,7 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, csvHead, statTitle, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
@@ -43,12 +43,13 @@ import { DepthHistory, RANK_FINE_MS, cannotRank, rankAt, rankKind, rankValue, ty
 import { niceTicks } from '../cvd/hero.ts';
 import { button, checkRow, heading, note, numberRow, selectRow, sizeControl, sizeRow, sortableList, switchRow, togglePanel, type Panel } from '../ui.ts';
 import { COMMON_SIZES, SIZE_FLOOR_USD, SIZE_MAX_USD, sizeText } from '../sizes.ts';
-import { imbalanceAxis, ltPartAt, shownBy, type LtParts, type LtSeries } from '../lt.ts';
+import { imbalanceAxis, ltInCoins, ltPartAt, ltPrices, shownBy, type LtParts, type LtSeries } from '../lt.ts';
 import { LT_HALF_LIVES } from '../../shared/lt-sample.ts';
 import { GestureRecognizer, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
 import { panelSwitchRow, panelSwitchOn, panelSwitchTip, setPanelSwitch } from '../sound/panel.ts';
 import { t, tn } from '../i18n.ts';
 import { currentCoin, scaledUsd, unscaledUsd } from '../coin.ts';
+import { inCoins, unitFloor, unitName, units as pageUnits } from '../units.ts';
 import { fetchOiHistory, webGet } from '../../shared/history.ts';
 import { aggregateOi } from '../../shared/series.ts';
 import { BAR_CUT_H, BAR_CUT_PX, barScale, cutGap } from '../bar-scale.ts';
@@ -412,8 +413,11 @@ type LiqSeries = {
   /** The take profits' rows, which the table and the header read at a moment as they read `rows` (null: none drawn). */
   takeRows: LiqRow[] | null;
 };
-/** A difference as the Depth pane writes it, with its sign (a minus sign, not a hyphen). */
-const signedText = (value: number): string => `${value >= 0 ? '+' : '−'}${usd(Math.abs(value))}`;
+/**
+ * A difference as the Depth pane and the Liquidity Tracker's header write it, with its sign (a minus sign, not a hyphen): in the page's units
+ * (units.ts), dollars as the page writes them, coins as the tables do (`tableSigned`: three significant figures, a fraction never 0).
+ */
+const signedText = (value: number): string => inCoins() ? tableSigned(value) : `${value >= 0 ? '+' : '−'}${usd(Math.abs(value))}`;
 /** A readout figure's class where it is buying less selling: the buy colour above zero, the sell colour below, none at zero (never the plain text
  * colour for a figure that leans: in Terminal that is the buy colour whatever the sign; Karl, 2026-11-22). */
 const leanClass = (value: number): string => value > 0 ? ' class="bid"' : value < 0 ? ' class="ask"' : '';
@@ -518,7 +522,6 @@ export class DepthPane extends TimePane {
   readonly #preset = document.createElement('select');
   readonly #edit = document.createElement('button');
   readonly #scale = document.createElement('select');
-  readonly #units = document.createElement('select');
   readonly #tableBox = document.createElement('input');
   /** The lens (depth-lens.ts) on the plot's top left: its switch, its kind and its strength, the strength's figure beside it. */
   readonly #lensRoot = el('div', { class: 'depth-lens' });
@@ -580,10 +583,7 @@ export class DepthPane extends TimePane {
     this.#scale.append(new Option(t('Linear'), 'linear'), new Option(t('Detail'), 'detail'));
     this.#scale.onchange = () => this.#set({ scale: this.#scale.value === 'detail' ? 'detail' : 'linear' });
     scale.append(this.#scale);
-    const units = el('label', { class: 'ctl', tip: t('Dollars, or the coin: each price level\'s dollars over its own price.') }, t('Units'));
-    this.#units.append(new Option('USD', 'usd'), new Option(currentCoin().coin, 'coin'));
-    this.#units.onchange = () => this.#set({ units: this.#units.value === 'coin' ? 'coin' : 'usd' });
-    units.append(this.#units);
+    // Dollars or the coin is the page's choice (units.ts, issue 9: the top bar's USD / coin button), not the pane's.
     const table = el('label', { class: 'ctl', tip: `${t('Each band\'s bids, asks and their difference in a table on the pane, at the pointer\'s time or the newest. Click a row to bring that band forward.')} ${t('× in the table is how many times the larger side is the smaller, in its colour: 2.50× is two and a half times as much on that side; ∞, the other side has none.')}` });
     this.#tableBox.type = 'checkbox'; this.#tableBox.onchange = () => this.#set({ table: this.#tableBox.checked });
     table.append(this.#tableBox, t('Table'));
@@ -609,11 +609,11 @@ export class DepthPane extends TimePane {
     bell.append(this.#bell, t('Sound')); setTip(bell, panelSwitchTip('depthPane'));
     this.#bellLabel = bell;
     // The switches last, the table's at the right end (as on every pane).
-    this.head.append(source, this.#levelsButton, this.#venues.root, group, scale, units, bell, table);
+    this.head.append(source, this.#levelsButton, this.#venues.root, group, scale, bell, table);
     this.root.append(this.#lensRoot);
     this.syncSound(); this.#sync(); this.#placeLens();
     // On a phone the source stays in the row and the rest waits behind the key (pane-tune.ts); on a desktop the venues fold last.
-    addTune(this.head, [this.#venues.root, group, scale, units, bell, table], t('Depth'), { fold: true });
+    addTune(this.head, [this.#venues.root, group, scale, bell, table], t('Depth'), { fold: true });
     this.#lock.onclick = () => { togglePlus(this.#lock); };
     this.root.append(this.#lock);
     // A pass that comes or goes opens or closes the older days: the series is built again from what may now be read.
@@ -658,7 +658,7 @@ export class DepthPane extends TimePane {
     if (this.#bellLabel) this.#bellLabel.hidden = liq;
     this.#venues.root.hidden = liq; this.#venues.sync();
     this.#preset.value = s.preset; this.#edit.hidden = s.preset !== 'custom';
-    this.#scale.value = s.scale; this.#units.value = s.units; this.#tableBox.checked = s.table;
+    this.#scale.value = s.scale; this.#tableBox.checked = s.table;
     // The lens: lit while on; its kind and strength shown only then.
     this.#lensLive = null;
     const lensState = s.lens ? 'on' : 'off';
@@ -793,8 +793,7 @@ export class DepthPane extends TimePane {
     const state = this.store.state, liq = state.depthSource === 'liq', settings = this.#settings(), radii = bandsOf(settings);
     const readout = this.head.querySelector('.readout');
     const say = (text: string): void => { ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(text, 12, ph / 2); setHtml(readout, ''); };
-    const coin = currentCoin().coin, coinOption = this.#units.options[1];
-    if (coinOption && coinOption.text !== coin) coinOption.text = coin;
+    const coin = currentCoin().coin;
     let s: { t0: number; t1: number; w: number; radii: readonly number[]; answer: DepthAnswer } | null;
     let liqHeld: LiqSeries | null = null;
     if (liq) {
@@ -824,8 +823,9 @@ export class DepthPane extends TimePane {
       s = this.#series;
       if (!s) { say(t('Depth history is collecting…')); return; }
     }
-    // Until the answer for new bands arrives, the one there is is drawn with its own bands.
-    const k = s.answer.k, coins = settings.units === 'coin';
+    // Until the answer for new bands arrives, the one there is is drawn with its own bands. The page's units (units.ts): the answer carries its
+    // bands in coins beside its dollars (each price bin's dollars over its own price), and Highlights keep judging the dollars.
+    const k = s.answer.k, coins = inCoins();
     if (!(k > 0)) return;
     const bid = coins ? s.answer.bidCoin : s.answer.bid, ask = coins ? s.answer.askCoin : s.answer.ask;
     const top = settings.focus !== null && settings.focus < k ? settings.focus : k - 1, focused = top < k - 1 || settings.focus !== null;
@@ -1067,8 +1067,8 @@ export class DepthPane extends TimePane {
     if (!pointed && !settings.table) { /* neither the card nor the table's lines are wanted */ }
     else if (liq) {
       const tk = readTake ? { bid: liqFigure(readTake, 'long', top), ask: liqFigure(readTake, 'short', top) } : null;
-      if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: settings.units, coin, view: liqHeld!.view, takes: tk });
-      if (readRow && tk) brief = [liqTakesLine(tk, settings.units, coin)];
+      if (readRow) card = liqCardLines({ asOf: readRow.asOf, bands: rows, watched: top, units: pageUnits(), coin, view: liqHeld!.view, takes: tk });
+      if (readRow && tk) brief = [liqTakesLine(tk, pageUnits(), coin)];
     }
     // Where each band's reading stands in its own history (depth-history.ts): the order book's, once the table or a card wants it, at the moment
     // the table reads, in the units shown.
@@ -1079,15 +1079,15 @@ export class DepthPane extends TimePane {
     // every 16 minutes, for nothing.
     const counted = liq ? [] : bookIds(state), ruledOut = !liq && cannotRank(null, false, this.hub.source.depthSince?.(counted) ?? null, this.hub.sourceNow());
     const history = !liq && !ruledOut && (pointed || settings.table) ? this.#bandHistory.get(counted, s.radii) : null;
-    const inCoins = settings.units === 'coin', fine = live || (s.answer.stepMs ?? Infinity) <= RANK_FINE_MS;
-    const rankSide = (b: 'bid' | 'ask'): RankSide => inCoins ? (b === 'bid' ? 'bidCoin' : 'askCoin') : b;
+    const fine = live || (s.answer.stepMs ?? Infinity) <= RANK_FINE_MS;
+    const rankSide = (b: 'bid' | 'ask'): RankSide => coins ? (b === 'bid' ? 'bidCoin' : 'askCoin') : b;
     // The moment ranked: the books now, or the column read (only where its books agreed on a price); in a coarser view the pointer's own moment
     // (not its column's start, which the zoom moves), or the newest with no pointer.
     const fineMoment = live && liveNow ? liveNow.at : readX >= 0 && (s.answer.centred?.[readX] ?? 1) > 0 ? colT(readX) : NaN;
     const presentNow = live && liveNow ? liveNow.present : readX >= 0 ? s.answer.present?.[readX] ?? null : null;
     const rankMoment = fine ? fineMoment : pointed ? Math.min(hv!.t, newestT) : newestT;
     // Worked out again only when the reading or the history changes, not on every frame the pointer moves within a column.
-    const rankKey = history ? `${history.version}|${history.key}|${counted.join(',')}|${inCoins}|${fine}|${rankMoment}|${presentNow}|${rows.map(r => `${r.bid},${r.ask}`).join(';')}` : '';
+    const rankKey = history ? `${history.version}|${history.key}|${counted.join(',')}|${coins}|${fine}|${rankMoment}|${presentNow}|${rows.map(r => `${r.bid},${r.ask}`).join(';')}` : '';
     if (this.#ranks.key !== rankKey) this.#ranks = { key: rankKey, ranks: history && Number.isFinite(rankMoment) ? s.radii.map((_, j) => fine
       ? { bid: rankValue(history, rankSide('bid'), j, rankMoment, rows[j]!.bid, counted, null, presentNow), ask: rankValue(history, rankSide('ask'), j, rankMoment, rows[j]!.ask, counted, null, presentNow) }
       : { bid: rankAt(history, rankSide('bid'), j, rankMoment, counted), ask: rankAt(history, rankSide('ask'), j, rankMoment, counted) }) : [] };
@@ -1104,11 +1104,11 @@ export class DepthPane extends TimePane {
         const here = rows[said]!.bid + rows[said]!.ask;
         let rank = 1, of = 0;
         for (let x = 0; x < cutW; x++) { const total = bid[at(x, said)]! + ask[at(x, said)]!; if (total > 0) { of++; if (total > here) rank++; } }
-        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank, of });
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: pageUnits(), coin, rank, of });
       } else {
         // Where the band stands in its history takes the place of its rank among the columns in view (which changed with the zoom).
         const placeOf = { bid: ranks[said]?.bid ?? null, ask: ranks[said]?.ask ?? null, loading: !history, whole };
-        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: settings.units, coin, rank: null, of: 0, history: placeOf });
+        card = depthCardLines({ time: readTime, bands: rows, watched: said, units: pageUnits(), coin, rank: null, of: 0, history: placeOf });
         brief = depthRankBrief(s.radii[said]!, placeOf);
       }
     }
@@ -1188,12 +1188,13 @@ export const oiHeldKey = (state: Pick<AppState, 'marketId' | 'timeframe' | 'oiMa
 /**
  * What the Bar stats pane's Range summary is worked out for (range/bars-lines.ts): the chart and candle markets, the timeframe, the markets
  * the footprint counts, the OI pane's markets, the statistics chosen in their order and the options their arithmetic uses (not how the cells
- * look, nor where the running sums start: the summary adds up each candle's own increment).
+ * look, nor where the running sums start: the summary adds up each candle's own increment), and in coins the units (units.ts: the table's
+ * sizes are worked out in them, so a snapshot of the other units is not this one).
  */
 export const barStatsHeldKey = (state: Pick<AppState, 'marketId' | 'seriesInstrument' | 'timeframe' | 'barStats' | 'barStatOptions' | 'oiMarkets' | 'oiParts' | 'oiInstrument'>, markets: readonly string[]): string => {
   const o = state.barStatOptions;
   return [state.marketId, state.seriesInstrument, state.timeframe, markets.join(','), state.oiMarkets, state.oiParts.length > 1 ? state.oiParts.map(part => part.id).join(',') : state.oiInstrument,
-    enabledStats(state.barStats).map(def => def.id).join(','), o.imbRatio, o.imbMinUsd, o.stackedN, o.imbZeros, o.retailUsd, o.whaleUsd, o.oiUnits].join('|');
+    enabledStats(state.barStats).map(def => def.id).join(','), o.imbRatio, o.imbMinUsd, o.stackedN, o.imbZeros, o.retailUsd, o.whaleUsd, o.oiUnits].join('|') + (inCoins() ? '|coins' : '');
 };
 
 /** The chart market's coin ("BTC"), for amounts of it. */
@@ -1722,8 +1723,11 @@ export class LtPane extends TimePane {
   /** What the pane drew last, for its Range summary (range/lt-lines.ts): the same object while that does not change. */
   #held: LtPaneHeld | null = null;
   get rangeHeld(): LtPaneHeld | null { return this.#held; }
-  /** What a snapshot of the pane is for, now: the books counted (Venues), the half-life, the size filters and the mode. */
-  rangeKey(state: AppState): string { return ltHeldKey(bookIds(state), state.lt); }
+  /**
+   * What a snapshot of the pane is for, now: the books counted (Venues), the half-life, the size filters and the mode; in coins the timeframe of
+   * the candles that price it (the chart's, or the one before while its candles still stand: store.ts `candlesTimeframe`).
+   */
+  rangeKey(state: AppState): string { return ltHeldKey(bookIds(state), state.lt, state.candlesTimeframe ?? state.timeframe); }
   #publish(held: LtPaneHeld | null): void { if (held !== this.#held) { this.#held = held; this.rangeChanged(); } }
   #key = ''; #busy = false; #lastAt = 0;
   #sync: (() => void)[] = [];
@@ -1741,7 +1745,7 @@ export class LtPane extends TimePane {
     this.hub.onLtLane = () => this.invalidate();
     this.head.innerHTML = `<strong>${t('Liquidity Tracker')}</strong><span class="readout"></span>`;
     this.head.querySelector('strong')!.after(helpButton('ltPane'));
-    setTip(this.head.querySelector('strong')!, t("Weighted USD liquidity near the touch: each venue counted (Venues) measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders."));
+    this.#titleTip();
     const lt = () => this.store.state.lt;
     const patch = (change: Partial<AppState['lt']>) => this.store.set({ lt: { ...lt(), ...change } });
     // One group, so the header's rule that puts its last control at the right edge moves them all together (each went on its own, so only the last
@@ -1803,10 +1807,32 @@ export class LtPane extends TimePane {
   }
   /** Recompute on the next draw and reflect persisted settings in the controls. */
   refresh(): void { this.#key = ''; for (const sync of this.#sync) sync(); this.invalidate(); this.rangeStale(); }
+  /** The units the title's tip was written in (it names them). */
+  #tipUnits = '';
+  #titleTip(): void {
+    const now = pageUnits(); if (now === this.#tipUnits) return;
+    this.#tipUnits = now;
+    setTip(this.head.querySelector('strong')!, inCoins()
+      ? t("Weighted {unit} liquidity near the touch: each venue counted (Venues) measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders.", { unit: unitName() })
+      : t("Weighted USD liquidity near the touch: each venue counted (Venues) measured from its own best bid and best ask, then added up. A level weighs 1 at the touch and halves every half-life. The size filter applies to a venue's aggregated size at one price bin, not to individual orders."));
+  }
+  /**
+   * The series in coins (lt.ts `ltInCoins`, each window at the chart candles overlapping it, `tfMs` long: none, no coin figure), worked out once
+   * per series, candles and timeframe, and only in coins.
+   */
+  #coinSeries: { series: object; candles: unknown; tfMs: number; prices: Float64Array; value: ReturnType<typeof ltInCoins> } | null = null;
+  #inCoins(s: LtSeries & { stepMs: number }, candles: AppState['candles'], tfMs: number): { prices: Float64Array; value: ReturnType<typeof ltInCoins> } {
+    const held = this.#coinSeries;
+    if (held && held.series === s && held.candles === candles && held.tfMs === tfMs) return held;
+    const prices = ltPrices(s.times, s.stepMs, candles, tfMs);
+    this.#coinSeries = { series: s, candles, tfMs, prices, value: ltInCoins(s, prices) };
+    return this.#coinSeries;
+  }
 
   protected draw(): void {
     this.#lines = null;
     this.#table.clear();
+    this.#titleTip();
     this.#paint();
     const at = this.pointer;
     if (this.#lines && at) this.#card.show(this.#lines, at.x, at.y); else this.#card.hide();
@@ -1842,27 +1868,37 @@ export class LtPane extends TimePane {
     let n = s.times.length;
     // In a replay only the windows that had ended by its moment: one under way then is the mean of samples taken after it.
     if (replaying()) n = shownBy(s.times, s.stepMs, pageNow());
+    // In coins (units.ts) the figures and the lines are each window's dollars over its price (lt.ts `ltInCoins`); the filters stay dollars, and
+    // the imbalance is the same in either units.
+    // The candles are priced at their own timeframe (store.ts `candlesTimeframe`: right after a switch they can be the one before's).
+    const coins = inCoins(), pricedBy = state.candlesTimeframe ?? state.timeframe;
+    const inCoin = coins ? this.#inCoins(s, state.candles, TIMEFRAMES[pricedBy] ?? 3_600_000) : null, bidS = inCoin?.value.bid ?? s.bid, askS = inCoin?.value.ask ?? s.ask;
     {
-      // The snapshot of what is drawn: a new one only for a new answer, a replay's cut moving, or its minute.
+      // The snapshot of what is drawn: a new one only for a new answer, a replay's cut moving, or its minute; in coins also new prices (the
+      // candles), and either way other units (the key holds them).
       // No book to ask for (none yet, or the books counted away from the feed for a moment: book-markets.ts): nothing is asked and the old
       // series stays drawn, but it stands for no book now.
+      // A toggle either way changes the coin arrays held (none in dollars), so it republishes, under the key of the units now.
       const replayAt = replaying() ? Math.floor(pageNow() / MINUTE) * MINUTE : null, was = this.#held;
       if (!ids.length) this.#publish(null);
-      else if (!was || was.times !== s.times || was.shown !== n || was.replayAt !== replayAt) {
+      else if (!was || was.times !== s.times || was.shown !== n || was.replayAt !== replayAt || (was.coins?.bid ?? null) !== (inCoin?.value.bid ?? null)) {
         const a = s.asked;
-        this.#publish({ key: ltHeldKey(s.ids, a), ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
+        this.#publish({ key: ltHeldKey(s.ids, a, pricedBy), ids: s.ids, names: bookNames(s.ids, state.markets), halfLifeBp: a.halfLifeBp, minUsd: a.minUsd, maxUsd: a.maxUsd,
           minApplied: scaledUsd(a.minUsd), maxApplied: scaledUsd(a.maxUsd), average: a.average,
-          times: s.times, bid: s.bid, ask: s.ask, parts: s.parts ?? null, approx: s.approx ?? null, stepMs: s.stepMs, shown: n, replayAt, answeredAt: s.answeredAt });
+          times: s.times, bid: s.bid, ask: s.ask, parts: s.parts ?? null, approx: s.approx ?? null, stepMs: s.stepMs, shown: n, replayAt, answeredAt: s.answeredAt,
+          ...(inCoin ? { coins: { bid: inCoin.value.bid, ask: inCoin.value.ask, coin: unitName() } } : {}) });
       }
     }
     if (!n) { setText(readout, ''); return; }
-    const step = s.stepMs, xOf = (t: number) => v.xOf(t + step / 2, pw), gap = step * 2.5;
+    const step = s.stepMs, xOf = (t: number) => v.xOf(t + step / 2, pw);
     let max = 0;
-    for (let i = 0; i < n; i++) if (s.times[i]! + step >= v.t0 && s.times[i]! <= v.t1) max = Math.max(max, s.bid[i]!, s.ask[i]!);
+    // A window with no price to value it at in coins (NaN: no candle at all) is drawn as a gap, never read into the scale.
+    for (let i = 0; i < n; i++) if (s.times[i]! + step >= v.t0 && s.times[i]! <= v.t1 && bidS[i] === bidS[i] && askS[i] === askS[i]) max = Math.max(max, bidS[i]!, askS[i]!);
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     if (lt.view === 'lines') {
-      const hi = Math.max(max, 1) * 1.08, y = (value: number) => ph - 6 - value / hi * (ph - 12);
-      this.scaleAt = at => usd(Math.max(0, (ph - 6 - at) / (ph - 12) * hi));
+      // The dollar floor is a dollar's worth of the coin in coins (units.ts `unitFloor`, at the newest window's price): the same lines either way.
+      const hi = Math.max(max, unitFloor(inCoin?.prices[n - 1] ?? 0)) * 1.08, y = (value: number) => ph - 6 - value / hi * (ph - 12);
+      this.scaleAt = at => amountText(Math.max(0, (ph - 6 - at) / (ph - 12) * hi), coins);
       // On a phone the lines have round gridlines to read their height by and a tag at their ends with the newest figure, as the map's price has;
       // the desktop keeps its two numbers (Karl, 2026-10-26: the tracker is the pane that is looked at).
       const phone = isPhone(), ticks = phone ? niceTicks(0, hi, 3).values.filter(value => value > 0) : [];
@@ -1873,36 +1909,30 @@ export class LtPane extends TimePane {
       }
       if (state.highlight.on) { // the gap between the lines takes the colour of the side with more, stronger the larger the imbalance
         for (let i = 0; i < n; i++) {
-          const t = s.times[i]!, b = s.bid[i]!, a = s.ask[i]!, total = b + a; if (t + step < v.t0 - step || t > v.t1 + step || total <= 0) continue;
+          const t = s.times[i]!, b = bidS[i]!, a = askS[i]!, total = b + a; if (t + step < v.t0 - step || t > v.t1 + step || !(total > 0)) continue;
           const x0 = xOf(t - step / 2), x1 = xOf(t + step / 2), imbalance = Math.abs(b - a) / total, top = y(Math.max(a, b)), bottom = y(Math.min(a, b));
           ctx.globalAlpha = 0.06 + 0.4 * Math.min(1, imbalance / 0.4); ctx.fillStyle = b >= a ? p.bid : p.ask;
           ctx.fillRect(x0, top, Math.max(1, x1 - x0 - 0.3), Math.max(1, bottom - top));
         }
         ctx.globalAlpha = 1;
       }
-      for (const [data, color] of [[s.bid, p.bid], [s.ask, p.ask]] as const) {
+      for (const [data, color] of [[bidS, p.bid], [askS, p.ask]] as const) {
         ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
-        let prev = -Infinity;
-        for (let i = 0; i < n; i++) {
-          const t = s.times[i]!; if (t + step < v.t0 - step || t > v.t1 + step) continue;
-          const px = xOf(t), py = y(data[i]!);
-          if (t - prev > gap) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-          prev = t;
-        }
+        ltLinePath(ctx, s.times, data, n, step, v, xOf, y);
         ctx.stroke();
       }
       ctx.lineWidth = 1; ctx.fillStyle = p.muted;
-      if (!phone) { ctx.fillText(usd(hi), this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, ph - 8); }
+      if (!phone) { ctx.fillText(amountText(hi, coins), this.w - AXIS_W + 6, 10); ctx.fillText('0', this.w - AXIS_W + 6, ph - 8); }
       else {
         // The newest figure of each line, in a tag at its end (the ask above the bid, never one over the other), and the round numbers between the tags.
         const last = n - 1, tags: { y: number; text: string; color: string }[] = [];
-        if (last >= 0 && s.times[last]! + step >= v.t0 && s.times[last]! <= v.t1 + step) tags.push({ y: y(s.ask[last]!), text: usd(s.ask[last]!), color: p.ask }, { y: y(s.bid[last]!), text: usd(s.bid[last]!), color: p.bid });
+        if (last >= 0 && s.times[last]! + step >= v.t0 && s.times[last]! <= v.t1 + step && bidS[last] === bidS[last] && askS[last] === askS[last]) tags.push({ y: y(askS[last]!), text: amountText(askS[last]!, coins), color: p.ask }, { y: y(bidS[last]!), text: amountText(bidS[last]!, coins), color: p.bid });
         tags.sort((a, b) => a.y - b.y);
         for (let k = 1; k < tags.length; k++) if (tags[k]!.y - tags[k - 1]!.y < 15) tags[k]!.y = tags[k - 1]!.y + 15;
         // Two lines near zero push the lower tag below the plot: the pair is lifted back up from the floor.
         for (let k = tags.length - 1, floor = ph - 8; k >= 0; k--, floor = tags[k + 1]!.y - 15) if (tags[k]!.y > floor) tags[k]!.y = floor;
         ctx.textAlign = 'left';
-        for (const value of [0, ...ticks]) { const gy = y(value); if (!tags.some(tag => Math.abs(tag.y - gy) < 9)) ctx.fillText(value === 0 ? '0' : usd(value), this.w - AXIS_W + 6, value === 0 ? ph - 8 : gy); }
+        for (const value of [0, ...ticks]) { const gy = y(value); if (!tags.some(tag => Math.abs(tag.y - gy) < 9)) ctx.fillText(value === 0 ? '0' : amountText(value, coins), this.w - AXIS_W + 6, value === 0 ? ph - 8 : gy); }
         for (const tag of tags) {
           ctx.fillStyle = tag.color; ctx.fillRect(this.w - AXIS_W + 1, tag.y - 7, AXIS_W - 2, 14);
           ctx.fillStyle = textOn(tag.color, 1, p); ctx.font = `600 10px ui-monospace, SFMono-Regular, Menlo, monospace`; ctx.textAlign = 'center'; ctx.fillText(tag.text, this.w - AXIS_W / 2, tag.y + 0.5);
@@ -1933,28 +1963,54 @@ export class LtPane extends TimePane {
     // Readout follows the cursor, else the newest point.
     let at = n - 1;
     if (state.hover) { at = 0; for (let i = 0; i < n; i++) if (s.times[i]! <= state.hover.t) at = i; }
-    const b = s.bid[at]!, a = s.ask[at]!, total = b + a, r = sideRatio(b, a), imb = total > 0 ? Math.round((b - a) / total * 100) : 0;
+    // In coins the window's own figures, and the coin named after them (the header's numbers are bare, as the Depth header's are).
+    // The imbalance from the dollars: the same as from the window's coins (one price values both sides), and known where they are not (no candle
+    // overlaps the window: its figures are dashes, and no coin is named beside them).
+    const db = s.bid[at]!, da = s.ask[at]!, b = bidS[at]!, a = askS[at]!, total = db + da, r = sideRatio(b, a), imb = total > 0 ? Math.round((db - da) / total * 100) : 0;
+    const unit = coins && Number.isFinite(b) && Number.isFinite(a) ? ` ${unitName()}` : '';
     const larger = r?.lead ? ` <b class="${r.lead > 0 ? 'bid' : 'ask'}">${r.lead > 0 ? t('bids') : t('asks')} ${ratioFigure(r.ratio)}</b>` : '';
     // ≈: part of the line was worked out from the minutes' average books (a size filter, or minutes recorded before the tracker was kept: see the help).
-    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${usd(b)}</b> ${t('Ask')} <b class="ask">${usd(a)}</b> Δ <b${leanClass(b - a)}>${signedText(b - a)}</b> ${t('imb')} <b${leanClass(imb)}>${imb > 0 ? '+' : imb < 0 ? '−' : ''}${Math.abs(imb)}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
+    setHtml(readout, `${s.estimated ? '≈ ' : ''}${t('Bid')} <b class="bid">${amountText(b, coins)}</b> ${t('Ask')} <b class="ask">${amountText(a, coins)}</b>${unit} Δ <b${leanClass(b - a)}>${signedText(b - a)}</b> ${t('imb')} <b${leanClass(imb)}>${imb > 0 ? '+' : imb < 0 ? '−' : ''}${Math.abs(imb)}%</b>${larger} · ${tn(s.ids.length, '{n} venue', '{n} venues')}`);
     // The card reads the windows shown too: in a replay, never one under way at its moment or after it (the mask covers pixels, not the card).
     const over = state.hover && this.pointer ? readAt(slotAt(s.times.subarray(0, n), step, state.hover.t), state.hover.t, n - 1, s.times[n - 1]) : -1;
     if (over >= 0 && state.hover && state.hover.t >= s.times[over]! + step) this.cursorT = s.times[over]! + step / 2;
-    const cardAt = (i: number): InfoLine[] => ltCardLines({ time: s.times[i]!, bid: s.bid[i]!, ask: s.ask[i]!, halfLifeBp: lt.halfLifeBp, venues: s.ids.length });
+    const cardAt = (i: number): InfoLine[] => ltCardLines({ time: s.times[i]!, bid: bidS[i]!, ask: askS[i]!, halfLifeBp: lt.halfLifeBp, venues: s.ids.length, ...(coins ? { coin: unitName() } : {}) });
     if (over >= 0) this.#lines = cardAt(over);
     // Each market at the window read (the readout's), and under them the card's lines (the total, its balance and how it was weighted): a table that
     // holds all of it takes the card's place, as on every pane with one; beside a table that cannot, the card stays.
     if (state.ltTable && s.parts && s.ids.length > 1) {
       const parts = s.parts, windows = s.times.length;
-      // The order is the series' (worked out once for it): rows keep their places while the pointer moves and as the newest window changes.
+      // The order is the series' (worked out once for it): rows keep their places while the pointer moves and as the newest window changes. It
+      // ranks the dollars in either units; the rows say the window's figures as shown (in coins each at the window's price).
       if (this.#rank?.series !== s || this.#rank.n !== n) this.#rank = { series: s, n, order: ltRank(parts, windows, s.ids.length, n) };
-      const rows = ltRowsAt(s, bookNames(s.ids, state.markets), this.#rank.order, at, tableRowCap(ph));
+      const rows = ltRowsAt(inCoin ? { times: s.times, bid: bidS, ask: askS, parts: inCoin.value.parts ?? parts } : s, bookNames(s.ids, state.markets), this.#rank.order, at, tableRowCap(ph));
       const foot = `${s.estimated ? '≈ ' : ''}${state.hover ? clock(s.times[at]!, true) : `${t('newest')} ${clock(s.times[at]!)}`}`;
       // Per level is what the series was worked out with (its parts carry the weights), not the setting, which a new series may still be on its way for.
       const heads = ltHeads(parts), lines = headed(t('Total'), tableLines(over === at && this.#lines ? this.#lines : cardAt(at)));
       if (rows.length && this.#table.draw(ctx, p, { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !state.hover }, { heads, minCols: 3, plateMin: heads.length - 1, cardCols: 1, focus: -1, foot, rows: ltTableRows(rows, p), lines, restKey: `${state.marketId}\u0001${state.timeframe}` })?.complete) this.#lines = null;
     }
   }
+}
+
+/**
+ * One line of the Liquidity Tracker on the path begun: through the windows of the first `n` in view (a window either side of it too, so the line
+ * runs off the edges), starting afresh after a gap of more than two and a half windows and after a window with no figure (NaN: in coins one no
+ * chart candle prices, lt.ts `ltPrices`), so it never joins across either. A window with a figure alone between windows without one is a short
+ * dash a window wide, so it does not vanish (a lone window beside a gap of time alone draws nothing, as it always did).
+ */
+export function ltLinePath(ctx: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo'>, times: ArrayLike<number>, data: ArrayLike<number>, n: number, step: number, view: { t0: number; t1: number },
+  x: (t: number) => number, y: (value: number) => number): void {
+  const gap = step * 2.5;
+  let prev = -Infinity, afterNaN = false, lone: { t: number; px: number; py: number; nan: boolean } | null = null;
+  const dash = (l: { t: number; px: number; py: number }): void => { const half = Math.max(1.5, Math.abs(x(l.t + step) - x(l.t)) / 2); ctx.moveTo(l.px - half, l.py); ctx.lineTo(l.px + half, l.py); };
+  for (let i = 0; i < n; i++) {
+    const t = times[i]!; if (t + step < view.t0 - step || t > view.t1 + step) continue;
+    if (data[i] !== data[i]) { if (lone) dash(lone); lone = null; prev = -Infinity; afterNaN = true; continue; }
+    const px = x(t), py = y(data[i]!);
+    if (t - prev > gap) { if (lone?.nan) dash(lone); ctx.moveTo(px, py); lone = { t, px, py, nan: afterNaN }; } else { ctx.lineTo(px, py); lone = null; }
+    afterNaN = false; prev = t;
+  }
+  if (lone?.nan) dash(lone);
 }
 
 /** A row of the Liquidity Tracker's table: a market (or the rest added up), its weighted bids and asks at the window read, and its share of the lines' total (null in the Per level mode). */
@@ -2053,7 +2109,11 @@ export class BarStatsPane extends TimePane {
   #liqBuckets: { key: string; value: StatInput['liquidations'] } | null = null;
   #button = document.createElement('button');
   #panel: Panel | null = null;
-  /** The open interest's change in USD, worked out once per set of bars, parts and candles (the pane paints on every pointer move), and only in USD. */
+  /**
+   * The open interest's change in USD, worked out once per set of bars, parts and candles (the pane paints on every pointer move), and only with
+   * the option in USD. In coins too: the cells' look and ranks read the dollars' table in either units (the figures written are the coin's own
+   * change, bar-stats.ts).
+   */
   #usd: { oi: unknown; parts: unknown; candles: unknown; price: number; tfMs: number; map: Map<number, number> } | null = null;
   #oiUsd(state: AppState, parts: readonly OiPart[], tfMs: number, candles: ReadonlyMap<number, CandleRow>): Map<number, number> | undefined {
     if (state.barStatOptions.oiUnits !== 'usd') return undefined;
@@ -2105,13 +2165,13 @@ export class BarStatsPane extends TimePane {
     if (!chosen.length) body.append(note(t('Nothing selected: tick statistics below to add them.')));
     else {
       body.append(note(t('The strip shows them top to bottom in this order. Drag a row by its dots to reorder it (or focus the dots and press the up and down arrow keys); × hides it.')));
-      body.append(sortableList(chosen.map(id => { const def = statDef(id)!; return { id, label: def.label, title: def.title }; }), setStats, id => setStats(chosen.filter(x => x !== id))));
+      body.append(sortableList(chosen.map(id => { const def = statDef(id)!; return { id, label: def.label, title: statTitle(def) }; }), setStats, id => setStats(chosen.filter(x => x !== id))));
     }
 
     for (const group of Object.keys(GROUP_TITLES) as StatGroup[]) {
       body.append(heading(GROUP_TITLES[group]));
       for (const def of BAR_STATS.filter(d => d.group === group))
-        body.append(checkRow(def.label, def.title, chosen.includes(def.id), on => setStats(on ? [...chosen, def.id] : chosen.filter(id => id !== def.id))));
+        body.append(checkRow(def.label, statTitle(def), chosen.includes(def.id), on => setStats(on ? [...chosen, def.id] : chosen.filter(id => id !== def.id))));
     }
 
     body.append(heading(t('Options')));
@@ -2137,8 +2197,11 @@ export class BarStatsPane extends TimePane {
     );
   }
 
+  /** The units the open panel was built in: its lines say the statistics in them (`statTitle`), so it is built again when they change. */
+  #panelUnits = pageUnits();
   protected draw(): void {
     this.#cell = null; this.#viewLines = null;
+    if (this.#panelUnits !== pageUnits()) { this.#panelUnits = pageUnits(); this.#panel?.render((tools, body) => this.#build(tools, body)); }
     const held = this.#held, pins = this.#strip();
     // The Range summary is worked out again only for a new table (a pointer move draws the pane from the same one).
     if (this.#held !== held) this.rangeChanged();
@@ -2161,7 +2224,8 @@ export class BarStatsPane extends TimePane {
   get rangeHeld(): BarsPaneHeld | null { return this.#held; }
   #held: BarsPaneHeld | null = null;
   /** What the table worked out last, kept while nothing it was worked out from changes (a pointer move only redraws), and what Export CSV writes. */
-  #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
+  /** `values` in dollars (what the cells' look and ranks read), `shown` in the page's units (what they write: the same rows in dollars) with its input. */
+  #table: { key: unknown[]; times: number[]; defs: StatDef[]; values: (number | null)[][]; input: StatInput; shown: (number | null)[][]; shownInput: StatInput; view: { at: string; cells: (ViewCell | null)[] } | null } | null = null;
   /** Where the View column is (plot coordinates), while it is drawn: the pointer there reads it, not a candle. */
   #viewSpan: [number, number] | null = null;
   /** The bands as last drawn, top to bottom (what a click on a header folds). */
@@ -2190,14 +2254,17 @@ export class BarStatsPane extends TimePane {
     this.invalidate();
   }
 
-  /** The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change). */
+  /**
+   * The liquidations by candle over the table's candles, from the days answered (kept while neither they nor the candles change), and in coins
+   * (only) their coins too (units.ts).
+   */
   #liquidationsFor(ids: readonly string[], times: readonly number[], tfMs: number, coverFrom: number): StatInput['liquidations'] {
-    const held = this.liqDays;
+    const held = this.liqDays, coins = inCoins();
     if (ids.join(',') !== held.ids) return undefined;
     // By the minute too: the candle under way counts once the minute it starts in has been asked about.
-    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}`;
+    const key = `${held.version}|${held.ids}|${times[0]}|${times.length}|${times[times.length - 1]}|${tfMs}|${coverFrom}|${Math.floor(Date.now() / 60_000)}${coins ? '|coins' : ''}`;
     if (this.#liqBuckets?.key === key) return this.#liqBuckets.value;
-    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now());
+    const value = liquidationBuckets(held.days, ids, times, tfMs, coverFrom, Date.now(), coins);
     this.#liqBuckets = { key, value };
     return value;
   }
@@ -2256,26 +2323,34 @@ export class BarStatsPane extends TimePane {
     // (the coverage of the candle under way).
     // Whether a perpetual's executions are counted (a market of unknown kind may be one): oi × delta reads them against open interest.
     const perps = markets.some(id => kindOf(state.markets, id) !== 'spot');
-    const key = [data.version, data.step, state.candles, state.oi, parts, state.oiPrice, state.barStats, options, data.cuts, taker, liquidations, zone, times[0], times[times.length - 1], times.length, tfMs, Math.floor(now / 60_000), perps];
+    // In coins (units.ts) the figures are worked out in the coin too, each part at its own price (bar-stats.ts): the units are part of what the
+    // table is.
+    const coins = inCoins();
+    const key = [data.version, data.step, state.candles, state.oi, parts, state.oiPrice, state.barStats, options, data.cuts, taker, liquidations, zone, times[0], times[times.length - 1], times.length, tfMs, Math.floor(now / 60_000), perps, coins];
     let table = this.#table;
     if (!table || table.key.length !== key.length || table.key.some((k, i) => k !== key[i])) {
       const candles = new Map(state.candles.map(c => [c[0], c] as const));
       const input: StatInput = { bars: times.map(start => data.bars.get(start) ?? null), times, tfMs, now, ...(taker ? { taker } : {}), ...(liquidations ? { liquidations } : {}), ...(restart ? { restart } : {}),
         step: data.step, options, cuts: data.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
-      table = this.#table = { key, times, defs, values: defs.map(def => def.compute(input)), input, view: null };
+      // The cells' shading, Unusual, lines and ranks read the dollars in either units, so toggling them changes no cell's look (a percentile cut or a
+      // flag would flip where every value moved by its own price): the figures written (cells, cards, pins, the View column, Export CSV and the
+      // Range summary) are the coin's, worked out from the same input in coins.
+      const values = defs.map(def => def.compute(input)), shownInput: StatInput = coins ? { ...input, coins } : input;
+      table = this.#table = { key, times, defs, values, input, shown: coins ? defs.map(def => def.compute(shownInput)) : values, shownInput, view: null };
     }
     // The Range summary's snapshot: the same object while the table and what it is worked out for stay (range/bars-lines.ts). Only once the
     // footprint holds the bars of these markets and this timeframe: the map switches it in its own frame, and this pane can draw first after
     // a click, with the new choice but the old bars (published under the new key, they would be summed up, and kept, as the new markets').
     const heldKey = barStatsHeldKey(state, markets), ours = data.holds(markets, state.timeframe);
-    if (ours && (this.#held?.input !== table.input || this.#held.key !== heldKey)) {
+    // The summary writes figures: the table's in the page's units, with the input they were worked out from.
+    if (ours && (this.#held?.input !== table.shownInput || this.#held.key !== heldKey)) {
       const chart = state.seriesInstrument || state.marketId;
-      this.#held = { key: heldKey, tfMs, tf: state.timeframe, input: table.input, times: table.times, defs: table.defs, values: table.values,
+      this.#held = { key: heldKey, tfMs, tf: state.timeframe, input: table.shownInput, times: table.times, defs: table.defs, values: table.shown,
         markets: markets.length, oiMarkets: Math.max(1, state.oiParts.length), coin: coinOf(state),
         candleMarket: chart ? `${venueLabel(chart)} ${chart.split(':').slice(1).join(':')}` : '', quote: state.markets.find(m => (m.instrumentId ?? m.id) === chart)?.quote ?? '',
         replayAt: replaying() ? Math.floor(now / tfMs) * tfMs : null, answered: data.answered };
     }
-    const { input, values: rowsValues } = table, all = input.bars;
+    const { input, values: rowsValues, shown: shownValues, shownInput } = table, all = input.bars;
     // A row taken at the nearest box edge for some bar (the source had no sums for the size set), or from a cut answer, says so: ≈ before its name.
     const labelOf = new Map(defs.map(def => [def.id, def.approx?.(input) ? `≈${def.label}` : def.label]));
     // The bands: rows as chosen, or under a header per kind; the rows share what the headers leave.
@@ -2314,19 +2389,20 @@ export class BarStatsPane extends TimePane {
         ctx.restore();
         return;
       }
-      const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category', scale = ranked ? rowScale(def, visible.map(i => values[i])) : null;
+      // `values` (dollars) shade, rank and judge; `texts` (the page's units) are written, and their sign gives a figure its side's colour.
+      const { def, index: rowIndex } = band, values = rowsValues[rowIndex]!, texts = shownValues[rowIndex]!, ranked = def.scale !== 'plain' && def.scale !== 'category', scale = ranked ? rowScale(def, visible.map(i => values[i])) : null;
       // Each row's own baseline (the Highlights' window and multiple): its unusual candles are outlined while Highlights is on, and Unusual shades by it.
       const found = ranked && (state.highlight.on || cells === 'unusual') ? anomalies(Float64Array.from(values, value => value === null || value === undefined ? NaN : deviation(def, value)), state.highlight) : null;
       const unusual = state.highlight.on ? found?.flag ?? null : null;
       const mine = hoverIdx >= 0 && bandIndex === hoverBand ? values[hoverIdx] : undefined;
       if (hoverIdx >= 0 && bandIndex === hoverBand && mine !== null && mine !== undefined) {
-        const previous = hoverIdx > 0 && times[hoverIdx - 1] === times[hoverIdx]! - tfMs ? values[hoverIdx - 1] : null;
+        const previous = hoverIdx > 0 && times[hoverIdx - 1] === times[hoverIdx]! - tfMs ? texts[hoverIdx - 1] : null;
         const seenValues = visible.map(i => values[i]).filter((x): x is number => x !== null && x !== undefined), rank = (x: number) => def.scale === 'diverging' ? deviation(def, x) : x;
         const share = all[hoverIdx] ? coverageOf(all[hoverIdx]!, times[hoverIdx]!, tfMs, now) : null;
-        const sigma = found?.sigma[hoverIdx];
+        const sigma = found?.sigma[hoverIdx], written = texts[hoverIdx], title = statTitle(def);
         hoverCell = {
-          label: labelOf.get(def.id)!, title: def.approx?.(input) ? `${def.title} ${def.approxNote?.() ?? t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.')}` : def.title,
-          value: shown(def, mine), tone: toneOf(def, mine), time: clock(times[hoverIdx]!, true),
+          label: labelOf.get(def.id)!, title: def.approx?.(input) ? `${title} ${def.approxNote?.() ?? t('≈ About: for some of these minutes only the size boxes are known (an older server, or minutes it has not filled in yet), so this line is drawn at the nearest box edge.')}` : title,
+          value: shown(def, written), tone: written === null || written === undefined ? 'text' : toneOf(def, written), time: clock(times[hoverIdx]!, true),
           previous: previous === null || previous === undefined ? null : shown(def, previous), rank: ranked ? 1 + seenValues.filter(x => rank(x) > rank(mine)).length : null, of: seenValues.length,
           sigma: (unusual?.[hoverIdx] || cells === 'unusual') && sigma !== undefined && Number.isFinite(sigma) && sigma > 0 ? sigma : null,
           partial: def.source === 'executions' && share !== null && share < 0.95 ? Math.round(share * 100) : null,
@@ -2353,7 +2429,8 @@ export class BarStatsPane extends TimePane {
         // Unusual: how far above its own recent candles, from 0 to 3σ (none while the baseline warms up); else its size among the candles in view.
         const sigma = found?.sigma[i];
         // A value flagged against a flat baseline (no spread, so no σ) is as unusual as a value can be.
-        const t = cells === 'unusual' ? (found?.flag[i] && !(sigma! > 0) ? 1 : sigma !== undefined && Number.isFinite(sigma) ? Math.min(1, Math.max(0, sigma) / 3) : 0) : strength(def, value, scale), tone = (value - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown;
+        const figure = texts[i] ?? null, signed = figure ?? value;
+        const t = cells === 'unusual' ? (found?.flag[i] && !(sigma! > 0) ? 1 : sigma !== undefined && Number.isFinite(sigma) ? Math.min(1, Math.max(0, sigma) / 3) : 0) : strength(def, value, scale), tone = (signed - (def.center ?? 0)) >= 0 ? p.candleUp : p.candleDown;
         // A filled cell takes its colours from the theme (the page's own colour toward its accent, or toward the side's colour) and its figures
         // from textOn: a fixed light ramp made a row of pale bars on every dark theme.
         const fill = def.scale === 'sequential' ? mixHex(p.panel, p.ui, 0.12 + 0.76 * t) : def.scale === 'diverging' ? mixHex(mixHex(p.panel, tone, 0.18), tone, t) : p.panel;
@@ -2367,7 +2444,7 @@ export class BarStatsPane extends TimePane {
         if (slot >= 48) {
           ctx.fillStyle = filled ? (def.scale === 'plain' ? p.text : textOn(fill, 1, p)) : def.scale === 'diverging' ? tone : p.text;
           ctx.globalAlpha = (filled ? 1 : 0.6 + 0.4 * t) * fade;
-          ctx.fillText(def.format(value), x + w / 2, y + (h - 1) / 2); ctx.globalAlpha = 1;
+          ctx.fillText(figure === null ? '–' : def.format(figure), x + w / 2, y + (h - 1) / 2); ctx.globalAlpha = 1;
         }
       }
     });
@@ -2392,7 +2469,7 @@ export class BarStatsPane extends TimePane {
       const x = v.xOf(times[pinIdx]!, pw), w = Math.max(1, slot - 1);
       ctx.save(); ctx.strokeStyle = p.text; ctx.lineWidth = 2; ctx.strokeRect(Math.round(x) + 1, top + 1, Math.max(1, Math.round(w) - 2), gridBottom - top - 2); ctx.restore();
       const page = this.canvas.getBoundingClientRect();
-      pins.push({ lines: pinnedLines(clock(times[pinIdx]!, true), defs.map((def, r) => { const value = rowsValues[r]![pinIdx]; return { label: labelOf.get(def.id)!, value: shown(def, value), tone: value === null || value === undefined ? 'text' : toneOf(def, value) }; })),
+      pins.push({ lines: pinnedLines(clock(times[pinIdx]!, true), defs.map((def, r) => { const value = shownValues[r]![pinIdx]; return { label: labelOf.get(def.id)!, value: shown(def, value), tone: value === null || value === undefined ? 'text' : toneOf(def, value) }; })),
         x: page.left + leftGutter(state) + x + w, y: page.top });
     }
     pins.sort((a, b) => a.x - b.x);
@@ -2400,7 +2477,7 @@ export class BarStatsPane extends TimePane {
     if (this.#viewSpan) {
       // Worked out again only for other candles in view or other figures (a pointer move redraws from what is held).
       const at = `${visible[0]}|${visible[visible.length - 1]}|${visible.length}`;
-      if (table.view?.at !== at) table.view = { at, cells: defs.map((def, r) => def.view?.(input, visible, rowsValues[r]!) ?? null) };
+      if (table.view?.at !== at) table.view = { at, cells: defs.map((def, r) => def.view?.(shownInput, visible, shownValues[r]!) ?? null) };
       const viewCells = table.view.cells;
       ctx.save();
       ctx.globalAlpha = 0.6; ctx.strokeStyle = p.line; ctx.beginPath(); ctx.moveTo(Math.round(pw) + 0.5, top); ctx.lineTo(Math.round(pw) + 0.5, gridBottom); ctx.stroke(); ctx.globalAlpha = 1;
@@ -2416,7 +2493,7 @@ export class BarStatsPane extends TimePane {
         }
         if (bandIndex === viewBand) {
           ctx.strokeStyle = p.text; ctx.lineWidth = 1; ctx.strokeRect(Math.round(vx) + 0.5, Math.round(y) + 0.5, Math.round(vw) - 1, Math.round(h) - 2);
-          viewHover = viewCellLines(labelOf.get(def.id)!, cell, def.title, visible.length);
+          viewHover = viewCellLines(labelOf.get(def.id)!, cell, statTitle(def), visible.length);
         }
       });
       ctx.restore();
@@ -2478,13 +2555,14 @@ export class BarStatsPane extends TimePane {
   /** Export CSV: the table's candles in view, one line each, every statistic shown as its number or its mark (empty where it has none). */
   #export(): void {
     const table = this.#table, shown = enabledStats(this.store.state.barStats);
-    // Only a table of the statistics now chosen (one held from before a change is not written).
-    if (!table || table.defs.length !== shown.length || table.defs.some((def, i) => def !== shown[i])) return;
+    // Only a table of the statistics now chosen, in the page's units now (one held from before a change is not written).
+    if (!table || table.defs.length !== shown.length || table.defs.some((def, i) => def !== shown[i]) || !!table.shownInput.coins !== inCoins()) return;
     const v = this.view, tfMs = TIMEFRAMES[this.store.state.timeframe] ?? 3_600_000;
     const at = table.times.map((_, i) => i).filter(i => table.times[i]! + tfMs > v.t0 && table.times[i]! < v.t1);
     if (!at.length) return;
-    const lines = [['candle_start_utc', ...table.defs.map(def => def.csv?.head ?? def.id)].join(',')];
-    for (const i of at) lines.push([new Date(table.times[i]!).toISOString(), ...table.values.map((row, r) => csvCell(table.defs[r]!, row[i]))].join(','));
+    // The figures as written, in the page's units: a size's head names the coin in coins (`csvHead`), as it always was in dollars.
+    const lines = [['candle_start_utc', ...table.defs.map(def => csvHead(def))].join(',')];
+    for (const i of at) lines.push([new Date(table.times[i]!).toISOString(), ...table.shown.map((row, r) => csvCell(table.defs[r]!, row[i]))].join(','));
     const name = `bar-stats-${this.store.state.marketId.replace(/[^A-Za-z0-9]+/g, '-')}-${this.store.state.timeframe}-${new Date(table.times[at[at.length - 1]!]!).toISOString().slice(0, 16).replace(/[-:]/g, '')}Z.csv`;
     // With a byte-order mark, so a spreadsheet reads the marks (▲, −) as UTF-8.
     const url = URL.createObjectURL(new Blob([`\ufeff${lines.join('\n')}\n`], { type: 'text/csv' })), link = el('a', { href: url, download: name });

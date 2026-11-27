@@ -5,8 +5,8 @@ import { CVD_SPANS, type CvdSpan } from './settings.ts';
 
 /**
  * The Flow view's chart (Karl, 2026-10-26): on a phone the aggregate row is the whole chart, the price drawn over the taker flow of every
- * exchange, spot and perpetual, with an axis for each (the dollars of the flow at the left, the price at the right). Everything it needs that
- * is not a drawing is here, with no canvas and no DOM, so a test reads it.
+ * exchange, spot and perpetual, with an axis for each (the flow in the page's units at the left, dollars or coins (units.ts), the price at the
+ * right). Everything it needs that is not a drawing is here, with no canvas and no DOM, so a test reads it.
  */
 
 /** A value range on one axis. */
@@ -15,22 +15,23 @@ export interface Range { lo: number; hi: number }
 /**
  * The range a line is drawn over: its extent, with zero kept in view when the line starts from zero at the left edge (`rebase`), a floor so a
  * flat line is not blown up into noise, and a tenth of the height of air above and below. Null when the line holds nothing yet. This is the
- * rule every row of the column has always used.
+ * rule every row of the column has always used. `floor` is a dollar in the line's units (units.ts `unitFloor`: a dollar's worth of coin for a
+ * line drawn in coins), so a nearly flat line looks the same in either units.
  */
-export function laneRange(lane: Pick<LaneLine, 'min' | 'max'>, rebase: boolean): Range | null {
+export function laneRange(lane: Pick<LaneLine, 'min' | 'max'>, rebase: boolean, floor = 1): Range | null {
   let lo = lane.min, hi = lane.max;
   if (!(lo <= hi)) return null;
   if (rebase) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
-  if (hi - lo < 1) { lo -= 1; hi += 1; }
+  if (hi - lo < floor) { lo -= floor; hi += floor; }
   const pad = (hi - lo) * 0.1;
   return { lo: lo - pad, hi: hi + pad };
 }
 
-/** One range for several lines, so they stand on one axis in dollars: the extent of all of them, by the rule of `laneRange`. */
-export function sharedRange(lanes: readonly (Pick<LaneLine, 'min' | 'max'> | null)[], rebase: boolean): Range | null {
+/** One range for several lines, so they stand on one axis of the page's units: the extent of all of them, by the rule of `laneRange`. */
+export function sharedRange(lanes: readonly (Pick<LaneLine, 'min' | 'max'> | null)[], rebase: boolean, floor = 1): Range | null {
   let min = Infinity, max = -Infinity;
   for (const lane of lanes) if (lane && lane.min <= lane.max) { min = Math.min(min, lane.min); max = Math.max(max, lane.max); }
-  return laneRange({ min, max }, rebase);
+  return laneRange({ min, max }, rebase, floor);
 }
 
 /** The prices' range: their extent and an eighth of it above and below (a flat stretch takes a twentieth of a percent), or null with no price. */

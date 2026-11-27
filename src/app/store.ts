@@ -38,6 +38,7 @@ import { readLiqLevels, type LiqLevelSettings } from './liq-url.ts';
 import { WAVE_STRENGTH_DEFAULT, readWaveStrength } from './glass/waves.ts';
 import type { ReplayView } from './replay/clock.ts';
 import { isFundingPick, type FundingPick } from './funding.ts';
+import { readUnits, type Units } from './units.ts';
 import { readFlowView, type FlowView } from './tns/model.ts';
 import { TRADES_DEFAULTS, readTrades, tradesRev5Default, type TradesSettings } from './trades/settings.ts';
 
@@ -252,6 +253,8 @@ export interface AppState {
   barCollapsed: boolean;
   /** The clock the page's times are on: the computer's own, or UTC. */
   timeZone: TimeZone;
+  /** What sizes are written in: dollars, or the coin on screen (units.ts). The person's own, like the clock: kept in this browser, never in a layout. */
+  units: Units;
   /**
    * Shared cursor: `t` is authoritative; each pane converts it to its own x. `price` is only set by the heatmap. `touch` marks a hover
    * that a finger pinned (it stays until the next tap or drag, and its readouts sit above the finger).
@@ -279,7 +282,18 @@ type Listener = (state: AppState, changed: ReadonlySet<keyof AppState>) => void;
 export type PhoneTape = 'list' | 'chart';
 export const readPhoneTape = (saved: unknown): PhoneTape => saved === 'chart' ? 'chart' : 'list';
 
-const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'phoneTape', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'timeframe', 'layer', 'show', 'cvd', 'flowView', 'trades', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'customMarkets', 'bookMarkets', 'bookPicks', 'draw', 'chartType', 'candleColors'];
+/**
+ * The page's units from a page save (units.ts). Before the page had them, the Depth pane had a Units choice of its own (for its bands and for
+ * its Liquidation levels view): a save that chose the coin there and holds no page units yet reads as the coin, since that was the one place
+ * the choice could be made. A page save only: a layout never carries the page's units.
+ */
+export function savedUnits(saved: Partial<AppState>): Units {
+  if (Object.hasOwn(saved, 'units')) return readUnits(saved.units);
+  const chose = (bands: unknown): boolean => !!bands && typeof bands === 'object' && (bands as Record<string, unknown>).units === 'coin';
+  return chose(saved.depthBands) || chose(saved.liqBands) ? 'coin' : 'usd';
+}
+
+const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'phoneTape', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'units', 'timeframe', 'layer', 'show', 'cvd', 'flowView', 'trades', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'customMarkets', 'bookMarkets', 'bookPicks', 'draw', 'chartType', 'candleColors'];
 /**
  * The saved settings: the saved keys only, from an object (a backup can bring any text here, backup.ts). The keys spread into the state as
  * they are, without a reader of their own below, are checked for their type here; every other one is read field by field further on.
@@ -470,7 +484,7 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   const state: AppState = {
     connected: false, status: t('connecting'), markets: [], marketId: '', seriesInstrument: '', mark: { price: 0, asOf: 0 }, levels: null, bookGone: {},
     layers: {}, candles: [], oi: [], oiInstrument: '', oiParts: [], oiPrice: 0, oiReading: false, oiFine: [], sounds: { ...DEFAULT_SOUNDS }, soundState: 'locked', lastSound: 0, vwapAnchoring: false, anchorMove: null, anchorPreview: null, profileAnchoring: false, heatmapSource: 'aggregated', disabledVenues: [],
-    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', phoneTape: 'list', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', hover: null, bookHover: null, range: null, rangeTool: false,
+    ladderVenue: '', ladderVenues: [], replay: null, draw: readDrawSettings(undefined), theme: DEFAULT_THEME, themePicked: false, themeSlots: { light: DEFAULT_THEME, dark: PHONE_DARK_THEME }, defaultsRev: DEFAULTS_REV, material: 'solid', waveStrength: WAVE_STRENGTH_DEFAULT, followLive: true, keepAwake: false, tabPrice: true, tabIcon: true, phoneHistory: 'auto', phoneTape: 'list', scriptBars: readScriptBars(undefined, false), barCollapsed: false, timeZone: 'local', units: 'usd', hover: null, bookHover: null, range: null, rangeTool: false,
     ...saved, ...readSettings(saved),
   };
   // A save's measure strip was read into the profile along the top (`readSettings`): it is no setting of its own any more.
@@ -482,6 +496,7 @@ export function initialState(phone: boolean = isPhone(), touch: boolean = isCoar
   state.sounds = readSounds(saved.sounds);
   state.draw = readDrawSettings(saved.draw);
   state.timeZone = saved.timeZone === 'utc' ? 'utc' : 'local';
+  state.units = savedUnits(saved);
   // Every save writes the theme down whether chosen or not (Terminal for a day on 2026-10-17): one that was not picked from the menu or the
   // light-or-dark key is the page's default of its time, and the theme follows `autoTheme` below; the saves since carry the pick.
   state.themePicked = saved.themePicked === true;

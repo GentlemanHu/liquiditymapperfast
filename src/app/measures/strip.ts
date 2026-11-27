@@ -3,7 +3,7 @@ import type { AppState } from '../store.ts';
 import type { InfoLine } from '../infobox.ts';
 import type { FlowLoader } from '../delta/flows.ts';
 import { flowIds, mapVenues, oiFlowIds } from '../cvd/ids.ts';
-import { tradedNet, tradedNetLine } from '../traded.ts';
+import { saidNet, tradedNetLine } from '../traded.ts';
 import { measureDef, timeWords, type ProfileMetric } from './registry.ts';
 import { placedOn } from '../traded/profiles.ts';
 import type { PlacedBand } from '../traded/arrange.ts';
@@ -74,7 +74,8 @@ export class TopProfile {
 
   /** The column's header for these rows: the measure's own (measures/defs/), with what its record leaves out. */
   #header(w: Worked): { head: string; sub: string; warn: boolean; net: { text: string; sign: number } | null } {
-    const rows = w.rows, net = rows.total > 0 ? { text: tradedNetLine(rows), sign: Math.sign(tradedNet(rows)) } : null;
+    // The difference in the page's units, in the colour of its own sign (app/units.ts: in coins its sign is the coins').
+    const rows = w.rows, net = rows.total > 0 ? { text: tradedNetLine(rows), sign: Math.sign(saidNet(rows)) } : null;
     const { head, sub, warn } = measureDef(this.metric).header(rows, w.flags);
     if (w.unavailable && !(rows.total > 0)) return { head, sub: t('not on this server'), warn: false, net: null };
     // A chart wider than a source answers: its newest part, said as the column says it.

@@ -262,7 +262,7 @@ test('the map draws the stripe through its painter and takes only what it painte
   assert.match(stripe, /\.\.\.\(left\?\.takes \? \[\{ lane: left\.takes, words: t\('Take profits'\), dashed: true, old: src\.takesOutOfDate\(\) \}\] : \[\]\),/);
   assert.match(heat, /if \(lanes\.length\) this\.#laneEdge = Math\.min\(\.\.\.lanes\.map\(l => l\.x0\), \.\.\.\(this\.#liqPlates \?\? \[\]\)\.map\(pl => pl\.x\)\);/);
   assert.match(heat, /if \(replaying\(\)\) return \[\];\n    const held = this\.#liqHeld\.right;\n    if \(right && held && x >= right\.lane\.x0 && x < right\.lane\.x1\) return this\.#laneLines\(state, right\.set, held, y, ph, touch, right\.whose\);\n    if \(!lanes \|\| src\.state !== 'ready'\) return \[\];/);
-  assert.match(heat, /inTakes \? lanes\.takesWhose : lanes\.whose\);/);
+  assert.match(heat, /inTakes \? lanes\.takesWhose : lanes\.whose, said\);/);
   assert.match(heat, /return setBoxLines\(found, set, at > 0 \? at : this\.hub\.liqLevels\.lastPriceOf\(levels\), side => shown\(found, side\), whose\);/);
   // The painter's right lane: from the right set, its rows kept by that set's key.
   assert.match(stripe, /const rr = held\.right = laneRows\(\{ key: \(\) => right\.key\(\), takesKey: \(\) => '', taken: \(\) => right\.taken\(\), takesTaken: \(\) => null \}, 'levels', right\.levels,/);
@@ -419,12 +419,13 @@ test('a short map gives the note fewer lines, so the stripe\'s captions keep the
   for (let ph = 60; ph <= 900; ph++) for (let under = 20; under <= 90; under += 7) {
     const most = noteMostLines(ph, under);
     assert.ok(most >= 2 && most <= 4, `${ph}/${under}: two to four lines`);
-    // Past the two lines the note always had, a line is given only where the history note's line, the note and three captions still fit.
-    if (most > 2) assert.ok(under + 13 + 13 * most + 3 + 3 * (PLATE_H + 2) <= ph, `${ph}/${under}: ${most} lines leave the captions their room`);
+    // Past the two lines the note always had, a line is given only where the note and three captions still fit (the "depth recorded from"
+    // note, which took a line of its own here until 2026-11-26, is the legend's last row: `under` counts it).
+    if (most > 2) assert.ok(under + 13 * most + 3 + 3 * (PLATE_H + 2) <= ph, `${ph}/${under}: ${most} lines leave the captions their room`);
   }
   const pane = fs.readFileSync('src/app/panes/heat-pane.ts', 'utf8');
   // `layNote` lays it out in `noteMostLines`, then fewer where the volume strip's names stand (tests/app-liq-split-phone.test.mts).
-  assert.match(pane, /layNote\(measure, note, Math\.max\(40, pw - 24\), \{ ph, under, foot, history: this\.#historyNote \}\)/, 'the pane lays the note out by the map\'s height');
+  assert.match(pane, /layNote\(measure, note, Math\.max\(40, pw - 24\), \{ ph, under, foot \}\)/, 'the pane lays the note out by the map\'s height');
 });
 
 test('a thin take profits\' lane starts on a dash, so it is never all gap; a wider one keeps the plot\'s one pattern (Sol, review 2026-11-19)', () => {

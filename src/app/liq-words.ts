@@ -5,6 +5,7 @@
  */
 import { t } from './i18n.ts';
 import { clock, usd } from './format.ts';
+import { coinText, inCoins, unitName } from './units.ts';
 import type { LevelsKind, LiqLevelsSource, LiqSet } from './liq-levels.ts';
 import type { LiqFamily } from './liq-history.ts';
 import { curveOf, groupName, groupTitle, kindName, kindTitle, takesBeside, type LiqPair, type LiqView } from './liq-view.ts';
@@ -53,10 +54,12 @@ export function splitLabel(kind: LevelsKind): string {
  * the parts rounded by largest remainder so the printed parts add up to the printed total. The total is what the parts add up to, or the
  * figure shown beside them, which they match but for rounding drift (two standings added in another order): each part is its share of the
  * printed total, which absorbs that drift. A part that is not a finite amount of at least nothing counts as nothing, so nothing prints
- * "NaN"; without a printable total (not finite), each is said alone.
+ * "NaN"; without a printable total (not finite), each is said alone. In coins (app/units.ts) the same in the coin's three figures
+ * (`coinSplit`): figures bare, in the page's units, as `figure` writes them.
  */
 export function splitAmounts(total: number, a: number, b: number): [string, string, string] {
   const amount = (v: number): number => Number.isFinite(v) && v > 0 ? v : 0, pa = amount(a), pb = amount(b);
+  if (inCoins()) return coinSplit(total, pa, pb);
   const shown = usd(total), m = /^(\d+)(?:\.(\d))?([KMBT]?)$/.exec(shown);
   if (!m) return [shown, usd(pa), usd(pb)];
   const unit = m[3] ?? '', tenths = unit !== '';
@@ -71,13 +74,36 @@ export function splitAmounts(total: number, a: number, b: number): [string, stri
 }
 
 /**
+ * `splitAmounts` in coins: the total as `coinText` writes it (three significant figures: 0.0125, 13.2, 551, 5.51K) and its parts in steps of
+ * its last figure, in its unit (K, M ...), by largest remainder, so they add up to it as printed. The steps are read from the printed total
+ * (its trailing zeros dropped: "12" is 12.0, so tenths), never worked out again from the number.
+ */
+export function coinSplit(total: number, pa: number, pb: number): [string, string, string] {
+  const shown = coinText(total), m = /^(\d+)(?:\.(\d+))?([KMBT]?)$/.exec(shown), value = m ? Number(`${m[1]}.${m[2] ?? ''}`) : NaN;
+  if (!m || !(value > 0)) return [shown, coinText(pa), coinText(pb)];
+  const unit = m[3] ?? '';
+  let e = Math.floor(Math.log10(value));
+  if (value / 10 ** e >= 10) e++; else if (value / 10 ** e < 1) e--;
+  // Three significant figures: as many decimals in its unit as the third figure needs (5.51 two, 13.2 one, 551 none, 0.0125 four).
+  const decimals = Math.max(0, 2 - e), steps = Math.round(value * 10 ** decimals), sum = pa + pb;
+  const xa = sum > 0 ? pa / sum * steps : 0, xb = sum > 0 ? steps - xa : 0;
+  let na = Math.floor(xa), nb = Math.floor(xb);
+  if (sum > 0 && steps - na - nb > 0) { if (xa - na >= xb - nb) na++; else nb++; }
+  const trim = (s: string): string => s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s;
+  const say = (n: number): string => n === 0 ? '0' : `${trim((n / 10 ** decimals).toFixed(decimals))}${unit}`;
+  return [shown, say(na), say(nb)];
+}
+
+/**
  * A total of liquidations and stops (Liq + stops) with its two parts, wherever the page gives that total (the stripe's box, the column's
  * reading and its Mirror box, the Liq tab's finger): "Total $330.6M = liquidations $200.5M + stops $130.1M". `shown` is the figure the line
  * above says (the parts' sum when there is none), so the total is that figure as printed, and the parts add up to it (`splitAmounts`).
  */
 export function splitText(parts: { liq: number; stops: number }, shown = parts.liq + parts.stops): string {
   const [total, liq, stops] = splitAmounts(shown, parts.liq, parts.stops);
-  return t('Total {total} = liquidations {liq} + stops {stops}', { total: `$${total}`, liq: `$${liq}`, stops: `$${stops}` });
+  // With the unit: "$330.6M" in dollars, "3.31K BTC" in coins (app/units.ts).
+  const unit = (figure: string): string => inCoins() ? `${figure} ${unitName()}` : `$${figure}`;
+  return t('Total {total} = liquidations {liq} + stops {stops}', { total: unit(total), liq: unit(liq), stops: unit(stops) });
 }
 
 /**

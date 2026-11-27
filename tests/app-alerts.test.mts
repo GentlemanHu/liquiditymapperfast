@@ -6,6 +6,7 @@ import { DEFAULT_PANEL_SOUNDS, alertNotes, readPanelSounds, readSounds, type Ale
 import { FlowBook } from '../src/app/flow-book.ts';
 import { initialState, type AppState } from '../src/app/store.ts';
 import type { LevelsFrame } from '../src/app/wire.ts';
+import { setUnits } from '../src/app/units.ts';
 
 // ---- Cool-downs and the cap -------------------------------------------------------------------------------------------------------
 
@@ -318,4 +319,117 @@ test('Test plays a sample whatever the switches say', async () => {
   alerts.test('wall-appeared', 'sell');
   await new Promise(r => setImmediate(r));
   assert.equal(player.played.length, 1);
+});
+
+// ---- Notify: alerts sent beside the sounds ------------------------------------------------------------------------------------------
+
+/** A Notify stand-in: which panels it wants, whether this tab sends them, every alert it was handed, and whether a channel sent it. */
+function out(wanted: readonly string[], o: { sends?: boolean; delivered?: boolean } = {}) {
+  const sent: { panel: string; text: string; key: string }[] = [];
+  return {
+    sent, wants: (panel: string) => wanted.includes(panel), sends: (panel: string) => wanted.includes(panel) && o.sends !== false,
+    deliver: (panel: string, text: string, key: string) => { sent.push({ panel, text, key }); return { channels: 1, done: Promise.resolve(o.delivered !== false) }; },
+  };
+}
+const burstsOn = (flow: FlowBook, ids: readonly string[]): void => {
+  for (const id of ids) { feed(flow, id, T, 2_000, 30_000, 30_000); for (let i = 9; i >= 0; i--) flow.apply([[id, T - i * 1000, 500_000, 20_000]]); }
+};
+
+test('with Notify off every alert is a sound as before; with sounds off and Notify wanting it, it is sent, listed, and said as no sound due', () => {
+  const plain = rig({ flow: { burst: true, usd: 1_000_000, sensitivity: 4 } } as never);
+  const none = out([]); plain.alerts.out = none;
+  burstsOn(plain.flow, ['a:BTC']); plain.alerts.tick(T);
+  assert.equal(plain.player.played.length, 1); assert.deepEqual(none.sent, []); assert.equal(plain.alerts.log[0]!.sent, 0);
+  const quiet = rig({ flow: { burst: true, usd: 1_000_000, sensitivity: 4 } } as never, false);
+  const sends = out(['flow']); quiet.alerts.out = sends;
+  burstsOn(quiet.flow, ['a:BTC']); quiet.alerts.tick(T);
+  assert.equal(quiet.player.played.length, 0, 'Sounds is off: nothing plays');
+  assert.equal(sends.sent.length, 1, 'but Notify sends it');
+  assert.deepEqual([quiet.alerts.log[0]!.audible, quiet.alerts.log[0]!.sent], [true, 1], 'never said as "not heard": no sound was due');
+});
+
+test('the sounds\' cap is the ear\'s: a fifth alert in ten seconds is still sent, and open interest\'s never is', () => {
+  const { state, alerts, player, flow } = rig();
+  state.sounds = readSounds({ on: true, panels: { flow: { burst: true, usd: 1_000_000, sensitivity: 4 } } });
+  const sends = out(['flow', 'oi']); alerts.out = sends;
+  burstsOn(flow, ['a:BTC', 'b:BTC', 'c:BTC', 'd:BTC', 'e:BTC', 'f:BTC']);
+  alerts.tick(T);
+  assert.equal(player.played.length, 4, 'four sounds');
+  assert.equal(sends.sent.length, 6, 'six messages');
+  alerts.drawing(T, 'Price reached your level at 100', 'level:x');
+  assert.equal(sends.sent.length, 6, 'a bell is the drawing panel\'s, which this stand-in does not want');
+});
+
+test('the depth sound reads the recording only while it can be heard or Notify would send it', () => {
+  let asked = 0;
+  const state: AppState = initialState();
+  state.sounds = readSounds({ on: false, panels: { ...DEFAULT_PANEL_SOUNDS, depthPane: { ...DEFAULT_PANEL_SOUNDS.depthPane, extreme: true } } });
+  state.markets = [{ instrumentId: 'a:BTC', venue: 'a', marketType: 'perpetual' }]; state.marketId = 'a:BTC';
+  const alerts = new Alerts({ state }, new FlowBook(), new FakePlayer(), () => T, undefined, () => { asked++; return new Promise(() => {}); });
+  alerts.tick(T);
+  assert.equal(asked, 0, 'Sounds off and no Notify: nothing is read (as before Notify)');
+  alerts.out = out(['depthPane']);
+  alerts.tick(T + 1_000);
+  assert.equal(asked, 1, 'Notify sends it: the recording is read');
+});
+
+test('a bell reached the person only when it was heard here or sent by this tab: else a bell that goes off once stays on', async () => {
+  const quiet = rig({}, false);
+  assert.equal(await quiet.alerts.drawing(T, 'Price reached your level at 100', 'level:a'), false, 'Sounds off and no Notify: nobody was told');
+  const locked = rig({}, true); locked.player.running = false;
+  assert.equal(await locked.alerts.drawing(T, 'Price reached your level at 100', 'level:b'), false, 'a locked sound was not heard');
+  const heard = rig({}, true);
+  assert.equal(await heard.alerts.drawing(T, 'Price reached your level at 100', 'level:c'), true, 'heard here');
+  assert.equal(await heard.alerts.drawing(T + 1_000, 'Price reached your level at 100', 'level:c'), false, 'inside its cool-down nothing happened');
+  const sent = rig({}, false); sent.alerts.out = out(['drawing']);
+  assert.equal(await sent.alerts.drawing(T, 'Price reached your level at 100', 'level:d'), true, 'sent by this tab and delivered');
+  const failed = rig({}, false); failed.alerts.out = out(['drawing'], { delivered: false });
+  assert.equal(await failed.alerts.drawing(T, 'Price reached your level at 100', 'level:e'), false, 'every channel failed');
+  const other = rig({}, true); other.alerts.out = out(['drawing'], { sends: false });
+  assert.equal(await other.alerts.drawing(T, 'Price reached your level at 100', 'level:f'), false, 'heard in a tab that does not send: the tab that sends decides, so the phone is not skipped');
+  assert.equal(other.player.played.length, 1, 'it still sounded there');
+});
+
+test('a bell that told nobody gives back its cool-down: the next crossing within the minute is heard', async () => {
+  const r = rig({}, false);
+  assert.equal(await r.alerts.drawing(T, 'Price reached your level at 100', 'level:z'), false, 'Sounds off: nobody heard it');
+  r.state.sounds = readSounds({ ...r.state.sounds, on: true });
+  assert.equal(await r.alerts.drawing(T + 10_000, 'Price reached your level at 100', 'level:z'), true, 'ten seconds later, with Sounds on: heard');
+});
+
+test('a cool-down given back is only the firing\'s own: a newer firing keeps its cool-down', () => {
+  const c = new Cooldowns();
+  assert.equal(c.take('k', 0, 60_000), true);
+  assert.equal(c.take('k', 70_000, 60_000), true, 'a second firing after the first one\'s minute');
+  c.release('k', 0);
+  assert.equal(c.take('k', 75_000, 60_000), false, 'the first firing\'s late failure leaves the second one\'s cool-down');
+  c.release('k', 70_000);
+  assert.equal(c.take('k', 76_000, 60_000), true, 'its own release frees it');
+});
+
+test('a message gives its size in the page\'s units, as the Recent list does; where the coins were not known, the dollars it fired with', () => {
+  const burst = { flow: { burst: true, usd: 1_000_000, sensitivity: 4 } } as never;
+  const fired = (price: number) => {
+    const r = rig(burst, false), sends = out(['flow']); r.alerts.out = sends;
+    burstsOn(r.flow, ['a:BTC']);
+    // The coin price of each second (the coin twin's rule): a price, or none for a second that moved without one.
+    r.flow.get('a:BTC')!.coinPriceAt = (() => price) as never;
+    r.alerts.tick(T);
+    return { message: sends.sent[0]!.text, entry: r.alerts.log[0]!, list: r.alerts.text(r.alerts.log[0]!) };
+  };
+  try {
+    setUnits('coin');
+    const known = fired(100_000);
+    assert.match(known.message, /BTC/, `in coins: ${known.message}`);
+    assert.equal(known.message, known.list, 'the words the Recent list shows');
+    const unknown = fired(Number.NaN);
+    assert.match(unknown.list, /–/, 'the Recent list says it kept no coins');
+    assert.equal(unknown.message, unknown.entry.text, `a message cannot be written again: the dollars, not a dash (${unknown.message})`);
+    assert.match(unknown.message, /\$/);
+    setUnits('usd');
+    const dollars = fired(100_000);
+    assert.equal(dollars.message, dollars.entry.text, 'in dollars: the sentence as it fired');
+  } finally {
+    setUnits('usd');
+  }
 });

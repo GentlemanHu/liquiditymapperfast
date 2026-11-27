@@ -9,6 +9,8 @@ import type { InfoLine } from '../infobox.ts';
 import { coverageOf } from '../panes/bar-stats.ts';
 import type { Bar } from '../panes/footprint.ts';
 import { sizeText } from '../sizes.ts';
+import type { CandleRow } from '../store.ts';
+import { coinText as coinFigure } from '../units.ts';
 
 /**
  * The Flow history pane's model (pure; tests/app-size-history.test.mts): per candle, the liquidations, the change of open interest and the
@@ -24,6 +26,12 @@ import { sizeText } from '../sizes.ts';
  *   its bars had no baseline at all.
  * - A candle recorded in part is drawn hollow, never judged, and left out of the baselines; liquidation days the source cut at 5,000 are
  *   judged among the liquidations it held (the largest), and said so.
+ * - In coins (the page's units, units.ts, issue 9) only the figures change (`historyCoins`, written by the card and the table): the bars, their
+ *   emphasis, the dots and every judgement keep reading the dollars, so the picture is the same in either units. The size bands' coins are
+ *   their dollars at the candle's typical price (`slotPrices`; a slot without its candle has no coin figure, a dash): the pane loads the bars
+ *   without their price rows, so this is an approximation,
+ *   as close as the candle's orders were to its typical price. Liquidations are each one's dollars over its reported price, and open interest's
+ *   change is the coin's own. The band names ("$25K–100K") are the size boxes' edges, in dollars in either units.
  */
 
 /** The six size bands, each a run of the footprint's boxes (indices into `SIZE_EDGES`): < 25K | 25K-100K | 100K-500K | 500K-1M | 1M-5M | >= 5M for BTC. */
@@ -262,6 +270,40 @@ export function buildHistory(input: HistoryInput): HistoryModel {
   return { rows, sides: BANDS.map((_, b) => ({ buy: buys[b]!, sell: sells[b]! })), cover, partial, total, liqCut, share, shareKind };
 }
 
+/**
+ * The price each slot's size bands are valued at in coins: the typical price, (high + low + close) / 3, of the chart candle starting there (a
+ * slot is a candle of the chart's timeframe). NaN where there is none (a bar held where no candle is, the pre-roll before the candles loaded):
+ * its coins are not known, never valued at a price from another time. Both oldest first, as the store keeps them.
+ */
+export function slotPrices(times: readonly number[], candles: readonly CandleRow[]): Float64Array {
+  const out = new Float64Array(times.length).fill(NaN), typical = (c: CandleRow): number => c[3] > 0 ? (c[2] + c[3] + c[4]) / 3 : NaN;
+  let k = 0;
+  for (let i = 0; i < times.length; i++) {
+    while (k < candles.length && candles[k]![0] < times[i]!) k++;
+    const c = candles[k];
+    if (c && c[0] === times[i]) out[i] = typical(c);
+  }
+  return out;
+}
+
+/** What the card and the table write in coins (`historyCoins`), slot by slot: each size band's buys and sells, the liquidations, open interest's change (NaN where not known). */
+export interface HistoryCoins { sides: { buy: Float64Array; sell: Float64Array }[]; liq: { buy: Float64Array; sell: Float64Array }; oi: Float64Array }
+/**
+ * The model's figures in coins: each size band's buys and sells over its slot's price (`slotPrices`: the candle's typical price), the
+ * liquidations as `liquidationBuckets` gives them in coins (each at its reported price), open interest's change as the coin's own.
+ */
+export function historyCoins(model: Pick<HistoryModel, 'sides'>, times: readonly number[], prices: ArrayLike<number>,
+  liquidations?: { buyCoin?: ReadonlyMap<number, number>; sellCoin?: ReadonlyMap<number, number> }, oi?: ReadonlyMap<number, number>): HistoryCoins {
+  const n = times.length, at = (side: Float64Array): Float64Array => side.map((v, i) => prices[i]! > 0 ? v / prices[i]! : NaN);
+  const liq = { buy: new Float64Array(n).fill(NaN), sell: new Float64Array(n).fill(NaN) }, change = new Float64Array(n).fill(NaN);
+  for (let i = 0; i < n; i++) {
+    const b = liquidations?.buyCoin?.get(times[i]!), s = liquidations?.sellCoin?.get(times[i]!), d = oi?.get(times[i]!);
+    if (b !== undefined && s !== undefined) { liq.buy[i] = b; liq.sell[i] = s; }
+    if (d !== undefined) change[i] = d;
+  }
+  return { sides: model.sides.map(side => ({ buy: at(side.buy), sell: at(side.sell) })), liq, oi: change };
+}
+
 /** Of the size rows at slot `i`: how many were judged (on any side), and how many the rule flags (a row once, whichever side). */
 export function unusualRows(model: Pick<HistoryModel, 'rows'>, i: number): { flagged: number; judged: number } {
   let flagged = 0, judged = 0;
@@ -316,7 +358,13 @@ export interface CardContext {
   dots?: boolean;
   /** Open interest's change at this candle in the coin itself, and the coin's name, beside the dollars; absent where not known. */
   oiCoins?: { value: number; coin: string } | null;
+  /** In coins (units.ts): the figures to write (`historyCoins`) and the coin's name; absent or null in dollars. */
+  coins?: { figures: HistoryCoins; coin: string } | null;
 }
+
+/** An amount of the coin as the card writes it ("13.2 BTC"), and with its sign ("+13.2 BTC", "0 BTC"); a dash where it is not known. */
+const coinAmount = (v: number, coin: string): string => Number.isFinite(v) ? `${coinFigure(v)} ${coin}` : '–';
+const signedCoinAmount = (v: number, coin: string): string => !Number.isFinite(v) ? '–' : v === 0 ? `0 ${coin}` : `${v < 0 ? '−' : '+'}${coinFigure(Math.abs(v))} ${coin}`;
 
 /**
  * The card of row `r` at slot `i`: its amounts, how unusual each side is, and how the candle's size rows stand together. Pure, so a test reads the
@@ -342,9 +390,10 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
   if (row.kind === 'size') {
     const sides = model.sides[row.band!]!, b = sides.buy[i]!, s = sides.sell[i]!;
     if (!Number.isFinite(b) || !Number.isFinite(s)) { out.push({ text: t('Nothing recorded for this candle.'), color: 'muted', rule: true }); return out; }
-    const net = b - s;
-    out.push({ label: t('Buys / sells'), text: `${plainUsd(b)} / ${plainUsd(s)}`, rule: true, table: false });
-    out.push({ label: t('Net'), text: signedUsd(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text', table: false });
+    const net = b - s, c = ctx.coins, cb = c ? c.figures.sides[row.band!]!.buy[i]! : NaN, cs = c ? c.figures.sides[row.band!]!.sell[i]! : NaN;
+    // In coins the figures are the coin's; the net's colour stays the dollars' side (the same side: one price values both).
+    out.push({ label: t('Buys / sells'), text: c ? `${coinAmount(cb, c.coin)} / ${coinAmount(cs, c.coin)}` : `${plainUsd(b)} / ${plainUsd(s)}`, rule: true, table: false });
+    out.push({ label: t('Net'), text: c ? signedCoinAmount(cb - cs, c.coin) : signedUsd(net), color: net > 0 ? 'buy' : net < 0 ? 'sell' : 'text', table: false });
     if (b + s > 0) out.push({ label: t('Buy share'), text: `${Math.round(b / (b + s) * 100)}%` });
     // Its share of the candle, and where it was unusual, what it usually is (the dot, where the bar is not already lit): of the volume with Buys
     // and sells bars, of the six sizes' nets counted without their signs with Delta bars, said on a line of its own.
@@ -366,17 +415,22 @@ export function cardLines(model: HistoryModel, r: number, i: number, ctx: CardCo
     const [shorts, longs] = row.parts as [Part, Part], s = shorts.values[i]!, l = longs.values[i]!, cut = model.liqCut[i] === 1;
     if (ctx.liqNote === 'spot') { out.push({ text: t('Only spot markets are counted: they have no liquidations.'), color: 'muted', wrap: true, rule: true }); return out; }
     if (!Number.isFinite(s) || !Number.isFinite(l)) { out.push({ text: t('Not known for this candle: the record does not reach it.'), color: 'muted', rule: true }); return out; }
-    const at = (v: number): string => cut ? `≥ ${plainUsd(v)}` : plainUsd(v);
-    out.push({ label: t('Shorts liquidated'), text: at(s), color: 'buy', rule: true, table: false });
-    out.push({ label: t('Longs liquidated'), text: at(l), color: 'sell', table: false });
+    // In coins each liquidation at its reported price (`historyCoins`).
+    const c = ctx.coins, money = (v: number, coins: number): string => c ? coinAmount(coins, c.coin) : plainUsd(v);
+    const at = (v: number, coins: number): string => cut ? `≥ ${money(v, coins)}` : money(v, coins);
+    out.push({ label: t('Shorts liquidated'), text: at(s, c ? c.figures.liq.buy[i]! : NaN), color: 'buy', rule: true, table: false });
+    out.push({ label: t('Longs liquidated'), text: at(l, c ? c.figures.liq.sell[i]! : NaN), color: 'sell', table: false });
     judged(shorts, t('Shorts'), false); judged(longs, t('Longs'), false);
     if (cut) out.push({ text: t('≈ A day of these candles held more than 5,000 liquidations: only its largest 5,000 are counted.'), color: 'muted', wrap: true });
   } else {
     const [oi] = row.parts as [Part], v = oi.values[i]!;
     if (ctx.oiNote === 'spot') { out.push({ text: t('Only spot markets are counted: they have no open interest.'), color: 'muted', wrap: true, rule: true }); return out; }
     if (!Number.isFinite(v)) { out.push({ text: t('Not known for this candle.'), color: 'muted', rule: true }); return out; }
-    // The table's Δ is the dollars: the line stays there for the coins beside them.
-    out.push({ label: t('Change'), text: ctx.oiCoins ? `${signedUsd(v)} · ${coinText(ctx.oiCoins.value, ctx.oiCoins.coin)}` : signedUsd(v), color: v > 0 ? 'buy' : v < 0 ? 'sell' : 'text', rule: true, ...(ctx.oiCoins ? {} : { table: false as const }) });
+    // The table's Δ is the dollars: the line stays there for the coins beside them. In coins the change is the coin's alone, which the table says.
+    const c = ctx.coins;
+    const cv = c ? c.figures.oi[i]! : NaN;
+    if (c) out.push({ label: t('Change'), text: signedCoinAmount(cv, c.coin), color: cv > 0 ? 'buy' : cv < 0 ? 'sell' : 'text', rule: true, table: false });
+    else out.push({ label: t('Change'), text: ctx.oiCoins ? `${signedUsd(v)} · ${coinText(ctx.oiCoins.value, ctx.oiCoins.coin)}` : signedUsd(v), color: v > 0 ? 'buy' : v < 0 ? 'sell' : 'text', rule: true, ...(ctx.oiCoins ? {} : { table: false as const }) });
     if (ctx.oiSource) out.push({ label: t('Markets'), text: ctx.oiSource });
     if (ctx.oiNote === 'minute') out.push({ text: t('Not judged on a one-minute chart: some venues report open interest every few minutes, which puts several minutes of change into one.'), color: 'muted', wrap: true });
     else judged(oi, null, false);

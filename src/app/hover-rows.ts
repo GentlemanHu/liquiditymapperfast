@@ -2,11 +2,13 @@
  * What the map's column boxes say when you point at them (Karl's pick of 2026-11-20 from the hover-box proposal): the profile column's box
  * leads with the row under the pointer (its prices, its size and the two books holding most of it), then compares the band from the price to
  * the pointer with its mirror and says how many books send data that far; the liquidation column's card says what stands in the row; the seam
- * weighs the book against the levels per side. Pure: the map finds the figures (`HeatPane`), these say them.
+ * weighs the book against the levels per side. Pure: the map finds the figures (`HeatPane`), these say them, every amount in the page's units
+ * (app/units.ts): the map hands them over in those units (in coins, each part over the price it was valued at).
  */
 import type { InfoColor, InfoLine, InfoRun } from './infobox.ts';
 import { t } from './i18n.ts';
-import { price as fmtPrice, usd } from './format.ts';
+import { price as fmtPrice } from './format.ts';
+import { amount } from './units.ts';
 import { coverage, cumulative, pastReach, type Grouped } from './panes/levels-data.ts';
 import type { LevelsFrame } from './wire.ts';
 import { venueLabel } from './venues.ts';
@@ -14,7 +16,8 @@ import type { LevelsKind } from './liq-levels.ts';
 import { countLabel, sideTitle, splitText, topLabel } from './liq-words.ts';
 import { BALANCED_RATIO, ratioWords } from './mirror.ts';
 
-const dollars = (value: number): string => `$${usd(value)}`;
+/** An amount as the boxes write it: "$1.2M", or "13.2 BTC" in coins. */
+const dollars = (value: number): string => amount(value);
 
 /** How long the profile column's box keeps a row's reading while the pointer stays on it: a row near the price changes its total two or three times a second (measured 2026-11-20), too fast to read. */
 export const ROW_HOLD_MS = 1000;
@@ -211,7 +214,7 @@ export function liqCardLines(f: LiqCard): InfoLine[] {
   const color = f.side === 'long' ? 'below' : 'above', title = sideTitle(f.kind, f.side), span = ` ${fmtPrice(f.lo, f.step)}–${fmtPrice(f.hi, f.step)}`;
   // Where price has taken part of the row, what stands of what the snapshot put there (the count and the largest below are the snapshot's,
   // so "$0" beside "Positions 14" would contradict them), as the stripe's box says it.
-  const taken = usd(f.level) !== usd(f.total);
+  const taken = dollars(f.level) !== dollars(f.total);
   const lines: InfoLine[] = [{ text: title + span, runs: [{ text: title, color, bold: true }, { text: span, bold: true }] },
     { label: t('At this level'), text: taken ? t('{left} of {total}', { left: dollars(f.level), total: dollars(f.total) }) : dollars(f.level), bold: true }];
   if (f.split && f.level > 0) lines.push({ text: splitText(f.split, f.level), color: 'muted', wrap: true });

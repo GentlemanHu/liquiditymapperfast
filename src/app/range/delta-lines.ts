@@ -7,6 +7,7 @@ import { sumWho, type OiWho } from './oi-summary.ts';
 import { durationText, estimateNotes, estimateStacks, signedCoins, signedUsd, spanText } from './oi-lines.ts';
 import type { RangeSelection } from './selection.ts';
 import type { RangeLine } from './stats.ts';
+import { coinText, inCoins, unitName, units as pageUnits } from '../units.ts';
 
 /** The share of a stretch's volume its delta must reach before the summary reads it against the price (the Bar stats' "delta vs candle" rule). */
 export const DELTA_SHARE_MIN = 0.05;
@@ -43,6 +44,11 @@ export interface DeltaPaneHeld {
   nlns: ReadonlyMap<number, NlnsCandle> | null; whose: string; coin: string;
   /** In a replay, the start of the bar under way at its moment, or null live. */
   replayAt: number | null;
+  /**
+   * In coins (units.ts, issue 9): each candle's flow in coins from the markets' coin tracks (aligned with `starts`; null where `flows` is), and
+   * the CVD candles in coins by start. Absent in dollars, and from a pane that does not give them: the summary then writes dollars.
+   */
+  coins?: { flows: readonly (CandleFlow | null)[]; candles: ReadonlyMap<number, DeltaCandle> };
 }
 
 /** A stretch of the Delta pane's candles summed up. */
@@ -68,6 +74,11 @@ export interface DeltaStretch {
   before: number | null;
   /** NL/NS added up over its candles (the OI pane's sum, `sumWho`). */
   who: OiWho | null;
+  /**
+   * The written figures in coins, where the pane gave its candles in coins (`DeltaPaneHeld.coins`): over the same candles, the largest the one
+   * the dollars picked, the CVD's level from the coin candles. What is counted, ranked and shared stays the dollars'.
+   */
+  coins?: { delta: number; volume: number; bought: number; sold: number; before: number | null; largest: number | null; cvd: { open: number; close: number } | null };
 }
 
 /** The candle of `candles` (oldest first) that starts at `t`; undefined when none does. */
@@ -129,7 +140,21 @@ export function deltaStretch(held: DeltaPaneHeld, sel: Pick<RangeSelection, 't0'
   return {
     t0: held.starts[first]!, t1: held.starts[last]! + tf, expected, bars: n, held: k, unrecorded: gaps, delta, volume, bought: (volume + delta) / 2, sold: (volume - delta) / 2,
     movement, half, buying, selling, flat, largest, runs: runs.size, cvd, supportLow: Number.isFinite(supportLow) ? supportLow : 0, supportHigh: Number.isFinite(supportHigh) ? supportHigh : 0, price, before, who,
+    ...(held.coins ? coinFigures(held, held.coins, idx, first, n, before !== null, largest, cvd !== null) : {}),
   };
+}
+
+/**
+ * The stretch's written figures in coins: the candles the dollars counted, each from its coin flow (`DeltaPaneHeld.coins`). None (the summary
+ * writes dollars) where a candle counted has no coin flow: a total of some candles would read as all of them.
+ */
+function coinFigures(held: DeltaPaneHeld, coins: NonNullable<DeltaPaneHeld['coins']>, idx: readonly number[], first: number, n: number, before: boolean, largest: DeltaStretch['largest'], cvd: boolean): Pick<DeltaStretch, 'coins'> {
+  let delta = 0, volume = 0;
+  for (const i of idx) { if (!held.flows[i]) continue; const f = coins.flows[i]; if (!f) return {}; delta += f.delta; volume += f.gross; }
+  let prior: number | null = null;
+  if (before) { prior = 0; for (let i = first - n; i < first; i++) { const f = coins.flows[i]; if (!f) { prior = null; break; } prior += f.delta; } }
+  const at = largest ? held.starts.indexOf(largest.t) : -1, a = coins.candles.get(held.starts[first]!), b = coins.candles.get(held.starts[idx[idx.length - 1]!]!);
+  return { coins: { delta, volume, bought: (volume + delta) / 2, sold: (volume - delta) / 2, before: prior, largest: at >= 0 ? coins.flows[at]?.delta ?? null : null, cvd: cvd && a && b ? { open: a.open, close: b.close } : null } };
 }
 
 const pct = (x: number): string => `${Math.round(x * 100)}%`;
@@ -171,13 +196,13 @@ const sharePct = (x: number): string => { const a = Math.abs(x) * 100 + 1e-9; re
 export class DeltaRangeSummary {
   /** The last complete result of a closed selection, with what it was worked out with (the markets and where the flow began then). */
   #kept: { key: string; s: DeltaStretch; markets: number; earliest: number | null; firsts: readonly (number | null)[]; priceMarket: string } | null = null;
-  #last: { held: DeltaPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; slot: number; zone: string; lines: RangeLine[] } | null = null;
+  #last: { held: DeltaPaneHeld | null; sel: RangeSelection; shown: boolean; current: string; slot: number; zone: string; units: string; lines: RangeLine[] } | null = null;
 
   lines(sel: RangeSelection, held: DeltaPaneHeld | null, shown: boolean, current: string, now: number, zone = ''): RangeLine[] {
-    const last = this.#last, slot = held ? Math.floor(now / held.tfMs) : 0;
-    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.slot === slot && last.zone === zone) return last.lines;
+    const last = this.#last, slot = held ? Math.floor(now / held.tfMs) : 0, units = pageUnits();
+    if (last && last.held === held && last.sel === sel && last.shown === shown && last.current === current && last.slot === slot && last.zone === zone && last.units === units) return last.lines;
     const lines = this.#lines(sel, held, shown, current, now);
-    this.#last = { held, sel, shown, current, slot, zone, lines };
+    this.#last = { held, sel, shown, current, slot, zone, units, lines };
     return lines;
   }
 
@@ -232,20 +257,26 @@ export class DeltaRangeSummary {
     if (s.held === 0) return [...lines, { key: 'dl-flow-none', kind: 'note', tone: 'muted', cells: [earliest !== null && earliest >= s.t1 - held.tfMs ? t('Flow is recorded from {time}: the candles before it have none.', { time: clock(earliest, true) }) : t('No flow recorded for these candles yet.')] }];
     // The whole selection held: only then are the delta read against the price and the stretch before said as the selection's.
     const whole = s.bars >= s.expected && s.held === n;
-    const share = s.volume > 0 ? s.delta / s.volume : 0;
-    if (s.volume > 0) lines.push({ key: 'dl-split', kind: 'split', share: s.bought / s.volume, cells: [t('Bought {value}', { value: `$${usd(s.bought)}` }), t('Sold {value}', { value: `$${usd(s.sold)}` })] });
-    lines.push({ key: 'dl-delta', kind: 'stat', ...(s.delta > 0 ? { tone: 'buy' as const } : s.delta < 0 ? { tone: 'sell' as const } : {}), cells: [t('Delta'), s.volume > 0 ? t('{value} · {share} of the volume', { value: signedUsd(s.delta), share: `${share > 0 ? '+' : share < 0 ? '−' : ''}${sharePct(share)}` }) : signedUsd(s.delta)] });
-    lines.push({ key: 'dl-volume', kind: 'stat', cells: [t('Recorded taker volume'), `$${usd(s.volume)}`] });
+    // In coins (the pane gave its candles in coins: `DeltaPaneHeld.coins`) the figures are the coin's; the shares and the colours stay the dollars'.
+    // The coin figures only while the page writes coins (a snapshot's coins are never written as dollars, nor its dollars as coins).
+    const c = inCoins() ? s.coins : undefined, coin = unitName(), money = (v: number): string => c ? `${coinText(v)} ${coin}` : `$${usd(v)}`;
+    const signedMoney = (v: number): string => !c ? signedUsd(v) : v === 0 ? `0 ${coin}` : `${v > 0 ? '+' : '−'}${coinText(Math.abs(v))} ${coin}`;
+    // In coins the delta's share of the volume and its colour are the coin amounts' (they agree in sign with the figure beside them); what decides
+    // (the note against the price below) reads the dollars.
+    const dollarShare = s.volume > 0 ? s.delta / s.volume : 0, delta = c ? c.delta : s.delta, share = c ? (c.volume > 0 ? c.delta / c.volume : 0) : dollarShare;
+    if (s.volume > 0) lines.push({ key: 'dl-split', kind: 'split', share: s.bought / s.volume, cells: [t('Bought {value}', { value: money(c ? c.bought : s.bought) }), t('Sold {value}', { value: money(c ? c.sold : s.sold) })] });
+    lines.push({ key: 'dl-delta', kind: 'stat', ...(delta > 0 ? { tone: 'buy' as const } : delta < 0 ? { tone: 'sell' as const } : {}), cells: [t('Delta'), s.volume > 0 ? t('{value} · {share} of the volume', { value: signedMoney(delta), share: `${share > 0 ? '+' : share < 0 ? '−' : ''}${sharePct(share)}` }) : signedMoney(delta)] });
+    lines.push({ key: 'dl-volume', kind: 'stat', cells: [t('Recorded taker volume'), money(c ? c.volume : s.volume)] });
     if (s.price) {
       const move = (s.price.close - s.price.open) / s.price.open, sign = move > 0 ? '+' : move < 0 ? '−' : '';
       lines.push({ key: 'dl-price', kind: 'stat', ...(move > 0 ? { tone: 'buy' as const } : move < 0 ? { tone: 'sell' as const } : {}), cells: [t('Price, {market}', { market: priceMarket }), `${fmtPrice(s.price.open)} → ${fmtPrice(s.price.close)} · ${sign}${(Math.abs(move) * 100).toFixed(2)}%`] });
       // The delta against the price: said only where they went opposite ways and the delta is a real share of the volume, and as what it is.
-      if (Math.abs(share) >= DELTA_SHARE_MIN && move !== 0 && Math.sign(move) !== Math.sign(share) && whole) {
-        lines.push({ key: 'dl-against', kind: 'note', cells: [share > 0 ? t('Net buying while the price fell: taker flow against the price, not proof that resting orders absorbed it.') : t('Net selling while the price rose: taker flow against the price, not proof that resting orders absorbed it.')] });
+      if (Math.abs(dollarShare) >= DELTA_SHARE_MIN && move !== 0 && Math.sign(move) !== Math.sign(dollarShare) && whole) {
+        lines.push({ key: 'dl-against', kind: 'note', cells: [dollarShare > 0 ? t('Net buying while the price fell: taker flow against the price, not proof that resting orders absorbed it.') : t('Net selling while the price rose: taker flow against the price, not proof that resting orders absorbed it.')] });
       }
     }
     // The CVD before and after the selection, both in one unit so their difference reads as the delta (-$763.8M -> -$1,390.0M, not -$1.4B).
-    if (s.cvd) lines.push({ key: 'dl-cvd', kind: 'stat', cells: [t('Recorded CVD, before → after selection'), usdPair(s.cvd.open, s.cvd.close)] });
+    if (s.cvd && (!c || c.cvd)) lines.push({ key: 'dl-cvd', kind: 'stat', cells: [t('Recorded CVD, before → after selection'), c?.cvd ? `${signedMoney(c.cvd.open)} → ${signedMoney(c.cvd.close)}` : usdPair(s.cvd.open, s.cvd.close)] });
     const spread: RangeLine[] = [];
     if (s.held >= 3 && s.movement > 0) spread.push({ key: 'dl-half', kind: 'stat', cells: [t('Half the movement came in'), `${t('{k} of {n} candles', { k: s.half, n: s.held })}${forming ? ` ${t('so far')}` : ''}`] });
     if (s.held >= 2 && s.movement > 0) {
@@ -253,8 +284,8 @@ export class DeltaRangeSummary {
       spread.push({ key: 'dl-offset', kind: 'stat', cells: [t('Net left after candles offset each other'), t('{share} of their combined size', { share: pct(Math.abs(s.delta) / s.movement) })] });
     }
     if (s.held >= 2) spread.push({ key: 'dl-count', kind: 'stat', cells: [t('Candle delta signs'), t('{b} buying · {s} selling · {f} flat', { b: s.buying, s: s.selling, f: s.flat })] });
-    if (s.before !== null && !forming && whole) spread.push({ key: 'dl-before', kind: 'stat', cells: [tn(n, 'Previous {n} candle ({span})', 'Previous {n} candles ({span})', { span: durationText(s.t1 - s.t0) }), signedUsd(s.before)], ...leanTone(s.before) });
-    if (s.largest && s.held > 1) spread.push({ key: 'dl-largest', kind: 'stat', cells: [t('Largest absolute candle delta'), `${clock(s.largest.t, true)} · ${signedUsd(s.largest.delta)}`], ...leanTone(s.largest.delta) });
+    if (s.before !== null && !forming && whole) spread.push({ key: 'dl-before', kind: 'stat', cells: [tn(n, 'Previous {n} candle ({span})', 'Previous {n} candles ({span})', { span: durationText(s.t1 - s.t0) }), c && c.before !== null ? signedMoney(c.before) : signedUsd(s.before)], ...leanTone(s.before) });
+    if (s.largest && s.held > 1) spread.push({ key: 'dl-largest', kind: 'stat', cells: [t('Largest absolute candle delta'), `${clock(s.largest.t, true)} · ${c && c.largest !== null ? signedMoney(c.largest) : signedUsd(s.largest.delta)}`], ...leanTone(s.largest.delta) });
     if (spread.length) lines.push({ key: 'h-dl-spread', kind: 'heading', cells: [t('How it was spread')] }, ...spread);
     return lines;
   }
