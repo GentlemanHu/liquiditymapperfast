@@ -4940,8 +4940,8 @@ export class HeatPane {
    * highlights that area on the main chart"): the ring pointed at in the colour the pane draws its side in, the band whole from the price
    * faintly, the same ring across the price at half (as the pane lights it). The order book's over the map's past on each column's own centre,
    * so the heat inside it is the money the band counts there; the levels' across the stripe right of the live edge from their newest snapshot,
-   * dashed and fainter while the pane reads an older one. The moment read brighter, the band named beside it and its edge's price on the axis
-   * (clamped with an arrowhead when out of view), as the book's row has.
+   * its edges dashed while the pane reads an older one. The moment read brighter. The band is named, and its edge's price given on the axis
+   * (clamped with an arrowhead when out of view, as the book's row has), on the stripe's zone where it is drawn, else on the moment's.
    */
   #paintDepthZone(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
     const z = state.depthHover; if (!z) return;
@@ -4991,11 +4991,10 @@ export class HeatPane {
         edge(run, other); ctx.globalAlpha = 0.35; ctx.strokeStyle = acrossInk; ctx.stroke();
       }
     }
-    // The liquidation levels: across the stripe and the columns right of the live edge, from their newest snapshot.
-    if (z.now && !replaying()) {
-      const x0 = Math.max(0, Math.round(xOf(pageNow())));
-      if (x0 < axisX) boxes(x0, axisX, z.now.centre, z.now.strong ? 1 : 0.45, z.now.strong ? [] : [4, 3]);
-    }
+    // The liquidation levels: across the stripe and the columns right of the live edge, from their newest snapshot, as strong while an older
+    // snapshot is read (the zone asked for, most hovers read an older one), its edges dashed then.
+    const stripeX0 = z.now && !replaying() ? Math.max(0, Math.round(xOf(pageNow()))) : axisX;
+    if (z.now && stripeX0 < axisX) boxes(stripeX0, axisX, z.now.centre, 1, z.now.strong ? [] : [4, 3]);
     // The moment read, brighter: a slab at its column, at least a few pixels wide.
     const slab = momentSlab(xOf(z.moment.t0), xOf(z.moment.t1), 5, 0, pw);
     if (slab) {
@@ -5004,13 +5003,16 @@ export class HeatPane {
       if (r) { const y0 = yOf(r.hi), y1 = yOf(r.lo); ctx.globalAlpha = 0.95; ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.strokeRect(Math.round(slab.x0) + 0.5, Math.round(y0) + 0.5, Math.max(1, Math.round(slab.x1 - slab.x0) - 1), Math.max(1, Math.round(y1 - y0) - 1)); }
     }
     ctx.restore();
-    // The band named beside the slab, at its outer edge, on a plate that reads over the heat and the candles.
-    const edgePrice = z.side === 'up' ? z.moment.centre * (1 + z.outer) : z.moment.centre * Math.max(0, 1 - z.outer), ey = yOf(edgePrice), inView = ey >= 0 && ey <= ph;
-    if (slab && inView) {
+    // The zone the band is named on and whose edge the axis gives: the stripe's where it is drawn (beside the axis), else the moment's slab.
+    const named = z.now && stripeX0 < axisX ? { centre: z.now.centre, x0: stripeX0, x1: stripeX0 } : slab ? { centre: z.moment.centre, x0: slab.x0, x1: slab.x1 } : null;
+    const centre = named?.centre ?? z.moment.centre;
+    // The band named beside it, at its outer edge, on a plate that reads over the heat and the candles.
+    const edgePrice = z.side === 'up' ? centre * (1 + z.outer) : centre * Math.max(0, 1 - z.outer), ey = yOf(edgePrice), inView = ey >= 0 && ey <= ph;
+    if (named && inView) {
       ctx.save();
       ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
       const label = edgeLabel(z.side, z.outer), w = Math.ceil(ctx.measureText(label).width) + 10, h = 16;
-      const lx = slab.x1 + 6 + w <= pw ? slab.x1 + 6 : Math.max(0, slab.x0 - 6 - w), ly = Math.max(0, Math.min(ph - h, Math.round(ey - h / 2)));
+      const lx = named.x1 + 6 + w <= axisX ? named.x1 + 6 : Math.max(0, named.x0 - 6 - w), ly = Math.max(0, Math.min(ph - h, Math.round(ey - h / 2)));
       ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(lx, ly, w, h, 4); ctx.fill();
       ctx.globalAlpha = 1; ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.roundRect(lx + 0.5, ly + 0.5, w - 1, h - 1, 4); ctx.stroke();
       ctx.fillStyle = p.text; ctx.fillText(label, lx + 5, ly + h / 2 + 0.5);

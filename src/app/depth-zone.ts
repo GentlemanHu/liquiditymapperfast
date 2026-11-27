@@ -7,8 +7,9 @@
  * - the order book: over the map's past, column by column on the price each pixel column's bands were centred on (`DepthBands.mid`), so the
  *   heat inside the ribbon is the money the band counts there, and the column read brighter;
  * - the liquidation levels: their history is not on the map, which holds the newest snapshot on the stripe right of the live edge, so the ring is
- *   shaded across the stripe from that snapshot's mark (dashed and fainter while the table reads an older one), and the moment read as a slab at
- *   its own time and mark. Their edges are the history's bucket edges the figure was read from, not the bands asked.
+ *   shaded across the stripe from that snapshot's mark (its edges dashed while the table reads an older one, which most hovers do: the newest
+ *   snapshot stands only in the last minutes), and the moment read as a slab at its own time and mark. The band is named, and its edge's price
+ *   given on the axis, on the stripe's zone. Their edges are the history's bucket edges the figure was read from, not the bands asked.
  *
  * `?depthZone=off` draws none, for comparing.
  */
