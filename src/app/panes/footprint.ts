@@ -347,7 +347,9 @@ export class FootprintData {
       const bars = fresh ? new Map<number, Bar>() : this.bars;
       if (!fresh && ask.kind === 'tail') for (const t of [...bars.keys()]) if (t >= reached) bars.delete(t);
       if (!fresh && ask.kind === 'redo') for (const t of [...bars.keys()]) if (t >= reached && t < ask.to) bars.delete(t);
-      for (const bar of body.bars) if (bar.t >= reached && bar.t < ask.to) bars.set(bar.t, readBar(bar, asked.length, body.venues));
+      // Bars without rows keep none: a source from before `sums` answers each as one merged row at price 0, which priced in coins as if it traded
+      // there (review 2026-11-27); its dollars are the bar's own.
+      for (const bar of body.bars) if (bar.t >= reached && bar.t < ask.to) { const read = readBar(bar, asked.length, body.venues); bars.set(bar.t, this.sumsOnly && read.rows.length ? { ...read, rows: [] } : read); }
       // Without rows: whether this answer's bars carry their dollars (it says so, or every bar is one merged row), and with them all those held.
       if (this.sumsOnly) { const told = body.totals === true || body.bars.every(bar => Array.isArray(bar.rows) && bar.rows.length > 0); this.#totals = fresh ? told : (this.#totals ?? true) && told; }
       if (fresh) this.#held = { grid, from: reached, to: ask.to, settled, at: performance.now(), rechecked: performance.now(), redo: { from: Infinity, to: Infinity, at: performance.now(), tries: 0 } };

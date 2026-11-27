@@ -26,7 +26,8 @@ import type { LaneLine } from './model.ts';
  *   the price at the middle of the stretch it traded over (`SizeInput.coins`, the price strip's own price), added up after that. The bars keep
  *   no price of their own (their trades only by size), so a long bar's coins are as close as its trades were to that price; the figures,
  *   read from minutes, are close to exact. A bar whose price is not known is not known in coins either: the line breaks there, as at a bar
- *   without sizes, and the figures leave it out. The share and the band names ($25K–100K, the boxes' edges) stay the dollars'.
+ *   without sizes, and a figure it traded in is not known (a dash, never a sum short of it). The share and the band names ($25K–100K, the
+ *   boxes' edges) stay the dollars'.
  */
 
 /** The timeframes the bars may be asked on, shortest first (the footprint's). */
@@ -195,7 +196,8 @@ export function rasterise(points: { t: readonly number[]; v: readonly number[] }
 /**
  * One kind's figures for a band over the ranking window [now - rankMs, now): bought and sold dollars of the bars (`tfMs` long) inside it, the
  * bar the window starts in for its part of it (its trades taken as spread evenly over it), none after now (in a replay, none still under way).
- * With `priceOf`, the same in coins beside them (each bar over its price; a bar without one left out of them).
+ * With `priceOf`, the same in coins beside them (each bar over its price), NaN where a bar that traded in the band has no price (review
+ * 2026-11-27: left out, a lane priced nowhere read "0 BTC").
  */
 function bandFigures(held: SizeBars, band: number, input: SizeInput, tfMs: number, priceOf: PriceOf | null): { buy: number; sell: number; coins: { buy: number; sell: number } | null } {
   const [lo, hi] = BANDS[band]!, from = input.now - input.rankMs;
@@ -204,7 +206,7 @@ function bandFigures(held: SizeBars, band: number, input: SizeInput, tfMs: numbe
     if (s + tfMs <= from || s >= input.now || !bar.stats || (input.replay && s + tfMs > input.now)) continue;
     const part = s < from ? (s + tfMs - from) / tfMs : 1, b = part * sumBox(bar.stats.buy, lo, hi), sl = part * sumBox(bar.stats.sell, lo, hi);
     buy += b; sell += sl;
-    if (priceOf) { const price = priceOf(s, tfMs); if (price > 0) { coinBuy += b / price; coinSell += sl / price; } }
+    if (priceOf && b + sl > 0) { const price = priceOf(s, tfMs); coinBuy += price > 0 ? b / price : Number.NaN; coinSell += price > 0 ? sl / price : Number.NaN; }
   }
   return { buy, sell, coins: priceOf ? { buy: coinBuy, sell: coinSell } : null };
 }

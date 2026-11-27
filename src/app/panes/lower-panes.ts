@@ -14,7 +14,7 @@ import { ASKS, BIDS, DepthBars, fitsBars, neededBars, pixelFlags, sideFlags } fr
 import type { View } from '../view.ts';
 import { clock, price as fmtPrice, usd } from '../format.ts';
 import { gutter, leftGutter, timeTicks, AXIS_W, type HeatPane } from './heat-pane.ts';
-import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, csvHead, statTitle, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, readsRows, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
+import { BAR_STATS, GROUP_SHORT, GROUP_TITLES, HEAD_H, PRESETS, coverageOf, csvCell, csvHead, statTitle, dayStartOf, deviation, enabledStats, liquidationBuckets, pinnedLines, pinsAfterClick, readsRows, coinRunOf, rowScale, statCellLines, statDef, strength, tableBands, viewCellLines, type StatCell, type StatDef, type StatGroup, type StatInput, type StatTone, type TableBand, type ViewCell } from './bar-stats.ts';
 import { resolveZone } from '../traded/settings.ts';
 import { resetKeys } from '../delta/candles.ts';
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
@@ -2086,10 +2086,10 @@ export function bookNames(ids: readonly string[], markets: AppState['markets']):
   return names.map((name, i) => (count.get(name)! > 1 && kindOf(markets, ids[i]!) === 'spot' && !/spot/i.test(name) ? `${name} ${t('Spot')}` : name));
 }
 
-/** Strip under the chart with the enabled per-candle statistics, aligned to the candle slots (footprint on); its settings key chooses, orders and configures them. */
 /** What a Bar stats row draws that a pointer move does not change (`BarStatsPane.#rowPaint`): its scale, its unusual candles, and per slot its cell's strength (0 to 1) and fill. */
 interface RowPaint { scale: { lo: number; hi: number } | null; found: Anomalies | null; strength: Float64Array; fill: (string | null)[] }
 
+/** Strip under the chart with the enabled per-candle statistics, aligned to the candle slots (footprint on); its settings key chooses, orders and configures them. */
 export class BarStatsPane extends TimePane {
   /** A table: the pointer's height is a row, not a value, so it takes no horizontal line. */
   protected override crossY = false;
@@ -2301,7 +2301,9 @@ export class BarStatsPane extends TimePane {
     const readout = this.head.querySelector('.readout'), daily = options.cvdFrom === 'day';
     // The bars without rows (dollars, order statistics, minutes, size lines: quick over any window), and the footprint's bars with rows, loaded
     // and read only for a statistic that reads rows or their markets, or the dollars from a source whose bars without rows carry none.
-    const sums = this.heat.statSums, rowData = this.heat.footprintData, fromRows = defs.map(def => readsRows(def, sums.totals)), anyRows = fromRows.some(Boolean);
+    // In coins with CVD from each day's start the running sums read rows too (`readsRows`): their bars reach back past the chart's candles.
+    const coinRun = coinRunOf(inCoins(), options);
+    const sums = this.heat.statSums, rowData = this.heat.footprintData, fromRows = defs.map(def => readsRows(def, sums.totals, coinRun)), anyRows = fromRows.some(Boolean);
     // Aggregated, the rows count every market the footprint adds together; open interest stays the OI pane's one market (as its row's tip says),
     // and the liquidations count the perpetuals whatever the Spot / Perp filter (`liquidationMarkets`, below).
     const markets = this.heat.footprintMarkets(state), stats = daily

@@ -706,7 +706,7 @@ async function main(): Promise<void> {
     if (changed.has('depthBands') || changed.has('liqBands')) depth.settingsChanged();
     // What the levels show (liquidations, stops, both; whose; take profits) is the Depth pane's Liquidation levels too.
     if (changed.has('depthSource') || changed.has('liqLevels')) depth.refresh();
-    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('keyLevels') || changed.has('traded') || changed.has('vwap') || changed.has('tpo') || changed.has('vwapAnchoring') || changed.has('profileAnchoring') || changed.has('footprint') || changed.has('customMarkets') || changed.has('barStatOptions')) heat.invalidate();
+    if (changed.has('absorption') || changed.has('tradeBubbles') || changed.has('liquidations') || changed.has('keyLevels') || changed.has('traded') || changed.has('vwap') || changed.has('tpo') || changed.has('vwapAnchoring') || changed.has('profileAnchoring') || changed.has('footprint') || changed.has('customMarkets') || changed.has('barStatOptions') || changed.has('barStats')) heat.invalidate();
     // Placing a VWAP anchor, selecting a Range and placing a drawing all take the next press on the map: arming one ends the others.
     if (changed.has('rangeTool') && state.rangeTool && state.vwapAnchoring) store.set({ vwapAnchoring: false });
     // Placing ended, however it ended (placed, Esc, Cancel, another tool): the anchor being moved, if any, is no longer.

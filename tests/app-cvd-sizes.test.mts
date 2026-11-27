@@ -161,11 +161,20 @@ test('in coins (issue 9) a bar is its dollars over the price at the middle of wh
   try {
     assert.deepEqual(sizeRowLabel(coins.rows[0]!, 87).map(l => l.text), [coins.rows[0]!.label, 'S +32 BTC', '100% · 35.5 BTC'], 'the band\x27s name stays its dollars');
   } finally { setUnits('usd'); }
-  // A minute whose price is not known is not known in coins: the line breaks there and goes on from where it stood; the coins leave it out
-  // (the dollars do not).
+  // A minute whose price is not known is not known in coins: the line breaks there and goes on from where it stood, and the figures it traded
+  // in are not known (a dash, never a sum short of it: review 2026-11-27); the dollars are as they were, and a band it did not trade in keeps
+  // its coins.
   const gap = buildSizeModel({ ...base, coins: { priceAt: t => t >= M && t < 2 * M ? NaN : priceAt(t) } }), g = gap.rows[0]!.lanes[0]!;
   assert.ok(near(g.last[0]!, d[0]!) && Number.isNaN(g.last[1]!) && near(g.last[2]!, d[0]! + d[2]!) && near(g.last[3]!, d[0]! + d[2]! + d[3]!), `${[...g.last].join(', ')}`);
-  assert.ok(near(g.coins!.buy, coinBuy - 10_000 / 1_150) && g.coins!.sell === 0);
+  assert.ok(Number.isNaN(g.coins!.buy) && Number.isNaN(g.coins!.sell) && Number.isNaN(gap.rows[0]!.coins!.gross));
   assert.deepEqual([g.delta, g.buy, g.sell], [38_000, 40_000, 2_000]);
+  assert.deepEqual(gap.rows[1]!.lanes[0]!.coins, { delta: 0, gross: 0, buy: 0, sell: 0 }, 'nothing traded in the band: 0, known');
   assert.equal(gap.rows[0]!.unknown, 0, 'every bar has its sizes: the count of bars without them says nothing of prices');
+  setUnits('coin');
+  try {
+    assert.deepEqual(sizeRowLabel(gap.rows[0]!, 87).map(l => l.text), [gap.rows[0]!.label, 'S –', '100% · –'], 'not "0 BTC"');
+  } finally { setUnits('usd'); }
+  // Priced nowhere (the price track not loaded yet): a dash, not "0 BTC".
+  const none = buildSizeModel({ ...base, coins: { priceAt: () => NaN } }).rows[0]!;
+  assert.ok(Number.isNaN(none.lanes[0]!.coins!.delta) && Number.isNaN(none.coins!.gross));
 });

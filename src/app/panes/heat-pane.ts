@@ -70,7 +70,7 @@ import { linesToAsk } from '../sizes.ts';
 import { MAX_COUNT, chartKinds, linesCount, linesSource, profileAnchorOf, resolveZone, type LineKind, type TradedSettings } from '../traded/settings.ts';
 import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt, anchorSnapshot, anchorTag, answerFits, snapshotDue, type AnchorSnapshot, type ProfileAnchorStart } from '../traded/anchor.ts';
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
-import { dayStartOf, enabledStats, readsRows } from './bar-stats.ts';
+import { dayStartOf, enabledStats, readsRows, coinRunOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
 import { WARM_IDLE, WARM_LOOK_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
@@ -900,12 +900,13 @@ export class HeatPane {
   get statSums(): FootprintData { return this.#statSums; }
   /**
    * Whether the Bar stats table reads the footprint's bars with rows: a statistic shown reads rows or their markets, or reads the bars'
-   * dollars from a source whose bars without rows carry none (`readsRows`). Otherwise it reads `#statSums` alone and no row is loaded for it.
+   * dollars from a source whose bars without rows carry none, or is a running sum in coins from each day's start (`readsRows`). Otherwise it
+   * reads `#statSums` alone and no row is loaded for it.
    */
   statsReadRows(state: AppState): boolean {
     if (!state.show.stats) return false;
-    const totals = this.#statSums.totals;
-    return enabledStats(state.barStats).some(def => readsRows(def, totals));
+    const totals = this.#statSums.totals, coinRun = coinRunOf(inCoins(), state.barStatOptions);
+    return enabledStats(state.barStats).some(def => readsRows(def, totals, coinRun));
   }
 
   /**
@@ -1434,16 +1435,20 @@ export class HeatPane {
    * What the footprint's bars are asked for while the footprint shows or a Bar stats statistic reads rows (`statsReadRows`): the markets, the
    * rows the footprint would draw at this zoom whether it shows or not (so the table's rows, point of control and imbalances, are the
    * footprint's own when both are on), and the window: the view, from the start of the day its left edge falls in for a running sum read from
-   * rows (from each day's start). No size lines: the table reads them from its bars without rows (`#statSumsAsk`).
+   * rows (from each day's start). No size lines but for running sums read from rows in coins (cvd retail and whales priced by the rows): the
+   * table reads them from its bars without rows (`#statSumsAsk`).
    */
-  #footprintAsk(state: AppState): { markets: string[]; window: Bounds; rowStep: number } {
+  #footprintAsk(state: AppState): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
     const v = this.view, ph = this.plotH, fine = this.#footprint.fine;
     const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
     const rowStep = fine > 0 ? fine * 2 ** this.#lod.level(fineRowPx) : 0;
-    // From the start of the day only for a running sum read from rows (cvd from an older source): the row statistics read the view alone.
-    const dayRows = state.show.stats && state.barStatOptions.cvdFrom === 'day' && enabledStats(state.barStats).some(def => def.running && readsRows(def, this.#statSums.totals));
+    // From the start of the day only for a running sum read from rows (cvd from an older source, or any in coins): the row statistics read the
+    // view alone.
+    const coinRun = coinRunOf(inCoins(), state.barStatOptions);
+    const dayRows = state.show.stats && state.barStatOptions.cvdFrom === 'day' && enabledStats(state.barStats).some(def => def.running && readsRows(def, this.#statSums.totals, coinRun));
     const from = dayRows ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
-    return { markets: this.footprintMarkets(state), window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, rowStep };
+    const cuts = dayRows && coinRun ? linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd) : [];
+    return { markets: this.footprintMarkets(state), window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, rowStep, cuts };
   }
 
   /**
@@ -1529,9 +1534,9 @@ export class HeatPane {
       return;
     }
     const tfMs = TIMEFRAMES[state.timeframe] ?? 3_600_000;
-    const { markets, window, rowStep } = this.#footprintAsk(state);
+    const { markets, window, rowStep, cuts } = this.#footprintAsk(state);
     if (!markets.length) this.#footprint.clear();
-    if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), [], this.hub.sourceNow());
+    if (markets.length) this.#footprint.ensure(markets.join(','), state.timeframe, window, rowStep, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow());
     const rowH = rowStep > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(rowStep, ph)) : 0;
     const factor = visibilityFactor(state.candles, tfMs, v, pw, ph, rowH || 1, rowStep || 1);
     // The table alone draws nothing on the map: the footprint's level of detail stays off, and with it the heatmap's dimming and the traps.
