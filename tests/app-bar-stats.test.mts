@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, readsRows, coinRunOf, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, readsRows, coinRunOf, PRICE_CARRY_MS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -396,26 +396,29 @@ test('coins (issue 9): each size is its parts at their own prices, the candle\'s
   } finally { setUnits('usd'); }
 });
 
-test('coins on bars without rows (review 2026-11-27): each at its candle\x27s typical price; one that traded past the candles has no figure and a running sum is not known from it on; with CVD from each day\x27s start the running sums read rows', () => {
-  // Bars without rows, as the table's bars without rows are: minutes 0 and 2 under candles (typical prices 100 and 200), minute 1 traded
-  // past the chart's candles (it holds its newest 500), minute 3 quiet and without a candle too. Every order is under the retail size.
+test('coins on bars without rows (review 2026-11-27): each at its candle\x27s typical price, a candle missing from the chart\x27s market at the close before it; a running sum from the view starts at the first bar it can price, and is not known from a later one it cannot; with CVD from each day\x27s start the running sums read rows', () => {
+  // Bars without rows, as the table's bars without rows are: minute 0 older than the chart's candles (it holds its newest 500), candles at
+  // minutes 10 and 12 (typical prices 100 and 200, closes 100 and 200), minute 11 traded with no candle of the chart's market (it sends no
+  // empty candles), minute 13 quiet, and minute 200 traded more than two hours after the last candle. Every order is under the retail size.
   const box0 = (usd: number) => [usd, 0, 0, 0, 0, 0, 0, 0];
   const plain = (t: number, buy: number, sell: number): Bar => ({ t, rows: [], buyUsd: buy, sellUsd: sell, minutes: 1, stats: tradeStats(buy > 0 ? 1 : 0, sell > 0 ? 1 : 0, box0(buy), box0(sell)) });
-  const noRows = [plain(0, 1_000, 400), plain(MIN, 500, 100), plain(2 * MIN, 200, 900), plain(3 * MIN, 0, 0)];
-  const cs = new Map<number, CandleRow>([[0, [0, 100, 110, 90, 100, 5, 1]], [2 * MIN, [2 * MIN, 200, 210, 190, 200, 5, 1]]]);
-  const usdInput: StatInput = { bars: noRows, times: noRows.map(b => b.t), tfMs: MIN, now: 4 * MIN, step: 0, candles: cs, oi: new Map(), options: { ...DEFAULT_STAT_OPTIONS } };
+  const noRows = [plain(0, 300, 100), plain(10 * MIN, 1_000, 400), plain(11 * MIN, 500, 100), plain(12 * MIN, 200, 900), plain(13 * MIN, 0, 0), plain(200 * MIN, 50, 10)];
+  const cs = new Map<number, CandleRow>([[10 * MIN, [10 * MIN, 100, 110, 90, 100, 5, 1]], [12 * MIN, [12 * MIN, 200, 210, 190, 200, 5, 1]]]);
+  const usdInput: StatInput = { bars: noRows, times: noRows.map(b => b.t), tfMs: MIN, now: 201 * MIN, step: 0, candles: cs, oi: new Map(), options: { ...DEFAULT_STAT_OPTIONS } };
   const coinInput: StatInput = { ...usdInput, coins: true };
   const run = (id: string, input: StatInput) => statDef(id)!.compute(input);
-  assert.deepEqual(run('vol', coinInput), [14, null, 5.5, 0], 'each bar at its candle; past the candles no figure; a quiet bar 0 whatever its price');
-  assert.deepEqual(run('delta', coinInput), [6, null, -3.5, 0]);
-  // A running sum: not known from the bar it cannot price on (never a sum that leaves it out), until the next restart.
-  assert.deepEqual(run('cvd', coinInput), [6, null, null, null]);
-  assert.deepEqual(run('cvdRetail', coinInput), [6, null, null, null], 'cvd retail the same: all of it is retail');
-  assert.deepEqual(run('cvd', { ...coinInput, restart: [0, 0, 1, 1] }), [6, null, -3.5, -3.5], 'a new day starts it again, known');
+  assert.deepEqual(run('vol', coinInput), [null, 14, 6, 5.5, 0, null], 'older than the candles and past two hours: no figure; minute 11 at minute 10\x27s close; quiet: 0');
+  assert.deepEqual(run('delta', coinInput), [null, 6, 4, -3.5, 0, null]);
+  // From the view the sum starts at the first bar it can price, and is not known from a later bar it cannot (never a sum leaving it out).
+  assert.deepEqual(run('cvd', coinInput), [null, 6, 10, 6.5, 6.5, null]);
+  assert.deepEqual(run('cvdRetail', coinInput), [null, 6, 10, 6.5, 6.5, null], 'cvd retail the same: all of it is retail');
+  // With restarts (each day's start) a bar it cannot price leaves the sum not known until the next start, the first bars too.
+  assert.deepEqual(run('cvd', { ...coinInput, restart: [0, 0, 0, 1, 1, 1] }), [null, null, null, -3.5, -3.5, null]);
   // In dollars nothing needs a price: as it always was.
-  assert.deepEqual(run('cvd', usdInput), [600, 1_000, 300, 300]);
-  assert.deepEqual(run('cvdRetail', usdInput), [600, 1_000, 300, 300]);
-  assert.deepEqual(run('vol', usdInput), [1_400, 600, 1_100, 0]);
+  assert.deepEqual(run('cvd', usdInput), [200, 800, 1_200, 500, 500, 540]);
+  assert.deepEqual(run('cvdRetail', usdInput), [200, 800, 1_200, 500, 500, 540]);
+  assert.deepEqual(run('vol', usdInput), [400, 1_400, 600, 1_100, 0, 60]);
+  assert.equal(PRICE_CARRY_MS, 2 * 3_600_000);
   // So in coins with CVD from each day's start, whose bars reach back past the candles, the running sums read rows (each part at its row's
   // price, as before the bars without rows); the others, and every one in dollars or from the view, read the bars without rows.
   assert.equal(coinRunOf(true, { cvdFrom: 'day' }), true);

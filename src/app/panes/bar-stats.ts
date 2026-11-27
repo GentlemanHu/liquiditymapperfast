@@ -27,8 +27,9 @@ import { coinText, inCoins, unitName } from '../units.ts';
  * its candle's typical price): an approximation, as close as the bar's orders are to its average price. delta % is the share of the coin amounts
  * it is written beside (so the two agree in sign); other shares, ratios, counts and prices stay as they are, and what decides (the imbalance
  * minimum, the retail and whale sizes, the order of the rows) keeps reading dollars. Nothing in coins is worked out in dollars mode. A bar
- * that traded but has neither rows nor its candle (the chart holds its newest 500 candles) has no figure in coins, and a running sum is not
- * known from it on: with CVD from each day's start the running sums read rows in coins, as their bars reach back past the candles.
+ * without rows whose candle the chart's market lacks takes the close of the one before (within two hours, `barPrice`); one older than the
+ * chart's candles (it holds its newest 500) has no figure in coins: a running sum from the view starts after such bars and is not known from
+ * a later one, and with CVD from each day's start the running sums read rows in coins, as their bars reach back past the candles.
  */
 export type { StatOptions } from '../stat-options.ts';
 export { DEFAULT_STAT_OPTIONS } from '../stat-options.ts';
@@ -177,15 +178,31 @@ function barCoins(bar: Bar, step: number): BarCoins {
   coinsHeld.set(bar, made);
   return made;
 }
+/** How far back a bar without its candle takes the close of the one before (the flow's coins carry a price as far, units.ts). */
+export const PRICE_CARRY_MS = 2 * 3_600_000;
+/** Each candle map's starts, oldest first, worked out once a map (a table builds its map once). */
+const startsHeld = new WeakMap<ReadonlyMap<number, CandleRow>, number[]>();
+/** The close of the last candle that started before `t`, no more than `PRICE_CARRY_MS` before it; NaN with none. */
+function closeBefore(candles: ReadonlyMap<number, CandleRow>, t: number): number {
+  let starts = startsHeld.get(candles);
+  if (!starts) { starts = [...candles.keys()].sort((a, b) => a - b); startsHeld.set(candles, starts); }
+  let lo = 0, hi = starts.length - 1, at = -1;
+  while (lo <= hi) { const mid = (lo + hi) >> 1; if (starts[mid]! < t) { at = mid; lo = mid + 1; } else hi = mid - 1; }
+  if (at < 0 || t - starts[at]! > PRICE_CARRY_MS) return Number.NaN;
+  const close = candles.get(starts[at]!)![4];
+  return close > 0 ? close : Number.NaN;
+}
 /**
  * The price a bar's orders are valued at where only their dollars are known (the size boxes): the bar's volume-weighted price from its rows,
- * else its candle's typical price; NaN where neither is known.
+ * else its candle's typical price, else, where the chart's market has no candle for it (it traded nothing there: some venues send no empty
+ * candles), the close of the candle before it, as the price stood, within `PRICE_CARRY_MS` (review 2026-11-27); NaN where none is known
+ * (a bar older than the chart's candles: it holds its newest 500).
  */
 export function barPrice(input: Pick<StatInput, 'step' | 'candles'>, bar: Bar): number {
   const c = barCoins(bar, input.step);
   if (c.buy + c.sell > 0) return c.usd / (c.buy + c.sell);
   const k = input.candles.get(bar.t);
-  return k && k[3] > 0 ? (k[2] + k[3] + k[4]) / 3 : Number.NaN;
+  return k && k[3] > 0 ? (k[2] + k[3] + k[4]) / 3 : closeBefore(input.candles, bar.t);
 }
 /** A bar's dollar figure in the input's units: as it is in dollars; in coins at the bar's price (`barPrice`), null where that is not known. */
 function inBarUnits(input: StatInput, bar: Bar, usd: number): number | null {
@@ -406,12 +423,19 @@ const tradeStat = (id: string, label: string, title: string, scale: StatScale, f
 const sumBuckets = (values: readonly number[], from: number, to: number): number => values.slice(from, to + 1).reduce((a, b) => a + b, 0);
 /**
  * A running sum over the slots, starting again where `restart` changes (a new day). A slot without a value (null: no bar, or one without
- * statistics) adds nothing; a bar whose value is not known (NaN: in coins, one that traded but has no price) leaves the sum not known until
- * the next restart, rather than left out of it (review 2026-11-27: a cvd in coins skipped every bar the chart's candles did not reach).
+ * statistics) adds nothing; a bar whose value is not known (NaN: in coins, one that traded with no price) leaves the sum not known until the
+ * next restart, rather than left out of it (review 2026-11-27: a cvd in coins skipped every bar the chart's candles did not reach). Without
+ * restarts (from the view, whose left edge is where the sum starts anyway) the sum starts at the first bar it can value: the bars older than
+ * the chart's candles, which a view zoomed out past them holds, say nothing rather than leave the whole row unknown (review round 4).
  */
 const running = (values: (number | null)[], restart?: readonly number[]): (number | null)[] => {
-  let run = 0, key = NaN;
-  return values.map((v, i) => { if (restart && restart[i] !== key) { key = restart[i]!; run = 0; } if (v === null) return null; run += v; return Number.isNaN(run) ? null : run; });
+  let run = 0, key = NaN, started = restart !== undefined;
+  return values.map((v, i) => {
+    if (restart && restart[i] !== key) { key = restart[i]!; run = 0; }
+    if (v === null || (!started && Number.isNaN(v))) return null;
+    started = true; run += v;
+    return Number.isNaN(run) ? null : run;
+  });
 };
 /** A bar's delta for a running sum: NaN in coins where it traded but has no price (the sum is then not known). */
 const runDelta = (input: StatInput, bar: Bar): number => barDelta(input, bar) ?? Number.NaN;

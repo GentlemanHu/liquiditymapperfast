@@ -2359,7 +2359,10 @@ export class BarStatsPane extends TimePane {
         step: anyRows ? rowData.step : 0, options, cuts: sums.cuts, candles, oi: new Map(state.oi.map(b => [b[0], b] as const)), oiChange: oiChangeByTime(state.oi, parts, tfMs), oiUsd: this.#oiUsd(state, parts, tfMs, candles), perps };
       // (The rows' size is said only where a statistic reads rows: the Range summary names it from `step`.)
       const rowInput: StatInput | null = anyRows ? { ...input, bars: times.map(start => rowData.bars.get(start) ?? null), cuts: rowData.cuts, step: rowData.step } : null;
-      const inputs = defs.map((_, i) => fromRows[i] && rowInput ? rowInput : input);
+      // The look (the dollars: shading, ranks, Unusual) reads what dollars mode reads; only the coins written follow `coinRun` (a running sum
+      // read from rows to be priced), so the rows still loading change no cell's look (review round 4).
+      const lookRows = defs.map(def => readsRows(def, sums.totals));
+      const inputs = defs.map((_, i) => lookRows[i] && rowInput ? rowInput : input);
       // The cells' shading, Unusual, lines, paint and ranks read the dollars in either units, so toggling them changes no cell's look (a percentile
       // cut or a flag would flip where every value moved by its own price): the figures written (cells, cards, pins, the View column, Export CSV
       // and the Range summary) are the coin's, worked out from the same inputs in coins.
