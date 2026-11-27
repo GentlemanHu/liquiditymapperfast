@@ -163,3 +163,27 @@ export function lsLanded(ids: readonly string[], before: readonly LsSeries[], an
   }
   return out;
 }
+
+/**
+ * Where the lines' end marks and tags go, between `top` and `bottom`: each kept `gap` px from the one above where the two end within `gap` px
+ * of each other, pushed down from where its line ends, then the stack lifted back where it ran past the bottom. Where the pane cannot hold
+ * them all, Hyperliquid's tags give way, the most crowded first: the readout, the popup and the table name every line.
+ */
+export function placeEnds<T extends { x: number; y: number; tag?: string }>(ends: readonly T[], top: number, bottom: number, gap = 14): T[] {
+  const room = Math.max(1, Math.floor((bottom - top) / gap) + 1);
+  let kept = ends.map(e => ({ ...e, y: Math.max(top, Math.min(bottom, e.y)) }));
+  if (kept.length > room) {
+    // The space each tag has to itself: the distance to the nearest other end.
+    const crowd = (e: T): number => Math.min(...kept.filter(o => o !== e).map(o => Math.abs(o.y - e.y)));
+    const drop = new Set(kept.filter(e => e.tag).sort((a, b) => crowd(a) - crowd(b)).slice(0, kept.length - room));
+    kept = kept.filter(e => !drop.has(e));
+  }
+  kept.sort((a, b) => a.y - b.y);
+  const near = (a: T, b: T): boolean => Math.abs(a.x - b.x) < gap;
+  for (let i = 1; i < kept.length; i++) if (near(kept[i]!, kept[i - 1]!) && kept[i]!.y - kept[i - 1]!.y < gap) kept[i]!.y = kept[i - 1]!.y + gap;
+  for (let i = kept.length - 1; i >= 0; i--) {
+    const below = kept[i + 1], limit = below && near(kept[i]!, below) ? below.y - gap : bottom;
+    if (kept[i]!.y > limit) kept[i]!.y = Math.max(top, limit);
+  }
+  return kept;
+}

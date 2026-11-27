@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { HL_MAX_DAYS, HL_PERIOD_MS, HL_RAMP, HL_ROLLUP_MS, HlSides, hlAt, hlColor, hlLines, hlName, hlTag, readSidesRows, shareOf, sidesUrls, type HlCell, type HlRow } from '../src/app/hl-sides.ts';
 import type { LiqAnswer } from '../src/app/liq-history.ts';
+import { placeEnds } from '../src/app/panes/ls-window.ts';
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 /** 2026-11-15T00:00:00Z. */
@@ -154,4 +155,23 @@ test('a wide view reads the rollup, a refusal stops the asking, and without a pa
   assert.ok(flaky.asked.length > before);
   const rows: HlRow[] = flaky.reader.rows(D, D + 2 * HOUR).rows;
   assert.equal(rows[0]!.createdAt, D + HOUR - 6 * MIN);
+});
+
+test('end marks and tags stay inside a short pane; where they cannot all fit, the most crowded tags give way', () => {
+  // A 120 px pane: about 81 px between the top and bottom limits, room for six 14 px slots.
+  const ends = [
+    { id: 'bitget', x: 500, y: 10 }, { id: 'okx', x: 500, y: 24 }, { id: 'binance', x: 500, y: 26 }, { id: 'bybit', x: 500, y: 28 },
+    { id: 'gate', x: 500, y: 40 }, { id: 'hl', x: 500, y: 25, tag: '-PnL' }, { id: 'hl', x: 500, y: 45, tag: 'All' }, { id: 'hl', x: 500, y: 87, tag: '+PnL' },
+  ];
+  const placed = placeEnds(ends, 6, 87);
+  assert.equal(placed.length, 6, 'two tags give way');
+  assert.deepEqual(placed.filter(e => e.tag).map(e => e.tag), ['+PnL'], 'the tags in the crowd go first; the lone one at the bottom stays');
+  for (const e of placed) assert.ok(e.y >= 6 && e.y <= 87, `${e.id} at ${e.y}`);
+  const ys = placed.map(e => e.y);
+  for (let i = 1; i < ys.length; i++) assert.ok(ys[i]! - ys[i - 1]! >= 14 - 1e-9, `${ys}`);
+  // Room for all: none dropped, and a stack that ran past the bottom is lifted back inside it.
+  const lifted = placeEnds([{ x: 0, y: 80 }, { x: 0, y: 82 }, { x: 0, y: 84, tag: 'All' }], 6, 87);
+  assert.deepEqual(lifted.map(e => e.y), [59, 73, 87]);
+  // Ends far apart in time are not pushed apart.
+  assert.deepEqual(placeEnds([{ x: 0, y: 50 }, { x: 300, y: 52 }], 6, 87).map(e => e.y), [50, 52]);
 });

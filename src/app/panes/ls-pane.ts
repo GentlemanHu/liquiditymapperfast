@@ -15,7 +15,7 @@ import { TimePane, setHtml } from './lower-panes.ts';
 import { PaneTable, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import type { Palette } from '../theme.ts';
 import { addTune } from '../pane-tune.ts';
-import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsDrawnIn, lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
+import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsDrawnIn, placeEnds, lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { IdbLsShown } from '../browser/ls-store.ts';
 import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
@@ -474,11 +474,9 @@ export class LsPane extends TimePane {
       ctx.stroke(); ctx.lineWidth = 1;
       if (last) ends.push({ id: HL, tag: hlTag(line.key), ...last });
     }
-    // Each line's venue mark where it ends, kept apart from the others.
-    ends.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < ends.length; i++) if (ends[i]!.y - ends[i - 1]!.y < 14 && Math.abs(ends[i]!.x - ends[i - 1]!.x) < 14) ends[i]!.y = ends[i - 1]!.y + 14;
-    for (const e of ends) {
-      const ey = Math.max(top + 6, Math.min(bottom - 6, e.y));
+    // Each line's venue mark (or Hyperliquid's tag) where it ends, kept apart from the others and inside the pane.
+    for (const e of placeEnds(ends, top + 6, bottom - 6)) {
+      const ey = e.y;
       if (!e.tag) { drawVenueMark(ctx, e.id, Math.min(pw - 8, e.x + 8), ey, 12); continue; }
       const baseline = ctx.textBaseline, w = ctx.measureText(e.tag).width;
       ctx.fillStyle = p.text; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
