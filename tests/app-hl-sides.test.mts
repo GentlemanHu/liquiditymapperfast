@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { HL_MAX_DAYS, HL_PERIOD_MS, HL_RAMP, HL_ROLLUP_MS, HlSides, hlAt, hlColor, hlLines, hlName, hlTag, readSidesRows, shareOf, sidesUrls, type HlCell, type HlRow } from '../src/app/hl-sides.ts';
 import type { LiqAnswer } from '../src/app/liq-history.ts';
 import { placeEnds } from '../src/app/panes/ls-window.ts';
+import { hlCardLines, hlTableRows } from '../src/app/panes/ls-pane.ts';
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 /** 2026-11-15T00:00:00Z. */
@@ -174,4 +175,29 @@ test('end marks and tags stay inside a short pane; where they cannot all fit, th
   assert.deepEqual(lifted.map(e => e.y), [59, 73, 87]);
   // Ends far apart in time are not pushed apart.
   assert.deepEqual(placeEnds([{ x: 0, y: 50 }, { x: 300, y: 52 }], 6, 87).map(e => e.y), [50, 52]);
+});
+
+test('the popup names each Hyperliquid line with its share and the wallets or dollars behind it, and says what they count', () => {
+  const rows = readSidesRows(file('2026-11-15', [row(D + HOUR)]))!;
+  const at = D + HOUR + 10 * MIN;
+  const wallets = hlCardLines(hlLines(rows, 'groups', 'wallets', HL_PERIOD_MS), at, 'wallets');
+  assert.deepEqual(wallets.slice(0, 3).map(l => l.label), ['Hyperliquid +PnL', 'Hyperliquid Everyone', 'Hyperliquid −PnL']);
+  assert.equal(wallets[0]!.text, '71.4% long · 28.6% short · L/S 2.50 · 10 long, 4 short');
+  assert.equal(wallets[0]!.color, 'buy');
+  assert.ok(wallets.every(l => l.table === false), 'the table carries the rows; the notes stay with the help');
+  assert.match(wallets[3]!.text, /^Hyperliquid: every wallet's BTC position in HyperTracker's snapshots/);
+  assert.equal(wallets.length, 4);
+  const dollars = hlCardLines(hlLines(rows, 'groups', 'usd', HL_PERIOD_MS), at, 'usd');
+  assert.deepEqual(dollars.slice(0, 2).map(l => l.label), ['Hyperliquid +PnL', 'Hyperliquid −PnL']);
+  assert.equal(dollars[0]!.text, '71.4% long · 28.6% short · L/S 2.50 · $1K long, $400 short');
+  assert.match(dollars[dollars.length - 1]!.text, /^In dollars every long has a short/);
+  // A band by its range; a moment past the hold has no reading.
+  const bands = hlCardLines(hlLines(rows, 'pnl', 'wallets', HL_PERIOD_MS), D + 5 * HOUR, 'wallets');
+  assert.equal(bands[0]!.label, '$1M and more');
+  assert.equal(bands[0]!.text, 'no reading');
+  assert.deepEqual(hlCardLines([], at, 'wallets'), []);
+  const PALETTE = { bid: '#00ff00', ask: '#ff0000', text: '#000000', muted: '#888888' };
+  const table = hlTableRows(hlLines(rows, 'groups', 'wallets', HL_PERIOD_MS), at, PALETTE);
+  assert.deepEqual(table[0]!.map(c => c.text), ['Hyperliquid +PnL', '71.4%', '28.6%', '2.50']);
+  assert.deepEqual(hlTableRows(hlLines(rows, 'groups', 'wallets', HL_PERIOD_MS), D, PALETTE)[0]!.map(c => c.text), ['Hyperliquid +PnL', '–', '–', '–']);
 });
