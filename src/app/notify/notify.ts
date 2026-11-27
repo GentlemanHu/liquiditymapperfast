@@ -23,9 +23,10 @@ export type PhoneChannel = 'telegram' | 'ntfy' | 'discord';
 /**
  * Channels whose real send has not been seen yet (each needs a bot or a webhook of the owner's own): offered on a page served from this
  * computer (Karl's own server, where he tries them) or with `?notify=all`, not yet on the public page. ntfy and the pop-up were seen to work
- * end to end on 2026-11-26.
+ * end to end on 2026-11-26; Telegram on 2026-11-27 (Karl's own bot made with BotFather, its chat found by Find my chat, the test message
+ * received in Telegram from the page on his computer). Discord waits for a webhook of his to receive one.
  */
-const UNSEEN: ReadonlySet<ChannelId> = new Set<ChannelId>(['telegram', 'discord']);
+const UNSEEN: ReadonlySet<ChannelId> = new Set<ChannelId>(['discord']);
 export function offered(id: ChannelId): boolean {
   if (!UNSEEN.has(id)) return true;
   if (typeof location === 'undefined') return true;
