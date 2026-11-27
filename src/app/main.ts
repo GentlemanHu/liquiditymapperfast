@@ -783,6 +783,7 @@ async function main(): Promise<void> {
     if (changed.has('marketId')) candle.marketChanged();
     if (['levels', 'mark', 'disabledVenues', 'scope', 'markets', 'footprint', 'customMarkets', 'replay', 'bookGone', 'show'].some(k => changed.has(k as never))) candle.invalidate();
     if (changed.has('lsMetric')) ls.settingsChanged();
+    if (changed.has('lsHl') || changed.has('lsHlUnit')) ls.hlChanged();
     // The panes follow the room the bar leaves or takes by themselves (each watches its own size).
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();

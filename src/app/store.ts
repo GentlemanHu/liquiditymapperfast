@@ -24,6 +24,7 @@ import { isCoarse, isPhone } from './device.ts';
 import { isHandheldPhone, readPhoneHistory, type PhoneHistory } from './history-window.ts';
 import { readScriptBars } from './script/bars.ts';
 import { LS_METRICS, type LsMetric } from '../shared/long-short.ts';
+import { HL_SPLITS, HL_UNITS, type HlSplit, type HlUnit } from './hl-split.ts';
 import { readCustomMarkets, readPicks, type CustomMarkets } from './market-choice.ts';
 import { readBookMarkets, type BookMarkets } from './book-markets.ts';
 import { readPullWindow, type PullWindow } from './panes/pull-stack.ts';
@@ -183,6 +184,10 @@ export interface AppState {
   delta: DeltaSettings;
   /** The Binance series the Long/Short pane shows: every account, its top traders' accounts or their positions (the other venues publish one each). */
   lsMetric: LsMetric;
+  /** How the Long/Short pane splits Hyperliquid's line (hl-sides.ts, 2026-11-27): everyone with the profitable and the losing traders, the PnL bands or the size bands. */
+  lsHl: HlSplit;
+  /** Whether Hyperliquid's lines count the wallets on each side or the dollars they hold. */
+  lsHlUnit: HlUnit;
   /** Sound notifications: master switch, volume, which trades count and the size tiers. */
   sounds: SoundSettings;
   /** Whether the browser lets sound play yet (it holds audio until a click or key press). */
@@ -293,7 +298,7 @@ export function savedUnits(saved: Partial<AppState>): Units {
   return chose(saved.depthBands) || chose(saved.liqBands) ? 'coin' : 'usd';
 }
 
-const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'phoneTape', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'units', 'timeframe', 'layer', 'show', 'cvd', 'flowView', 'trades', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'customMarkets', 'bookMarkets', 'bookPicks', 'draw', 'chartType', 'candleColors'];
+const PERSISTED: (keyof AppState)[] = ['keepAwake', 'tabPrice', 'tabIcon', 'phoneHistory', 'phoneTape', 'scriptBars', 'barCollapsed', 'material', 'waveStrength', 'timeZone', 'units', 'timeframe', 'layer', 'show', 'cvd', 'flowView', 'trades', 'heatmapSource', 'disabledVenues', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta', 'sounds', 'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'ladderVenue', 'ladderVenues', 'theme', 'themePicked', 'themeSlots', 'defaultsRev', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'lsHl', 'lsHlUnit', 'customMarkets', 'bookMarkets', 'bookPicks', 'draw', 'chartType', 'candleColors'];
 /**
  * The saved settings: the saved keys only, from an object (a backup can bring any text here, backup.ts). The keys spread into the state as
  * they are, without a reader of their own below, are checked for their type here; every other one is read field by field further on.
@@ -322,7 +327,7 @@ export type LadderCurves = (typeof LADDER_CURVES)[number];
 
 /** The settings a saved layout holds: what the chart shows and how, never the coin, the venues, the theme, the time zone or the sounds. */
 export const LAYOUT_KEYS = ['timeframe', 'layer', 'show', 'cvd', 'flowView', 'trades', 'scope', 'highlight', 'absorption', 'tradeBubbles', 'liquidations', 'keyLevels', 'liqLevels', 'vwap', 'tpo', 'footprint', 'delta',
-  'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'customMarkets', 'bookMarkets', 'bookPicks', 'chartType', 'candleColors'] as const satisfies readonly (keyof AppState)[];
+  'heat', 'lt', 'barStats', 'barStatOptions', 'grouping', 'ladderMode', 'ladderShow', 'ladderCurves', 'pullStack', 'ladderCues', 'depthBands', 'depthSource', 'liqBands', 'traded', 'oiMarkets', 'oiChange', 'fundingVenue', 'fundingTable', 'oiTable', 'lsTable', 'ltTable', 'deltaTable', 'sizesTable', 'sizeBars', 'lsMetric', 'lsHl', 'lsHlUnit', 'customMarkets', 'bookMarkets', 'bookPicks', 'chartType', 'candleColors'] as const satisfies readonly (keyof AppState)[];
 export type Settings = Pick<AppState, (typeof LAYOUT_KEYS)[number]>;
 
 /** The timeframes (hub.ts TIMEFRAMES; a test keeps the two the same). */
@@ -361,7 +366,8 @@ export function readSettings(saved: Partial<Record<keyof AppState, unknown>>): S
     show: strip?.on ? { ...show, traded: true } : show,
     cvd: readCvd(saved.cvd), flowView: readFlowView(saved.flowView), trades: readTrades(saved.trades), highlight: readHighlight(saved.highlight), absorption: readAbsorption(saved.absorption), tradeBubbles: readBubbles(saved.tradeBubbles),
     liquidations: readLiquidations(saved.liquidations), keyLevels: readKeyLevels(saved.keyLevels), liqLevels: readLiqLevels(saved.liqLevels), vwap: readVwap(saved.vwap), tpo: readTpo(saved.tpo), footprint: readFootprint(saved.footprint),
-    delta: readDelta(saved.delta), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts', pullStack: readPullWindow(saved.pullStack),
+    delta: readDelta(saved.delta), lsMetric: (LS_METRICS as readonly unknown[]).includes(saved.lsMetric) ? saved.lsMetric as LsMetric : 'accounts',
+    lsHl: (HL_SPLITS as readonly unknown[]).includes(saved.lsHl) ? saved.lsHl as HlSplit : 'groups', lsHlUnit: (HL_UNITS as readonly unknown[]).includes(saved.lsHlUnit) ? saved.lsHlUnit as HlUnit : 'wallets', pullStack: readPullWindow(saved.pullStack),
     ladderCues: readLadderCues(saved.ladderCues),
     depthBands: readDepthSettings(saved.depthBands),
     depthSource: saved.depthSource === 'liq' ? 'liq' : 'book',

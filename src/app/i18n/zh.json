@@ -3552,5 +3552,19 @@
  "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "是谁的钱在推动价格？每一行是一档市价单大小，从 $25K 以下到 $5M 及以上（小币种的档位更小）：线条是该档订单的买入减去卖出，现货与永续各用自己的颜色，从左边缘的零开始。六行相加即为最上一行。",
  "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "每条线都有自己的刻度，请比较形状而不是高度。每行旁边：齿轮中所选窗口内各类的净额，以及该档在六档总成交量中的份额。将鼠标悬停在一行上可查看其数字。",
  "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "订单大小只以每分钟的订单统计保存，因此这些线条每分钟移动一次（在较长的时间跨度上为五分钟或更久），而资金流视图的线条每秒移动。在开始保存订单大小之前记录的区段没有大小：线条在那里中断。市场与最上一行相同，现货 / 永续筛选在这里同样有效。",
- "The order sizes could not be read: asked again in a few seconds.": "无法读取订单大小：几秒后将再次请求。"
+ "The order sizes could not be read: asked again in a few seconds.": "无法读取订单大小：几秒后将再次请求。",
+ "−PnL": "−PnL",
+ "{v} and more": "{v} 及以上",
+ "{v} and less": "{v} 及以下",
+ "{lo} to {hi}": "{lo} 至 {hi}",
+ "{long} long, {short} short": "多 {long}，空 {short}",
+ "Hyperliquid: every wallet's BTC position in HyperTracker's snapshots, about every 29 minutes, the positions some 35 minutes old; the groups by all-time PnL or size are HyperTracker's, as each snapshot gives them.": "Hyperliquid：HyperTracker 快照中每个钱包的 BTC 持仓，约每 29 分钟一次，持仓约为 35 分钟前；按历史总盈亏或规模的分组来自 HyperTracker，以各快照给出的为准。",
+ "In dollars every long has a short: all wallets together are always half long, so the profitable and the losing traders sit on opposite sides of 50 %.": "按美元计，每个多头都有对应的空头：所有钱包合计始终一半做多，因此盈利交易者与亏损交易者位于 50 % 的两侧。",
+ "How Hyperliquid's line is split, by HyperTracker's groups of wallets: everyone with the profitable and the losing traders, its eight bands of all-time PnL, or its eight size bands.": "Hyperliquid 线如何按 HyperTracker 的钱包分组拆分：全部与盈利、亏损交易者，历史总盈亏的八个区间，或规模的八个区间。",
+ "By PnL": "按盈亏",
+ "By size": "按规模",
+ "Count Hyperliquid's wallets on each side, or the dollars they hold. In dollars all wallets together are always half long, so that line is left out.": "统计 Hyperliquid 每一方的钱包数，或其持有的美元。按美元计，所有钱包合计始终一半做多，因此不显示那条线。",
+ "Wallets": "钱包",
+ "Dollars": "美元",
+ "Hyperliquid publishes no ratio of its own. Its lines are counted from HyperTracker's snapshots of every wallet's BTC position, about every 29 minutes and some 35 minutes old: the share of wallets that is long for everyone, for the profitable traders (all-time PnL above zero, +PnL) and for the losing ones (−PnL), or, with the Hyperliquid choice in the header, for each of HyperTracker's eight bands of all-time PnL or of size, each wallet in the band its snapshot gives it. Count switches to the dollars each side holds; everyone is then always half long, since every long has a short, and that line is left out. They show while Hyperliquid's BTC perpetual is one of the open-interest markets, from mid-June 2026 on. They have not been tested as a signal.": "Hyperliquid 不公布自己的多空比。它的线由 HyperTracker 快照中每个钱包的 BTC 持仓统计而来，约每 29 分钟一次，约为 35 分钟前的持仓：全部、盈利交易者（历史总盈亏大于零，+PnL）和亏损交易者（−PnL）中做多钱包的占比；或者用标题栏中的 Hyperliquid 选项，按 HyperTracker 历史总盈亏或规模的八个区间分别显示，每个钱包归入其快照给出的区间。“统计范围”可切换为每一方持有的美元；此时所有钱包合计始终一半做多（每个多头都有对应的空头），因此不显示那条线。只要 Hyperliquid 的 BTC 永续合约在持仓量市场之中就会显示，自 2026 年 6 月中旬起。尚未作为信号检验。"
 }

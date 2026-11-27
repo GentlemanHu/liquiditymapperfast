@@ -3552,5 +3552,19 @@
  "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "누구의 돈이 가격을 움직이는가? 각 행은 시장가 주문의 한 크기로, $25K 미만부터 $5M 이상까지입니다(작은 코인은 크기도 작습니다). 선은 그 크기 주문의 매수에서 매도를 뺀 값이며, 현물과 무기한은 각자의 색으로 왼쪽 끝의 0에서 시작합니다. 여섯 행을 더하면 맨 위 행이 됩니다.",
  "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "선마다 자체 눈금이 있으므로 높이가 아니라 모양을 비교하세요. 각 행 옆에는 톱니바퀴에서 정한 구간의 종류별 순액과, 여섯 크기 거래량 중 그 크기의 비중이 있습니다. 행에 마우스를 올리면 숫자를 볼 수 있습니다.",
  "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "크기는 매분의 주문 통계로만 기록되므로 이 선들은 1분 단위로 움직입니다(긴 구간에서는 5분 이상 단위). 플로우 보기의 선은 매초 움직입니다. 주문 크기를 기록하기 전에 기록된 구간에는 크기가 없어 선이 그곳에서 끊깁니다. 시장은 맨 위 행과 같으며, 현물 / 무기한 필터도 여기에 적용됩니다.",
- "The order sizes could not be read: asked again in a few seconds.": "주문 크기를 읽지 못했습니다: 몇 초 후 다시 요청합니다."
+ "The order sizes could not be read: asked again in a few seconds.": "주문 크기를 읽지 못했습니다: 몇 초 후 다시 요청합니다.",
+ "−PnL": "−PnL",
+ "{v} and more": "{v} 이상",
+ "{v} and less": "{v} 이하",
+ "{lo} to {hi}": "{lo}~{hi}",
+ "{long} long, {short} short": "롱 {long}, 숏 {short}",
+ "Hyperliquid: every wallet's BTC position in HyperTracker's snapshots, about every 29 minutes, the positions some 35 minutes old; the groups by all-time PnL or size are HyperTracker's, as each snapshot gives them.": "Hyperliquid: HyperTracker 스냅샷(약 29분마다, 포지션은 약 35분 전 기준)에 담긴 모든 지갑의 BTC 포지션입니다. 전체 기간 PnL이나 규모에 따른 그룹은 HyperTracker의 것으로, 각 스냅샷이 제공하는 그대로입니다.",
+ "In dollars every long has a short: all wallets together are always half long, so the profitable and the losing traders sit on opposite sides of 50 %.": "달러 기준으로는 모든 롱에 숏이 있습니다. 모든 지갑을 합치면 항상 절반이 롱이므로, 수익을 낸 트레이더와 손실을 낸 트레이더는 50 %를 사이에 두고 서로 반대편에 놓입니다.",
+ "How Hyperliquid's line is split, by HyperTracker's groups of wallets: everyone with the profitable and the losing traders, its eight bands of all-time PnL, or its eight size bands.": "Hyperliquid 선을 HyperTracker의 지갑 그룹으로 나누는 방식: 전체와 수익 트레이더·손실 트레이더, 전체 기간 PnL 8개 구간, 또는 규모 8개 구간.",
+ "By PnL": "PnL별",
+ "By size": "규모별",
+ "Count Hyperliquid's wallets on each side, or the dollars they hold. In dollars all wallets together are always half long, so that line is left out.": "Hyperliquid의 각 방향 지갑 수 또는 그들이 보유한 달러를 셉니다. 달러 기준으로는 모든 지갑을 합치면 항상 절반이 롱이므로 그 선은 빠집니다.",
+ "Wallets": "지갑",
+ "Dollars": "달러",
+ "Hyperliquid publishes no ratio of its own. Its lines are counted from HyperTracker's snapshots of every wallet's BTC position, about every 29 minutes and some 35 minutes old: the share of wallets that is long for everyone, for the profitable traders (all-time PnL above zero, +PnL) and for the losing ones (−PnL), or, with the Hyperliquid choice in the header, for each of HyperTracker's eight bands of all-time PnL or of size, each wallet in the band its snapshot gives it. Count switches to the dollars each side holds; everyone is then always half long, since every long has a short, and that line is left out. They show while Hyperliquid's BTC perpetual is one of the open-interest markets, from mid-June 2026 on. They have not been tested as a signal.": "Hyperliquid는 자체 비율을 공개하지 않습니다. 그 선은 HyperTracker 스냅샷(약 29분마다, 약 35분 전 기준)에 담긴 모든 지갑의 BTC 포지션으로 셉니다. 전체, 수익 트레이더(전체 기간 PnL이 0보다 큼, +PnL), 손실 트레이더(−PnL) 각각에서 롱인 지갑의 비율이며, 헤더의 Hyperliquid 선택으로 HyperTracker의 전체 기간 PnL 또는 규모 8개 구간별로도 볼 수 있고, 각 지갑은 해당 스냅샷이 정한 구간에 들어갑니다. '집계 대상'을 바꾸면 각 방향이 보유한 달러로 셉니다. 이때 모든 롱에는 숏이 있으므로 전체는 항상 절반이 롱이며 그 선은 빠집니다. Hyperliquid의 BTC 무기한 선물이 미결제약정 시장에 포함되어 있는 동안, 2026년 6월 중순부터 표시됩니다. 신호로서 검증되지 않았습니다."
 }
