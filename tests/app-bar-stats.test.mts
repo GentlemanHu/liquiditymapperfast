@@ -419,6 +419,16 @@ test('coins on bars without rows (review 2026-11-27): each at its candle\x27s ty
   assert.deepEqual(run('cvdRetail', usdInput), [200, 800, 1_200, 500, 500, 540]);
   assert.deepEqual(run('vol', usdInput), [400, 1_400, 600, 1_100, 0, 60]);
   assert.equal(PRICE_CARRY_MS, 2 * 3_600_000);
+  // Bars older than the candles, one with no whale order (0 whatever the price) and one with a $6M whale buy, then a priced whale bar: the
+  // whale cvd from the view starts at the priced bar; counted as 0, the first would have started it and the second left it unknown.
+  const whale = (t: number, buy: number): Bar => ({ t, rows: [], buyUsd: buy + 100, sellUsd: 100, minutes: 1, stats: tradeStats(2, 1, [100, 0, 0, 0, 0, 0, 0, buy], [100, 0, 0, 0, 0, 0, 0, 0]) });
+  const whales = [whale(0, 0), whale(MIN, 6_000_000), whale(10 * MIN, 5_000_000)];
+  assert.deepEqual(run('cvdWhales', { ...coinInput, bars: whales, times: whales.map(b => b.t) }), [null, null, 50_000], 'the $5M at the candle\'s 100');
+  assert.deepEqual(run('deltaWhales', { ...coinInput, bars: whales, times: whales.map(b => b.t) }), [0, null, 50_000], 'a cell of 0 stays 0: nothing to price');
+  // The carry counts from the end of the candle before: on a 4h chart the slot after a candle takes its close.
+  const H4 = 4 * 3_600_000, four = new Map<number, CandleRow>([[0, [0, 100, 110, 90, 105, 5, 1]]]);
+  assert.equal(barPrice({ step: 0, candles: four, tfMs: H4 }, plain(H4, 10, 0)), 105, 'the next 4h slot: its close');
+  assert.ok(Number.isNaN(barPrice({ step: 0, candles: four, tfMs: H4 }, plain(H4 + 2 * 3_600_000 + MIN, 10, 0))), 'more than two hours after its end: none');
   // So in coins with CVD from each day's start, whose bars reach back past the candles, the running sums read rows (each part at its row's
   // price, as before the bars without rows); the others, and every one in dollars or from the view, read the bars without rows.
   assert.equal(coinRunOf(true, { cvdFrom: 'day' }), true);
