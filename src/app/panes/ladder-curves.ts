@@ -1,7 +1,8 @@
 import type { InfoLine } from '../infobox.ts';
 import { contrastRatio, mixHex, type Palette } from '../theme.ts';
 import { hueGap, nearDirection } from '../cvd/colors.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount } from '../units.ts';
 import { t } from '../i18n.ts';
 import { distanceText } from './ladder-info.ts';
 import type { Grouped } from './levels-data.ts';
@@ -243,16 +244,16 @@ export function curveLines(f: CurveFacts): InfoLine[] {
     { label: t('Side'), text: f.ask ? t('Ask: sellers waiting') : t('Bid: buyers waiting'), color: f.ask ? 'above' : 'below' },
     ...(past ? [
       { text: t('Its published book ends at {price} ({distance}): the dashed line holds the total it reached.', { price: fmtPrice(f.reach!, f.step), distance: distanceText(f.reach!, f.mark) }), color: 'muted' as const, wrap: true },
-      { label: t('From the mark'), text: t('at least {value}', { value: `$${usd(f.venueCum)}` }), bold: true },
+      { label: t('From the mark'), text: t('at least {value}', { value: amount(f.venueCum) }), bold: true },
     ] : [
-      { label: t('From the mark'), text: `$${usd(f.venueCum)}`, bold: true },
+      { label: t('From the mark'), text: amount(f.venueCum), bold: true },
       { label: t('Share of the depth shown'), text: `${f.totalCum > 0 ? Math.round(f.venueCum / f.totalCum * 100) : 0}%` },
-      { label: t('At this price'), text: `$${usd(f.venueLevel)}` },
+      { label: t('At this price'), text: amount(f.venueLevel) },
     ]),
     { label: t('Distance'), text: distanceText(f.low + f.step / 2, f.mark) },
-    { label: t('Lines, full width'), text: `$${usd(f.full)}`, color: 'muted' },
+    { label: t('Lines, full width'), text: amount(f.full), color: 'muted' },
     f.volume !== null
-      ? { label: t('Traded, last {window}', { window: f.window }), text: `$${usd(f.volume)} · #${f.rank}`, rule: true }
+      ? { label: t('Traded, last {window}', { window: f.window }), text: `${amount(f.volume)} · #${f.rank}`, rule: true }
       : { text: t('No trades held for this book: placed by its liquidity in view.'), color: 'muted', rule: true, wrap: true },
   ];
 }

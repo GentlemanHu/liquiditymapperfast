@@ -5,11 +5,12 @@ import { t } from '../i18n.ts';
 import { helpButton } from '../help.ts';
 import { el } from '../dom.ts';
 import { replaying } from '../replay/clock.ts';
-import { clock, price as fmtPrice, usd } from '../format.ts';
+import { clock, price as fmtPrice } from '../format.ts';
+import { amount, inCoins } from '../units.ts';
 import { currentCoin } from '../coin.ts';
 import { niceStep } from '../view.ts';
 import { measureInfoBox, paintInfoBox, type InfoLine } from '../infobox.ts';
-import { binsIn, dollarPriceOf, liqProfile, standingBelow, TAKE_DASH, type LiqLevels, type LiqProfile, type LiqSet, type LiqStanding } from '../liq-levels.ts';
+import { binsIn, dollarPriceOf, levelsInCoins, liqProfile, partsSaid, standingBelow, standingSaid, TAKE_DASH, type LiqLevels, type LiqProfile, type LiqSet, type LiqStanding } from '../liq-levels.ts';
 import { curveOf, groupName, groupTitle, heldBack, kindName, kindTitle, liveAsk, liveSplit, liveView, narrowView, plusOn, viewKey, type LiqPair, type LiqView } from '../liq-view.ts';
 import { liqNote, liqRatioWords, liqWhy, narrowNote, ordersAbsent, sideTitle, splitName, subNames } from '../liq-words.ts';
 import { ladderSplitFits, placeProbeBoxes, probeDetail, splitScales, type BoxSize } from '../liq-split.ts';
@@ -260,7 +261,7 @@ export class LiqPane {
     this.#paintGrid(ctx, p, price, lo, hi, span, yOf, xR, W);
     this.#paintMountains(ctx, p, prof, step, price, yOf, xR, plotW, mid);
     const placed = this.#paintMilestones(ctx, p, s, price, yOf, plotW);
-    this.#paintBars(ctx, p, prof, step, levels, yOf, xR, plotW, H, placed, tprof);
+    this.#paintBars(ctx, p, prof, step, levels, yOf, xR, plotW, H, placed, tprof, undefined, 0, s);
     this.#paintPrice(ctx, p, price, mid, xR, W);
     if (this.#probe !== null) {
       // The box on the side away from the finger's line, so the line and its bars stay in sight.
@@ -317,14 +318,14 @@ export class LiqPane {
     if (leftHas.s && leftHas.levels && prof) {
       this.#paintMountains(ctx, p, prof, step, price, yOf, a.x1, aw, mid, left.maxCum);
       const placedA = this.#paintMilestones(ctx, p, leftHas.s, price, yOf, a.x1, a.x0, heads[0]!.keep);
-      this.#paintBars(ctx, p, prof, step, leftHas.levels, yOf, a.x1, aw, H, placedA, tprof, left.maxLevel, a.x0);
+      this.#paintBars(ctx, p, prof, step, leftHas.levels, yOf, a.x1, aw, H, placedA, tprof, left.maxLevel, a.x0, leftHas.s);
     } else reason(a, leftHas.why || t('Liquidation levels are loading.'));
     // Right half: the right set, or why it has none.
     const b = halves[1], bw = b.x1 - b.x0;
     if (rightHas.s && rightHas.levels && rprof) {
       this.#paintMountains(ctx, p, rprof, step, price, yOf, b.x1, bw, mid, other.maxCum);
       const placedB = this.#paintMilestones(ctx, p, rightHas.s, price, yOf, b.x1, b.x0, heads[1]!.keep);
-      this.#paintBars(ctx, p, rprof, step, rightHas.levels, yOf, b.x1, bw, H, placedB, null, other.maxLevel, b.x0);
+      this.#paintBars(ctx, p, rprof, step, rightHas.levels, yOf, b.x1, bw, H, placedB, null, other.maxLevel, b.x0, rightHas.s);
     } else reason(b, rightHas.why || t('Liquidation levels are loading.'));
     // The divider, and each half's caption at its top, with the lines under it.
     ctx.save();
@@ -362,12 +363,15 @@ export class LiqPane {
     }
   }
 
-  /** The summary: the longs that would go below and the shorts above within the range, weighed against each other. */
+  /**
+   * The summary: the longs that would go below and the shorts above within the range, weighed against each other. The figures and the verdict
+   * in the page's units (app/units.ts: in coins each bin over its own price); the balance bar by the dollars, as the ladder's bars are.
+   */
   #paintSummary(s: LiqStanding, levels: LiqLevels, price: number, lo: number, hi: number, view: LiqView, note?: { src: Parameters<typeof liqNote>[0]; view: LiqView; first: string; last?: string }): void {
-    const longs = Math.max(0, standingBelow(s, 'long', price) - standingBelow(s, 'long', lo));
-    const shorts = Math.max(0, standingBelow(s, 'short', hi) - standingBelow(s, 'short', price));
-    this.#longUsd.textContent = `$${usd(longs)}`; this.#shortUsd.textContent = `$${usd(shorts)}`;
-    const total = longs + shorts, share = total > 0 ? longs / total : 0.5;
+    const within = (st: LiqStanding): [number, number] => [Math.max(0, standingBelow(st, 'long', price) - standingBelow(st, 'long', lo)), Math.max(0, standingBelow(st, 'short', hi) - standingBelow(st, 'short', price))];
+    const [usdLongs, usdShorts] = within(s), [longs, shorts] = inCoins() ? within(standingSaid(s, true)) : [usdLongs, usdShorts];
+    this.#longUsd.textContent = amount(longs); this.#shortUsd.textContent = amount(shorts);
+    const total = usdLongs + usdShorts, share = total > 0 ? usdLongs / total : 0.5;
     this.#balanceLong.style.flexGrow = String(share); this.#balanceShort.style.flexGrow = String(1 - share);
     this.#within.textContent = t('Within ±{pct} of {price}', { pct: pctText(this.#range), price: fmtPrice(price) });
     // Take profits alone: their own names, the order sides' colours (the buys below in the rising colour), bids against asks.
@@ -455,7 +459,9 @@ export class LiqPane {
    * below, on the left where the mountains reach. Returns the boxes it took, for the level labels to keep clear of, after `keepOut`'s (a
    * split half's caption and the lines under it): a milestone that would lie under one of those is left out.
    */
-  #paintMilestones(ctx: CanvasRenderingContext2D, p: Palette, s: LiqStanding, price: number, yOf: (pr: number) => number, plotW: number, x0 = 0, keepOut: Placed[] = []): Placed[] {
+  #paintMilestones(ctx: CanvasRenderingContext2D, p: Palette, usdStanding: LiqStanding, price: number, yOf: (pr: number) => number, plotW: number, x0 = 0, keepOut: Placed[] = []): Placed[] {
+    // What each milestone says, in the page's units (app/units.ts: in coins each bin over its own price).
+    const s = standingSaid(usdStanding, inCoins());
     const placed: Placed[] = [...keepOut], used: number[] = [];
     ctx.save(); ctx.font = `600 10.5px ${SANS}`; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
     for (const d of MILESTONES) {
@@ -468,10 +474,10 @@ export class LiqPane {
       for (const side of ['short', 'long'] as const) {
         const y = side === 'short' ? yUp : yDown, color = this.#color(p, side);
         if (keepOut.some(b => y - 9 < b.y1 && y + 9 > b.y0 && x0 + 6 < b.x1 + 4)) continue;
-        const amount = side === 'short' ? standingBelow(s, 'short', price * (1 + d)) - standingBelow(s, 'short', price) : standingBelow(s, 'long', price) - standingBelow(s, 'long', price * (1 - d));
+        const gone = side === 'short' ? standingBelow(s, 'short', price * (1 + d)) - standingBelow(s, 'short', price) : standingBelow(s, 'long', price) - standingBelow(s, 'long', price * (1 - d));
         ctx.globalAlpha = 0.5; ctx.strokeStyle = color; ctx.setLineDash([2, 4]); ctx.lineWidth = 1;
         ctx.beginPath(); ctx.moveTo(x0, Math.round(y) + 0.5); ctx.lineTo(plotW, Math.round(y) + 0.5); ctx.stroke(); ctx.setLineDash([]);
-        const tag = `${side === 'short' ? '+' : '−'}${pctText(d)}`, value = `$${usd(Math.max(0, amount))}`;
+        const tag = `${side === 'short' ? '+' : '−'}${pctText(d)}`, value = amount(Math.max(0, gone));
         ctx.font = `600 10.5px ${SANS}`; const wTag = ctx.measureText(tag).width;
         ctx.font = `700 11.5px ${SANS}`; const wVal = ctx.measureText(value).width;
         const w = wTag + wVal + 18, x = x0 + 6, top = y - 9;
@@ -486,8 +492,13 @@ export class LiqPane {
     return placed;
   }
 
-  /** The levels: a bar per row out of the price axis, the strongest brighter at their tips; the three largest each side named. */
-  #paintBars(ctx: CanvasRenderingContext2D, p: Palette, prof: LiqProfile, step: number, levels: LiqLevels, yOf: (pr: number) => number, xR: number, plotW: number, H: number, placed: { y0: number; y1: number; x1: number }[], takes: LiqProfile | null = null, scale?: number, x0 = 0): void {
+  /**
+   * The levels: a bar per row out of the price axis, the strongest brighter at their tips; the three largest each side named. The bars and
+   * which are named go by the dollars; a name says its level in the page's units (app/units.ts: in coins from `standing`, each bin over its
+   * own price).
+   */
+  #paintBars(ctx: CanvasRenderingContext2D, p: Palette, prof: LiqProfile, step: number, levels: LiqLevels, yOf: (pr: number) => number, xR: number, plotW: number, H: number, placed: { y0: number; y1: number; x1: number }[], takes: LiqProfile | null = null, scale?: number, x0 = 0, standing: LiqStanding | null = null): void {
+    const said = standing && inCoins() ? standingSaid(standing, true) : null;
     const maxLevel = Math.max(scale ?? Math.max(prof.maxLevel, takes?.maxLevel ?? 0), 1), reach = plotW * 0.6;
     const lenOf = (v: number): number => Math.max(1.5, Math.pow(v / maxLevel, 0.75) * reach);
     const grads = {
@@ -538,7 +549,7 @@ export class LiqPane {
       for (const { r, v } of top3) {
         const a = (prof.row0 + r) * step, y = (yOf(a) + yOf(a + step)) / 2, len = lenOf(v);
         const one = binsIn(levels, side, a, a + step).top >= v * 0.5;
-        const text = `${one ? '◆ ' : ''}$${usd(v)}`;
+        const text = `${one ? '◆ ' : ''}${amount(said ? Math.max(0, standingBelow(said, side, a + step) - standingBelow(said, side, a)) : v)}`;
         ctx.font = `700 11.5px ${SANS}`;
         const w = ctx.measureText(text).width + 14, x = Math.max(x0 + 4, xR - len - w - 6), top = y - 10;
         if (placed.some(b => top < b.y1 && top + 20 > b.y0 && x < b.x1 + 4)) continue;
@@ -580,11 +591,14 @@ export class LiqPane {
     const at = this.#probe!, y = yOf(at);
     if (y < 0 || y > H) return null;
     const side = at >= price ? 'short' : 'long', color = this.#color(p, side), d = Math.abs(at - price);
-    const way = side === 'short' ? standingBelow(s, 'short', at) - standingBelow(s, 'short', price) : standingBelow(s, 'long', price) - standingBelow(s, 'long', at);
-    const other = side === 'short' ? standingBelow(s, 'long', price) - standingBelow(s, 'long', price - d) : standingBelow(s, 'short', price + d) - standingBelow(s, 'short', price);
+    // What the box says, in the page's units (app/units.ts: in coins the standing, the levels and the parts each bin over its own price).
+    const coins = inCoins(), cs = standingSaid(s, coins);
+    const way = side === 'short' ? standingBelow(cs, 'short', at) - standingBelow(cs, 'short', price) : standingBelow(cs, 'long', price) - standingBelow(cs, 'long', at);
+    const other = side === 'short' ? standingBelow(cs, 'long', price) - standingBelow(cs, 'long', price - d) : standingBelow(cs, 'short', price + d) - standingBelow(cs, 'short', price);
     const r = Math.floor(at / step) - prof.row0, a = (prof.row0 + r) * step;
-    const level = r >= 0 && r < prof.long.length ? (side === 'long' ? prof.long[r]! : prof.short[r]!) : 0;
-    const { positions, top } = binsIn(levels, side, a, a + step);
+    const level = r < 0 || r >= prof.long.length ? 0 : !coins ? (side === 'long' ? prof.long[r]! : prof.short[r]!) : Math.max(0, standingBelow(cs, side, a + step) - standingBelow(cs, side, a));
+    // The largest one is the one with the most dollars, said in the page's units (`binsIn`'s `said`).
+    const { positions, top } = binsIn(levels, side, a, a + step, coins ? levelsInCoins(levels) : levels);
     // The line across and the price's tag on the axis, once a frame (`decorate`: the first half of a split that reads draws them).
     if (decorate) {
       ctx.save();
@@ -595,7 +609,7 @@ export class LiqPane {
       ctx.restore();
     }
     // What it says is `probeBoxLines`'s from these figures; Liq + stops gives each total with its two parts under it.
-    const parts = levels.kind === 'both' ? set.partStandings() : null;
+    const held = levels.kind === 'both' ? set.partStandings() : null, parts = held ? partsSaid(held, coins) : null;
     return { facts: { kind: levels.kind, side, at, price, way, other, level, lo: a, hi: a + step, positions, top, parts }, color, y };
   }
 

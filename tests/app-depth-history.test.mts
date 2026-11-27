@@ -208,7 +208,7 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.match(depth, /if \(pointed && card && !placed\) this\.#lines = card;/);
   assert.doesNotMatch(depth, /!placed\?\.complete/);
   assert.match(depth, /brief = depthRankBrief\(s\.radii\[said\]!, placeOf\);/);
-  assert.match(depth, /if \(readRow && tk\) brief = \[liqTakesLine\(tk, settings\.units, coin\)\];/);
+  assert.match(depth, /if \(readRow && tk\) brief = \[liqTakesLine\(tk, pageUnits\(\), coin\)\];/);
   assert.match(depth, /depthHeads\(levelsKind\), sides, lines, brief, keepBrief, /);
   // A source that can never reach the minimum (the public site's browser engine): once whole and still short, the card's rank in view as before
   // the history, no rank row and no room kept for one.
@@ -217,7 +217,7 @@ test('with Table on the Depth pane shows no card (Karl, 2026-11-22): the card on
   assert.match(depth, /const unranked = !liq && \(ruledOut \|\| cannotRank\(history, whole, null, this\.hub\.sourceNow\(\)\)\);/);
   assert.match(lower, /new DepthHistory\(\(ids, from, to, step\) => this\.hub\.source\.columns\(ids, from, to, step, true\), \(\) => this\.invalidate\(\), \(\) => this\.hub\.sourceNow\(\)\)/, 'the source\'s clock');
   assert.match(depth, /if \(unranked\) \{\n\s+const here = rows\[said\]!\.bid \+ rows\[said\]!\.ask;/);
-  assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: settings\.units, coin, rank, of \}\);/);
+  assert.match(depth, /card = depthCardLines\(\{ time: readTime, bands: rows, watched: said, units: pageUnits\(\), coin, rank, of \}\);/);
   assert.match(depth, /keepBrief = liq \? !!liqHeld\?\.takeRows\?\.length : !unranked;/);
   // The card the browser engine's pane says then: its rank in view, no history lines.
   const said = (h: Parameters<typeof depthCardLines>[0]) => depthCardLines(h).map(l => l.label ?? l.text);

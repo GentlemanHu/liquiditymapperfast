@@ -2,7 +2,8 @@ import type { View } from '../view.ts';
 import type { Palette } from '../theme.ts';
 import type { LabelBoard } from '../labels.ts';
 import { t } from '../i18n.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, inCoins } from '../units.ts';
 import { ageAlpha, LABEL_FLOOR } from '../traded/carry.ts';
 import { letterOf, type TpoProfile } from './model.ts';
 import type { TpoSettings } from './settings.ts';
@@ -343,7 +344,8 @@ export function paintTpo(ctx: CanvasRenderingContext2D, o: TpoPaint): TpoGeometr
         const step = prof.R, y0 = yTop(prof.drawLo) + rh + (s.calls && prof.bottom !== 'neither' ? 24 : 12);
         const ib = prof.ibh !== null && prof.ibl !== null ? (prof.ibh - prof.ibl + 1) * step : null;
         const first = `${t('Range')} ${fmtPrice(prof.high - prof.low, step)}${ib !== null ? ` · ${t('IB')} ${fmtPrice(ib, step)}` : ''}`;
-        const second = `${t('TPO')} ${prof.total} · ▲${prof.above} ▼${prof.below}${prof.usd > 0 ? ` · $${usd(prof.usd)}` : ''}${prof.developing ? ` · ${t('developing')}` : ''}`;
+        // The window's volume in the page's units: in coins its candles' own (app/units.ts), never its dollars over a price.
+        const second = `${t('TPO')} ${prof.total} · ▲${prof.above} ▼${prof.below}${prof.usd > 0 ? ` · ${amount(inCoins() ? prof.coins ?? 0 : prof.usd)}` : ''}${prof.developing ? ` · ${t('developing')}` : ''}`;
         label(first, x0, y0, p.muted, 'left', named);
         label(second, x0, y0 + 15, p.muted, 'left', named);
       }

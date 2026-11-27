@@ -26,7 +26,11 @@ export interface Alone { id: string; bp: number; price: number }
  * chosen markets (`mergeBlocks`) also says how far one market's wick alone reached past its high or low (`xh`, `xl`, drawn hollow and never
  * counted), and which market that was.
  */
-export interface Block { t: number; h: number; l: number; o: number; c: number; usd: number; closed: boolean; xh?: number; xl?: number; up?: Alone; down?: Alone }
+export interface Block {
+  t: number; h: number; l: number; o: number; c: number; usd: number; closed: boolean; xh?: number; xl?: number; up?: Alone; down?: Alone;
+  /** Its volume in coins as its candles give it (app/units.ts: what the window's figure says in coins; `usd` is these at each candle's typical price). */
+  coins?: number;
+}
 
 /** The start of the block holding `t` on the grid of blocks of `blockMs` that starts at `from`. */
 export const blockStart = (t: number, from: number, blockMs: number): number => from + Math.floor((t - from) / blockMs) * blockMs;
@@ -53,18 +57,18 @@ export function blocksOf(bars: readonly CandleRow[], from: number, to: number, b
     if (t > now || (replay && t + barMs > now)) continue;
     const high = b[2], low = b[3];
     if (!(high >= low) || !(low > 0)) continue;
-    const k = blockStart(t, from, blockMs), usd = (b[5] > 0 ? b[5] : 0) * (high + low + b[4]) / 3;
+    const coins = b[5] > 0 ? b[5] : 0, k = blockStart(t, from, blockMs), usd = coins * (high + low + b[4]) / 3;
     const x = out.get(k);
-    if (!x) out.set(k, { t: k, h: high, l: low, o: b[1], c: b[4], usd, closed: k + blockMs <= now, first: t, last: t });
+    if (!x) out.set(k, { t: k, h: high, l: low, o: b[1], c: b[4], usd, coins, closed: k + blockMs <= now, first: t, last: t });
     else {
       if (high > x.h) x.h = high;
       if (low < x.l) x.l = low;
       if (t >= x.last) { x.c = b[4]; x.last = t; }
       if (t < x.first) { x.o = b[1]; x.first = t; }
-      x.usd += usd;
+      x.usd += usd; x.coins = (x.coins ?? 0) + coins;
     }
   }
-  return [...out.values()].sort((a, b) => a.t - b.t).map(({ t, h, l, o, c, usd, closed }) => ({ t, h, l, o, c, usd, closed }));
+  return [...out.values()].sort((a, b) => a.t - b.t).map(({ t, h, l, o, c, usd, coins, closed }) => ({ t, h, l, o, c, usd, coins, closed }));
 }
 
 /**
@@ -108,8 +112,8 @@ export interface TpoProfile {
   singles: number[];
   /** Blocks above and below the point of control's row. */
   above: number; below: number;
-  /** The window's high and low prices, its volume in USD. */
-  high: number; low: number; usd: number;
+  /** The window's high and low prices, its volume in USD, and in coins as its candles give it (app/units.ts). */
+  high: number; low: number; usd: number; coins?: number;
   /** The window is under way (its last block can still grow). */
   developing: boolean;
 }
@@ -204,7 +208,7 @@ export function buildProfile(win: { key: string; from: number; to: number }, blo
     ibh: first.length ? Math.max(...first.map(b => b.z)) : null, ibl: first.length ? Math.min(...first.map(b => b.a)) : null, ibBlocks,
     open: blocks[0]!.t < win.from + blockMs ? rowOf(blocks[0]!.o, R) : null, close: rowOf(last.c, R),
     top: e.top, bottom: e.bottom, topVotes, bottomVotes, singles, above, below,
-    high: Math.max(...blocks.map(b => b.h)), low: Math.min(...blocks.map(b => b.l)), usd: blocks.reduce((s, b) => s + b.usd, 0),
+    high: Math.max(...blocks.map(b => b.h)), low: Math.min(...blocks.map(b => b.l)), usd: blocks.reduce((s, b) => s + b.usd, 0), coins: blocks.reduce((s, b) => s + (b.coins ?? 0), 0),
     developing: win.to > now,
   };
 }
@@ -348,20 +352,20 @@ export function mergeBlocks(parts: readonly Part[], ref: string | null, from: nu
   for (const p of parts) for (const t of p.blocks.keys()) if (t >= from && t < to) times.add(t);
   const out: Block[] = [];
   for (const t of [...times].sort((a, b) => a - b)) {
-    const here: { id: string; h: number; l: number; o: number; c: number; w: number; read: boolean }[] = [];
+    const here: { id: string; h: number; l: number; o: number; c: number; w: number; coins: number; read: boolean }[] = [];
     for (const p of parts) {
       const b = p.blocks.get(t);
       if (!b) continue;
       const f = Math.exp(-p.gap(t) / 1e4);
-      here.push({ id: p.id, h: b.h * f, l: b.l * f, o: b.o * f, c: b.c * f, w: b.usd, read: t + blockMs <= p.heldTo });
+      here.push({ id: p.id, h: b.h * f, l: b.l * f, o: b.o * f, c: b.c * f, w: b.usd, coins: b.coins ?? 0, read: t + blockMs <= p.heldTo });
     }
     if (!here.length) continue;
     // No volume known (a venue's candles without it): each market counts the same.
     const weighed = here.some(x => x.w > 0) ? here : here.map(x => ({ ...x, w: 1 }));
     const top = weightedMedian(weighed.map(x => ({ x: x.h, w: x.w })), true), bottom = weightedMedian(weighed.map(x => ({ x: x.l, w: x.w })), false);
     const lead = here.find(x => x.id === ref) ?? [...weighed].sort((a, b) => b.w - a.w)[0]!;
-    const usd = here.reduce((s, x) => s + x.w, 0), end = t + blockMs;
-    const block: Block = { t, h: top, l: bottom, o: Math.min(top, Math.max(bottom, lead.o)), c: Math.min(top, Math.max(bottom, lead.c)), usd, closed: end <= now };
+    const usd = here.reduce((s, x) => s + x.w, 0), coins = here.reduce((s, x) => s + x.coins, 0), end = t + blockMs;
+    const block: Block = { t, h: top, l: bottom, o: Math.min(top, Math.max(bottom, lead.o)), c: Math.min(top, Math.max(bottom, lead.c)), usd, coins, closed: end <= now };
     if (hollow && here.length >= 3 && (here.every(x => x.read) || now - end >= 10 * MIN)) {
       const need = Math.max(1e4 * R / top, HOLLOW_MIN_BP);
       for (const x of here) {

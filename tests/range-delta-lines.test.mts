@@ -7,6 +7,7 @@ import type { NlnsCandle } from '../src/app/delta/nlns.ts';
 import type { CandleRow, OiBar } from '../src/app/store.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
 import { readFileSync } from 'node:fs';
+import { setUnits } from '../src/app/units.ts';
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 12, 0), KEY = 'binance:BTCUSDT|1h|cvd|net|day|UTC|a,b';
 const sel = (t0: number, t1: number, extra: Partial<RangeSelection> = {}): RangeSelection => ({ t0, t1, p0: null, p1: null, live: false, draft: false, pane: 'delta', step: H, ...extra });
@@ -196,4 +197,38 @@ test('review dcr4: only a first reaching back drops a kept result (not one movin
   const back = { ...part, firsts: [0, -7200], starts: [T + 2 * H], flows: [part.flows[2]!], raw: [part.raw[2]!], support: [2] };
   assert.equal(text(p.lines(sel(T, T + 3 * H), back, true, KEY, NOW), 'dl-kept'), undefined);
   assert.equal(usdPair(12_345_678, 12_300_000), '+$12.35M → +$12.30M');
+});
+
+test('coins (issue 9): a snapshot with its candles in coins is written in the coin (the candles the dollars counted); without them, dollars', async () => {
+  const rows: [number, number][] = [[5, 50], [10, 100], [-4, 40], [20, 200]];
+  const base = held(rows), starts = base.starts, coinFlows = rows.map(([d, g]) => flow(d / 100, g / 100));
+  const coins = { flows: coinFlows, candles: new Map(deltaCandles(starts, coinFlows, rows.map(() => 0)).map(c => [c.t, c] as const)) };
+  const h = held(rows, { coins });
+  setUnits('coin');
+  try {
+    const s = deltaStretch(h, { t0: T + H, t1: T + 4 * H })!;
+    assert.deepEqual(s.coins && [s.coins.delta, s.coins.volume, s.coins.largest], [0.26, 3.4, 0.2]);
+    assert.equal(s.delta, 26, 'the dollars stay what is counted');
+    const lines = new DeltaRangeSummary().lines(sel(T + H, T + 4 * H), h, true, KEY, NOW);
+    assert.equal(text(lines, 'dl-delta'), 'Delta | +0.26 BTC · +7.6% of the volume', 'the share is the dollars\'');
+    assert.equal(text(lines, 'dl-split'), 'Bought 1.83 BTC | Sold 1.57 BTC');
+    assert.equal(text(lines, 'dl-volume'), 'Recorded taker volume | 3.4 BTC');
+    assert.match(text(lines, 'dl-largest') ?? '', /· \+0\.2 BTC$/);
+    // A counted candle without its coin flow: nothing in coins rather than a total of some candles; and no coins given at all: dollars.
+    const gap = held(rows, { coins: { ...coins, flows: coinFlows.map((f, i) => i === 2 ? null : f) } });
+    assert.equal(deltaStretch(gap, { t0: T + H, t1: T + 4 * H })!.coins, undefined);
+    assert.equal(text(new DeltaRangeSummary().lines(sel(T + H, T + 4 * H), base, true, KEY, NOW), 'dl-delta'), 'Delta | +$26 · +7.6% of the volume');
+  } finally { setUnits('usd'); }
+});
+
+test('coins (issue 9): the delta\'s share of the volume and its colour follow the coin delta written beside them', () => {
+  // Dollars: +5 of 50 bought; coins: the candle's coin flow leans the other way (bought dearer than sold).
+  const rows: [number, number][] = [[5, 50]], coinFlows = [flow(-0.01, 0.5)];
+  const h = held(rows, { coins: { flows: coinFlows, candles: new Map(deltaCandles([T], coinFlows, [0]).map(c => [c.t, c] as const)) } });
+  const delta = (): ReturnType<DeltaRangeSummary['lines']>[number] => new DeltaRangeSummary().lines(sel(T, T + H), h, true, KEY, NOW).find(l => l.key === 'dl-delta')!;
+  assert.deepEqual([delta().cells[1], delta().tone], ['+$5 · +10% of the volume', 'buy'], 'dollars (the snapshot\'s coins are not read)');
+  setUnits('coin');
+  try {
+    assert.deepEqual([delta().cells[1], delta().tone], ['−0.01 BTC · −2.0% of the volume', 'sell']);
+  } finally { setUnits('usd'); }
 });

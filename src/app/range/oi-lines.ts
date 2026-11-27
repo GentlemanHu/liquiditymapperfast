@@ -7,6 +7,7 @@ import { venueLabel } from '../venues.ts';
 import { clock, price as fmtPrice, spanClock, usd } from '../format.ts';
 import { t, tn } from '../i18n.ts';
 import { oiStretch, type OiStretch, type OiWho } from './oi-summary.ts';
+import { amount as unitAmount, coinsAt, inCoins, units as pageUnits } from '../units.ts';
 import type { RangeSelection } from './selection.ts';
 import type { RangeLine, StackPart } from './stats.ts';
 
@@ -115,15 +116,19 @@ export class OiRangeSummary {
    * The last lines and what they were made of: the snapshot, the selection, whether the pane shows, the liquidations (their book's version: it
    * grows in place), the coin and markets now, the candle under way (the only time the lines read) and the time zone the clock writes in.
    */
-  #last: { held: OiPaneHeld | null; sel: RangeSelection; shown: boolean; liq: string; current: string; slot: number; zone: string; lines: RangeLine[] } | null = null;
+  #last: { held: OiPaneHeld | null; sel: RangeSelection; shown: boolean; liq: string; current: string; slot: number; zone: string; units: string; lines: RangeLine[] } | null = null;
 
-  /** `current`: the coin, timeframe and markets now (the held snapshot must be of them); `now`: the page's clock; `zone`: the clock's time zone. */
+  /**
+   * `current`: the coin, timeframe and markets now (the held snapshot must be of them); `now`: the page's clock; `zone`: the clock's time zone.
+   * The page's units (units.ts) are read as the lines are written: open interest is the coin's in either, so only the dollar line and the
+   * liquidations change with them.
+   */
   lines(sel: RangeSelection, held: OiPaneHeld | null, shown: boolean, liquidations: OiLiquidations | null, current: string, now: number, zone = ''): RangeLine[] {
-    const last = this.#last, slot = held ? Math.floor(now / held.tfMs) : 0, w = liquidations?.held;
+    const last = this.#last, slot = held ? Math.floor(now / held.tfMs) : 0, w = liquidations?.held, units = pageUnits();
     const liq = liquidations ? `${liquidations.version}|${liquidations.min}|${w ? `${w.t0}|${w.t1}|${w.min}|${w.cut}|${w.live}` : '-'}` : '';
-    if (last && last.held === held && last.sel === sel && last.shown === shown && last.liq === liq && last.current === current && last.slot === slot && last.zone === zone) return last.lines;
+    if (last && last.held === held && last.sel === sel && last.shown === shown && last.liq === liq && last.current === current && last.slot === slot && last.zone === zone && last.units === units) return last.lines;
     const lines = this.#lines(sel, held, shown, liquidations, current, now);
-    this.#last = { held, sel, shown, liq, current, slot, zone, lines };
+    this.#last = { held, sel, shown, liq, current, slot, zone, units, lines };
     return lines;
   }
 
@@ -159,7 +164,8 @@ export class OiRangeSummary {
       const rel = cohort && s.start > 0 ? ` · ${s.change >= 0 ? '+' : '−'}${(Math.abs(s.change) / s.start * 100).toFixed(2)}%` : '';
       lines.push({ key: 'oi-known', kind: 'stat', ...(tone(s.change) ? { tone: tone(s.change)! } : {}), cells: [t('Known change'), `${signedCoins(s.change, held.coin)}${rel}`] });
       lines.push({ key: 'oi-level', kind: 'stat', cells: [held.market ? t('Level') : t('Combined level'), `${amount(s.start)} → ${amount(s.end)}${held.coin ? ` ${held.coin}` : ''}`] });
-      if (s.usd !== null && (s.usd !== 0 || s.change !== 0)) lines.push({ key: 'oi-usd', kind: 'stat', cells: [t('In USD, at bar prices'), `≈ ${signedUsd(s.usd)}`] });
+      // In coins open interest is already the coin's: its dollars are left out.
+      if (!inCoins() && s.usd !== null && (s.usd !== 0 || s.change !== 0)) lines.push({ key: 'oi-usd', kind: 'stat', cells: [t('In USD, at bar prices'), `≈ ${signedUsd(s.usd)}`] });
     }
     if (s.price) {
       const move = (s.price.close - s.price.open) / s.price.open, sign = move > 0 ? '+' : move < 0 ? '−' : '';
@@ -292,13 +298,16 @@ function liquidationLine(s: OiStretch, held: OiPaneHeld, liquidations: OiLiquida
   // Only what was read for the stretch: outside the window held, "none reported" would be about minutes nobody looked at.
   const w = liquidations.held, covered = w !== null && w.t0 <= s.t0 && (w.live || w.t1 >= s.t1);
   if (!covered) return { key: 'oi-liq', kind: 'stat', tone: 'muted', cells: [t('Liquidations reported'), t('not held for this stretch')] };
-  const ids = new Set(held.ids), min = Math.max(liquidations.min, w.min);
+  // The size shown from is a setting, in dollars in either units; in coins each liquidation is its dollars over its reported price (units.ts).
+  const ids = new Set(held.ids), min = Math.max(liquidations.min, w.min), coins = inCoins();
   let longs = 0, shorts = 0;
   for (const l of liquidations.items) {
     if (l.t < s.t0 || l.t >= s.t1 || l.usd < min || !ids.has(l.id)) continue;
-    if (l.side === 'long') longs += l.usd; else shorts += l.usd;
+    const size = coins ? coinsAt(l.usd, l.reported) : l.usd;
+    if (coins && !Number.isFinite(size)) continue;
+    if (l.side === 'long') longs += size; else shorts += size;
   }
-  const from = `$${usd(min)}`;
-  const text = longs + shorts > 0 ? t('{longs} longs · {shorts} shorts (from {min})', { longs: `$${usd(longs)}`, shorts: `$${usd(shorts)}`, min: from }) : t('none reported from {min}', { min: from });
+  const from = `$${usd(min)}`, money = (x: number): string => coins ? unitAmount(x) : `$${usd(x)}`;
+  const text = longs + shorts > 0 ? t('{longs} longs · {shorts} shorts (from {min})', { longs: money(longs), shorts: money(shorts), min: from }) : t('none reported from {min}', { min: from });
   return { key: 'oi-liq', kind: 'stat', cells: [t('Liquidations reported'), w.cut ? `${text} · ${t('the largest only: the answer was cut')}` : text] };
 }

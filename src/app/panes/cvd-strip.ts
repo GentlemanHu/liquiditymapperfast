@@ -11,6 +11,7 @@ import { SIZE_FLOOR_USD } from '../sizes.ts';
 import { GEOMETRY, askedWindows, bandCuts, buildStrip, coverageNote, flashBands, ledRow, percent, rankMinutes, rowAt, rowLines, sizeBands, stripHeight, weightDots, weightText, type Led, type StripData, type StripRow } from '../cvd/strip.ts';
 import { replaying } from '../replay/clock.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
+import { inCoins } from '../units.ts';
 
 const SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
 const FONT = `9px ${SANS}`, FONT_BOLD = `600 9px ${SANS}`;
@@ -139,7 +140,8 @@ export class CvdStrip {
     const windows = askedWindows(rankMinutes(c)), cuts = bandCuts(sizeBands(c)), key = this.#key(windows, cuts);
     this.#ask(windows, cuts, key);
     const known = this.#sizes?.key === key ? this.#sizes.answer : null;
-    this.#data = buildStrip({ flow: this.hub.flow, counted: this.#counted, nowSec: Math.floor(Date.now() / 1000), settings: c, scope: s.scope, sizes: known, state: known ? 'ready' : this.#failed ? 'unavailable' : 'loading' });
+    // In coins the rows carry their coins too, for the box under the pointer (units.ts); the dots, shares and size bands stay the dollars'.
+    this.#data = buildStrip({ flow: this.hub.flow, counted: this.#counted, nowSec: Math.floor(Date.now() / 1000), settings: c, scope: s.scope, sizes: known, state: known ? 'ready' : this.#failed ? 'unavailable' : 'loading', coins: inCoins() });
     this.#h = stripHeight(this.#data.size.rows.length);
     this.#resize();
     this.#schedule();
@@ -316,6 +318,8 @@ export class CvdStrip {
     heading(t('TAKER FLOW'), '', data.heading);
     data.pulse.forEach(rowData => row(rowData, -1, false));
     y += g.groupGap;
+    // USD in either units (units.ts): it names the bands' unit, and the bands are size thresholds, which stay the dollars'. The rows show
+    // shares only; their coins are in the box under the pointer.
     heading(t('ORDER SIZE · USD · {window}', { window: data.window }), data.size.partial && data.size.covered !== null ? coverageNote(data.size.covered, data.size.minutes) : '', t('share of volume'));
     const bands = sizeBands(this.store.state.cvd), top = y, idle = data.size.state === 'unavailable';
     // A row that holds orders from the floor up can blink (the print stream starts there); the row of the orders under it cannot.

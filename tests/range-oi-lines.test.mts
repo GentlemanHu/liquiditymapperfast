@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { OiRangeSummary, durationPair, type OiPaneHeld } from '../src/app/range/oi-lines.ts';
 import { chainedOi, oiSumOf, type OiPart } from '../src/app/oi-change.ts';
 import { oiCohorts } from '../src/app/panes/lower-panes.ts';
-import type { OiBar } from '../src/app/store.ts';
+import type { CandleRow, OiBar } from '../src/app/store.ts';
 import type { NlnsCandle } from '../src/app/delta/nlns.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const H = 3_600_000, T = Date.UTC(2026, 10, 12, 0), KEY = 'binance:BTCUSDT|1h|all';
 const bars = (values: number[], from = T): OiBar[] => values.map((v, i) => [from + i * H, v, v, v, v]);
@@ -141,4 +142,22 @@ test('a covered part and its span in one unit: hours with hours, days with days,
   assert.deepEqual(durationPair(20_000, 40 * H), { k: 'under 1 min', n: '40 h' });
   assert.deepEqual(durationPair(2 * 60_000, 40 * H), { k: '2 min', n: '40 h' }, 'a part too small for the unit says its own size, never 0 h');
   assert.deepEqual(durationPair(70 * 60_000, 51 * H), { k: '70 min', n: '2.1 days' }, 'never 0.0 days');
+});
+
+test('coins (issue 9): open interest is the coin\'s in either units; in coins its dollar line goes and liquidations are at their reported prices', async () => {
+  const oi = bars([100, 102, 105, 103]), candles = oi.map(b => [b[0], 50_000, 50_000, 50_000, 50_000, 1] as CandleRow);
+  const held = one(oi, { candles, ownPrice: true });
+  const items = [{ t: T + 2 * H, id: 'binance:BTCUSDT', side: 'long', price: 100, usd: 5_000_000, reported: 50_000, kind: 'fill' } as Liquidation];
+  const liq = { items, version: 1, min: 1000, held: { t0: T, t1: T + 20 * H, min: 1000, cut: false, live: false } };
+  const summary = new OiRangeSummary(), lines = () => summary.lines(sel(T + H, T + 4 * H), held, true, liq, KEY, NOW);
+  const usd = lines();
+  assert.match(text(usd, 'oi-usd') ?? '', /^In USD, at bar prices \| ≈ \+\$/);
+  setUnits('coin');
+  try {
+    const coins = lines();
+    assert.equal(text(coins, 'oi-usd'), undefined, 'no dollar line: the change is the coin\'s already');
+    assert.equal(text(coins, 'oi-known'), text(usd, 'oi-known'), 'the change as before');
+    assert.equal(text(coins, 'oi-liq'), 'Liquidations reported | 100 BTC longs · 0 BTC shorts (from $1K)', 'at its reported price; the setting in dollars');
+  } finally { setUnits('usd'); }
+  assert.deepEqual(lines(), usd, 'back in dollars');
 });

@@ -1,6 +1,7 @@
 import { t, tn } from '../i18n.ts';
 import { el } from '../dom.ts';
-import { clock, price as fmtPrice, usd } from '../format.ts';
+import { clock, price as fmtPrice } from '../format.ts';
+import { amount, inUnits } from '../units.ts';
 import { compactBar, isCoarse } from '../device.ts';
 import { togglePanel, switchRow, segmented, heading, note, button, type Panel } from '../ui.ts';
 import { DRAW_COLORS, DRAW_WIDTHS, MAX_IMPORT_CHARS, positionFigures, type DrawColor, type DrawKind, type Drawing } from './model.ts';
@@ -8,6 +9,7 @@ import { MAGNET_MODES, type MagnetMode } from './magnet.ts';
 import { handlesOf, noteBox, type Projection, type Pt } from './geometry.ts';
 import type { DrawController } from './controller.ts';
 import type { DrawSettings } from './settings.ts';
+import { alertEnded, canAlert } from './alerts.ts';
 import { colorOf } from './paint.ts';
 import type { Palette } from '../theme.ts';
 
@@ -106,14 +108,18 @@ function span(ms: number): string {
   return tn(Math.round(h / 24), '{n} day', '{n} days');
 }
 
-/** What the bar says about a selected drawing: its prices, how far the price is, what rests there now, its height or its move. */
+/**
+ * What the bar says about a selected drawing: its prices, how far the price is, what rests there now, its height or its move. `resting` is in
+ * dollars; it is said in the page's units (app/units.ts), in coins over the price in the middle of its row, as the book profile's rows are.
+ */
 export function readout(d: Drawing, mark: number, resting: { bid: number; ask: number; step: number } | null): string {
   const [a, b, c] = d.points;
   switch (d.kind) {
     case 'level': {
       const p = a!.p, parts = [fmtPrice(p)];
       if (mark > 0) parts.push(t('{pct} from the price', { pct: pct((p - mark) / mark * 100) }));
-      if (resting) parts.push(resting.bid + resting.ask > 0 ? t('{usd} resting in the {step} row now', { usd: `$${usd(resting.bid + resting.ask)}`, step: `$${fmtPrice(resting.step, resting.step)}` }) : t('nothing resting in the {step} row now', { step: `$${fmtPrice(resting.step, resting.step)}` }));
+      const rowMid = resting ? (Math.floor(p / resting.step) + 0.5) * resting.step : 0;
+      if (resting) parts.push(resting.bid + resting.ask > 0 ? t('{usd} resting in the {step} row now', { usd: amount(inUnits(resting.bid + resting.ask, rowMid)), step: `$${fmtPrice(resting.step, resting.step)}` }) : t('nothing resting in the {step} row now', { step: `$${fmtPrice(resting.step, resting.step)}` }));
       else parts.push(t('the book is not held here'));
       return parts.join(' · ');
     }
@@ -381,7 +387,14 @@ export class DrawBar {
     text.onkeydown = e => { if (e.key === 'Enter') { keep(); text.blur(); } else if (e.key === 'Escape') { text.value = d.get(id)?.text ?? ''; text.blur(); } e.stopPropagation(); };
     this.#syncEdit.push(x => { if (document.activeElement !== text) text.value = x.text; text.disabled = x.locked || d.readOnly; });
     controls.push(text);
-    if (first.kind === 'level') controls.push(toggle('bell', t('Alert'), t('Sound when the price reaches this level (through Sound, which must be on)'), x => x.alert, (_x, on) => ({ alert: on })));
+    // A bell goes off once when it is switched on (Notify's list can make it go off every time). A zone or a trend line that has already ended
+    // runs on to the right as its bell comes on, or it could never go off.
+    if (canAlert(first.kind)) {
+      const tip = first.kind === 'zone' ? t('Alert when the price enters this zone, once: a sound (Sounds) and a message (Notify). A zone that has ended runs on to the right so it can.')
+        : first.kind === 'trend' ? t('Alert when the price crosses this line, once: a sound (Sounds) and a message (Notify). A line that has ended runs on to the right so it can.')
+          : t('Alert when the price reaches this level, once: a sound (Sounds) and a message (Notify). In Notify it can go off every time.');
+      controls.push(toggle('bell', t('Alert'), tip, x => x.alert, (x, on) => on ? { alert: true, alertOnce: true, ...(alertEnded(x, Date.now()) ? { extendRight: true } : {}) } : { alert: false }));
+    }
     if (first.kind === 'level' || first.kind === 'zone') {
       const inspect = iconButton('inspect', t('Inspect'), first.kind === 'zone' ? t('Inspect: add up what traded in this zone (the Range tool)') : t('Inspect: add up what traded at this level\'s row over the time on the map (the Range tool)'));
       inspect.onclick = () => d.inspect(id);

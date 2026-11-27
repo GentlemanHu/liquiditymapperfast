@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LT_DEFAULTS, imbalanceAxis, ltPartAt, ltSeries, ltWeight, shownBy, type LtParams, type LtStore } from '../src/app/lt.ts';
+import { LT_DEFAULTS, imbalanceAxis, ltPartAt, ltSeries, ltWeight, shownBy, type LtParams, type LtStore, ltInCoins, ltPrices } from '../src/app/lt.ts';
 import { LT_LENGTH, ltIndex } from '../src/shared/lt-sample.ts';
+import { ltLinePath } from '../src/app/panes/lower-panes.ts';
 
 const MIN = 60_000;
 const near = (actual: ArrayLike<number>, expected: number[], eps = 1e-3) => { assert.equal(actual.length, expected.length); expected.forEach((v, i) => assert.ok(Math.abs(actual[i]! - v) < eps, `index ${i}: ${actual[i]} vs ${v}`)); };
@@ -145,4 +146,45 @@ test('each window says whether a column of it was worked out from an average boo
   const out = ltSeries([s, live], 0, 3 * MIN, MIN, { ...LT_DEFAULTS, halfLifeBp: 10 });
   assert.deepEqual([...out.times], [0, MIN, 2 * MIN]);
   assert.deepEqual([...out.approx!], [1, 0, 0]);
+});
+
+test('coins (issue 9): each window at the typical price of the chart candles overlapping it, its parts too; a window none overlaps is NaN', async () => {
+  // 5-minute candles; windows of 1 minute (inside a candle) and of 10 minutes (holding two), and a gap with no candle from 15 to 30 minutes.
+  const c = (t: number, high: number, low: number, close: number): [number, number, number, number, number, number] => [t, low, high, low, close, 1];
+  const candles = [c(0, 103, 97, 100), c(5 * MIN, 113, 107, 110), c(10 * MIN, 123, 117, 120), c(30 * MIN, 133, 127, 130)];
+  const at = (times: number[], step: number, list = candles) => [...ltPrices(times, step, list, 5 * MIN)];
+  assert.deepEqual(at([MIN, 6 * MIN, 14 * MIN], MIN), [100, 110, 120], 'the candle holding the window');
+  assert.deepEqual(at([0], 10 * MIN), [105], 'the mean of the candles it overlaps');
+  assert.deepEqual(at([4.5 * MIN], MIN), [105], 'one across two candles: both');
+  // Never a price from another time: before the candles loaded, in a gap, past the newest candle's end.
+  assert.ok(at([-10 * MIN, 20 * MIN, 40 * MIN], MIN).every(Number.isNaN), 'no candle overlaps: not known');
+  assert.deepEqual(at([12 * MIN], 10 * MIN), [120], 'a window reaching into the gap: the candle it overlaps');
+  assert.ok(Number.isNaN(ltPrices([0], MIN, [], 5 * MIN)[0]!), 'no candle: not known');
+  const parts = { bid: Float32Array.from([100, 220, 300, 440]), ask: Float32Array.from([50, 110, 0, 0]) };
+  const coins = ltInCoins({ times: Float64Array.from([0, MIN]), bid: Float32Array.from([400, 660]), ask: Float32Array.from([50, 110]), parts }, Float64Array.from([100, 110]));
+  near(coins.bid, [4, 6]); near(coins.ask, [0.5, 1]);
+  near(coins.parts!.bid, [1, 2, 3, 4], 1e-6); near(coins.parts!.ask, [0.5, 1, 0, 0], 1e-6);
+  assert.equal(imbalanceAxis(Math.abs(4 - 0.5) / 4.5), imbalanceAxis(Math.abs(400 - 50) / 450), 'the imbalance is the same in either units');
+  const unpriced = ltInCoins({ times: Float64Array.from([0]), bid: Float32Array.from([1]), ask: Float32Array.from([1]) }, Float64Array.from([NaN]));
+  assert.ok(Number.isNaN(unpriced.bid[0]!));
+});
+
+test('coins (issue 9): a line starts afresh after a window with no figure (one no candle prices), as after a gap in the windows', () => {
+  const calls: string[] = [], ctx = { moveTo: (x: number) => { calls.push(`M${x}`); }, lineTo: (x: number) => { calls.push(`L${x}`); } };
+  const times = Float64Array.from([0, 1, 2, 3, 4, 8, 9].map(m => m * MIN)), view = { t0: 0, t1: 10 * MIN }, x = (t: number) => t / MIN, y = (v: number) => v;
+  ltLinePath(ctx, times, Float32Array.from([1, 1, NaN, 1, 1, 1, 1]), times.length, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'L1', 'M3', 'L4', 'M8', 'L9'], 'broken at the window with no figure and at the four minutes no window holds, never joined across');
+  calls.length = 0;
+  ltLinePath(ctx, times, Float32Array.from([1, 1, 1, 1, 1, 1, 1]), times.length, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'L1', 'L2', 'L3', 'L4', 'M8', 'L9'], 'with every figure (dollars) the path is as before: broken at the gap alone');
+});
+
+test('coins (issue 9): a window with a figure alone between windows without one is a dash a window wide, not nothing (review 4)', () => {
+  const calls: string[] = [], ctx = { moveTo: (x: number) => { calls.push(`M${x}`); }, lineTo: (x: number) => { calls.push(`L${x}`); } };
+  const view = { t0: 0, t1: 10 * MIN }, x = (t: number) => t / MIN, y = (v: number) => v;
+  ltLinePath(ctx, Float64Array.from([0, 1, 2, 3].map(m => m * MIN)), Float32Array.from([2, NaN, 1, 1]), 4, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'M-1.5', 'L1.5', 'M2', 'L3'], 'the first window alone: a dash (at least 3 px); the last two: a line');
+  calls.length = 0;
+  ltLinePath(ctx, Float64Array.from([0, 5].map(m => m * MIN)), Float32Array.from([1, 1]), 2, MIN, view, x, y);
+  assert.deepEqual(calls, ['M0', 'M5'], 'a lone window beside a gap of time alone draws nothing, as it always did');
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { buildSizeModel, lineAt, rasterise, sizeTf, type SizeBars, type SizeInput } from '../src/app/cvd/sizes.ts';
 import { sizeRowLabel } from '../src/app/cvd/text.ts';
 import { BANDS } from '../src/app/size-history/model.ts';
+import { setUnits } from '../src/app/units.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 
 const M = 60_000;
@@ -131,4 +132,40 @@ test('a row without a line says its sizes alone; with one, the net of each kind 
   const bars = held([bar(0, box(0, 5_000), box(0, 1_000))], 0, M);
   const row = buildSizeModel(input(bars, null, { t1: M, columns: 1, now: M, rankMs: M })).rows[0]!;
   assert.deepEqual(sizeRowLabel(row, 87).map(l => l.text), [row.label, 'S +$4K', '100% · $6K']);
+});
+
+test('in coins (issue 9) a bar is its dollars over the price at the middle of what it traded: lines, figures and label in the coin, the share the dollars\x27', () => {
+  // A $10K buy (box 0) each minute and a $2K sell at minute 1; the price rises $100 a minute from $1,000; now is halfway through minute 3.
+  const priceAt = (t: number): number => 1_000 + 100 * t / M;
+  const spot = held(Array.from({ length: 4 }, (_, i) => bar(i * M, box(0, 10_000), box(0, i === 1 ? 2_000 : 0))), 0, 4 * M);
+  const base = input(spot, null, { t1: 4 * M, columns: 4, now: 3.5 * M, rankMs: 4 * M });
+  const usd = buildSizeModel(base), coins = buildSizeModel({ ...base, coins: { priceAt } });
+  // Minutes 0-2 at their middles ($1,050, $1,150, $1,250); the one under way at the middle of what it has traded, 3:00-3:30 ($1,325).
+  const d = [10_000 / 1_050, 8_000 / 1_150, 10_000 / 1_250, 10_000 / 1_325];
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-9;
+  const lane = coins.rows[0]!.lanes[0]!;
+  let run = 0;
+  const want = d.map(x => (run += x));
+  assert.ok([...lane.last].every((v, i) => near(v, want[i]!)), `the line in coins: ${[...lane.last].join(', ')}`);
+  assert.deepEqual([...usd.rows[0]!.lanes[0]!.last], [10_000, 18_000, 28_000, 38_000], 'in dollars as it always was');
+  // The lane's own figures stay the dollars (the share and the shading read them); its coins are beside them, each minute at its own price.
+  assert.deepEqual([lane.delta, lane.buy, lane.sell], [38_000, 40_000, 2_000]);
+  const coinBuy = 10_000 / 1_050 + 10_000 / 1_150 + 10_000 / 1_250 + 10_000 / 1_325, coinSell = 2_000 / 1_150;
+  assert.ok(near(lane.coins!.buy, coinBuy) && near(lane.coins!.sell, coinSell) && near(lane.coins!.delta, coinBuy - coinSell) && near(lane.coins!.gross, coinBuy + coinSell));
+  assert.ok(near(lane.coins!.delta, run), 'the figures over the window drawn end where the line does');
+  assert.ok(near(coins.rows[0]!.coins!.gross, coinBuy + coinSell), 'the row\x27s coins are its lanes\x27');
+  assert.equal(usd.rows[0]!.coins, undefined, 'a model in dollars carries no coins');
+  assert.equal(usd.rows[0]!.lanes[0]!.coins, undefined);
+  assert.deepEqual(coins.rows.map(r => r.share), usd.rows.map(r => r.share), 'the share is the dollars\x27');
+  setUnits('coin');
+  try {
+    assert.deepEqual(sizeRowLabel(coins.rows[0]!, 87).map(l => l.text), [coins.rows[0]!.label, 'S +32 BTC', '100% · 35.5 BTC'], 'the band\x27s name stays its dollars');
+  } finally { setUnits('usd'); }
+  // A minute whose price is not known is not known in coins: the line breaks there and goes on from where it stood; the coins leave it out
+  // (the dollars do not).
+  const gap = buildSizeModel({ ...base, coins: { priceAt: t => t >= M && t < 2 * M ? NaN : priceAt(t) } }), g = gap.rows[0]!.lanes[0]!;
+  assert.ok(near(g.last[0]!, d[0]!) && Number.isNaN(g.last[1]!) && near(g.last[2]!, d[0]! + d[2]!) && near(g.last[3]!, d[0]! + d[2]! + d[3]!), `${[...g.last].join(', ')}`);
+  assert.ok(near(g.coins!.buy, coinBuy - 10_000 / 1_150) && g.coins!.sell === 0);
+  assert.deepEqual([g.delta, g.buy, g.sell], [38_000, 40_000, 2_000]);
+  assert.equal(gap.rows[0]!.unknown, 0, 'every bar has its sizes: the count of bars without them says nothing of prices');
 });

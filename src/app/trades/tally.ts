@@ -11,7 +11,15 @@ import { STRIDE } from '../tape/ring.ts';
  * while the tally still holds it). A new filter, a cleared ring or another ring starts over: the ring is read back from its newest order in
  * steps (`fill`), so a list that opens on hours of orders never blocks a frame. Memory is fixed: a ring of `cap` seconds, a few typed arrays
  * per market met (about 20 bytes a market a second).
+ *
+ * Coins (units.ts, issue 9): the tally keeps none, so dollars mode does its old work and nothing more, and the page switches units without
+ * starting it over. In coin mode a second's coins are worked out when read (`buyCoins`, `sellCoins`): the dollars the filter let in over
+ * that second's own volume-weighted price, every order of the market in it (`vwap`), so to within the second's range of prices rather than
+ * order by order; dollars with no price are NaN (written '–').
  */
+
+/** Dollars at a price, in coins: 0 for none, NaN for some with no price (units.ts writes it '–'). */
+const toCoins = (usd: number, price: number): number => usd === 0 ? 0 : price > 0 ? usd / price : Number.NaN;
 
 /** What the tally reads of the tape ring (the ring itself in the page; a plain object in the tests). */
 export interface TallyRing {
@@ -190,6 +198,12 @@ export class SecondTally {
   sell(m: number, s: number): number { return this.#sell[m]?.[s] ?? 0; }
   /** The second's VWAP of market `m` over every order (0: it did not trade). */
   vwap(m: number, s: number): number { const v = this.#v[m]?.[s] ?? 0; return v > 0 ? this.#pv[m]![s]! / v : 0; }
+  /**
+   * The coins market `m` bought and sold at market in slot `s` (what the filter lets in), worked out when read (coin mode): its dollars over
+   * the second's own volume-weighted price (`vwap`, every order of the market in that second); 0 for none, NaN for dollars with no price.
+   */
+  buyCoins(m: number, s: number): number { return toCoins(this.buy(m, s), this.vwap(m, s)); }
+  sellCoins(m: number, s: number): number { return toCoins(this.sell(m, s), this.vwap(m, s)); }
   topBuy(s: number): number { return this.#topBuy[s]!; }
   topBuyK(s: number): number { return this.#topBuyK[s]!; }
   topSell(s: number): number { return this.#topSell[s]!; }

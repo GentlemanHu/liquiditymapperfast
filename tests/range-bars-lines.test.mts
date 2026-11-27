@@ -6,6 +6,7 @@ import { volText, type Bar } from '../src/app/panes/footprint.ts';
 import { price as fmtPrice } from '../src/app/format.ts';
 import type { CandleRow } from '../src/app/store.ts';
 import type { RangeSelection } from '../src/app/range/selection.ts';
+import { setUnits } from '../src/app/units.ts';
 
 const M5 = 300_000, T = Date.UTC(2026, 10, 12, 0), NOW = T + 1000 * M5;
 const zeros = (): number[] => [0, 0, 0, 0, 0, 0, 0, 0];
@@ -240,4 +241,21 @@ test('review: a kept result is not replaced by one the pane holds fewer executio
   assert.equal(thin.find(l => l.key === 'bs-kept')?.cells[0], 'As worked out earlier, when the pane held more of these candles\' executions.');
   // Once it holds them all again, the result is worked out from what it holds.
   assert.equal(summary.lines(s, held(rows, ['vol']), true, 'K', NOW).find(l => l.key === 'bs-kept'), undefined);
+});
+
+test('coins (issue 9): a table worked out in coins is written in the coin, never with a dollar sign; oi chg in the coin whatever its option', async () => {
+  setUnits('coin');
+  try {
+    // Step 1: rows at 99.5 + 0.5 = 100 a coin, so 950 bought is 9.5 coins.
+    const bars = [bar(at(0), [[99.5, 950, 50]], { stats: orders(2, 950, 1, 50) }), bar(at(1), [[99.5, 0, 100]])];
+    const h = held(bars, ['vol', 'delta', 'cvd', 'deltaPct', 'avgTrade', 'oiChange'], { input: { coins: true, oiChange: new Map([[at(0), 3], [at(1), -1]]) }, options: { oiUnits: 'usd' } });
+    assert.equal(fig(h, at(0), at(2), 'vol').value, '11 BTC');
+    assert.equal(fig(h, at(0), at(2), 'delta').value, '+8 BTC');
+    assert.equal(fig(h, at(0), at(2), 'cvd').value, '+8 BTC', 'the increments in coins');
+    assert.equal(fig(h, at(0), at(2), 'deltaPct').value, '+72.7%', 'a share as before');
+    assert.equal(fig(h, at(0), at(2), 'avgTrade').value, '3.33 BTC', '1000 dollars of orders at 100 a coin over 3');
+    assert.equal(fig(h, at(0), at(2), 'oiChange').value, '+2.0 BTC', 'the coin\'s change as the OI pane writes it, not dollars');
+    const zero = held([bar(at(0), [[99.5, 100, 100]])], ['delta'], { input: { coins: true } });
+    assert.deepEqual([fig(zero, at(0), at(1), 'delta').value, fig(zero, at(0), at(1), 'delta').tone], ['0 BTC', 'text'], 'a zero takes no side');
+  } finally { setUnits('usd'); }
 });

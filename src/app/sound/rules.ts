@@ -142,8 +142,9 @@ export function readSounds(saved: unknown): SoundSettings {
 }
 
 /** One sweep: the prints of one side that landed within the coalescing window, across venues. `queuedAt` is when its first print was taken in (the caller's clock). */
-export interface SoundEvent { side: 'buy' | 'sell'; usd: number; n: number; venues: number; largest: number; firstT: number; queuedAt: number }
-type Group = { first: number; usd: number; n: number; venues: Set<string>; largest: number; firstT: number };
+/** `coins`: the event's coins, each print's dollars over its own price (a liquidation's over its reported price), for the Recent list (units.ts). */
+export interface SoundEvent { side: 'buy' | 'sell'; usd: number; n: number; venues: number; largest: number; firstT: number; queuedAt: number; coins: number }
+type Group = { first: number; usd: number; coins: number; n: number; venues: Set<string>; largest: number; firstT: number };
 
 /**
  * Merges the fills of one aggressive order that arrive on several venues (or as several fills) into one event, so a sweep is one sound.
@@ -155,12 +156,12 @@ export class Coalescer {
   /** Groups that were already over when the next print of their side arrived: kept, complete, for the next drain. */
   #closed: SoundEvent[] = [];
   constructor(private windowMs = 250) {}
-  static #event(side: 'buy' | 'sell', g: Group): SoundEvent { return { side, usd: g.usd, n: g.n, venues: g.venues.size, largest: g.largest, firstT: g.firstT, queuedAt: g.first }; }
+  static #event(side: 'buy' | 'sell', g: Group): SoundEvent { return { side, usd: g.usd, n: g.n, venues: g.venues.size, largest: g.largest, firstT: g.firstT, queuedAt: g.first, coins: g.coins }; }
   add(print: Print, now: number): void {
     let g = this.#groups.get(print.side);
     if (g && now - g.first >= this.windowMs) { this.#closed.push(Coalescer.#event(print.side, g)); this.#groups.delete(print.side); g = undefined; }
-    if (!g) { g = { first: now, usd: 0, n: 0, venues: new Set(), largest: 0, firstT: print.t }; this.#groups.set(print.side, g); }
-    g.usd += print.usd; g.n++; g.venues.add(print.id.split(':')[0]!); g.largest = Math.max(g.largest, print.usd); g.firstT = Math.min(g.firstT, print.t);
+    if (!g) { g = { first: now, usd: 0, coins: 0, n: 0, venues: new Set(), largest: 0, firstT: print.t }; this.#groups.set(print.side, g); }
+    g.usd += print.usd; g.coins += print.price > 0 ? print.usd / print.price : 0; g.n++; g.venues.add(print.id.split(':')[0]!); g.largest = Math.max(g.largest, print.usd); g.firstT = Math.min(g.firstT, print.t);
   }
   /** Events whose window has elapsed (all of them with `force`), oldest first. */
   drain(now: number, force = false): SoundEvent[] {
@@ -173,7 +174,7 @@ export class Coalescer {
 }
 
 /** One liquidation burst: the forced closes of one side within the coalescing window across venues. */
-export interface LiqSoundEvent { side: 'long' | 'short'; usd: number; n: number; venues: number; largest: number; firstT: number; queuedAt: number }
+export interface LiqSoundEvent { side: 'long' | 'short'; usd: number; n: number; venues: number; largest: number; firstT: number; queuedAt: number; coins: number }
 
 /**
  * Merges a liquidation cascade on one side (longs or shorts liquidated) arriving across venues within `windowMs` into one sound event,
@@ -183,12 +184,12 @@ export class LiqCoalescer {
   #groups = new Map<'long' | 'short', Group>();
   #closed: LiqSoundEvent[] = [];
   constructor(private windowMs = 300) {}
-  static #event(side: 'long' | 'short', g: Group): LiqSoundEvent { return { side, usd: g.usd, n: g.n, venues: g.venues.size, largest: g.largest, firstT: g.firstT, queuedAt: g.first }; }
+  static #event(side: 'long' | 'short', g: Group): LiqSoundEvent { return { side, usd: g.usd, n: g.n, venues: g.venues.size, largest: g.largest, firstT: g.firstT, queuedAt: g.first, coins: g.coins }; }
   add(liq: Liquidation, now: number): void {
     let g = this.#groups.get(liq.side);
     if (g && now - g.first >= this.windowMs) { this.#closed.push(LiqCoalescer.#event(liq.side, g)); this.#groups.delete(liq.side); g = undefined; }
-    if (!g) { g = { first: now, usd: 0, n: 0, venues: new Set(), largest: 0, firstT: liq.t }; this.#groups.set(liq.side, g); }
-    g.usd += liq.usd; g.n++; g.venues.add(liq.id.split(':')[0]!); g.largest = Math.max(g.largest, liq.usd); g.firstT = Math.min(g.firstT, liq.t);
+    if (!g) { g = { first: now, usd: 0, coins: 0, n: 0, venues: new Set(), largest: 0, firstT: liq.t }; this.#groups.set(liq.side, g); }
+    g.usd += liq.usd; g.coins += liq.reported > 0 ? liq.usd / liq.reported : 0; g.n++; g.venues.add(liq.id.split(':')[0]!); g.largest = Math.max(g.largest, liq.usd); g.firstT = Math.min(g.firstT, liq.t);
   }
   drain(now: number, force = false): LiqSoundEvent[] {
     const out = this.#closed.splice(0);

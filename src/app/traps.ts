@@ -2,6 +2,7 @@ import type { Bar } from './panes/footprint.ts';
 import type { CandleRow } from './store.ts';
 import { price as fmtPrice, usd } from './format.ts';
 import { t } from './i18n.ts';
+import { amount, inCoins } from './units.ts';
 
 /**
  * Rejected aggressive buying or selling on a closed candle, from the candle and its footprint alone.
@@ -58,6 +59,11 @@ export interface Trap {
   zoneDelta: number; multiple: number;
   /** What was bought and sold at market in the zone (USD), and what was traded in the whole candle: dominance, not only size. */
   zoneBuy: number; zoneSell: number; barGross: number;
+  /**
+   * The zone's net and its two sides in coins (app/units.ts), each row's dollars over the price in its middle: what the pop-up says in coins.
+   * The rule reads only the dollars.
+   */
+  zoneDeltaCoins: number; zoneBuyCoins: number; zoneSellCoins: number;
   /** Volume-weighted price those aggressors paid or received (an estimate: a row is its middle), and how far the close is beyond it in ATRs. */
   entry: number; excursion: number; close: number;
   /** Pulsing (recent and not reclaimed), static (older), or reclaimed (a later candle closed back through the entry). */
@@ -153,11 +159,17 @@ export function detectSide(side: TrapSide, candle: CandleRow, rows: readonly [nu
   const mid = (idx: number): number => (idx + 0.5) * step;
   let zoneDelta = 0, aggressors = 0, aggressorPrice = 0, zoneBuy = 0, zoneSell = 0, barGross = 0;
   const below = new Map<number, number>();
+  // The zone's rows in coins: each over the price in its own middle (`rowLow + step / 2`; the mirrored `mid` is no price for sellers).
+  const zoneCoins: [low: number, buy: number, sell: number][] = [];
   let lowest = Infinity;
   for (const [rowLow, buy, sell] of rows) {
     const idx = index(rowLow), delta = dir > 0 ? buy - sell : sell - buy, aggressor = dir > 0 ? buy : sell;
     barGross += buy + sell;
-    if (mid(idx) >= top) { zoneDelta += delta; aggressors += aggressor; aggressorPrice += aggressor * mid(idx); zoneBuy += buy; zoneSell += sell; }
+    if (mid(idx) >= top) {
+      zoneDelta += delta; aggressors += aggressor; aggressorPrice += aggressor * mid(idx); zoneBuy += buy; zoneSell += sell;
+      const price = rowLow + step / 2;
+      if (price > 0) zoneCoins.push([rowLow, buy / price, sell / price]);
+    }
     else { below.set(idx, (below.get(idx) ?? 0) + delta); lowest = Math.min(lowest, idx); }
   }
   if (!(zoneDelta > 0) || !(aggressors > 0)) return null;
@@ -181,7 +193,12 @@ export function detectSide(side: TrapSide, candle: CandleRow, rows: readonly [nu
   const entry = dir * (aggressorPrice / aggressors), excursion = dir * (entry - close) / atr;
   if (excursion < params.excursion) return null;
   const zoneEdge = dir * top;
-  return { t, side, zoneLow: dir > 0 ? zoneEdge : low, zoneHigh: dir > 0 ? high : zoneEdge, zoneDelta, multiple: zoneDelta / baseline, zoneBuy, zoneSell, barGross, entry, excursion, close, state: 'static' };
+  // Added up from the lowest row, so the same rows give the same coins in whatever order they come.
+  zoneCoins.sort((a, b) => a[0] - b[0]);
+  let zoneBuyCoins = 0, zoneSellCoins = 0;
+  for (const [, buy, sell] of zoneCoins) { zoneBuyCoins += buy; zoneSellCoins += sell; }
+  return { t, side, zoneLow: dir > 0 ? zoneEdge : low, zoneHigh: dir > 0 ? high : zoneEdge, zoneDelta, multiple: zoneDelta / baseline, zoneBuy, zoneSell, barGross,
+    zoneDeltaCoins: dir > 0 ? zoneBuyCoins - zoneSellCoins : zoneSellCoins - zoneBuyCoins, zoneBuyCoins, zoneSellCoins, entry, excursion, close, state: 'static' };
 }
 
 /**
@@ -267,13 +284,24 @@ export function trapVerdict(scope?: { market: string; timeframe: string }): stri
     : t('Not validated for this market and timeframe. Not a forecast.');
 }
 
-/** What the pop-up says (lines, shortest first): facts about the candle, and nothing about who holds what. */
+/**
+ * What the pop-up says (lines, shortest first): facts about the candle, and nothing about who holds what. Its sizes in the page's units
+ * (app/units.ts); the shares and the multiple, parts of the one candle, are the dollars'.
+ */
 export function trapText(trap: Trap, scope?: { market: string; timeframe: string }): string[] {
   const buyers = trap.side === 'buyers', multiple = trap.multiple >= 10 ? trap.multiple.toFixed(0) : trap.multiple.toFixed(1);
+  // The net share is of the amounts said beside it (in coins the coins', so it agrees with them in sign); the wick's share of the candle stays
+  // the dollars'.
+  const coinGross = trap.zoneBuyCoins + trap.zoneSellCoins, share = Math.round(wickShareOf(trap) * 100);
+  const net = Math.round((!inCoins() ? imbalanceOf(trap) : coinGross > 0 ? trap.zoneDeltaCoins / coinGross : 0) * 100);
+  const sizes = !inCoins()
+    ? [buyers ? t("${amount} net aggressive buying in the upper wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }) : t("${amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }),
+      t("Wick volume: ${buy} bought and ${sell} sold at market ({net}% net); {share}% of the candle's volume", { buy: usd(trap.zoneBuy), sell: usd(trap.zoneSell), net, share })]
+    : [buyers ? t("{amount} net aggressive buying in the upper wick, {multiple}x a typical candle's net delta", { amount: amount(trap.zoneDeltaCoins), multiple }) : t("{amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta", { amount: amount(trap.zoneDeltaCoins), multiple }),
+      t("Wick volume: {buy} bought and {sell} sold at market ({net}% net); {share}% of the candle's volume", { buy: amount(trap.zoneBuyCoins), sell: amount(trap.zoneSellCoins), net, share })];
   const lines = [
     buyers ? t('Rejected aggressive buying') : t('Rejected aggressive selling'),
-    buyers ? t("${amount} net aggressive buying in the upper wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }) : t("${amount} net aggressive selling in the lower wick, {multiple}x a typical candle's net delta", { amount: usd(trap.zoneDelta), multiple }),
-    t("Wick volume: ${buy} bought and ${sell} sold at market ({net}% net); {share}% of the candle's volume", { buy: usd(trap.zoneBuy), sell: usd(trap.zoneSell), net: Math.round(imbalanceOf(trap) * 100), share: Math.round(wickShareOf(trap) * 100) }),
+    ...sizes,
     buyers ? t('estimated average aggressor price {price}; the candle closed {atr} ATR below', { price: fmtPrice(trap.entry), atr: trap.excursion.toFixed(1) }) : t('estimated average aggressor price {price}; the candle closed {atr} ATR above', { price: fmtPrice(trap.entry), atr: trap.excursion.toFixed(1) }),
   ];
   if (trap.state === 'reclaimed') lines.push(t('A later candle closed back through that price. That is a price event only.'));

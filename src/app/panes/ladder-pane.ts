@@ -8,12 +8,13 @@ import { button, checkRow, note, selectRow, switchRow, togglePanel, type Panel }
 import type { Kernels } from '../kernels.ts';
 import { PALETTES, textOn, paletteOf } from '../theme.ts';
 import { niceStep } from '../view.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, figure, inCoins, signedFigure, unitFloor, unitHead, unitName } from '../units.ts';
 import { LADDER_CURVES, type Store, type AppState } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import { RANK_MS } from '../cvd/settings.ts';
 import { CurveRanking, curveColors, curveLines, cutAtBars, lineFraction, lineTicks, nearestCurve, rankCurveVenues, reachRows, reachText, venueCumulative, CURVE_HIT_PX, CURVE_MIN_ROWS, CURVE_OVER_BAR_SHARE, type CurveVenue, type LineStep } from './ladder-curves.ts';
-import { beyondCover, coverage, cumulative, pastReach, dominanceWeight, groupLevels, groupSpan, imbalanceByDistance, liquidityInView, type Cover, type Grouped } from './levels-data.ts';
+import { beyondCover, coverage, cumulative, pastReach, dominanceWeight, groupLevels, groupSpan, imbalanceByDistance, liquidityInView, type Cover, type Cumulative, type Grouped } from './levels-data.ts';
 import { GROUPS, groupsFor, holdsMark, ladderWheel, offsetKeepingPrice, priceAtRow, stepBy } from './ladder-zoom.ts';
 import { currentCoin } from '../coin.ts';
 import { GestureRecognizer, axisPinchScale, bindTouch, type GestureHandlers, type Pt } from '../touch.ts';
@@ -54,7 +55,6 @@ const pieceWidths = new Map<string, number>();
 const CHANGE_HOVER_MS = 120_000;
 /** A window as the popup says it: "15 s", "1 min". */
 const windowText = (s: number): string => s < 60 ? t('{n} s', { n: s }) : t('{n} min', { n: s / 60 });
-const signedUsd = (v: number): string => `${v > 0 ? '+' : v < 0 ? '−' : ''}${usd(Math.abs(v))}`;
 /** Dragging the price column zooms; this is the width of that column's hit area, and how far to drag per zoom step. */
 const AXIS_W = PRICE_W + 6, AXIS_DRAG_PX = 26;
 const BOOK_MIN_W = 250;
@@ -72,6 +72,12 @@ const NO_BARS: readonly number[] = [];
 const ORDER_HOLD_MS = 300_000;
 /** The venue a book belongs to, as a popup names it: "Binance BTCUSDT". */
 const bookName = (id: string): string => `${venueLabel(id)} ${id.split(':').slice(1).join(':')}`;
+/** The pull/stack's changes (it keeps dollars) in the page's units: in coins each row's change over the price in the row's middle, as the rows are (units.ts). */
+function pullInUnits(rows: PullRows, g: Pick<Grouped, 'bin0' | 'step'>): PullRows {
+  if (!inCoins()) return rows;
+  const toCoins = (side: Float64Array): Float64Array => side.map((v, i) => v / ((g.bin0 + i + 0.5) * g.step));
+  return { bid: toCoins(rows.bid), ask: toCoins(rows.ask), touched: rows.touched };
+}
 
 
 export { venueLabel };
@@ -538,7 +544,7 @@ export class LadderPane {
     // The same distance on the other side of the mark too, so what compares the two sides at a distance (the highlight, Mirror) has both.
     // Scrolled further than one grouping holds, the view alone, and no running totals: they would start at its edge.
     const span = groupSpan(p0, p1, mark, step), withMark = span !== null;
-    const g = groupLevels(this.kernels, frame, ids, step, span?.lo ?? p0, span?.hi ?? p1);
+    const g = groupLevels(this.kernels, frame, ids, step, span?.lo ?? p0, span?.hi ?? p1, inCoins());
     const markBin = Math.floor(mark / step) - g.bin0;
     this.#cues.begin({ top: centerBin + Math.floor(rows / 2), rows, head, rowH: ROW_H, step, perVenue: state.ladderMode === 'single' });
     if (state.ladderMode === 'single') {
@@ -566,19 +572,22 @@ export class LadderPane {
   #own(g: Grouped, index: number): Grouped {
     let list = this.#owns.get(g);
     if (!list) { list = []; this.#owns.set(g, list); }
-    return list[index] ??= { ...g, totalBid: g.bid[index]!, totalAsk: g.ask[index]! };
+    return list[index] ??= { ...g, totalBid: g.bid[index]!, totalAsk: g.ask[index]!, ...(g.coins ? { coins: this.#own(g.coins, index) } : {}) };
   }
 
   /**
    * The Compact book's venue lines: the books ranked as the flow column ranks exchanges (traded volume over its ranking window, a book with
    * no trades held by its liquidity in view), held a minute at a time; each with its running total, its reach and its colour.
    */
+  /** The window (whole seconds) the venue lines' ranking last read the volumes over: a line's box says its volume over that same window. */
+  #rankWindow = { from: 0, to: -1 };
   #curves(state: AppState, g: Grouped, frame: NonNullable<AppState['levels']>, markBin: number, loBin: number, hiBin: number): Curve[] {
     const now = Date.now(), windowMs = RANK_MS[state.cvd.rank], n = state.ladderCurves;
     const venues = this.#curveRank.apply(now, g.ids, n, () => {
       // The volumes the column would count (one request when the flow book lacks them; nothing while it holds them).
       void this.hub?.ensureFlow(g.ids, now - windowMs);
       const nowSec = Math.floor(now / 1000), from = nowSec - Math.round(windowMs / 1000) + 1;
+      this.#rankWindow = { from, to: nowSec };
       const volume = (id: string): number | null => { const s = this.hub?.flow.get(id); return s && !s.empty ? s.gross(from, nowSec) : null; };
       const liquidity = (id: string): number => {
         const i = g.ids.indexOf(id); let sum = 0;
@@ -593,7 +602,7 @@ export class LadderPane {
     const drawn = venues.filter(v => !v.shallow), colors = curveColors(this.#palette, drawn.length);
     return drawn.flatMap((venue, k) => {
       const index = g.ids.indexOf(venue.id); if (index < 0) return [];
-      return [{ venue, index, cum: venueCumulative(g, index, markBin), cover: coverage(frame.books.find(b => b.id === venue.id), state.mark.price), color: colors[k]! }];
+      return [{ venue, index, cum: venueCumulative(g.coins ?? g, index, markBin), cover: coverage(frame.books.find(b => b.id === venue.id), state.mark.price), color: colors[k]! }];
     });
   }
 
@@ -617,9 +626,10 @@ export class LadderPane {
 
   /**
    * A Compact bar's pieces: each venue's part in the bar's order, the shade alternating with its place (so neighbours stay apart) and a hair
-   * of background between them; the smaller venues' piece at the end lighter. A piece wide enough says whose it is, and its size when it fits.
+   * of background between them; the smaller venues' piece at the end lighter. A piece wide enough says whose it is, and its size when it fits
+   * (`valueOf`: its size in the page's units; the pieces are laid out by their dollars).
    */
-  #paintPieces(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, pieces: readonly BarPiece[], y: number, color: string, f: number): void {
+  #paintPieces(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, pieces: readonly BarPiece[], y: number, color: string, f: number, valueOf: (piece: BarPiece) => number): void {
     const p = this.#palette;
     ctx.font = PIECE_FONT; ctx.textAlign = 'left';
     const measure = (text: string): number => {
@@ -634,7 +644,7 @@ export class LadderPane {
       // A piece wide enough starts with its venue's mark, and says what fits after it.
       const marked = piece.id !== null && w >= 15, MARK = 11, after = marked ? MARK + 4 : 0;
       if (marked) drawVenueMark(ctx, piece.id!, piece.x + 2 + MARK / 2, y + ROW_H / 2, MARK);
-      const label = piece.id ? pieceLabel(piece.id, usd(piece.usd), w - after, measure) : piece.merged.length > 1 && measure(`+${piece.merged.length}`) + 8 <= w ? `+${piece.merged.length}` : null;
+      const label = piece.id ? pieceLabel(piece.id, figure(valueOf(piece)), w - after, measure) : piece.merged.length > 1 && measure(`+${piece.merged.length}`) + 8 <= w ? `+${piece.merged.length}` : null;
       if (label) { ctx.fillStyle = textOn(color, alpha, p); ctx.fillText(label, piece.x + (marked ? 2 + after : 4), y + ROW_H / 2 + 0.5); }
     }
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -642,11 +652,12 @@ export class LadderPane {
 
   /**
    * What the pointer is directly on, if it is on something drawn: a venue's cell (or its piece of the bar) says that venue's part of the
-   * level, and the USD column or a plain bar says the whole level. Null over the price column, empty space and the cumulative area.
+   * level, and the size column or a plain bar says the whole level. Null over the price column, empty space and the cumulative area. What is
+   * pointed at is found on the bars as they are laid out, from the dollars (`g`); what the box says is in the page's units (`k.shown`).
    */
-  #cellUnder(state: AppState, g: Grouped, cum: ReturnType<typeof cumulative>,
+  #cellUnder(state: AppState, g: Grouped,
     o: { x: number; w: number; title: string; markId?: string; cells: string[] | null; order: string[] | null; head: number; cover: Cover | null; centerBin: number; rows: number; markBin: number; mark: number; step: number },
-    k: { priceW: number; usdW: number; cw: number; barX: number; barW: number; maxLevel: number; pull: PullRows | null; gut: number }): { lines: InfoLine[]; x: number; y: number; w: number; h: number } | null {
+    k: { priceW: number; usdW: number; cw: number; barX: number; barW: number; maxLevel: number; pull: PullRows | null; gut: number; shown: Grouped; cumShown: Cumulative; pullShown: PullRows | null }): { lines: InfoLine[]; x: number; y: number; w: number; h: number } | null {
     const hv = this.#hover; if (!hv || this.#drag) return null;
     const { x: x0, w, rows, markBin, step, centerBin, head } = o;
     if (hv.x < x0 || hv.x >= x0 + w || hv.y < head || hv.y >= head + rows * ROW_H) return null;
@@ -665,11 +676,14 @@ export class LadderPane {
     }
     if (!(size > 0)) return null;
     const y = head + r * ROW_H, ids = o.cells, at = (i: number): number => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0;
+    // What the box says of a venue, in the page's units (`at`, the dollars, finds what the pointer is on).
+    const shown = k.shown, said = (i: number): number => (isAsk ? shown.ask[i] : shown.bid[i])?.[bin] ?? 0, saidOf = (id: string): number => said(g.ids.indexOf(id));
     const order = o.order, orderIdx = order ? order.map(id => g.ids.indexOf(id)) : null;
-    const venues = ids ? ids.map((id, i) => ({ name: bookName(id), usd: at(i), id })) : order && orderIdx ? order.map((id, n) => ({ name: bookName(id), usd: at(orderIdx[n]!), id })) : [];
-    const change = k.pull ? (isAsk ? k.pull.ask[bin]! : k.pull.bid[bin]!) : NaN;
-    const facts: LevelFacts = { low: rowLo, step, mark: o.mark, ask: isAsk, size, cumulative: (isAsk ? cum.ask : cum.bid)[bin] ?? size, venues: venues.filter(v => v.usd > 0), ...(o.title ? { title: o.title } : {}),
-      ...(change === change && k.pull ? { pull: { usd: change, touched: k.pull.touched[bin] === 1, window: windowText(state.pullStack) } } : {}), changes: this.#changesAt(rowIds, isAsk, rowLo, rowLo + step, g, bin) };
+    const venues = ids ? ids.map((id, i) => ({ name: bookName(id), usd: said(i), id })) : order && orderIdx ? order.map((id, n) => ({ name: bookName(id), usd: said(orderIdx[n]!), id })) : [];
+    const change = k.pull ? (isAsk ? k.pull.ask[bin]! : k.pull.bid[bin]!) : NaN, changeSaid = k.pullShown ? (isAsk ? k.pullShown.ask[bin]! : k.pullShown.bid[bin]!) : NaN;
+    const sizeSaid = isAsk ? shown.totalAsk[bin]! : shown.totalBid[bin]!;
+    const facts: LevelFacts = { low: rowLo, step, mark: o.mark, ask: isAsk, size: sizeSaid, cumulative: (isAsk ? k.cumShown.ask : k.cumShown.bid)[bin] ?? sizeSaid, venues: venues.filter(v => v.usd > 0), ...(o.title ? { title: o.title } : {}),
+      ...(change === change && k.pull ? { pull: { usd: changeSaid, touched: k.pull.touched[bin] === 1, window: windowText(state.pullStack) } } : {}), changes: this.#changesAt(rowIds, isAsk, rowLo, rowLo + step, g, bin) };
     // A venue's part of the level says its own changes and its heat.
     const heatKind = state.ladderCues.heat;
     const cellFacts = (id: string): LevelFacts => {
@@ -688,7 +702,7 @@ export class LadderPane {
     if (order && orderIdx) {
       const piece = pieceAt(barPieces(order, orderIdx.map(i => at(i)), k.maxLevel, k.barX, k.barW, PIECE_MIN_PX), hv.x);
       if (!piece) return null;
-      const lines = piece.id ? venueCellLines(cellFacts(piece.id), { name: bookName(piece.id), usd: piece.usd, id: piece.id }) : smallerVenuesLines({ ...facts, changes: this.#changesAt(piece.merged.map(m => m.id), isAsk, rowLo, rowLo + step, g, bin) }, piece.merged.map(m => ({ name: bookName(m.id), usd: m.usd, id: m.id })));
+      const lines = piece.id ? venueCellLines(cellFacts(piece.id), { name: bookName(piece.id), usd: saidOf(piece.id), id: piece.id }) : smallerVenuesLines({ ...facts, changes: this.#changesAt(piece.merged.map(m => m.id), isAsk, rowLo, rowLo + step, g, bin) }, piece.merged.map(m => ({ name: bookName(m.id), usd: saidOf(m.id), id: m.id })));
       return { lines, x: piece.x, y: y + 2, w: Math.max(1, piece.w - 0.5), h: ROW_H - 4 };
     }
     if (ids) {
@@ -709,6 +723,7 @@ export class LadderPane {
    * The latest changes the cues saw at a price row, newest first: each of the books' `ids` own (the last two minutes), named as a popup names a book.
    * Each is the row's change as the light made it (`rowEvents` over the events of the newest publication that touched the row: shared over the row
    * and added up), so the figure the pointer reads is the one the cell was lit with, and a row of several bins that changed together says their sum.
+   * The cues keep dollars; a change is said in the page's units (units.ts), in coins over the price in the row's middle.
    */
   #changesAt(ids: readonly string[], ask: boolean, lo: number, hi: number, g: Grouped, bin: number): ChangeFact[] {
     // The grouping's own step, never `hi - lo` (the difference of two products is not the step at a decimal one: 0.10000000000582077 for 0.1).
@@ -720,7 +735,7 @@ export class LadderPane {
       const r = events.length ? latestRowChange(byPublication(events), g.bin0 + bin, step, scale) : null;
       if (!r || now - r.wall > CHANGE_HOVER_MS) continue;
       const traded = this.#tradedMeanwhile(id, ask, lo, hi, r.prevWall, r.wall);
-      out.push({ name: bookName(id), id, usd: r.usd, ageMs: Math.max(0, now - r.wall), removed: r.removed && held(id) === 0, pair: r.pair, ...(traded !== null ? { traded } : {}) });
+      out.push({ name: bookName(id), id, usd: inCoins() ? r.usd / ((g.bin0 + bin + 0.5) * step) : r.usd, ageMs: Math.max(0, now - r.wall), removed: r.removed && held(id) === 0, pair: r.pair, ...(traded !== null ? { traded } : {}) });
     }
     return out.sort((a, b) => a.ageMs - b.ageMs);
   }
@@ -729,23 +744,26 @@ export class LadderPane {
   #traded = new Map<string, { at: number; usd: number | null }>();
   #tradedMeanwhile(id: string, ask: boolean, lo: number, hi: number, prevWall: number, wall: number): number | null {
     const ring = this.hub?.tape; if (!ring) return null;
-    const key = `${id}|${ask ? 1 : 0}|${lo}|${hi}|${prevWall}|${wall}`, now = performance.now(), held = this.#traded.get(key);
+    const coins = inCoins(), key = `${id}|${ask ? 1 : 0}|${lo}|${hi}|${prevWall}|${wall}|${coins ? 'coins' : 'usd'}`, now = performance.now(), held = this.#traded.get(key);
     if (held && now - held.at < 1_000) return held.usd;
     if (this.#traded.size > 64) this.#traded.clear();
-    const usd = tradedInRow(ring, { id, ask, lo, hi, ...meanwhile(prevWall, wall), now: Date.now() });
+    const usd = tradedInRow(ring, { id, ask, lo, hi, ...meanwhile(prevWall, wall), now: Date.now(), coins });
     this.#traded.set(key, { at: now, usd });
     return usd;
   }
 
-  /** A venue line under the pointer: a dot where it crosses the pointer's row, and what it says there (on the key: the venue and its volume). */
-  #paintCurveInfo(ctx: CanvasRenderingContext2D, state: AppState, g: Grouped, cum: ReturnType<typeof cumulative>, c: Curve, bin: number | null, scale: CurveScale,
+  /**
+   * A venue line under the pointer: a dot where it crosses the pointer's row, and what it says there (on the key: the venue and its volume). The
+   * dollars (`g`) decide the side; what it says is in the page's units (`shown` and its running totals `cum`).
+   */
+  #paintCurveInfo(ctx: CanvasRenderingContext2D, state: AppState, g: Grouped, shown: Grouped, cum: ReturnType<typeof cumulative>, c: Curve, bin: number | null, scale: CurveScale,
     o: { x: number; w: number; head: number; centerBin: number; markBin: number; mark: number; step: number }, rows: number): void {
     const hv = this.#hover, p = this.#palette; if (!hv) return;
     const window = rankText(state.cvd.rank), name = bookName(c.venue.id), bounds = { x0: o.x, y0: o.head, x1: o.x + o.w, y1: o.head + rows * ROW_H };
-    const touch = this.#pinned !== null;
+    const touch = this.#pinned !== null, volume = this.#volumeShown(c);
     if (bin === null) {
       const lines: InfoLine[] = [{ text: name, bold: true, mark: c.venue.id },
-        c.venue.volume !== null ? { label: t('Traded, last {window}', { window }), text: `$${usd(c.venue.volume)} · #${c.venue.rank}` } : { text: t('No trades held for this book: placed by its liquidity in view.'), color: 'muted', wrap: true }];
+        volume !== null ? { label: t('Traded, last {window}', { window }), text: `${amount(volume)} · #${c.venue.rank}` } : { text: t('No trades held for this book: placed by its liquidity in view.'), color: 'muted', wrap: true }];
       if (c.cover) lines.push({ label: t('Its book reaches'), text: reachText(c.cover, o.mark) });
       lines.push({ text: t('Dashed: past the end of its published book, the total it reached. What rests beyond is not known.'), color: 'muted', wrap: true });
       const out = this.#curvesLeftOut;
@@ -759,8 +777,18 @@ export class LadderPane {
     ctx.save(); ctx.fillStyle = c.color; ctx.strokeStyle = p.bg; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
     const reach = scale.carried(c, bin) && c.cover ? (ask ? c.cover.hi : c.cover.lo) : null;
     const lines = curveLines({ id: c.venue.id, name, rank: c.venue.rank, low: (g.bin0 + bin) * o.step, step: o.step, ask, mark: o.mark,
-      venueCum: ask ? c.cum.ask[bin]! : c.cum.bid[bin]!, totalCum: ask ? cum.ask[bin]! : cum.bid[bin]!, venueLevel: (ask ? g.ask[c.index] : g.bid[c.index])?.[bin] ?? 0, volume: c.venue.volume, window, full: scale.full, reach });
+      venueCum: ask ? c.cum.ask[bin]! : c.cum.bid[bin]!, totalCum: ask ? cum.ask[bin]! : cum.bid[bin]!, venueLevel: (ask ? shown.ask[c.index] : shown.bid[c.index])?.[bin] ?? 0, volume, window, full: scale.full, reach });
     paintInfoBox(ctx, lines, hv.x, touch ? hv.y - 18 : hv.y, bounds, p, { placement: touch ? 'up' : 'center' });
+  }
+
+  /**
+   * A venue line's traded volume as it is written: the ranking's dollars, or in coins the coins traded over the same window, each second's
+   * dollars over its own price (units.ts; the ranking itself stays on the dollars).
+   */
+  #volumeShown(c: Curve): number | null {
+    if (c.venue.volume === null || !inCoins()) return c.venue.volume;
+    const coins = this.hub?.flow.coinsOf(c.venue.id), w = this.#rankWindow;
+    return coins && !coins.empty ? coins.gross(w.from, w.to) : null;
   }
 
   /** Box what is under the pointer and say what it is. */
@@ -790,7 +818,7 @@ export class LadderPane {
     this.mirror = stats;
     const bandTop = head + rowOf(Math.max(hb, mb)) * ROW_H, bandBottom = head + (rowOf(Math.min(hb, mb)) + 1) * ROW_H, pct = percentText(stats);
     dimOutside(ctx, o.x, o.w, head, head + rows * ROW_H, bandTop, bandBottom, p.bg, 0.55);
-    paintBand(ctx, p, o.x, o.w, { y: bandTop, color: p.ask, label: `${usd(stats.aboveUsd)} · ${pct}` }, { y: bandBottom, color: p.bid, label: `${usd(stats.belowUsd)} · ${pct}` }, { y0: head, y1: head + rows * ROW_H });
+    paintBand(ctx, p, o.x, o.w, { y: bandTop, color: p.ask, label: `${figure(stats.aboveUsd)} · ${pct}` }, { y: bandBottom, color: p.bid, label: `${figure(stats.belowUsd)} · ${pct}` }, { y0: head, y1: head + rows * ROW_H });
     // Directly over a cell or a block the popup says what that is, and the comparison's own box would only cover it.
     if (!cellUnder) paintMirrorBox(ctx, mirrorLines(stats, o.title || undefined), hv.x, hv.y, { x0: o.x, y0: head, x1: o.x + o.w, y1: head + rows * ROW_H }, p,
       c => c === 'above' ? p.ask : c === 'below' ? p.bid : c === 'muted' ? p.muted : p.text, stats.hoveredSide === 'above' ? 'down' : 'up');
@@ -856,7 +884,7 @@ export class LadderPane {
     // Full width is the largest measured total: a carried row holds the total at its reach, so it never raises it.
     let full = 0;
     for (const c of curves) for (let bin = top - o.rows + 1; bin <= top; bin++) { const v = value(c, bin); if (v !== null && v > full) full = v; }
-    full = Math.max(full, 1);
+    full = Math.max(full, unitFloor((g.bin0 + o.markBin + 0.5) * o.step));
     return { x: (c, bin) => { const v = value(c, bin); return v === null ? null : barX + lineFraction(v, full) * barW; }, carried, capped, full };
   }
 
@@ -979,10 +1007,14 @@ export class LadderPane {
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
   }
 
-  #drawBook(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, state: AppState, g: Grouped,
+  #drawBook(mat: CanvasRenderingContext2D, ctx: CanvasRenderingContext2D, state: AppState, usdRows: Grouped,
     o: { x: number; w: number; title: string; markId?: string; pullIds: string[]; cells: string[] | null; order: string[] | null; curves?: Curve[] | null; cellW: number; head: number; balanceH: number; cover: Cover | null; totals: boolean; centerBin: number; rows: number; markBin: number; mark: number; step: number }): void {
     const p = this.#palette, { x: x0, w, rows, markBin, step, centerBin } = o;
-    const cum = cumulative(g, o.mark);
+    // The bars, cells, pieces, the running totals' area and the side a row shows are laid out from the dollars (`g`), so the picture is the
+    // same in either units and the cues and Highlights weigh what they always did; every figure and box says the page's units (`shown`, its
+    // running totals `cumShown`; units.ts), and the venue lines are drawn on a scale of their own in the page's units.
+    const g = usdRows, shown = usdRows.coins ?? usdRows;
+    const cum = cumulative(g, o.mark), cumShown = shown === g ? cum : cumulative(shown, o.mark);
     const dominance = state.highlight.on ? imbalanceByDistance(g, cum, markBin) : null;
     const weight = (bin: number, bidSide: boolean): number => dominance ? dominanceWeight(dominance[bin]!, bidSide) : 1;
     // `head` is where the rows start; the labels sit above the balance bar, which takes the last `balanceH` of it.
@@ -1005,7 +1037,10 @@ export class LadderPane {
     }
     else {
       const line = head - HEAD_H / 2;
-      ctx.fillText(t('PRICE'), x0 + 6, line); ctx.textAlign = 'right'; ctx.fillText(t('LEVEL USD'), x0 + priceW + USD_W, line);
+      // In coins the heading names the coin, and only the coin where LEVEL and a long ticker (VIRTUAL) would run into PRICE (units.ts `unitHead`).
+      const priceHead = t('PRICE'), measure = (s: string): number => ctx.measureText(s).width;
+      ctx.fillText(priceHead, x0 + 6, line); ctx.textAlign = 'right';
+      ctx.fillText(inCoins() ? unitHead(t('LEVEL {unit}', { unit: unitName() }), priceW + USD_W - 12 - measure(priceHead), measure) : t('LEVEL USD'), x0 + priceW + USD_W, line);
       if (pull) {
         ctx.fillText(pull.kind === 'filling' ? `Δ ${t('{n} s', { n: pull.waitS })}…` : pull.kind === 'fine' ? 'Δ –' : `Δ ${windowText(state.pullStack)}`, x0 + priceW + usdW, line);
       }
@@ -1031,11 +1066,16 @@ export class LadderPane {
     let maxLevel = 1;
     const orderIdx = o.order ? o.order.map(id => g.ids.indexOf(id)) : null;
     const shownHi = Math.min(g.nBins - 1, centerBin + Math.floor(rows / 2) - g.bin0), shownLo = Math.max(0, shownHi - rows + 1);
-    // The running totals' full width is the largest on the rows on screen (each still counted from the mark).
-    let maxCum = 1;
-    for (let i = shownLo; i <= shownHi; i++) { maxLevel = Math.max(maxLevel, g.totalBid[i]!, g.totalAsk[i]!); maxCum = Math.max(maxCum, cum.bid[i]!, cum.ask[i]!); }
-    // The largest change the price did not reach, so the numbers fade with their size.
-    const pullRows = pull?.kind === 'rows' ? pull.rows : null;
+    // The running totals' full width is the largest on the rows on screen (each still counted from the mark). MAX says what the row with the
+    // longest bar holds, in the page's units.
+    let maxCum = 1, maxSaid = shown === g ? 1 : 0;
+    for (let i = shownLo; i <= shownHi; i++) {
+      if (g.totalBid[i]! > maxLevel) { maxLevel = g.totalBid[i]!; maxSaid = shown.totalBid[i]!; }
+      if (g.totalAsk[i]! > maxLevel) { maxLevel = g.totalAsk[i]!; maxSaid = shown.totalAsk[i]!; }
+      maxCum = Math.max(maxCum, cum.bid[i]!, cum.ask[i]!);
+    }
+    // The largest change the price did not reach, so the numbers fade with their size (judged on the dollars, said in the page's units).
+    const pullRows = pull?.kind === 'rows' ? pull.rows : null, pullShown = pullRows && shown !== g ? pullInUnits(pullRows, g) : pullRows;
     let maxPull = 1;
     if (pullRows) for (let i = shownLo; i <= shownHi; i++) if (!pullRows.touched[i]) for (const v of [pullRows.bid[i]!, pullRows.ask[i]!]) if (v === v) maxPull = Math.max(maxPull, Math.abs(v));
     // The venue lines' scale, and round values on it as faint gridlines behind the bars (it is not the bars' scale, so it needs its own).
@@ -1082,12 +1122,12 @@ export class LadderPane {
       if (ends && value > 0 && state.ladderShow !== 'cumulative') ends[r] = barX + Math.max(1, value / maxLevel * barW);
       if (bin === markBin) { mat.fillStyle = p.line; mat.fillRect(x0, y, w, ROW_H); }
       ctx.fillStyle = p.muted; ctx.textAlign = 'left'; ctx.fillText(fmtPrice((g.bin0 + bin) * step, step), x0 + 6, mid);
-      ctx.fillStyle = value > 0 ? p.text : p.muted; ctx.textAlign = 'right'; ctx.fillText(value > 0 ? usd(value) : '', x0 + priceW + USD_W, mid);
+      ctx.fillStyle = value > 0 ? p.text : p.muted; ctx.textAlign = 'right'; ctx.fillText(value > 0 ? figure(isAsk ? shown.totalAsk[bin]! : shown.totalBid[bin]!) : '', x0 + priceW + USD_W, mid);
       if (pullRows) {
         const change = isAsk ? pullRows.ask[bin]! : pullRows.bid[bin]!, touched = pullRows.touched[bin] === 1;
         if (change === change && Math.abs(change) >= 1) {
           ctx.fillStyle = touched ? p.muted : color; ctx.globalAlpha = touched ? 0.85 : Math.min(1, 0.45 + 0.55 * Math.sqrt(Math.abs(change) / maxPull));
-          ctx.fillText(signedUsd(change), x0 + priceW + usdW, mid); ctx.globalAlpha = 1;
+          ctx.fillText(signedFigure(isAsk ? pullShown!.ask[bin]! : pullShown!.bid[bin]!), x0 + priceW + usdW, mid); ctx.globalAlpha = 1;
         }
       }
       if (cellIds) cellIds.forEach((id, k) => {
@@ -1101,7 +1141,7 @@ export class LadderPane {
       if (state.ladderShow !== 'cumulative' && value > 0) {
         if (orderIdx && o.order) {
           const pieces = barPieces(o.order, orderIdx.map(i => (isAsk ? g.ask[i] : g.bid[i])?.[bin] ?? 0), maxLevel, barX, barW, PIECE_MIN_PX);
-          this.#paintPieces(mat, ctx, pieces, y, color, f);
+          this.#paintPieces(mat, ctx, pieces, y, color, f, piece => piece.id ? (isAsk ? shown.ask : shown.bid)[g.ids.indexOf(piece.id)]?.[bin] ?? 0 : 0);
           for (const piece of pieces) {
             const rect: Cell = { x: piece.x, y: y + 2, w: Math.max(1, piece.w - (piece.w >= 3 ? 1 : 0)), h: ROW_H - 4, usd: piece.usd };
             if (piece.id) { place(piece.id, r, isAsk, rect, rowLo); continue; }
@@ -1155,20 +1195,20 @@ export class LadderPane {
       // The gridlines' values on the bottom row, each on a patch of the background so the bars under it do not hide it.
       ctx.save(); ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace'; ctx.textAlign = 'center';
       const ly = o.head + rows * ROW_H - ROW_H / 2;
-      // A label that would overlap the one before it (a narrow column) is left out; its gridline stays.
+      // A label that would overlap the one before it (a narrow column) or run past the pane's edge (a long ticker's, 1T PEPE) is left out; its gridline stays.
       let right = -Infinity;
-      for (const tick of ticks) { const text = `$${usd(tick.v)}`, tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
+      for (const tick of ticks) { const text = amount(tick.v), tw = ctx.measureText(text).width + 6; if (tick.x - tw / 2 < right + 2 || tick.x + tw / 2 > x0 + w) continue; right = tick.x + tw / 2; ctx.globalAlpha = 0.85; ctx.fillStyle = p.bg; ctx.fillRect(tick.x - tw / 2, ly - 6, tw, 12); ctx.globalAlpha = 1; ctx.fillStyle = p.muted; ctx.fillText(text, tick.x, ly + 0.5); }
       ctx.restore();
       // The key again over the faded lines' entries, so the one under the pointer stands out there too.
       if (this.hoveredCurve !== null && keySpans.length) { ctx.fillStyle = p.bg; ctx.fillRect(barX, keyLine - 7, keySpans[keySpans.length - 1]!.x1 - barX, 14); this.#paintCurveKey(ctx, curves, barX, keyLine, barW - (maxShown ? 96 : 0), this.hoveredCurve, dashesAlone || runsPast(curves[this.hoveredCurve]!)); }
     }
     if (pull?.kind === 'filling') this.#paintPullFilling(ctx, pull.share, pull.waitS, x0 + priceW + USD_W, o.head, rows, centerBin + Math.floor(rows / 2) - g.bin0 - markBin);
-    const cell = curveHit ? null : this.#cellUnder(state, g, cum, o, { priceW, usdW, cw, barX, barW, maxLevel, pull: pullRows, gut });
+    const cell = curveHit ? null : this.#cellUnder(state, g, o, { priceW, usdW, cw, barX, barW, maxLevel, pull: pullRows, gut, shown, cumShown, pullShown });
     // On a venue line the Mirror comparison is left out: its dimming would wash out the lines being looked at.
-    if (!curveHit) this.#paintMirror(ctx, state, g, cum, o, o.head, rows, cell !== null);
+    if (!curveHit) this.#paintMirror(ctx, state, shown, cumShown, o, o.head, rows, cell !== null);
     if (cell) this.#paintCell(ctx, cell, o, rows);
-    if (curveHit && hv && scale) this.#paintCurveInfo(ctx, state, g, cum, curves[curveHit.k]!, curveHit.bin, scale, o, rows);
+    if (curveHit && hv && scale) this.#paintCurveInfo(ctx, state, g, shown, cumShown, curves[curveHit.k]!, curveHit.bin, scale, o, rows);
     // The scale label shares the header row with the DEPTH label (or the lines' key), so it only appears when the bar column is wide enough for both.
-    if (maxShown) { ctx.fillStyle = p.muted; ctx.textAlign = 'right'; ctx.fillText(t('MAX {value}', { value: usd(maxLevel) }), x0 + w - 6, keyLine); }
+    if (maxShown) { ctx.fillStyle = p.muted; ctx.textAlign = 'right'; ctx.fillText(t('MAX {value}', { value: figure(maxSaid) }), x0 + w - 6, keyLine); }
   }
 }

@@ -6,6 +6,11 @@ export interface HeatStyle {
   ask: [number, number, number]; askSoft: [number, number, number];
   /** USD window mapped onto the colour ramp: log-scaled for 'size', linear for 'sides'. */
   min: number; max: number; opacity: number; mode: 'size' | 'sides';
+  /**
+   * A dollar in the grid's units (heatmap/coins.ts `rasterFloor`): 1 for a grid in dollars (the default), a dollar's worth of coin for one in
+   * coins (app/units.ts), whose window is then in coins too. The floors written for dollars are this, so the two pictures are the same.
+   */
+  floor?: number;
 }
 
 /** What draws the map's heatmap: WebGL2 (`HeatGL`), or a 2D canvas where the browser gives the page no WebGL2 (`HeatCanvas`, canvas.ts). */
@@ -41,6 +46,7 @@ uniform sampler2D lut;
 uniform vec4 view;   // t0, t1, p0, p1 of the screen
 uniform vec4 tex;    // t0, t1, p0, p1 covered by the texture
 uniform vec4 range;  // min, max, opacity, mode (0 = size ramp, 1 = two hues)
+uniform float dollar;  // a dollar in the grid's units: 1, or a dollar's worth of coin (the floors below were written for dollars)
 uniform vec3 bidC, bidS, askC, askS;
 void main() {
   float t = mix(view.x, view.y, uv.x);
@@ -53,14 +59,14 @@ void main() {
   if (total <= 0.0) discard;
   if (range.w < 0.5) {
     // One ramp for size, log-scaled; cells below the window stay background so the ramp's zero colour never shows as a box.
-    float lo = log(max(range.x, 1.0)), hi = log(max(range.y, range.x * 1.0001 + 1.0));
+    float lo = log(max(range.x, dollar)), hi = log(max(range.y, range.x * 1.0001 + dollar));
     float s = (log(total) - lo) / max(hi - lo, 1e-6);
     if (s <= 0.0) discard;
     color = vec4(texture(lut, vec2(clamp(s, 0.0, 1.0), 0.5)).rgb, smoothstep(0.0, 0.06, s) * range.z);
     return;
   }
   bool isAsk = v.g > v.r;
-  float a = clamp((max(v.r, v.g) - range.x) / max(range.y - range.x, 1e-6), 0.0, 1.0);
+  float a = clamp((max(v.r, v.g) - range.x) / max(range.y - range.x, 1e-6 * dollar), 0.0, 1.0);
   if (a <= 0.0) discard;
   vec3 c = mix(isAsk ? askS : bidS, isAsk ? askC : bidC, a);
   color = vec4(c, pow(a, 0.75) * range.z);
@@ -93,7 +99,7 @@ export class HeatGL implements HeatRenderer {
       gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || t('program link failed'));
       this.#program = program;
-      for (const name of ['grid', 'lut', 'view', 'tex', 'range', 'bidC', 'bidS', 'askC', 'askS']) this.#loc[name] = gl.getUniformLocation(program, name);
+      for (const name of ['grid', 'lut', 'view', 'tex', 'range', 'dollar', 'bidC', 'bidS', 'askC', 'askS']) this.#loc[name] = gl.getUniformLocation(program, name);
       this.#texture = gl.createTexture()!;
       gl.bindTexture(gl.TEXTURE_2D, this.#texture);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -154,6 +160,7 @@ export class HeatGL implements HeatRenderer {
     gl.uniform4f(l.view!, 0, view.t1 - view.t0, 0, view.p1 - view.p0);
     gl.uniform4f(l.tex!, b.t0 - view.t0, b.t1 - view.t0, b.p0 - view.p0, b.p1 - view.p0);
     gl.uniform4f(l.range!, style.min, style.max, style.opacity, style.mode === 'size' ? 0 : 1);
+    gl.uniform1f(l.dollar!, style.floor ?? 1);
     gl.uniform3fv(l.bidC!, style.bid); gl.uniform3fv(l.bidS!, style.bidSoft);
     gl.uniform3fv(l.askC!, style.ask); gl.uniform3fv(l.askS!, style.askSoft);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

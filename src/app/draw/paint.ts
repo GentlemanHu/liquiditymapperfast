@@ -1,11 +1,13 @@
 import { t } from '../i18n.ts';
-import { price as fmtPrice, usd } from '../format.ts';
+import { price as fmtPrice } from '../format.ts';
+import { amount, inUnits } from '../units.ts';
 import type { Palette } from '../theme.ts';
 import type { KeyTag } from '../keylevels/paint.ts';
 import { ANCHORS, newDrawing, positionFigures, type DrawColor, type Drawing } from './model.ts';
 import { channelLines, extendSegment, fibLevels, handlesOf, noteBox, positionBox, strokesOf, type Projection, type Segment } from './geometry.ts';
 import type { DrawController } from './controller.ts';
 import type { SnapField } from './magnet.ts';
+import { alertEnded } from './alerts.ts';
 
 /**
  * How the drawings look on the map (draw/controller.ts holds them): every stroke over a halo in the background's own tone, so it reads over
@@ -102,16 +104,16 @@ export function noteLines(ctx: CanvasRenderingContext2D, text: string): string[]
 /** The size of a note's text box. */
 export function noteSizeOf(ctx: CanvasRenderingContext2D, d: Drawing): { w: number; h: number } { return noteLayout(ctx, d.text).size; }
 
-/** A small bell, for a level that sounds when the price reaches it. */
-function bell(ctx: CanvasRenderingContext2D, x: number, y: number, color: string): void {
-  ctx.save(); ctx.fillStyle = color; ctx.beginPath();
+/** A small bell, for a drawing whose bell is on; faint (`alpha`) where it can no longer go off (a zone or a line that has ended). */
+function bell(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, alpha = 1): void {
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.fillStyle = color; ctx.beginPath();
   ctx.moveTo(x - 4, y + 3); ctx.quadraticCurveTo(x - 4, y - 5, x, y - 5); ctx.quadraticCurveTo(x + 4, y - 5, x + 4, y + 3); ctx.closePath(); ctx.fill();
   ctx.fillRect(x - 5, y + 2.5, 10, 1.5); ctx.beginPath(); ctx.arc(x, y + 5, 1.4, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
-/** One drawing, as it looks committed (`alpha` below 1: the one being placed). */
-export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Projection, p: Palette, alpha = 1): void {
+/** One drawing, as it looks committed (`alpha` below 1: the one being placed); `now` decides whether a bell can still go off. */
+export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Projection, p: Palette, alpha = 1, now = Date.now()): void {
   plotBox = { x0: -CUT, y0: -CUT, x1: pr.w + CUT, y1: pr.h + CUT };
   const color = colorOf(d.style.color, p), w = d.style.width, dash = d.style.dashed;
   switch (d.kind) {
@@ -131,6 +133,11 @@ export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Proj
       const segs = strokesOf(d, pr);
       strokeSegments(ctx, segs, color, w, dash, p, alpha);
       if (d.text && segs[0]) { const a = { x: pr.x(d.points[0]!.t), y: pr.y(d.points[0]!.p) }, b = { x: pr.x(d.points[1]!.t), y: pr.y(d.points[1]!.p) }; label(ctx, d.text, (a.x + b.x) / 2, (a.y + b.y) / 2 - 12, color, p, 'center', alpha); }
+      // Its bell at the line's right end on the map (what it watches is the line's price now, at the right).
+      if (d.alert && segs.length) {
+        const end = segs.flatMap(s => [s.a, s.b]).reduce((r, q) => q.x > r.x ? q : r);
+        bell(ctx, Math.min(end.x, pr.w - 10), Math.max(12, end.y - 12), color, alertEnded(d, now) ? 0.35 : 1);
+      }
       return;
     }
     case 'zone': {
@@ -139,6 +146,7 @@ export function paintDrawing(ctx: CanvasRenderingContext2D, d: Drawing, pr: Proj
       ctx.save(); ctx.globalAlpha = 0.13 * alpha; ctx.fillStyle = color; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); ctx.restore();
       strokeSegments(ctx, strokesOf(d, pr), color, w, dash, p, alpha);
       if (d.text) label(ctx, d.text, Math.max(x0, 0) + 6, y0 + 10, color, p, 'left', alpha);
+      if (d.alert) bell(ctx, Math.min(x1, pr.w) - 10, y0 + 10, color, alertEnded(d, now) ? 0.35 : 1);
       return;
     }
     case 'fib': {
@@ -284,7 +292,8 @@ export function paintEditing(ctx: CanvasRenderingContext2D, draw: DrawController
     const s = cursor.snap;
     ctx.strokeStyle = p.text; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cursor.x, cursor.y, 6, 0, Math.PI * 2); ctx.stroke();
     ctx.fillStyle = p.text; ctx.beginPath(); ctx.arc(cursor.x, cursor.y, 2, 0, Math.PI * 2); ctx.fill();
-    const text = caughtText(s.field, fmtPrice(s.p), `$${usd(s.usd ?? 0)}`);
+    // A wall's dollars (the magnet judges dollars) in the page's units: in coins over the price of its row (app/units.ts).
+    const text = caughtText(s.field, fmtPrice(s.p), amount(inUnits(s.usd ?? 0, s.p)));
     const right = cursor.x > pr.w - 170;
     label(ctx, text, right ? cursor.x - 10 : cursor.x + 10, cursor.y - 14, p.text, p, right ? 'right' : 'left');
   }

@@ -31,10 +31,39 @@ export class FlowBook {
   get ids(): string[] { return [...this.#series.keys()]; }
   get(id: string): FlowSeries | undefined { return this.#series.get(id); }
   has(id: string): boolean { return this.#series.has(id); }
-  /** The instrument's line for the column: its seconds and, before them, its minutes (undefined when it has neither). */
-  track(id: string): FlowTrack | undefined {
+  /**
+   * The instrument's line for the column: its seconds and, before them, its minutes (undefined when it has neither); in coins with `coins`
+   * (app/units.ts: the seconds' coins, kept from then on, and the minutes').
+   */
+  track(id: string, coins = false): FlowTrack | undefined {
     const seconds = this.#series.get(id), minutes = this.#minutes.get(id);
-    return seconds || minutes ? new FlowTrack(seconds, minutes) : undefined;
+    if (!seconds && !minutes) return undefined;
+    if (!coins) return new FlowTrack(seconds, minutes);
+    if (seconds && !seconds.coins) seconds.keepCoins(true);
+    return new FlowTrack(seconds?.coins, minutes?.coins());
+  }
+  /** The instrument's seconds in coins (kept from then on), undefined when it has none. */
+  coinsOf(id: string): FlowSeries | undefined {
+    const seconds = this.#series.get(id);
+    if (seconds && !seconds.coins) seconds.keepCoins(true);
+    return seconds?.coins;
+  }
+  /**
+   * Whether new and held series keep their coins beside their dollars (app/units.ts: while the page writes sizes in coins). Back in dollars
+   * every series lets its coins go, the minutes' too, whoever asked for them.
+   */
+  #coins = false;
+  setCoins(on: boolean): void {
+    const changed = this.#coins !== on;
+    this.#coins = on;
+    for (const series of this.#series.values()) series.keepCoins(on);
+    if (!on) for (const minutes of this.#minutes.values()) minutes.dropCoins();
+    if (changed) { this.version++; this.loads++; }
+  }
+  #made(id: string): FlowSeries {
+    let series = this.#series.get(id);
+    if (!series) { series = new FlowSeries(); if (this.#coins) series.keepCoins(true); this.#series.set(id, series); }
+    return series;
   }
 
   /** Seconds from the live stream. */
@@ -47,7 +76,7 @@ export class FlowBook {
     this.version++;
   }
   #put([id, t, buy, sell, px]: FlowUpdate): void {
-    let series = this.#series.get(id); if (!series) { series = new FlowSeries(); this.#series.set(id, series); }
+    const series = this.#made(id);
     const sec = Math.floor(t / 1000);
     // A push is the running total of its second, and a second's total only grows. One that is below what the series holds was sent before the
     // history in it was taken (it was in flight, or held while the history came), and putting it on would take the second back.
@@ -73,7 +102,7 @@ export class FlowBook {
   load(frame: FlowFrame, ids: readonly string[], from: number): void {
     let reach = Infinity;
     for (const s of frame.instruments) {
-      let series = this.#series.get(s.id); if (!series) { series = new FlowSeries(); this.#series.set(s.id, series); }
+      const series = this.#made(s.id);
       series.load(Math.floor(s.t0 / 1000), s.buy, s.sell, s.px);
       if (s.buy.length && s.t0 < reach) reach = s.t0;
     }

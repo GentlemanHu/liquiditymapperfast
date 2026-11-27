@@ -18,7 +18,7 @@ function shaderPixel(style: HeatStyle, lut: Uint8Array, bid: number, ask: number
   if (!(total > 0)) return null;
   let c: number[], a: number;
   if (style.mode === 'size') {
-    const lo = Math.log(Math.max(style.min, 1)), hi = Math.log(Math.max(style.max, style.min * 1.0001 + 1));
+    const dollar = style.floor ?? 1, lo = Math.log(Math.max(style.min, dollar)), hi = Math.log(Math.max(style.max, style.min * 1.0001 + dollar));
     const s = (Math.log(total) - lo) / Math.max(hi - lo, 1e-6);
     if (!(s > 0)) return null;
     // texture(lut, vec2(clamp(s, 0, 1), 0.5)): LINEAR, CLAMP_TO_EDGE, texel i centred on (i + 0.5) / 256.
@@ -28,7 +28,7 @@ function shaderPixel(style: HeatStyle, lut: Uint8Array, bid: number, ask: number
     const t = Math.min(1, Math.max(0, s / 0.06));
     a = t * t * (3 - 2 * t) * style.opacity;
   } else {
-    const isAsk = ask > bid, x = Math.min(1, Math.max(0, (Math.max(bid, ask) - style.min) / Math.max(style.max - style.min, 1e-6)));
+    const isAsk = ask > bid, x = Math.min(1, Math.max(0, (Math.max(bid, ask) - style.min) / Math.max(style.max - style.min, 1e-6 * (style.floor ?? 1))));
     if (!(x > 0)) return null;
     const soft = isAsk ? style.askSoft : style.bidSoft, strong = isAsk ? style.ask : style.bid;
     c = [0, 1, 2].map(ch => soft[ch]! + (strong[ch]! - soft[ch]!) * x);

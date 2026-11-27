@@ -132,32 +132,22 @@ export function noteLines(measure: (words: string) => number, note: string, room
 }
 
 /**
- * How many lines the note under the legend may take on a plot `ph` tall whose note starts at `under`: what leaves room below it, under the
- * line the "depth recorded from" note may take, for the stripe's captions (three at most, `PLATE_H` + 2 px each), two at least (as the note always had)
- * and four at most (Sol, review 2026-11-19: on a 138 px phone map a four-line note pushed the last caption under the time axis).
+ * How many lines the note under the legend may take on a plot `ph` tall whose note starts at `under`: what leaves room below it for the
+ * stripe's captions (three at most, `PLATE_H` + 2 px each), two at least (as the note always had) and four at most (Sol, review 2026-11-19: on
+ * a 138 px phone map a four-line note pushed the last caption under the time axis). The "depth recorded from" note, which took a line here
+ * until 2026-11-26, is the legend's last row, so `under` already counts it.
  */
 export function noteMostLines(ph: number, under: number): number {
-  return Math.max(2, Math.min(4, Math.floor((ph - under - 13 - 3 - 3 * (PLATE_H + 2)) / 13)));
+  return Math.max(2, Math.min(4, Math.floor((ph - under - 3 - 3 * (PLATE_H + 2)) / 13)));
 }
 
 /**
- * The note under the legend laid out in `room` px: its lines (`noteLines`, at most `noteMostLines`) and their top, `under` the legend or a
- * line lower where the "depth recorded from" note (`history`) stands there and the first line would run into it. Never down to `foot`, what
- * stands at the map's foot (the volume strip's names, `stripNamesTop`, or the plot's bottom): there it takes fewer lines, one at least (a
- * phone held sideways, 844 x 207, 2026-11-19: on its 138 px plot the second line ran under "Binance 15m candles"). Lines are 13 px apart and
- * 12 px tall; where even the first reaches the foot, the strip leaves the name under it out (`StripDraw.clear`).
+ * The note under the legend laid out in `room` px: its lines (`noteLines`, at most `noteMostLines`) and their top, `under` the legend. Never
+ * down to `foot`, what stands at the map's foot (the volume strip's names, `stripNamesTop`, or the plot's bottom): there it takes fewer lines,
+ * one at least (a phone held sideways, 844 x 207, 2026-11-19: on its 138 px plot the second line ran under "Binance 15m candles"). Lines are
+ * 13 px apart and 12 px tall; where even the first reaches the foot, the strip leaves the name under it out (`StripDraw.clear`).
  */
-export function layNote(measure: (words: string) => number, note: string, room: number, o: { ph: number; under: number; foot: number; history: { x0: number; x1: number; top: number } | null }): { lines: string[]; top: number } {
-  const topOf = (first: string): number => {
-    const h = o.history, w = measure(first);
-    return h && Math.abs(h.top - o.under) < 12 && h.x0 < 8 + w + 6 && h.x1 > 2 ? o.under + 13 : o.under;
-  };
-  let lines = noteLines(measure, note, room, noteMostLines(o.ph, o.under)), top = topOf(lines[0] ?? '');
-  // Fewer lines make the first one longer, which can take it under the history note and a line lower: then it is fitted once more.
-  for (let pass = 0; pass < 2; pass++) {
-    const fit = Math.max(1, Math.floor((o.foot - top + 1) / 13));
-    if (lines.length <= fit) break;
-    lines = noteLines(measure, note, room, fit); top = topOf(lines[0] ?? '');
-  }
-  return { lines, top };
+export function layNote(measure: (words: string) => number, note: string, room: number, o: { ph: number; under: number; foot: number }): { lines: string[]; top: number } {
+  const top = o.under, most = noteMostLines(o.ph, o.under), fit = Math.max(1, Math.floor((o.foot - top + 1) / 13));
+  return { lines: noteLines(measure, note, room, Math.min(most, fit)), top };
 }

@@ -1,5 +1,6 @@
 import type { AppState } from '../store.ts';
 import type { FlowBook } from '../flow-book.ts';
+import type { FlowSeries } from '../../shared/flow.ts';
 import type { Note } from './rules.ts';
 import { alertNotes, scriptNotes, type AlertKind } from './rules.ts';
 import { Cooldowns, RateCap, WallWatch, ImbalanceWatch, bookBins, imbalanceOf } from './alert-rules.ts';
@@ -17,13 +18,64 @@ import { TIMEFRAMES } from '../../shared/series.ts';
 import { t } from '../i18n.ts';
 import { scaledUsd } from '../coin.ts';
 import { usd } from '../format.ts';
+import { amount, coinsAt, inCoins, signedAmount } from '../units.ts';
 import { replaying } from '../replay/clock.ts';
 import { DepthWatch, depthMinutes } from './depth-watch.ts';
 import type { ColumnsFrame } from '../wire.ts';
 
 export type AlertPanel = 'flow' | 'bars' | 'book' | 'depth' | 'depthPane' | 'oi' | 'script' | 'drawing';
-/** What was decided for one alert: kept for the panel's "recent" list and for the harness; audible is false when the engine was locked or muted. */
-export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean }
+/**
+ * The size an alert's words name, kept as numbers so the Recent list writes it in the page's units when it shows (units.ts, issue 9): its
+ * dollars and its coins, both taken when it fired, in either units (a wall's: its dollars over its price; a flow's: `windowCoinDelta` over the
+ * alert's window, NaN where that is not known), whether it is signed (a delta), and `words`, which put a written size into its sentence. The
+ * flow's seconds age out of the page's ring and late orders revise them, so the coins are never read again later.
+ */
+export interface AlertSize { usd: number; coins: number; signed: boolean; words: (size: string) => string }
+/**
+ * What was decided for one alert: kept for the panel's "recent" list and for the harness. `audible` is false when a sound was due and the
+ * engine was locked or muted (true when none was due); `sent` is how many channels Notify queued it on. `text` is the sentence as it fired,
+ * in dollars; `size` what it names, for writing it again in coins (`alertText`).
+ */
+export interface AlertEntry { at: number; panel: AlertPanel; kind: AlertKind; side: 'buy' | 'sell' | null; text: string; audible: boolean; sent: number; size?: AlertSize }
+/**
+ * Where alerts go besides a sound (notify/notify.ts). `wants`: Notify sends alerts of this panel (in whichever tab sends); `sends`: and this
+ * tab is the one that sends them; `deliver`: queue one, answering how many channels took it and whether any of them sent it, or null.
+ */
+export interface AlertOut {
+  wants(panel: AlertPanel): boolean;
+  sends(panel: AlertPanel): boolean;
+  deliver(panel: AlertPanel, text: string, key: string, at: number): { channels: number; done: Promise<boolean> } | null;
+}
+/** What became of one alert here: heard (a sound played), and what Notify did with it. */
+interface Fired { heard: boolean; sent: { channels: number; done: Promise<boolean> } | null }
+
+/** An alert's words as the Recent list writes them: as it fired in dollars; in coins its sentence again with the coins it kept ('–' for none). */
+export function alertText(e: AlertEntry): string {
+  const size = e.size;
+  if (!size || !inCoins()) return e.text;
+  return size.words(!Number.isFinite(size.coins) ? '–' : size.signed ? signedAmount(size.coins) : amount(size.coins));
+}
+
+/**
+ * What the flow of `series` bought less sold over whole seconds [from, to], in coins: each second's delta over its own volume-weighted price, or
+ * for a second without one the last price before it within reach (`coinPriceAt`: the coin twin's own rule, a price the ring let go included),
+ * added up over the seconds the series holds (those its dollars count). NaN
+ * where a second that moved has no price. From the dollars' series alone (no coin series is kept in dollars), so an alert takes its coins
+ * when it fires, in either units.
+ */
+export function windowCoinDelta(series: Pick<FlowSeries, 'span' | 'delta' | 'gross' | 'coinPriceAt'>, from: number, to: number): number {
+  const span = series.span;
+  if (!span || !(series.gross(from, to) > 0)) return 0;
+  let sum = 0;
+  for (let s = Math.max(from, span.first), end = Math.min(to, span.last); s <= end; s++) {
+    const d = series.delta(s, s);
+    if (d === 0) continue;
+    const price = series.coinPriceAt(s);
+    if (!(price > 0)) return Number.NaN;
+    sum += d / price;
+  }
+  return sum;
+}
 
 /** What the alerts read: the page state, its flow book, and something that plays notes. */
 export interface AlertsHost { state: AppState }
@@ -112,15 +164,35 @@ export class Alerts {
 
   get #s(): AppState { return this.host.state; }
 
-  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume)): void {
-    const sounds = this.#s.sounds;
-    if (!sounds.on) return;
-    if (!this.#cool.take(key, now, cooldownMs) || !this.#cap.allow(now)) return;
-    // An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
-    const audible = notes.length ? this.player.play(notes) : true;
-    this.log.push({ at: now, panel, kind, side, text, audible });
+  /** Where alerts are sent besides a sound (Notify; main.ts sets it). Without it, or with Notify off, every alert is a sound as before. */
+  out: AlertOut | null = null;
+  /** Whether this tab sends an alert of this panel through Notify: then it is looked for even while Sounds is off. */
+  #sends(panel: AlertPanel): boolean { return this.out?.sends(panel) === true; }
+
+  /** `size`: what the words name (`AlertSize`), worked out only for an alert that is listed or handed to Notify (its coins can take a pass over a candle's seconds). */
+  #fire(now: number, panel: AlertPanel, kind: AlertKind, side: 'buy' | 'sell' | null, text: string, key: string, cooldownMs: number, notes = alertNotes(kind, side, this.#s.sounds.volume), size?: () => AlertSize): Fired {
+    const none: Fired = { heard: false, sent: null };
+    const hear = this.#s.sounds.on, send = this.#sends(panel);
+    if (!hear && !send) return none;
+    if (!this.#cool.take(key, now, cooldownMs)) return none;
+    // The cap is the ear's: four sounds in ten seconds at most. A message has limits of its own (notify/delivery.ts), so a burst of sounds never
+    // keeps a bell's message from going out. An alert with no sound (a script's `sound=none`) is only listed: there was nothing to hear.
+    const heard = hear && this.#cap.allow(now) ? (notes.length ? this.player.play(notes) : true) : null;
+    // What the words name, worked out only for an alert that is listed or handed to Notify: a message says its size in the page's units, as
+    // the Recent list does (`alertText`; in dollars that is `text`). A message is never written again, so where the coins were not known when
+    // it fired (a second that moved without a price) it says the dollars it fired with, not the list's dash.
+    const entry: AlertEntry = { at: now, panel, kind, side, text, audible: heard ?? true, sent: 0 };
+    if (size && (heard !== null || send)) entry.size = size();
+    const said = entry.size && !Number.isFinite(entry.size.coins) ? text : alertText(entry);
+    const sent = send ? this.out!.deliver(panel, said, key, now) : null;
+    // Nothing played and nothing sent. A bell's cool-down is given back, so its next crossing is not silenced for one that told nobody; a
+    // panel's stays taken, as it always was (it is looked for again every second, and would sound late).
+    if (heard === null && !sent) { if (panel === 'drawing') this.#cool.release(key, now); return none; }
+    entry.sent = sent?.channels ?? 0;
+    this.log.push(entry);
     if (this.log.length > 100) this.log.splice(0, this.log.length - 100);
     this.onChange();
+    return { heard: heard === true, sent };
   }
 
   // ---- Flow ----------------------------------------------------------------------------------------------------------------------
@@ -138,7 +210,12 @@ export class Alerts {
       const kind = kindOf(s.markets, id) === 'spot' ? 'spot' : 'perp', family = familyKey(venueOfInstrument(id));
       this.bursts.push({ ...found, t: now, id, family, kind });
       if (this.bursts.length > MAX_BURSTS) this.bursts.splice(0, this.bursts.length - MAX_BURSTS);
-      if (rule.burst) this.#fire(now, 'flow', 'flow-burst', found.delta > 0 ? 'buy' : 'sell', t('{venue} {kind}: {delta} of taker flow in 10 s', { venue: venueLabel(id), kind: kind === 'spot' ? t('spot') : t('perp'), delta: signedUsd(found.delta) }), `flow:${id}`, FLOW_COOLDOWN_MS);
+      if (rule.burst) {
+        // The sentence as it fires (in dollars), and what it names for the Recent list: the burst's delta, in coins too (units.ts).
+        const words = (delta: string): string => t('{venue} {kind}: {delta} of taker flow in 10 s', { venue: venueLabel(id), kind: kind === 'spot' ? t('spot') : t('perp'), delta });
+        this.#fire(now, 'flow', 'flow-burst', found.delta > 0 ? 'buy' : 'sell', words(signedUsd(found.delta)), `flow:${id}`, FLOW_COOLDOWN_MS, undefined,
+          () => ({ usd: found.delta, coins: windowCoinDelta(series, nowSec - found.windowSec + 1, nowSec), signed: true, words }));
+      }
       this.onChange();
     }
   }
@@ -162,8 +239,10 @@ export class Alerts {
     const context = `${s.levels.books.filter(book => active.has(book.id)).map(book => book.epoch ? `${book.id}#${book.epoch}` : book.id).sort().join(',')}|${s.marketId}|${s.seriesInstrument}`;
     for (const signal of this.#walls.update(now, bins, mark, scaledUsd(panels.book.usd), context)) {
       if (!panels.book.wall) continue;
-      const word = signal.kind === 'appeared' ? t('wall appeared') : t('wall pulled');
-      this.#fire(now, 'book', signal.kind === 'appeared' ? 'wall-appeared' : 'wall-pulled', signal.side, `${signal.side === 'buy' ? t('Bid') : t('Ask')} ${word}: $${usd(signal.usd)}`, `wall:${signal.side}:${signal.kind}`, WALL_COOLDOWN_MS);
+      const words = (size: string): string => `${signal.side === 'buy' ? t('Bid') : t('Ask')} ${signal.kind === 'appeared' ? t('wall appeared') : t('wall pulled')}: ${size}`;
+      // In coins, its dollars over its price (the middle of its bin) as it fired.
+      this.#fire(now, 'book', signal.kind === 'appeared' ? 'wall-appeared' : 'wall-pulled', signal.side, words(`$${usd(signal.usd)}`), `wall:${signal.side}:${signal.kind}`, WALL_COOLDOWN_MS, undefined,
+        () => ({ usd: signal.usd, coins: coinsAt(signal.usd, signal.price), signed: false, words }));
     }
     // The balance starts over with the walls (another set of books or market, a gap), so a book found lopsided before says nothing now. Over
     // other books it has a warm-up of its own, by the walls' rules: another set of them or market, or a look more than ten seconds after the last.
@@ -205,7 +284,10 @@ export class Alerts {
     let delta = 0;
     for (const id of ids) delta += this.flow.get(id)?.delta(startSec, endSec) ?? 0;
     if (Math.abs(delta) < scaledUsd(rule.usd)) return;
-    this.#fire(now, 'bars', 'bar-delta', delta > 0 ? 'buy' : 'sell', t('{timeframe} candle closed with {delta} of net taker flow', { timeframe: s.timeframe, delta: signedUsd(delta) }), 'bar-delta', 1_000);
+    const timeframe = s.timeframe, words = (d: string): string => t('{timeframe} candle closed with {delta} of net taker flow', { timeframe, delta: d });
+    // In coins, each market's seconds over their own prices, added up as the dollars are (NaN where a second that moved has no price).
+    const coins = (): number => { let sum = 0; for (const id of ids) { const series = this.flow.get(id); if (series) sum += windowCoinDelta(series, startSec, endSec); } return sum; };
+    this.#fire(now, 'bars', 'bar-delta', delta > 0 ? 'buy' : 'sell', words(signedUsd(delta)), 'bar-delta', 1_000, undefined, () => ({ usd: delta, coins: coins(), signed: true, words }));
   }
 
   /**
@@ -237,8 +319,9 @@ export class Alerts {
    */
   #depthPane(now: number): void {
     const s = this.#s, rule = s.sounds.panels.depthPane;
-    // The sound is the order book's: while the Depth pane shows liquidation levels it is quiet (the switch keeps its setting).
-    if (!s.sounds.on || !rule.extreme || !this.columns || s.depthSource === 'liq') {
+    // The sound is the order book's: while the Depth pane shows liquidation levels it is quiet (the switch keeps its setting). It reads the
+    // recording only while it can be heard or Notify would send it.
+    if (!(s.sounds.on || this.#sends('depthPane')) || !rule.extreme || !this.columns || s.depthSource === 'liq') {
       if (this.#depthKey) { this.#depth.reset(); this.#depthKey = ''; this.depthState = null; }
       return;
     }
@@ -310,10 +393,23 @@ export class Alerts {
   }
 
   /** A level drawn on the map with its alert on was reached (draw/controller.ts): the chime, under the same Sounds switch, cap and list. */
-  drawing(now: number, text: string, key: string): void {
-    if (replaying()) return;
-    this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
+  /**
+   * Whether it reached the person: heard here, or sent on a channel by this tab. While Notify sends bells, only the tab that sends them answers
+   * yes (when a channel sent it, or it was heard there): another tab that only heard it leaves the bell on, or the phone could miss it when
+   * that tab switched it off first (draw/controller.ts `markMoved`).
+   */
+  drawing(now: number, text: string, key: string): Promise<boolean> {
+    if (replaying()) return Promise.resolve(false);
+    const fired = this.#fire(now, 'drawing', 'script', null, text, `drawing:${key}`, LEVEL_COOLDOWN_MS, scriptNotes('chime', this.#s.sounds.volume));
+    if (this.out?.wants('drawing') && !this.out.sends('drawing')) return Promise.resolve(false);
+    if (fired.heard) return Promise.resolve(true);
+    if (!fired.sent) return Promise.resolve(false);
+    // Every channel failed and nothing was heard: the cool-down is given back, so the next crossing tries again.
+    return fired.sent.done.then(ok => { if (!ok) this.#cool.release(`drawing:${key}`, now); return ok; });
   }
+
+  /** An alert's words as the Recent list writes them now (`alertText`: the sizes it kept when it fired, in the page's units). */
+  text(e: AlertEntry): string { return alertText(e); }
 
   test(kind: AlertKind, side: 'buy' | 'sell' | null = 'buy'): void {
     void this.player.unlock().then(() => { this.player.play(alertNotes(kind, side, this.#s.sounds.volume), true); });

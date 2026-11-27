@@ -1,5 +1,6 @@
 import type { Palette } from './theme.ts';
-import { price as fmtPrice, usd } from './format.ts';
+import { price as fmtPrice } from './format.ts';
+import { amount } from './units.ts';
 import { t } from './i18n.ts';
 import { measureInfoBox, paintInfoBox, wrapWithin, type InfoColor, type InfoLine, type InfoRect } from './infobox.ts';
 
@@ -17,7 +18,7 @@ export interface MirrorStats {
   distance: number;
   distanceBp: number;
   hoveredSide: 'above' | 'below';
-  /** USD inside the band on the hovered side and on the opposite side. */
+  /** What rests inside the band on the hovered side and on the opposite side, in the page's units (units.ts; the fields keep their old names). */
   hovered: number;
   opposite: number;
   aboveUsd: number;
@@ -89,7 +90,7 @@ export function mirrorLines(stats: MirrorStats, title?: string): MirrorLine[] {
   const lines: MirrorLine[] = [];
   if (title) lines.push({ text: title, bold: true });
   lines.push({ text: t('±{distance} ({bp} bp) from {mid}', { distance: fmtPrice(stats.distance), bp: stats.distanceBp < 10 ? stats.distanceBp.toFixed(1) : Math.round(stats.distanceBp), mid: fmtPrice(stats.mid) }), color: 'muted' });
-  lines.push({ text: `${t('Asks')}  $${usd(stats.aboveUsd)}`, color: 'above' }, { text: `${t('Bids')}  $${usd(stats.belowUsd)}`, color: 'below' });
+  lines.push({ text: `${t('Asks')}  ${amount(stats.aboveUsd)}`, color: 'above' }, { text: `${t('Bids')}  ${amount(stats.belowUsd)}`, color: 'below' });
   lines.push(bandVerdict(stats.belowUsd, stats.aboveUsd));
   // Wrapped too: in German it is the box's widest line, near the edge of the narrowest book (review, 2026-11-22).
   if (stats.clipped) lines.push({ text: t('part of the range is outside the data'), color: 'muted', wrap: true });

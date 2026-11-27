@@ -2,7 +2,7 @@ import type { Palette } from '../theme.ts';
 import type { InfoLine } from '../infobox.ts';
 import type { CandleRow } from '../store.ts';
 import { t } from '../i18n.ts';
-import { usd } from '../format.ts';
+import { amount, inCoins, signedAmount } from '../units.ts';
 import { VOLUME_WORDS } from '../traded.ts';
 import { anomalies } from '../anomaly.ts';
 import { emphasisFloor, medianRow, splitStyles } from '../traded/emphasis.ts';
@@ -21,6 +21,10 @@ import { TIMEFRAMES } from '../../shared/series.ts';
  * That "profile" was a misreading (Karl, 2026-10-21: the same design with more data, "not necessarily doing the profile box"): no value
  * area or point of control is drawn or named; the box says each candle's volume, sides and delta with their shares, its market orders
  * (counts and average sizes, whale share, largest venues: `strip-orders.ts`), and a Binance candle's quote volume and trades.
+ *
+ * In coins (app/units.ts) the bars are laid out from their dollars as before and the box says coins: a recorded bar's from the rows' coins
+ * (the flow's coin tracks, each second over its own price), a candle's its volume and taker buys, coins already (`candleCoins`), and the
+ * orders over the bar's own volume-weighted price, the narrowest the strip holds for them (`strip-orders.ts`).
  */
 
 /** One bar: its candle's start, where it is drawn, and what it holds (dollars; from a candle without taker buys, all of it in `buy`). */
@@ -38,6 +42,8 @@ export interface StripBar {
   /** Its bucket in the recorded rows (-1 for a candle). */
   i: number;
   gap: TimeGap | null;
+  /** A candle's two sides in coins (`candleCoins`), on bars asked for in coins: what its box says. */
+  coins?: { buy: number; sell: number };
 }
 
 /** A candle's dollars: its volume at its typical price, as the candle-based profiles value it (traded/levels.ts). */
@@ -56,6 +62,25 @@ export function candleSides(own: CandleRow | undefined, dollars: number): { buy:
   if (share === undefined || !Number.isFinite(share)) return null;
   const buy = dollars * Math.min(1, Math.max(0, share));
   return { buy, sell: dollars - buy, exact: false };
+}
+
+/**
+ * A candle's two sides in coins, as `candleSides` splits its dollars (app/units.ts): its volume and taker buys are coins already (`CandleRow`),
+ * so they are read as they are. Where the exchange's quote volumes are its dollars, the same candle's base volumes; else the chart's
+ * candle's volume split by the exchange candle's taker buys' share; all of it in `buy` where neither says who bought.
+ */
+export function candleCoins(c: CandleRow, own: CandleRow | undefined): { buy: number; sell: number } {
+  const volume = c[5] > 0 ? c[5] : 0;
+  if (own) {
+    const quote = own[9], quoteBought = own[10];
+    if (quote !== undefined && quoteBought !== undefined && quote >= 0 && own[5] >= 0) {
+      const taker = own[7], buy = taker !== undefined && Number.isFinite(taker) ? Math.min(own[5], Math.max(0, taker)) : quote > 0 ? own[5] * Math.min(1, Math.max(0, quoteBought / quote)) : 0;
+      return { buy, sell: own[5] - buy };
+    }
+    const share = own[7] !== undefined && own[5] > 0 ? own[7] / own[5] : undefined;
+    if (share !== undefined && Number.isFinite(share)) { const buy = volume * Math.min(1, Math.max(0, share)); return { buy, sell: volume - buy }; }
+  }
+  return { buy: volume, sell: 0 };
 }
 
 /** The most candles of the timeframe the strip reads from the exchange before the chart's own (about six of Binance's pages). */
@@ -144,10 +169,10 @@ export function withEarlier(drawn: readonly CandleRow[], own: ReadonlyMap<number
  * candle it starts inside partial; before it, or with nothing recorded, the candle itself, read with `exchange` (the exchange's own candle
  * of that start, Binance's: undefined where the exchange does not say who bought). Its quote volume and the part of it bought at market,
  * where it reports them, are its dollars and sides as reported; else its volume at its typical price split by its taker buys' share. In a
- * replay a candle not closed by `now` is left out: its final volume says what came later.
+ * replay a candle not closed by `now` is left out: its final volume says what came later. `coins`: a candle's bar carries its coins too.
  */
 export function stripBars(candles: readonly CandleRow[], tf: number, rows: TimeRows | null, since: number | null, now: number, t0: number, t1: number,
-  place: (start: number) => { x: number; w: number }, exchange: (start: number) => CandleRow | undefined, replay: boolean): StripBar[] {
+  place: (start: number) => { x: number; w: number }, exchange: (start: number) => CandleRow | undefined, replay: boolean, coins = false): StripBar[] {
   const out: StripBar[] = [];
   for (const c of candles) {
     const s = c[0], e = s + tf;
@@ -161,12 +186,12 @@ export function stripBars(candles: readonly CandleRow[], tf: number, rows: TimeR
       continue;
     }
     if (replay && e > now) continue;
-    const own = exchange(s), dollars = candleUsd(c), sides = candleSides(own, dollars), trades = own?.[8];
+    const own = exchange(s), dollars = candleUsd(c), sides = candleSides(own, dollars), trades = own?.[8], said = coins ? { coins: candleCoins(c, own) } : {};
     if (sides?.exact) {
-      out.push({ t: s, x, w, source: 'candle', buy: sides.buy, sell: sides.sell, split: true, exact: true, ...(trades !== undefined ? { trades } : {}), i: -1, gap: null });
+      out.push({ t: s, x, w, source: 'candle', buy: sides.buy, sell: sides.sell, split: true, exact: true, ...(trades !== undefined ? { trades } : {}), i: -1, gap: null, ...said });
       continue;
     }
-    out.push({ t: s, x, w, source: 'candle', buy: sides ? sides.buy : dollars, sell: sides ? sides.sell : 0, split: sides !== null, i: -1, gap: null });
+    out.push({ t: s, x, w, source: 'candle', buy: sides ? sides.buy : dollars, sell: sides ? sides.sell : 0, split: sides !== null, i: -1, gap: null, ...said });
   }
   return out;
 }
@@ -304,15 +329,18 @@ export function paintVolumeStrip(ctx: CanvasRenderingContext2D, bars: readonly S
 
 const pct = (x: number): string => `${(x * 100).toFixed(1)} %`;
 const signedPct = (x: number): string => `${x > 0 ? '+' : x < 0 ? '−' : ''}${(Math.abs(x) * 100).toFixed(1)} %`;
-const signedUsd = (x: number): string => `${x > 0 ? '+' : x < 0 ? '−' : ''}$${usd(Math.abs(x))}`;
-/** A bar's total, its two sides with their shares and its delta with its share of the total. */
-function sideLines(buy: number, sell: number): InfoLine[] {
-  const total = buy + sell, net = buy - sell, share = (x: number): string => total > 0 ? pct(x / total) : '—';
+/**
+ * A bar's total, its two sides with their shares and its delta with its share of the total. The amounts as they print (`said`: in coins while
+ * the page writes coins, app/units.ts); the sides' shares, parts of the one candle, of the dollars; the delta's signed share of the amounts it
+ * is said with, so the two never disagree in sign (a nearly even bar can lean the other way in coins).
+ */
+function sideLines(buy: number, sell: number, said: { buy: number; sell: number } = { buy, sell }): InfoLine[] {
+  const total = buy + sell, share = (x: number): string => total > 0 ? pct(x / total) : '—', saidNet = said.buy - said.sell, saidTotal = said.buy + said.sell;
   return [
-    { label: t('Volume'), text: `$${usd(total)}` },
-    { label: VOLUME_WORDS.buy, text: `$${usd(buy)} · ${share(buy)}`, color: 'buy' },
-    { label: VOLUME_WORDS.sell, text: `$${usd(sell)} · ${share(sell)}`, color: 'sell' },
-    { label: VOLUME_WORDS.net, text: `${signedUsd(net)} · ${total > 0 ? signedPct(net / total) : '—'}`, ...(net > 0 ? { color: 'buy' as const } : net < 0 ? { color: 'sell' as const } : {}) },
+    { label: t('Volume'), text: amount(saidTotal) },
+    { label: VOLUME_WORDS.buy, text: `${amount(said.buy)} · ${share(buy)}`, color: 'buy' },
+    { label: VOLUME_WORDS.sell, text: `${amount(said.sell)} · ${share(sell)}`, color: 'sell' },
+    { label: VOLUME_WORDS.net, text: `${signedAmount(saidNet)} · ${saidTotal > 0 ? signedPct(saidNet / saidTotal) : '—'}`, ...(saidNet > 0 ? { color: 'buy' as const } : saidNet < 0 ? { color: 'sell' as const } : {}) },
   ];
 }
 
@@ -339,21 +367,25 @@ export function stripLines(bar: StripBar, c: StripBoxContext): InfoLine[] {
     const rows = c.rows, i = bar.i, [a, b] = bucketSpan(rows, i), gap = rows.gaps[i], open = (rows.bin0 + i + 1) * rows.step > c.now;
     const lines: InfoLine[] = [{ text: `${timeText(a, rows.step, c.now)} – ${timeText(b, rows.step, c.now)}${open ? ` · ${t('under way')}` : ''}`, bold: true }];
     if (gap) { lines.push({ text: gapText(gap), color: 'muted', wrap: true }); return lines; }
-    const buy = rows.buy[i] ?? 0, sell = rows.sell[i] ?? 0;
+    const buy = rows.buy[i] ?? 0, sell = rows.sell[i] ?? 0, coins = inCoins() && rows.coins ? rows.coins : null;
+    const said = coins ? { buy: coins.buy[i] ?? 0, sell: coins.sell[i] ?? 0 } : { buy, sell };
     if (!(buy + sell > 0)) lines.push({ text: timeWords('volume').none, color: 'muted', wrap: true });
     else {
-      lines.push(...sideLines(buy, sell));
+      lines.push(...sideLines(buy, sell, said));
       if (c.total > 0) lines.push({ label: VOLUME_WORDS.share, text: pct((buy + sell) / c.total) });
-      lines.push(...orderLines(c.orders, c.whaleUsd ?? 0));
+      // The orders' dollars in coins over the bar's own volume-weighted price: its dollars over its coins (strip-orders.ts).
+      lines.push(...orderLines(c.orders, c.whaleUsd ?? 0, coins && said.buy + said.sell > 0 ? (buy + sell) / (said.buy + said.sell) : Number.NaN));
     }
     if (bar.source === 'partial') lines.push({ text: t('The recording began inside this bar: part of it only.'), color: 'muted', wrap: true });
     return lines;
   }
   const total = bar.buy + bar.sell, lines: InfoLine[] = [{ text: `${timeText(bar.t, c.tf, c.now)} – ${timeText(bar.t + c.tf, c.tf, c.now)}`, bold: true }];
-  if (bar.split) lines.push(...sideLines(bar.buy, bar.sell));
-  else lines.push({ label: t('Volume'), text: `$${usd(total)}` }, { text: c.reports ? t('Who bought in this candle is not loaded yet: the total only.') : t('{market} candles do not say who bought: the total only.', { market: c.market }), color: 'muted', wrap: true });
+  // What the candle's box says, in the page's units (app/units.ts: its coins, `candleCoins`).
+  const said = inCoins() && bar.coins ? bar.coins : { buy: bar.buy, sell: bar.sell }, saidTotal = said.buy + said.sell;
+  if (bar.split) lines.push(...sideLines(bar.buy, bar.sell, said));
+  else lines.push({ label: t('Volume'), text: amount(saidTotal) }, { text: c.reports ? t('Who bought in this candle is not loaded yet: the total only.') : t('{market} candles do not say who bought: the total only.', { market: c.market }), color: 'muted', wrap: true });
   if (bar.trades !== undefined) {
-    lines.push({ label: t('Trades (fills)'), text: bar.trades.toLocaleString('en-US'), rule: true }, { label: t('Average fill'), text: bar.trades > 0 ? `$${usd(total / bar.trades)}` : '—' });
+    lines.push({ label: t('Trades (fills)'), text: bar.trades.toLocaleString('en-US'), rule: true }, { label: t('Average fill'), text: bar.trades > 0 ? amount(saidTotal / bar.trades) : '—' });
     lines.push({ text: t('A trade is one fill: a market order filled against several resting orders counts several times.'), color: 'muted', wrap: true });
   }
   lines.push({ text: bar.exact ? t('{market} {tf} candle: one market, before the recording reaches; its quote volume as the exchange reports it.', { market: c.market, tf: c.tfName })
@@ -361,11 +393,21 @@ export function stripLines(bar: StripBar, c: StripBoxContext): InfoLine[] {
   return lines;
 }
 
-/** Two runs of rows of one step, the second starting where the first ends, as one (the closed buckets and the one under way). */
+/**
+ * Two runs of rows of one step, the second starting where the first ends, as one (the closed buckets and the one under way); their coins
+ * (app/units.ts) joined too where both carry them, else none.
+ */
 export function joinRows(a: TimeRows, b: TimeRows): TimeRows {
   const n = a.buy.length + b.buy.length, buy = new Float64Array(n), sell = new Float64Array(n);
   buy.set(a.buy); buy.set(b.buy, a.buy.length); sell.set(a.sell); sell.set(b.sell, a.buy.length);
   let total = 0, max = 0, poc = -1;
   for (let i = 0; i < n; i++) { const v = buy[i]! + sell[i]!; total += v; if (v > max) { max = v; poc = i; } }
-  return { ...a, to: b.to, buy, sell, gaps: [...a.gaps, ...b.gaps], buyN: null, sellN: null, total, max, poc };
+  const { coins: _coins, ...rest } = a;
+  let coins: TimeRows['coins'];
+  if (a.coins && b.coins) {
+    const cb = new Float64Array(n), cs = new Float64Array(n);
+    cb.set(a.coins.buy); cb.set(b.coins.buy, a.buy.length); cs.set(a.coins.sell); cs.set(b.coins.sell, a.buy.length);
+    coins = { buy: cb, sell: cs };
+  }
+  return { ...rest, to: b.to, buy, sell, gaps: [...a.gaps, ...b.gaps], buyN: null, sellN: null, total, max, poc, ...(coins ? { coins } : {}) };
 }

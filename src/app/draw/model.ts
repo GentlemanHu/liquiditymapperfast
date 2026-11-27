@@ -1,3 +1,5 @@
+import { canAlert } from './alerts.ts';
+
 /**
  * The drawings a person puts on the map (Karl, 2026-10-28: "a full suite of analysis tools ... minimalistic but the most useful"): the kinds,
  * what each is made of, and the rules a saved one must pass. Pure, so every rule here is tested (tests/draw-model.test.mts).
@@ -50,8 +52,16 @@ export interface Drawing {
   /** Cannot be moved, edited or deleted until unlocked; still selectable. */
   locked: boolean;
   hidden: boolean;
-  /** A level that sounds when the price reaches it (through the page's Sound switch). */
+  /**
+   * A bell: a level, a zone or a trend line that alerts when the price reaches it (draw/alerts.ts), with a sound through the page's Sounds
+   * switch and a message through Notify (notify/). Other kinds never carry one.
+   */
   alert: boolean;
+  /**
+   * The bell goes off once and then switches itself off (a bell put on since 2026-11-26 starts so); otherwise it goes off each time the price
+   * comes back to the drawing, at most once a minute (every bell before that date, which was a level's chime).
+   */
+  alertOnce: boolean;
   /** When it was made (ms): the order the list shows them in. */
   created: number;
 }
@@ -130,7 +140,7 @@ export function newId(now: number = Date.now()): string {
 /** A new drawing of `kind` on `points`, in the kind's own look. */
 export function newDrawing(kind: DrawKind, points: readonly Anchor[], now: number = Date.now()): Drawing {
   const d = DEFAULTS[kind];
-  return { id: newId(now), kind, points: points.slice(0, ANCHORS[kind]).map(q => ({ t: q.t, p: q.p })), style: { ...d.style }, extendLeft: d.extendLeft, extendRight: d.extendRight, text: '', leader: d.leader, locked: false, hidden: false, alert: false, created: now };
+  return { id: newId(now), kind, points: points.slice(0, ANCHORS[kind]).map(q => ({ t: q.t, p: q.p })), style: { ...d.style }, extendLeft: d.extendLeft, extendRight: d.extendRight, text: '', leader: d.leader, locked: false, hidden: false, alert: false, alertOnce: false, created: now };
 }
 
 /** The same drawing moved by `dt` and `dp` (every point by the same amount, so its shape stays). */
@@ -140,7 +150,7 @@ export function moved(d: Drawing, dt: number, dp: number): Drawing {
 
 /** A copy of a drawing under a new id, a little later and lower than the original, so it is seen apart from it. */
 export function duplicate(d: Drawing, dt: number, dp: number, now: number = Date.now()): Drawing {
-  return { ...moved(d, dt, dp), id: newId(now), created: now, alert: false };
+  return { ...moved(d, dt, dp), id: newId(now), created: now, alert: false, alertOnce: false };
 }
 
 const ID = /^d[0-9a-z]{4,24}$/;
@@ -177,8 +187,9 @@ export function readDrawing(raw: unknown): Drawing | null {
     extendLeft: flag(s.extendLeft, d.extendLeft), extendRight: flag(s.extendRight, d.extendRight),
     text: typeof s.text === 'string' ? s.text.slice(0, MAX_TEXT) : '',
     leader: flag(s.leader, d.leader), locked: flag(s.locked, false), hidden: flag(s.hidden, false),
-    // Only a level sounds.
-    alert: kind === 'level' && flag(s.alert, false),
+    // Only a level, a zone and a trend line carry a bell (a page from before 2026-11-26 kept one on a level only, every time).
+    alert: canAlert(kind) && flag(s.alert, false),
+    alertOnce: canAlert(kind) && flag(s.alertOnce, false),
     created: finite(s.created) ? s.created : 0,
   };
 }
@@ -192,12 +203,40 @@ export const fits = (d: Pick<Drawing, 'points' | 'kind'>): boolean => d.points.e
 /**
  * The drawings kept, by coin. Version 2 is a document that holds a position: a page from before positions reads a document of a version
  * above 1 as a newer page's, shows none of it and writes nothing over it, where it would have dropped the positions it does not know at its
- * next save. Without one the document stays version 1, which every page reads.
+ * next save. Version 3 is one with a bell only a page since 2026-11-26 keeps (on a zone or a trend line, or one that goes off once): an older
+ * page would read it as off, or as going off every time, and write that back. Without either the document stays version 1, which every page
+ * reads.
  */
-export interface DrawDoc { version: 1 | 2; coins: Record<string, Drawing[]> }
-export const DRAW_DOC_VERSION = 2;
-/** The version a document is written as: 2 when it holds a position, else 1. */
-export const versionOf = (coins: Readonly<Record<string, readonly Drawing[]>>): 1 | 2 => Object.values(coins).some(list => list.some(d => d.kind === 'position')) ? 2 : 1;
+export interface DrawDoc { version: 1 | 2 | 3; coins: Record<string, Drawing[]> }
+export const DRAW_DOC_VERSION = 3;
+/** The version a document is written as: 3 when it holds a bell an older page would lose, 2 when it holds a position, else 1. */
+export function versionOf(coins: Readonly<Record<string, readonly Drawing[]>>): 1 | 2 | 3 {
+  const all = Object.values(coins).flat();
+  if (all.some(d => (d.alert && d.kind !== 'level') || d.alertOnce)) return 3;
+  return all.some(d => d.kind === 'position') ? 2 : 1;
+}
+
+/**
+ * A document's drawings with their bells left out (the `alert` and `alertOnce` of each), as one text: two documents that say the same here
+ * differ in bells alone, which another tab changes when one goes off there (draw/controller.ts `#reload`).
+ */
+export function withoutBells(doc: DrawDoc): string { return shapeOf(doc, false); }
+
+/**
+ * A document as one text, with or without its bells: each coin's drawings by id (a file read in appends them, a document read back sorts them
+ * by when they were made, and neither is a change).
+ */
+export function shapeOf(doc: DrawDoc, bells: boolean): string {
+  return JSON.stringify(Object.keys(doc.coins).sort().map(coin => [coin, [...doc.coins[coin]!].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    .map(d => { if (bells) return d; const { alert: _a, alertOnce: _o, ...rest } = d; return rest; })]));
+}
+
+/** Each drawing's bell in a document, by id. */
+export function bellsIn(doc: DrawDoc): Map<string, Pick<Drawing, 'alert' | 'alertOnce'>> {
+  const out = new Map<string, Pick<Drawing, 'alert' | 'alertOnce'>>();
+  for (const list of Object.values(doc.coins)) for (const d of list) out.set(d.id, { alert: d.alert, alertOnce: d.alertOnce });
+  return out;
+}
 const COIN = /^[A-Za-z0-9._-]{1,24}$/;
 
 /**
@@ -254,7 +293,8 @@ export function importInto(doc: DrawDoc, text: string, now: number = Date.now())
     for (const d of list) {
       if (into.length >= MAX_PER_COIN || total >= MAX_TOTAL) { skipped++; continue; }
       const id = taken.has(d.id) ? newId(now) : d.id;
-      taken.add(id); into.push({ ...d, id }); added++; total++;
+      // A file read in brings no bell: a drawing shared by someone else must not send its label to this person's phone.
+      taken.add(id); into.push({ ...d, id, alert: false, alertOnce: false }); added++; total++;
     }
     if (!into.length) delete coins[coin];
   }

@@ -72,8 +72,9 @@ which comes back with Plus (`effectiveView` in `src/app/liq-view.ts`).
   (`liq-stripe.ts`), which reports what it painted: a lane is given only where
   it can be painted (`LANE_MIN_W`, 2 px: on a thin stripe the take profits' lane narrows, then goes), and only painted lanes are captioned or
   answer the pointer. Every sub-column is captioned; the take profits stay with the left set. The caption plates keep clear of the map's
-  corner buttons (whichever it shows: the desktop's row, or a phone's Draw key, `cornerSpan`), the legend, both notes, the volume strip's
-  names and each other: in the rows they always stood in where those are clear, else each at the highest free place (a phone held
+  corner buttons (whichever it shows: the desktop's row, or a phone's Draw key, `cornerSpan`), the legend (whose last row says where the
+  recorded depth begins), the note under it, the volume strip's names and each other: in the rows they always stood in where those are
+  clear, else each at the highest free place (a phone held
   sideways; `captionKeepOut`, `placeCaptions`), never past the plot's foot: where one has no room the split's lanes keep theirs and the
   take profits' plate is left out (its lane still answers the pointer). They are painted after the map's lines and bars, so none runs
   across them. The

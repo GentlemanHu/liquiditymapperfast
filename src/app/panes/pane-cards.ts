@@ -8,6 +8,7 @@ import { curveOf, viewParts, type LiqView } from '../liq-view.ts';
 import { depthBuyLessSell, depthOrderSides, type OrderSide } from '../order-side.ts';
 import { rankKind, type BandRank } from '../depth-history.ts';
 import { ratioFigure, sideRatio } from './pane-table.ts';
+import { coinText } from '../units.ts';
 
 /** The history's span a rank stands on, in words: whole days from two on, else hours. */
 const spanWords = (ms: number): string => ms >= 2 * 86_400_000 ? t('{n} days', { n: Math.floor(ms / 86_400_000) }) : t('{n} h', { n: Math.floor(ms / 3_600_000) });
@@ -282,14 +283,20 @@ export function liqCardLines(h: { asOf: number; bands: readonly { r: number; bid
   return lines;
 }
 
-/** One point of the Liquidity Tracker: the weighted liquidity of each side, how it compares, and the settings it was worked out with. */
-export function ltCardLines(h: { time: number; bid: number; ask: number; halfLifeBp: number; venues: number }): InfoLine[] {
+/**
+ * One point of the Liquidity Tracker: the weighted liquidity of each side, how it compares, and the settings it was worked out with. With `coin`
+ * (the page writes coins, units.ts) the figures are the coin's: the window's dollars over its price (lt.ts `ltInCoins`).
+ */
+export function ltCardLines(h: { time: number; bid: number; ask: number; halfLifeBp: number; venues: number; coin?: string }): InfoLine[] {
+  // A window no candle overlaps has no coin figure: a dash (lt.ts `ltPrices`).
+  const coin = h.coin, fmt = (v: number): string => !coin ? money(v) : Number.isFinite(v) ? `${coinText(v)} ${coin}` : '–';
+  const signed = (v: number): string => !coin ? signedUsd(v) : !Number.isFinite(v) ? '–' : v === 0 ? `0 ${coin}` : `${v < 0 ? '−' : '+'}${coinText(Math.abs(v))} ${coin}`;
   const lines: InfoLine[] = [
     { text: t('Liquidity Tracker'), bold: true, table: false },
     { label: t('Time'), text: clock(h.time, true), table: false },
-    { label: t('Bid'), text: money(h.bid), color: 'below' },
-    { label: t('Ask'), text: money(h.ask), color: 'above' },
-    { label: 'Δ', text: signedUsd(h.bid - h.ask), color: sideColor(h.bid - h.ask), bold: true },
+    { label: t('Bid'), text: fmt(h.bid), color: 'below' },
+    { label: t('Ask'), text: fmt(h.ask), color: 'above' },
+    { label: 'Δ', text: signed(h.bid - h.ask), color: sideColor(h.bid - h.ask), bold: true },
   ];
   const imbalance = imbalanceLine(h.bid, h.ask); if (imbalance) lines.push(imbalance);
   const ratio = ratioLine(h.bid, h.ask, [t('bids'), t('asks')]); if (ratio) lines.push(ratio);

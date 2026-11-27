@@ -87,7 +87,7 @@ export class HeatCanvas implements HeatRenderer {
   draw(view: Bounds, style: HeatStyle): void {
     const grid = this.#grid, b = this.#bounds, w = this.#w, h = this.#h;
     if (!grid || !b || !(w > 0) || !(h > 0)) { this.clear(); return; }
-    const key = `${style.mode}|${style.min}|${style.max}|${style.bid}|${style.bidSoft}|${style.ask}|${style.askSoft}`;
+    const key = `${style.mode}|${style.min}|${style.max}|${style.floor ?? 1}|${style.bid}|${style.bidSoft}|${style.ask}|${style.askSoft}`;
     if (key !== this.#key || !this.#image) {
       if (!this.#colour(grid, w, h, { ...style, opacity: 1 })) { this.clear(); return; }
       this.#key = key; this.#version++;
@@ -179,10 +179,12 @@ const highWord = (x: number): number => { SCRATCH[0] = x; return WORDS[HIGH]!; }
  * bits: at the least shift, 4,096 buckets an octave; a window of n octaves has 4,096 steps, so a bucket is 1/n of a step, a tenth for the
  * usual 7-10), and each bucket from the window's low end up takes the step of its middle value. The buckets stop at the window's top: a
  * total above it is the last bucket, the ramp's top. `from` is the window's low end, where the shader starts to draw. A window whose top is
- * not above that ($1 at the least) puts every cell drawn above its top: one bucket, the ramp's top (the shader's s is then above 1).
+ * not above that ($1 at the least: a dollar's worth of coin for a grid in coins, `HeatStyle.floor`) puts every cell drawn above its top: one
+ * bucket, the ramp's top (the shader's s is then above 1).
  */
 function sizeBuckets(style: HeatStyle, steps: Uint32Array): { table: Uint32Array; from: number; first: number; shift: number } {
-  const lo = Math.log(Math.max(style.min, 1)), hi = Math.log(Math.max(style.max, style.min * 1.0001 + 1)), perLog = STEPS / Math.max(hi - lo, 1e-6);
+  const dollar = style.floor ?? 1;
+  const lo = Math.log(Math.max(style.min, dollar)), hi = Math.log(Math.max(style.max, style.min * 1.0001 + dollar)), perLog = STEPS / Math.max(hi - lo, 1e-6);
   const from = Math.exp(lo), top = highWord(Math.exp(hi)), bottom = highWord(from), last = STEPS - 1;
   if (!(Math.exp(hi) > from)) return { table: Uint32Array.of(steps[last]!), from, first: bottom >> 8, shift: 8 };
   let shift = 8;
@@ -218,7 +220,7 @@ export function cellColours(grid: Float32Array, w: number, h: number, style: Hea
     }
     return out;
   }
-  const min = style.min, perUsd = STEPS / Math.max(style.max - style.min, 1e-6);
+  const min = style.min, perUsd = STEPS / Math.max(style.max - style.min, 1e-6 * (style.floor ?? 1));
   for (let row = 0; row < h; row++) {
     let o = (h - 1 - row) * w, i = row * w * 2;
     for (let col = 0; col < w; col++, o++, i += 2) {

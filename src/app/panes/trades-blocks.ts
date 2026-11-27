@@ -8,6 +8,7 @@ import { isPhone } from '../device.ts';
 import { contrastRatio, type Palette, PALETTES } from '../theme.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { scaledUsd } from '../coin.ts';
+import { coinText, inCoins, units } from '../units.ts';
 import { BlockReader, barLength, emptyBlock, fullScale, type Block } from '../trades/blocks.ts';
 import { liqBlockFullScale } from '../trades/liquidations.ts';
 import { RowWalker, type Row, type RowKind } from '../trades/rows.ts';
@@ -39,6 +40,12 @@ type Drawn = { kind: 'block'; s: number; y: number; h: number } | { kind: 'quiet
 interface Item { sig: string; y: number; h: number; fixed: boolean; kind: 'block' | RowKind | 'end' | 'late'; b: Block | null; from: number; to: number; words: string }
 /** The fonts a block's row uses (made once per device kind) and one digit's width in the time's font. */
 interface RowFonts { phone: boolean; made: boolean; time: string; ref: string; amount: string; over: string; top: string; topWhale: string; dash: string; digit: number }
+
+/**
+ * A block's size as its row writes it, in the page's units (units.ts): dollars as Trades writes them, or the coins (`Block.cBuy`, a named
+ * order's `coins`) bare in the three-figure coin form, which fits the amount's room as the dollars do. The bars stay on the dollars.
+ */
+const shownSize = (usd: number, coins: number): string => inCoins() ? coinText(coins) : money(usd);
 
 /** Where a block's columns sit at a list width (CSS px). */
 export function blockColumns(lw: number, phone: boolean): { t: number; amt: number; bars: number; big: number } {
@@ -392,7 +399,7 @@ export class BlockList {
     }
     [this.#shownSig, this.#nextSig] = [this.#nextSig, this.#shownSig]; this.#nextSig.clear();
     // What the rows' pixels depend on beyond their own signatures: any change draws the whole frame.
-    const look = `${w}|${h}|${dpr}|${phone}|${B}|${this.reader.mode}|${this.reader.liqVersion}|${this.venueIds.join(',')}|${this.whale}|${this.reader.version}|${this.reader.flowVersion()}|${this.#epoch}|${marksEpoch()}|${document.documentElement.lang}`;
+    const look = `${w}|${h}|${dpr}|${phone}|${B}|${this.reader.mode}|${this.reader.liqVersion}|${this.venueIds.join(',')}|${this.whale}|${this.reader.version}|${this.reader.flowVersion()}|${this.#epoch}|${marksEpoch()}|${document.documentElement.lang}|${units()}`;
     const items = this.#items, draw = this.rows.plan(ctx, look, items, 1, H, p.panel, Math.min(H, Math.max(y, lateD)));
     // Rows fill to the canvas's own width in device pixels (a width like 366 px at 1.25 is 457.5 of them: a fill to 366 would leave the
     // last column half covered, blended with whatever was under it, which a kept frame and a whole one differ in), and to their own
@@ -493,8 +500,8 @@ export class BlockList {
       if (b.liqSell > 0) { ctx.fillStyle = p.candleDown; ctx.fillText('◆', xAmt, l2); }
     }
     ctx.font = f.amount; ctx.textAlign = 'right';
-    ctx.fillStyle = p.candleUp; ctx.fillText(`${liqMode ? '◆' : '▲'} ${money(b.buy)}`, xBars - 7, l1);
-    ctx.fillStyle = p.candleDown; ctx.fillText(`${liqMode ? '◆' : '▼'} ${money(b.sell)}`, xBars - 7, l2);
+    ctx.fillStyle = p.candleUp; ctx.fillText(`${liqMode ? '◆' : '▲'} ${shownSize(b.buy, b.cBuy)}`, xBars - 7, l1);
+    ctx.fillStyle = p.candleDown; ctx.fillText(`${liqMode ? '◆' : '▼'} ${shownSize(b.sell, b.cSell)}`, xBars - 7, l2);
     ctx.fillStyle = p.line; ctx.fillRect(xBars, l1 - 7, 1, 14); ctx.fillRect(xBars, l2 - 7, 1, 14);
     let over = false;
     for (let side = 0; side < 2; side++) {
@@ -514,7 +521,7 @@ export class BlockList {
         if (o.has) {
           drawVenueMark(ctx, o.id, xBig + 7, line, phone ? 14 : 13, this.#dpr);
           ctx.font = o.usd >= this.whale ? f.topWhale : f.top; ctx.fillStyle = p.text;
-          ctx.fillText(money(o.usd), xBig + 18, line);
+          ctx.fillText(shownSize(o.usd, o.coins), xBig + 18, line);
         } else { ctx.font = f.dash; ctx.fillStyle = p.muted; ctx.fillText('–', xBig + 4, line); }
       }
     }
@@ -565,7 +572,9 @@ export class BlockList {
 /** Everything a block's row shows, as a key: a settled block keeps it, so its row is shifted with the canvas instead of drawn again. */
 function blockSig(b: Block, chosen: boolean): string {
   const tb = b.topBuy, ts = b.topSell;
-  return `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.liqBuy}|${b.liqSell}|${b.liqN}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}`;
+  const sig = `b|${b.s}|${b.B}|${b.forming ? 1 : 0}${chosen ? 1 : 0}${b.partial ? 1 : 0}|${b.buy}|${b.sell}|${b.liqBuy}|${b.liqSell}|${b.liqN}|${b.refPx}|${b.refPrev}|${tb.has ? `${tb.usd}|${tb.id}` : '-'}|${ts.has ? `${ts.usd}|${ts.id}` : '-'}`;
+  // In coins the row writes its coins (units.ts): they are part of what it shows.
+  return inCoins() ? `${sig}|c${b.cBuy}|${b.cSell}|${tb.has ? tb.coins : '-'}|${ts.has ? ts.coins : '-'}` : sig;
 }
 /** Text cut with an ellipsis to fit `max` px (one measure per cut step: only short notes go through it). */
 function fitText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, max: number): void {

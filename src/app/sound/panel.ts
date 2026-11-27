@@ -8,6 +8,7 @@ import type { Alerts } from './alerts.ts';
 import type { PanelSounds } from './rules.ts';
 import { clock } from '../format.ts';
 import { usd as formatUsd } from '../format.ts';
+import { amount, inCoins } from '../units.ts';
 import { t, tn } from '../i18n.ts';
 import { scaledUsd, unscaledUsd } from '../coin.ts';
 
@@ -46,8 +47,9 @@ export function liqSoundRows(store: Store, sounds: Sounds | null, rerender: () =
   return rows;
 }
 
+/** A sound's line in the Recent list, written when the list shows: its size in the page's units (units.ts; '–' in coins where none was kept). */
 function soundLogText(e: SoundLogEntry): string {
-  const amt = e.usd ? `$${formatUsd(e.usd)}` : '';
+  const amt = !e.usd ? '' : !inCoins() ? `$${formatUsd(e.usd)}` : e.coins !== undefined && Number.isFinite(e.coins) ? amount(e.coins) : '–';
   const multi = e.venues && e.venues > 1 ? ` · ${tn(e.venues, '{n} venue', '{n} venues')}` : '';
   if (e.kind === 'liquidation') return `${e.liqSide === 'short' ? t('Shorts liquidated') : t('Longs liquidated')} ${amt}${multi}`;
   if (e.kind === 'trade') return `${e.side === 'buy' ? t('BUY') : t('SELL')} ${amt}${multi}`;
@@ -180,7 +182,8 @@ function panelSounds(store: Store, p: PanelSounds, alerts: Alerts, sounds: Sound
     tests('oi-jump', false));
 
   const recent = [
-    ...alerts.log.slice(-6).map(e => ({ at: e.at, side: e.side, text: e.text, audible: e.audible })),
+    // Written now, in the page's units (an alert keeps the numbers its words name: `Alerts.text`).
+    ...alerts.log.slice(-6).map(e => ({ at: e.at, side: e.side, text: alerts.text(e), audible: e.audible })),
     ...sounds.log.filter(e => e.kind !== 'test').slice(-6).map(e => ({ at: e.at, side: e.side ?? null, text: soundLogText(e), audible: e.audible })),
   ].sort((a, b) => b.at - a.at).slice(0, 6);
   body.append(heading(t('Recent')));

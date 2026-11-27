@@ -17,9 +17,10 @@ import type { BucketLimit, TimeRows } from './model.ts';
 
 /**
  * What an answer leaves out: `cut`, its record was cut at a limit (the smallest left out); `incomplete`, some minutes keep only their largest
- * groups; `unplaced`, the change in open interest that could not be put at a price (USD, signed).
+ * groups; `unplaced`, the change in open interest that could not be put at a price (USD, signed), and in coins (`unplacedCoins`, app/units.ts)
+ * where it is known.
  */
-export interface MetricFlags { cut: boolean; incomplete: boolean; unplaced?: number }
+export interface MetricFlags { cut: boolean; incomplete: boolean; unplaced?: number; unplacedCoins?: number }
 export const NO_FLAGS: MetricFlags = { cut: false, incomplete: false };
 
 /**

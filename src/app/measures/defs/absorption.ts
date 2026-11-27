@@ -1,6 +1,7 @@
 import { t } from '../../i18n.ts';
-import { usd } from '../../format.ts';
 import type { ProfileAnswer } from '../../../shared/footprint.ts';
+import { figure, inCoins } from '../../units.ts';
+import { saidMax, saidTotal } from '../../traded.ts';
 import { AbsorptionProfile, MAX_ABSORPTION_INSTRUMENTS, type AbsorptionGroup } from '../../../shared/absorption.ts';
 import { bucketFor, eventRows, type TimeEvent } from '../model.ts';
 import { NO_FLAGS, emptyAnswer, worked, type MeasureDef, type Thresholds, type TimeWorker } from '../measure.ts';
@@ -20,10 +21,11 @@ export const ABSORPTION: MeasureDef<'absorption'> = {
   header(rows, flags) {
     const head = t('ABSORBED');
     if (!rows) return { head, sub: '', warn: false };
-    const total = t('ABSORBED {value}', { value: usd(rows.total) });
+    // In the page's units (app/units.ts); ROW MAX is what the row with the longest bar holds.
+    const total = t('ABSORBED {value}', { value: figure(saidTotal(rows)) });
     if (flags.cut) return { head: total, sub: t('the largest only'), warn: true };
     if (flags.incomplete) return { head: total, sub: t('some minutes in part'), warn: true };
-    return { head: total, sub: t('ROW MAX {value}', { value: usd(rows.max) }), warn: false };
+    return { head: total, sub: t('ROW MAX {value}', { value: figure(saidMax(rows)) }), warn: false };
   },
   priceNotes: () => [t('The absorption marks at the threshold the Absorption settings judge them at, each counted once: market sells resting buyers took (bid colour) and market buys resting sellers took (ask colour). Where a minute kept only its largest groups, the header says so.')],
   timeNote: () => t('The absorption marks at the threshold the Absorption settings judge them at, on the column\'s markets: market sells resting buyers took (bid colour) and market buys resting sellers took (ask colour). They are loaded for the time on the chart while this shows, marks on or off.'),
@@ -55,13 +57,14 @@ function absorptionWorker(): TimeWorker {
   return {
     work(q, last) {
       const { thresholds } = q.absorption(), book = q.hub.absorption, { from, to } = q;
-      const { step, limit } = bucketFor(q.span, q.pw);
+      const { step, limit } = bucketFor(q.span, q.pw), coins = inCoins();
       const judged = q.ids.filter(id => typeof thresholds.get(id) === 'number').slice(0, MAX_ABSORPTION_INSTRUMENTS);
-      const key = `a|${step}|${from}|${q.second}|${judged.join(',')}|${book.version}|${q.hub.absorptionState}`, refs = [thresholds];
+      const key = `a|${step}|${from}|${q.second}|${judged.join(',')}|${book.version}|${q.hub.absorptionState}|${coins ? 'coins' : 'usd'}`, refs = [thresholds];
       if (last?.key === key && last.refs.every((r, i) => r === refs[i])) return last;
-      // Market sells resting buyers took first (bid colour), then market buys resting sellers took (ask colour).
+      // Market sells resting buyers took first (bid colour), then market buys resting sellers took (ask colour); each in coins over the mark's
+      // own price (app/units.ts).
       const marks = book.marks(judged, thresholds, from, to, -Infinity, Infinity).filter(m => m.t0 >= from && m.t0 < to);
-      const events = marks.map((m): TimeEvent => ({ t: m.t0, side: m.side === 'sell' ? 0 : 1, usd: m.usd }));
+      const events = marks.map((m): TimeEvent => ({ t: m.t0, side: m.side === 'sell' ? 0 : 1, usd: m.usd, ...(coins ? { coins: m.price > 0 ? m.usd / m.price : 0 } : {}) }));
       const cut = judged.some(id => { const least = q.hub.absorptionCut.get(id), threshold = thresholds.get(id); return least !== undefined && threshold !== null && threshold !== undefined && least >= threshold; });
       // Where a busy minute kept only its largest groups and left out one that was a mark: judged from the minutes' floors by the column's own
       // rule (`AbsorptionProfile`), so the band says "some minutes in part" when the column does.
@@ -69,7 +72,7 @@ function absorptionWorker(): TimeWorker {
       for (const m of marks) judge.marked(m.id, m.side, m.price, m.t0, m.usd);
       for (const id of judged) { const floor = book.floorIn(id, from, to); if (floor !== undefined) judge.floor(id, null, floor); }
       const incomplete = judge.answer().incomplete.length > 0;
-      return worked(q, key, refs, eventRows(events, from, to, step, book.cover), limit, { flags: { cut, incomplete }, unavailable: q.hub.absorptionState === 'unavailable' });
+      return worked(q, key, refs, eventRows(events, from, to, step, book.cover, coins), limit, { flags: { cut, incomplete }, unavailable: q.hub.absorptionState === 'unavailable' });
     },
   };
 }
