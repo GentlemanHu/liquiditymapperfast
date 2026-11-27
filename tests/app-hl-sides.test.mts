@@ -43,6 +43,7 @@ test('the default lines are the profitable traders, everyone and the losing trad
   const dollars = hlLines(rows, 'groups', 'usd', HL_PERIOD_MS);
   assert.deepEqual(dollars.map(l => l.key), ['pos', 'neg']);
   assert.equal(dollars[0]!.points[0]!.long, 1_000 / 1_400);
+  assert.deepEqual(hlLines(rows, 'off', 'wallets', HL_PERIOD_MS), [], 'switched off: no line');
 });
 
 test('by PnL the most profit is the top of the ramp; by size the largest; a snapshot without size bands has no point there', () => {

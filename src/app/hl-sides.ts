@@ -119,6 +119,7 @@ export interface HlLine {
  * one has no point there.
  */
 export function hlLines(rows: readonly HlRow[], split: HlSplit, unit: HlUnit, periodMs: number): HlLine[] {
+  if (split === 'off') return [];
   const groups: { key: string; rank: number; of: (r: HlRow) => HlCell | null }[] = split === 'groups'
     ? [
       { key: 'pos', rank: 7, of: r => sum(r.pnl.slice(0, 4)) },

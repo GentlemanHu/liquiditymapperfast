@@ -203,7 +203,7 @@ export class LsPane extends TimePane {
     // Hyperliquid's lines: how they are split, and what each side counts (hl-sides.ts).
     const split = document.createElement('label'); split.className = 'ctl'; split.append(venueLabel(HL));
     setTip(split, t('How Hyperliquid\'s line is split, by HyperTracker\'s groups of wallets: everyone with the profitable and the losing traders, its eight bands of all-time PnL, or its eight size bands.'));
-    for (const [value, text] of [['groups', [t('Everyone'), t('+PnL'), t('−PnL')].join(' · ')], ['pnl', t('By PnL')], ['size', t('By size')]] as const) this.#hlSplit.append(new Option(text, value));
+    for (const [value, text] of [['groups', [t('Everyone'), t('+PnL'), t('−PnL')].join(' · ')], ['pnl', t('By PnL')], ['size', t('By size')], ['off', t('Off')]] as const) this.#hlSplit.append(new Option(text, value));
     this.#hlSplit.value = store.state.lsHl;
     this.#hlSplit.onchange = () => this.store.set({ lsHl: this.#hlSplit.value as HlSplit });
     split.append(this.#hlSplit);
@@ -420,7 +420,8 @@ export class LsPane extends TimePane {
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state, now = pageNow();
     const tf = TIMEFRAMES[state.timeframe] ?? HOUR, readout = this.head.querySelector('.readout');
-    const ids = lsIds(state, this.hub), hlOn = hlApplies(state, this.hub);
+    // Hyperliquid's lines unless switched off (the exchanges' lines then keep the scale to themselves).
+    const ids = lsIds(state, this.hub), hlOn = state.lsHl !== 'off' && hlApplies(state, this.hub);
     if (!ids.length && !hlOn) {
       ctx.fillStyle = p.muted; ctx.textAlign = 'left';
       ctx.fillText(t('None of the open-interest markets is on an exchange that publishes a long/short ratio (Binance, Bybit, OKX, Bitget, Gate).'), 12, ph / 2);
