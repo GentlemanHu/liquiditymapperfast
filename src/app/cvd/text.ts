@@ -1,7 +1,9 @@
 import { usd, clock, price as fmtPrice } from '../format.ts';
 import type { InfoLine } from '../infobox.ts';
 import { venueLabel } from '../venues.ts';
-import { t } from '../i18n.ts';
+import { t, tn } from '../i18n.ts';
+// Types alone from the Sizes model: it reads the size bands, whose module reads this one (no import cycle at run time).
+import type { SizeRow } from './sizes.ts';
 import { scaledUsd } from '../coin.ts';
 import { amount, signedAmount } from '../units.ts';
 import type { Kind } from '../scope.ts';
@@ -39,10 +41,28 @@ const letter = (kind: Kind): string => kind === 'spot' ? t('S') : t('P');
  * folds the two lanes onto one line.
  */
 export function rowLabel(row: FamilyRow, window: string, height: number, showQuiet: boolean): LabelLine[] {
-  const lines = Math.max(2, Math.floor((height - 6) / 12));
   const head: LabelLine = { text: `#${row.rank} ${venueLabel(row.key).toUpperCase()}${showQuiet && row.quiet ? ' !5m' : ''}`, tone: 'text', bold: true, mark: row.key };
-  const lanes = row.lanes.map(l => { const delta = laneFigures(l).delta; return { text: `${letter(l.kind)} ${signedAmount(delta)}`, tone: leanTone(delta), dot: l.kind }; });
-  const share: LabelLine = { text: `${Math.round(row.share * 100)}% · ${plainAmount(row.coins?.gross ?? row.gross)}`, tone: 'muted' };
+  return foldLabel(head, row.lanes, row.share, row.coins?.gross ?? row.gross, height);
+}
+
+/**
+ * A row's label in the Sizes view, as an exchange's is in the Flow view: the band's sizes, each kind's net over the ranking window with a dot
+ * in its line's colour, and the band's share of the volume of all six bands with what it traded, folded the same way into a short row.
+ */
+export function sizeRowLabel(row: SizeRow, height: number): LabelLine[] {
+  const head: LabelLine = { text: row.label, tone: 'text', bold: true };
+  // A row with no line (its bars not read yet, or none for the window) says its sizes alone: "0% · $0" would say nothing traded.
+  return row.lanes.length ? foldLabel(head, row.lanes, row.share, row.coins?.gross ?? row.gross, height) : [head];
+}
+
+/**
+ * A row's head, its lanes' nets and its share with what it traded (`traded`), in lines that fit `height` px at 12 px a line (the two lanes on
+ * one line in a short row). In the page's units: a lane's coins on a model built in coins (`laneFigures`), `traded` as the caller gives it.
+ */
+function foldLabel(head: LabelLine, laneLines: readonly LaneLine[], shareOf: number, traded: number, height: number): LabelLine[] {
+  const lines = Math.max(2, Math.floor((height - 6) / 12));
+  const lanes = laneLines.map(l => { const delta = laneFigures(l).delta; return { text: `${letter(l.kind)} ${signedAmount(delta)}`, tone: leanTone(delta), dot: l.kind }; });
+  const share: LabelLine = { text: `${Math.round(shareOf * 100)}% · ${plainAmount(traded)}`, tone: 'muted' };
   if (lines >= 2 + lanes.length) return [head, ...lanes, share];
   if (lines >= 3 && lanes.length === 2) return [head, { text: lanes.map(l => l.text).join('  '), tone: 'text' }, share];
   if (lines >= 3) return [head, ...lanes, share].slice(0, lines);
@@ -97,6 +117,28 @@ export function rowHover(row: FamilyRow, column: number, timeMs: number, window:
   }
   out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
   if (row.quiet) out.push({ text: t('No trades in the last five completed minutes.'), color: 'muted', wrap: true });
+  return out;
+}
+
+/**
+ * The box under the pointer on a row of the Sizes view: what each kind's running delta of orders of that size stands at there (from the left
+ * edge), each kind's net and buys against sells over the ranking window, the band's share of the volume, the bars it is read from, and how
+ * many of them hold no order sizes (where the lines break).
+ */
+export function sizeRowHover(row: SizeRow, column: number, timeMs: number, window: string, tfMs: number): InfoLine[] {
+  const out: InfoLine[] = [{ text: t('Orders {band}', { band: row.label }), bold: true }, { text: clock(timeMs, true), color: 'muted' }];
+  for (const lane of row.lanes) {
+    const v = lane.last[column];
+    out.push({ label: t('{kind} CVD here', { kind: lanePhrase(lane.kind) }), text: v !== undefined && Number.isFinite(v) ? signedAmount(v) : '–', color: leanColor(v), rule: out.length === 2 });
+  }
+  for (const lane of row.lanes) {
+    const f = laneFigures(lane);
+    out.push({ label: t('{kind} net, {window}', { kind: lanePhrase(lane.kind), window }), text: signedAmount(f.delta), color: leanColor(f.delta), rule: lane === row.lanes[0] });
+    out.push({ label: t('{kind} buys / sells', { kind: lanePhrase(lane.kind) }), text: `${plainAmount(f.buy)} / ${plainAmount(f.sell)}` });
+  }
+  if (row.lanes.length) out.push({ label: t('Share of all volume'), text: `${(row.share * 100).toFixed(row.share < 0.1 ? 1 : 0)}%`, rule: true });
+  out.push({ text: tn(Math.round(tfMs / 60_000), 'Read from bars of {n} minute: order sizes are kept a minute at a time.', 'Read from bars of {n} minutes: order sizes are kept a minute at a time.'), color: 'muted', wrap: true });
+  if (row.unknown > 0) out.push({ text: tn(row.unknown, '{n} bar here holds no order sizes: the lines break there.', '{n} bars here hold no order sizes: the lines break there.'), color: 'muted', wrap: true });
   return out;
 }
 

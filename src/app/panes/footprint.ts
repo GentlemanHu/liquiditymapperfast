@@ -240,6 +240,12 @@ export class FootprintData {
    */
   readonly tally = { answers: 0, failures: 0 };
   #busy = false; #retryAt = 0;
+  /**
+   * Whether the bars held carry their bought and sold dollars (`buyUsd`, `sellUsd`): always with rows; without rows only where every answer
+   * behind them said `totals` or held rows (a source from before `sums`, which merges each bar into one row). Null before the first answer.
+   */
+  get totals(): boolean | null { return this.sumsOnly ? this.#totals : true; }
+  #totals: boolean | null = null;
 
   /**
    * Trades of the bars from `from` on changed in the recording (recovered from a venue's history): those bars are asked for again with the
@@ -269,7 +275,7 @@ export class FootprintData {
   /** No markets to count (Aggregated with every venue off, or none inside the filter): no bars, and nothing asked for. */
   clear(): void {
     if (this.#context === '' && !this.bars.size) return;
-    this.#context = ''; this.#request++; this.#held = null; this.#busy = false; this.#stepAsked = ''; this.bars = new Map(); this.venueOrder = []; this.step = 0; this.fine = 0; this.version++;
+    this.#context = ''; this.#request++; this.#held = null; this.#busy = false; this.#stepAsked = ''; this.bars = new Map(); this.venueOrder = []; this.step = 0; this.fine = 0; this.#totals = null; this.version++;
   }
   /** The market and timeframe the bars belong to, and the number of the request whose answer counts. */
   #context = ''; #request = 0;
@@ -289,7 +295,7 @@ export class FootprintData {
     // Rows of another market or timeframe are not rows of this one, whatever the window: they go now, rather than being drawn until the new
     // ones come (or for good, if they never do). A request still out for the old context is left to finish, and its answer is ignored.
     const context = `${inst}|${tf}`;
-    if (context !== this.#context) { this.#context = context; this.bars = new Map(); this.venueOrder = []; this.step = 0; this.fine = 0; this.#held = null; this.#busy = false; this.#retryAt = 0; this.#stepAsked = ''; this.version++; }
+    if (context !== this.#context) { this.#context = context; this.bars = new Map(); this.venueOrder = []; this.step = 0; this.fine = 0; this.#held = null; this.#busy = false; this.#retryAt = 0; this.#stepAsked = ''; this.#totals = null; this.version++; }
     const clock = performance.now();
     if (this.#busy || clock < this.#retryAt) return false;
     // No row size yet (`rowStep` 0: the markets' recorded step comes with their first answer). Asked as it is, the answer would hold every bar
@@ -341,7 +347,11 @@ export class FootprintData {
       const bars = fresh ? new Map<number, Bar>() : this.bars;
       if (!fresh && ask.kind === 'tail') for (const t of [...bars.keys()]) if (t >= reached) bars.delete(t);
       if (!fresh && ask.kind === 'redo') for (const t of [...bars.keys()]) if (t >= reached && t < ask.to) bars.delete(t);
-      for (const bar of body.bars) if (bar.t >= reached && bar.t < ask.to) bars.set(bar.t, readBar(bar, asked.length, body.venues));
+      // Bars without rows keep none: a source from before `sums` answers each as one merged row at price 0, which priced in coins as if it traded
+      // there (review 2026-11-27); its dollars are the bar's own.
+      for (const bar of body.bars) if (bar.t >= reached && bar.t < ask.to) { const read = readBar(bar, asked.length, body.venues); bars.set(bar.t, this.sumsOnly ? { ...read, rows: [] } : read); }
+      // Without rows: whether this answer's bars carry their dollars (it says so, or every bar is one merged row), and with them all those held.
+      if (this.sumsOnly) { const told = body.totals === true || body.bars.every(bar => Array.isArray(bar.rows) && bar.rows.length > 0); this.#totals = fresh ? told : (this.#totals ?? true) && told; }
       if (fresh) this.#held = { grid, from: reached, to: ask.to, settled, at: performance.now(), rechecked: performance.now(), redo: { from: Infinity, to: Infinity, at: performance.now(), tries: 0 } };
       else if (ask.kind === 'older') held.from = reached;
       // The bars it reached are replaced and what is held stays; an answer that stopped short leaves the older part for the next slice.

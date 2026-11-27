@@ -3778,5 +3778,29 @@
  "Notify: on, sending from this tab": "Notificar: ligado, a enviar a partir deste separador",
  "Notify is on with nowhere to send: set up a pop-up or a phone channel in its panel": "Notificar está ligado sem destino: configure um pop-up ou um canal para o telemóvel no respetivo painel",
  "Notify is on; another tab of this coin sends, and this one takes over when it closes": "Notificar está ligado; outro separador desta moeda envia, e este assume quando o outro fechar",
- "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Notificar, depois de configurado, envia os seus alertas a partir do seu navegador para o bot do Telegram, o tópico ntfy ou o webhook do Discord que escolheu, nunca através deste site."
+ "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Notificar, depois de configurado, envia os seus alertas a partir do seu navegador para o bot do Telegram, o tópico ntfy ou o webhook do Discord que escolheu, nunca através deste site.",
+ "Sizes": "Tamanhos",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "Tamanhos: fluxo dos takers por tamanho da ordem a mercado. Uma linha para cada um dos seis tamanhos do Histórico do fluxo, de menos de $25K a $5M ou mais, cada uma com o delta de volume acumulado do spot e do perpétuo; a linha de cima soma todos.",
+ "How the column draws the order sizes, and its dot rows.": "Como a coluna desenha os tamanhos de ordem, e suas linhas de pontos.",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "Uma linha para cada tamanho de ordem a mercado, os seis do Histórico do fluxo: o delta acumulado de suas ordens spot e de suas ordens perpétuas desde a borda esquerda, a partir das estatísticas de ordens guardadas a cada minuto (assim uma linha avança de minuto em minuto). Somadas, as seis linhas dão a linha de cima.",
+ "Net and share over": "Líquido e parcela sobre",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "A janela sobre a qual são tomados os números de cada linha (o líquido de cada tipo, a parcela do volume dos seis tamanhos).",
+ "Reading the order sizes…": "Lendo os tamanhos de ordem…",
+ "No order sizes recorded for this window.": "Nenhum tamanho de ordem registrado para esta janela.",
+ "Orders {band}": "Ordens {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "one": "Lido de barras de {n} minuto: os tamanhos de ordem são guardados minuto a minuto.",
+  "many": "Lido de barras de {n} minutos: os tamanhos de ordem são guardados minuto a minuto.",
+  "other": "Lido de barras de {n} minutos: os tamanhos de ordem são guardados minuto a minuto."
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "one": "{n} barra aqui não tem tamanhos de ordem: as linhas se interrompem ali.",
+  "many": "{n} barras aqui não têm tamanhos de ordem: as linhas se interrompem ali.",
+  "other": "{n} barras aqui não têm tamanhos de ordem: as linhas se interrompem ali."
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "A terceira vista da coluna de fluxo: ordens a mercado por tamanho, uma linha para cada um dos seis tamanhos do Histórico do fluxo, cada uma com o delta de volume acumulado do spot e do perpétuo. A linha de cima soma todos.",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "De quem é o dinheiro que move o preço? Cada linha é um tamanho de ordem a mercado, de menos de $25K a $5M ou mais (tamanhos menores para moedas menores): suas linhas são o que as ordens desse tamanho compraram menos o que venderam, spot e perpétuo cada um em sua cor, a partir de zero na borda esquerda. Somadas, as seis linhas dão a linha de cima.",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "Cada linha tem sua própria escala, então compare formas, não alturas. Ao lado de cada linha: o líquido de cada tipo sobre a janela escolhida na engrenagem, e a parcela do tamanho no volume dos seis. Passe o cursor sobre uma linha para ver seus números.",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "Os tamanhos são guardados apenas como estatísticas de ordens de cada minuto, então essas linhas avançam de minuto em minuto (num intervalo longo, de cinco minutos ou mais), enquanto as da vista Fluxo avançam a cada segundo. Um trecho gravado antes de os tamanhos de ordem serem guardados não os tem: ali as linhas se interrompem. Os mercados são os da linha de cima, e o filtro Spot / Perp também conta aqui.",
+ "The order sizes could not be read: asked again in a few seconds.": "Não foi possível ler os tamanhos de ordem: nova tentativa em alguns segundos."
 }

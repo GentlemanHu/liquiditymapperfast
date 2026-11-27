@@ -3710,5 +3710,27 @@
  "Notify: on, sending from this tab": "Bildir: açık, bu sekme gönderiyor",
  "Notify is on with nowhere to send: set up a pop-up or a phone channel in its panel": "Bildir açık ama gönderilecek yer yok: panelinde bir açılır bildirim veya bir telefon kanalı ayarlayın",
  "Notify is on; another tab of this coin sends, and this one takes over when it closes": "Bildir açık; bu coinin başka bir sekmesi gönderiyor, o kapanınca bu sekme devralır",
- "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Bildir, kurduğunuzda uyarılarınızı tarayıcınızdan seçtiğiniz Telegram botuna, ntfy konusuna veya Discord webhook'una gönderir; asla bu site üzerinden değil."
+ "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Bildir, kurduğunuzda uyarılarınızı tarayıcınızdan seçtiğiniz Telegram botuna, ntfy konusuna veya Discord webhook'una gönderir; asla bu site üzerinden değil.",
+ "Sizes": "Boyutlar",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "Boyutlar: piyasa emri boyutuna göre taker akışı. Akış geçmişinin altı boyutunun her biri için bir satır, $25K altından $5M ve üstüne kadar; her birinde spot ve perpetual kümülatif hacim deltası. En üst satır hepsini toplar.",
+ "How the column draws the order sizes, and its dot rows.": "Sütunun emir boyutlarını nasıl çizdiği ve nokta satırları.",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "Her piyasa emri boyutu için bir satır, akış geçmişinin altı boyutu: sol kenardan itibaren spot ve perpetual emirlerinin kümülatif deltası; her dakika tutulan emir istatistiklerinden (bu yüzden bir çizgi dakika dakika ilerler). Altı satır toplandığında en üst satırı verir.",
+ "Net and share over": "Net ve pay süresi",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "Her satırın rakamlarının (her türün neti, altı boyutun hacmindeki pay) alındığı pencere.",
+ "Reading the order sizes…": "Emir boyutları okunuyor…",
+ "No order sizes recorded for this window.": "Bu pencere için kaydedilmiş emir boyutu yok.",
+ "Orders {band}": "Emirler {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "one": "{n} dakikalık çubuklardan okunur: emir boyutları dakika dakika tutulur.",
+  "other": "{n} dakikalık çubuklardan okunur: emir boyutları dakika dakika tutulur."
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "one": "Burada {n} çubukta emir boyutu yok: çizgiler orada kesilir.",
+  "other": "Burada {n} çubukta emir boyutu yok: çizgiler orada kesilir."
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "Akış sütununun üçüncü görünümü: boyuta göre piyasa emirleri, akış geçmişinin altı boyutunun her biri için bir satır, her birinde spot ve perpetual kümülatif hacim deltası. En üst satır hepsini toplar.",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "Fiyatı kimin parası hareket ettiriyor? Her satır bir piyasa emri boyutudur, $25K altından $5M ve üstüne kadar (küçük coinlerde boyutlar da küçüktür): çizgileri, o boyuttaki emirlerin aldıklarından sattıklarının çıkarılmasıdır; spot ve perpetual her biri kendi renginde, sol kenarda sıfırdan başlar. Altı satır toplandığında en üst satırı verir.",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "Her çizginin kendi ölçeği vardır, bu yüzden yüksekliği değil şekilleri karşılaştırın. Her satırın yanında: dişlide seçilen pencere boyunca her türün neti ve boyutun altısının toplam hacmindeki payı. Rakamları görmek için bir satırın üzerine gelin.",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "Boyutlar yalnızca her dakikanın emir istatistikleri olarak tutulur, bu yüzden bu çizgiler dakika dakika ilerler (uzun bir aralıkta beş dakika veya daha fazla); Akış görünümünün çizgileri ise her saniye ilerler. Emir boyutları tutulmaya başlanmadan önce kaydedilen bir bölümde boyut yoktur: çizgiler orada kesilir. Piyasalar en üst satırınkilerdir ve Spot / Perp filtresi burada da geçerlidir.",
+ "The order sizes could not be read: asked again in a few seconds.": "Emir boyutları okunamadı: birkaç saniye içinde yeniden istenecek."
 }

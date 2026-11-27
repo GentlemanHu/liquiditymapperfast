@@ -434,9 +434,13 @@ html[data-layout="desktop"] .pane.heat .map-tools.compact :is(.map-select, .map-
 .cvd-wrap canvas { position: absolute; left: 0; top: 0; display: block; }
 .cvd-wrap canvas.cvd-flash, .cvd-wrap canvas.cvd-line { pointer-events: none; }
 .pane.cvd .cvd-span-select, .pane.cvd .cvd-seg[hidden] { display: none; }
-/* The flow column's views (panes/cvd-pane.ts): the name is a tab for each, lit like the chosen timeframe; a narrow column writes T&S. */
+/* The flow column's views (panes/cvd-pane.ts): the name is a tab for each (Flow, Tape, Sizes), lit like the chosen timeframe. Where the
+   header's tools no longer fit beside them (#fitName: `narrow`, then `narrower`) the tabs draw tighter before the tools take a line of
+   their own: the third tab (2026-11-25) cost Italian's header a third row at the column's 200 px least. */
 .pane-head strong.cvd-views { display: inline-flex; font-size: 11.5px; }
 .cvd-views .cvd-view { padding: 1px 7px; font-weight: 650; white-space: nowrap; }
+.pane.cvd.narrow .cvd-views .cvd-view { padding-left: 4px; padding-right: 4px; }
+.pane.cvd.narrower .cvd-views .cvd-view { padding-left: 2px; padding-right: 2px; }
 .cvd-views .cvd-view .short, .pane.cvd.narrow .cvd-views .cvd-view[data-view="trades"] .long { display: none; }
 .pane.cvd.narrow .cvd-views .cvd-view[data-view="trades"] .short { display: inline; }
 html[data-layout="desktop"] .side-head > strong.cvd-views { max-width: none; overflow: visible; flex: 0 0 auto; }

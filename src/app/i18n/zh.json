@@ -3532,5 +3532,25 @@
  "Notify: on, sending from this tab": "推送：开，由此标签页发送",
  "Notify is on with nowhere to send: set up a pop-up or a phone channel in its panel": "推送已开启但没有发送目标：请在其面板中设置弹窗或手机渠道",
  "Notify is on; another tab of this coin sends, and this one takes over when it closes": "推送已开启；此币种的另一个标签页在发送，它关闭后由此标签页接替",
- "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "推送设置好后，会从你的浏览器把提醒直接发送到你选择的 Telegram 机器人、ntfy 主题或 Discord Webhook，从不经过本站。"
+ "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "推送设置好后，会从你的浏览器把提醒直接发送到你选择的 Telegram 机器人、ntfy 主题或 Discord Webhook，从不经过本站。",
+ "Sizes": "大小",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "大小：按市价单大小划分的吃单流。资金流历史的六档大小（从 $25K 以下到 $5M 及以上）各占一行，每行显示现货与永续的累计成交量差值；最上一行为全部之和。",
+ "How the column draws the order sizes, and its dot rows.": "这一栏如何绘制订单大小，以及它的圆点行。",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "每种市价单大小一行，即资金流历史的六档：从左边缘开始，其现货订单与永续订单的累计差值，取自每分钟保存的订单统计（因此线条每分钟移动一次）。六行相加即为最上一行。",
+ "Net and share over": "净额与份额统计窗口",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "每行数字（各类的净额、在六档成交量中的份额）所统计的窗口。",
+ "Reading the order sizes…": "正在读取订单大小…",
+ "No order sizes recorded for this window.": "此窗口没有记录订单大小。",
+ "Orders {band}": "订单 {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "other": "取自 {n} 分钟的 K 线：订单大小按分钟保存。"
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "other": "此处有 {n} 根 K 线没有订单大小：线条在那里中断。"
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "资金流栏的第三个视图：按大小划分的市价单，资金流历史的六档大小各占一行，每行显示现货与永续的累计成交量差值。最上一行为全部之和。",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "是谁的钱在推动价格？每一行是一档市价单大小，从 $25K 以下到 $5M 及以上（小币种的档位更小）：线条是该档订单的买入减去卖出，现货与永续各用自己的颜色，从左边缘的零开始。六行相加即为最上一行。",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "每条线都有自己的刻度，请比较形状而不是高度。每行旁边：齿轮中所选窗口内各类的净额，以及该档在六档总成交量中的份额。将鼠标悬停在一行上可查看其数字。",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "订单大小只以每分钟的订单统计保存，因此这些线条每分钟移动一次（在较长的时间跨度上为五分钟或更久），而资金流视图的线条每秒移动。在开始保存订单大小之前记录的区段没有大小：线条在那里中断。市场与最上一行相同，现货 / 永续筛选在这里同样有效。",
+ "The order sizes could not be read: asked again in a few seconds.": "无法读取订单大小：几秒后将再次请求。"
 }

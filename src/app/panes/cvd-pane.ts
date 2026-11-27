@@ -23,10 +23,13 @@ import type { AppState, Store } from '../store.ts';
 import type { Hub } from '../hub.ts';
 import type { View } from '../view.ts';
 import { Ranker } from '../cvd/rank.ts';
-import { buildModel, type CvdModel, type LaneLine } from '../cvd/model.ts';
+import { aggregateFamilies, buildModel, type CvdModel, type LaneLine } from '../cvd/model.ts';
+import { SIZE_TFS, buildSizeModel, sizeTf, type SizeModel } from '../cvd/sizes.ts';
+import { FootprintData, type FootprintLoad } from './footprint.ts';
+import { MAX_PROFILE_INSTRUMENTS } from '../../shared/footprint.ts';
 import { HEIGHT_MODES, locateRow, maxScroll, rowHeights, type RowLayout } from '../cvd/layout.ts';
 import { CVD_SPANS, CVD_SPAN_MS, RANK_MS, RANK_WINDOWS, type CvdSettings, type CvdSpan, type RankWindow } from '../cvd/settings.ts';
-import { aggregateHover, aggregateLabel, heroLabel, rowHover, rowLabel, windowName, type LabelLine } from '../cvd/text.ts';
+import { aggregateHover, aggregateLabel, heroLabel, rowHover, rowLabel, sizeRowHover, sizeRowLabel, windowName, type LabelLine } from '../cvd/text.ts';
 import { inCoins, signedAmount, unitFloor, units, type Units } from '../units.ts';
 import { PRICE_AXIS_W, columnAt, heroHeight, heroPoint, laneRange, niceTicks, pinchSpan, priceRange, sharedRange, spanOnPhone, type Range } from '../cvd/hero.ts';
 import { laneColors, type LaneColors } from '../cvd/colors.ts';
@@ -44,7 +47,7 @@ import { flowEndChange, type FlowEnd } from '../cvd/flash.ts';
 import { FitGrid } from '../ui/fit-grid.ts';
 import { pixelRatio, sharpens } from '../pixel-ratio.ts';
 import { TradesView } from './trades-view.ts';
-import type { FlowView } from '../tns/model.ts';
+import { linesView, type FlowView } from '../tns/model.ts';
 
 const SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif', MONO = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const PAD = 6, LINE_H = 12;
@@ -66,7 +69,9 @@ export interface CvdSnapshot { rows: string[]; scroll: number; maxScroll: number
   /** The lines of the notice above the rows (why an exchange with flow is not shown), empty when every exchange is. */
   notice: string[];
   /** The x of the line drawn for the pointer of another pane (null when there is none), and the time the pointer of this one has shared. */
-  sharedX: number | null; sharedTime: number | null }
+  sharedX: number | null; sharedTime: number | null;
+  /** The Sizes view's rows as drawn (empty in the other views), and the bars' timeframe they were read from. */
+  sizes: string[]; sizeTf: string | null }
 
 const fit = (ctx: CanvasRenderingContext2D, text: string, width: number): string => {
   if (ctx.measureText(text).width <= width) return text;
@@ -160,7 +165,18 @@ export class CvdPane {
   #gear = el('button', { type: 'button', class: 'icon-btn cvd-gear', ariaLabel: t('Settings'), tip: t('How the column ranks and draws the exchanges.') });
   /** The column's views, a tab each in the header's name (the flow lines, the Tape); a phone shows none (one view to a tab: `phoneView`). */
   #viewTabs = new Map<FlowView, HTMLButtonElement>();
-  #helpFlow = helpButton('cvd'); #helpTrades = helpButton('trades');
+  #helpFlow = helpButton('cvd'); #helpTrades = helpButton('trades'); #helpSizes = helpButton('cvdSizes');
+  /**
+   * The Sizes view's bars (cvd/sizes.ts): for each timeframe asked, the bars without rows of the spot and of the perpetual markets of the
+   * ALL VENUES lines (their order statistics are the only place sizes are kept). The last few timeframes are kept, so a span chosen again
+   * draws at once and a window whose timeframe changed is drawn from the one before until the new bars cover it.
+   */
+  #sizeBars = new Map<string, { spot: FootprintData; perp: FootprintData }>();
+  /** The minutes of the ranking window the rows' figures are read from, where the bars drawn are not those (another timeframe, or a window behind now). */
+  #rankBars = { spot: new FootprintData(true), perp: new FootprintData(true) };
+  #sizeTf: string | null = null; #sizeShownTf: string | null = null;
+  #sizeModel: SizeModel | null = null; #sizeKey = '';
+  readonly #sizeLoad: FootprintLoad = (inst, tf, from, to, rows, lines, budget, venues, sums) => this.hub.footprint(inst, tf, from, to, rows, lines, budget, venues, sums);
   /** The span buttons' cell, which only the flow view has. */
   #cells: HTMLElement | null = null;
   #shownView: FlowView | null = null;
@@ -240,27 +256,31 @@ export class CvdPane {
    * Whether the flow lines are on screen: the column shown and not covered by another of a phone's tabs, in the flow view. Every drawing of
    * the lines and the dot rows waits on it (a phone keeps the column in the page for its Tape tab even with the column switched off).
    */
-  #flowOn(): boolean { return !this.root.hidden && !this.covered() && this.#view() === 'flow'; }
+  #flowOn(): boolean { return !this.root.hidden && !this.covered() && linesView(this.#view()); }
   /**
    * The view changed (the tabs, a layout, a phone turned into a desktop) or the column was shown or hidden: the lines, the notice and the dot
    * rows show in the flow view, Trades in its own; the header's span buttons, settings and help follow the view.
    */
   viewChanged(): void {
-    const view = this.#view(), flow = view === 'flow', visible = !this.root.hidden && !this.covered();
+    // The flow lines show in two views: by exchange (Flow) and by order size (Sizes), with the same top row, price strip and span chips.
+    const view = this.#view(), flow = linesView(view), visible = !this.root.hidden && !this.covered();
     for (const [id, tab] of this.#viewTabs) { const on = id === view; tab.classList.toggle('on', on); tab.setAttribute('aria-pressed', String(on)); }
     // Each list shown only while it is the view and the column is on screen (a folded or closed column draws nothing and wants no tape).
     this.trades.setShown(visible && view === 'trades');
     this.onVisibility();
     if (view === this.#shownView) { this.#fitName(); if (flow && visible) this.invalidate(); return; }
     this.#shownView = view;
+    // Leaving the Sizes view lets its timeframe go (review 2026-11-25): back on it, the window chooses one afresh.
+    if (view !== 'sizes') this.#sizeTf = null;
     // The view on the pane itself, for the stylesheet (a phone gives Trades' header one row of keys, the Flow view two).
     this.root.dataset.view = view;
     this.#panel?.close(); this.#panel = null;
-    this.#wrap.hidden = !flow; this.#readout.hidden = !flow; this.#helpFlow.hidden = !flow; this.#helpTrades.hidden = flow;
+    this.#wrap.hidden = !flow; this.#readout.hidden = !flow; this.#helpFlow.hidden = view !== 'flow'; this.#helpSizes.hidden = view !== 'sizes'; this.#helpTrades.hidden = flow;
     if (this.#cells) this.#cells.hidden = !flow;
-    this.#gear.dataset.tip = flow ? t('How the column ranks and draws the exchanges.') : t('Tape settings: what a row is, the smallest order, the side.');
-    // The notice is the flow's: hidden with it, and said again when the flow comes back (its words may have changed meanwhile).
-    if (!flow) this.#notice.hidden = true;
+    this.#gear.dataset.tip = view === 'flow' ? t('How the column ranks and draws the exchanges.') : view === 'sizes' ? t('How the column draws the order sizes, and its dot rows.') : t('Tape settings: what a row is, the smallest order, the side.');
+    // The notice is the Flow view's (it says why an exchange is not a row): hidden in the others, and said again when it comes back (its words
+    // may have changed meanwhile).
+    if (view !== 'flow') this.#notice.hidden = true;
     this.#noticeKey = '';
     this.#strip.covered = !flow; this.#strip.refresh();
     if (flow) { this.#sharedX = null; this.#paintSharedLine(); this.invalidate(); }
@@ -354,7 +374,8 @@ export class CvdPane {
   get snapshot(): CvdSnapshot {
     const layout = this.#layout, model = this.#model;
     return { rows: model?.rows.map(r => r.key) ?? [], scroll: this.#scroll, maxScroll: layout ? maxScroll(layout, this.#h) : 0, heights: layout ? { agg: layout.agg, price: layout.price, rows: layout.rows } : { agg: 0, price: 0, rows: [] },
-      spanMs: model ? model.t1 - model.t0 : 0, columns: model?.columns ?? 0, empty: this.#empty, gutter: this.#gutter, price: this.#priceStats(), since: this.#since, notice: this.#noticeRows, sharedX: this.#sharedX, sharedTime: this.store.state.hover?.source === 'cvd' ? this.store.state.hover.t : null };
+      spanMs: model ? model.t1 - model.t0 : 0, columns: model?.columns ?? 0, empty: this.#empty, gutter: this.#gutter, price: this.#priceStats(), since: this.#since, notice: this.#noticeRows, sharedX: this.#sharedX, sharedTime: this.store.state.hover?.source === 'cvd' ? this.store.state.hover.t : null,
+      sizes: this.#view() === 'sizes' ? this.#sizeModel?.rows.map(r => r.key) ?? [] : [], sizeTf: this.#view() === 'sizes' ? this.#sizeShownTf : null };
   }
   get model(): CvdModel | null { return this.#model; }
   /** What the dot rows last drew. */
@@ -390,6 +411,8 @@ export class CvdPane {
     const views: [FlowView, string, string, string][] = [
       ['flow', t('Flow'), t('Flow'), t('Taker flow: cumulative volume delta (market buys minus market sells) per exchange, spot and perpetual. Biggest exchanges first; the top row adds them all.')],
       ['trades', t('Tape'), t('Tape'), t('Tape: what was bought and sold at market, each order (by default, a burst of them one row) or a block of time per row, newest on top, with the markets it came from and its largest orders.')],
+      // Karl, 2026-11-25: the venues' rows replaced by sizes of market orders, a third view (a third key on the folded column's strip too).
+      ['sizes', t('Sizes'), t('Sizes'), t('Sizes: taker flow by market order size. A row for each of the Flow history\'s six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.')],
     ];
     const name = el('strong', { class: 'seg cvd-views', role: 'group', ariaLabel: t('Flow column view') }, ...views.map(([id, long, short, tip]) => {
       const tab = el('button', { type: 'button', class: 'cvd-view', tip, ariaLabel: long, onclick: () => { if (this.store.state.flowView !== id) this.store.set({ flowView: id }); } },
@@ -399,7 +422,7 @@ export class CvdPane {
     }));
     // A phone has one view to a tab and shows no view tabs: the Tape's row says its name instead (the stylesheet shows it there alone).
     const phoneTitle = el('span', { class: 'cvd-phone-title', textContent: t('Tape'), ariaHidden: 'true' });
-    this.controls.append(name, phoneTitle, cells, this.#spanSelect, this.#gear, this.#helpFlow, this.#helpTrades, this.#readout);
+    this.controls.append(name, phoneTitle, cells, this.#spanSelect, this.#gear, this.#helpFlow, this.#helpSizes, this.#helpTrades, this.#readout);
     this.#fit = new FitGrid(this.controls, cells, this.root);
     this.#syncControls();
   }
@@ -414,6 +437,18 @@ export class CvdPane {
   }
   #buildSettings(body: HTMLElement): void {
     const c = this.store.state.cvd;
+    // The Sizes view: what ranks, pins and flags the exchanges means nothing there; its rows always start at zero at the left edge.
+    if (this.#view() === 'sizes') {
+      body.append(
+        note(t("A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.")),
+        selectRow(t('Net and share over'), t("The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over."), RANK_WINDOWS.map(w => [w, w] as [string, string]), c.rank, v => this.#set({ rank: v as RankWindow })),
+        note(t('Spot and perpetual keep colours of their own (the dots by S and P), whichever way the money moved. Numbers carry the sign.')),
+        ...this.#stripSettings(c),
+        ...flowHistoryRows(this.store),
+        panelSwitchRow(this.store, 'flow'),
+      );
+      return;
+    }
     body.append(
       // The phone's chart draws spot and perpetual on one axis of dollars, or each over its own range (see `CvdSettings.scale`); in coins
       // (units.ts) the axis is the coin's, so the words do not name dollars.
@@ -648,6 +683,77 @@ export class CvdPane {
     }, () => { this.#priceAt = Date.now(); this.#priceFor = want; }).finally(() => { this.#priceLoading = false; });
   }
 
+  /**
+   * The Sizes view's rows for the window the column draws (cvd/sizes.ts): ask for the bars without rows of the spot and the perpetual markets of
+   * the ALL VENUES lines (`aggregateFamilies`, the instruments the top row adds up), on the timeframe the window and the columns call for
+   * (`sizeTf`), over the window and the ranking window before now; draw them from the bars of the timeframe asked, or, until those cover the
+   * window, from a timeframe held before that does.
+   */
+  #sizeRows(s: AppState, model: CvdModel, now: number): SizeModel {
+    const tf = this.#sizeTf = sizeTf(model.t1 - model.t0, model.columns, this.#sizeTf);
+    const lanes = aggregateFamilies(this.hub.flow, flowIds(s, this.hub.flow.ids), id => kindOf(s.markets, id)).aggregate.flatMap(f => f.lanes);
+    const ids = { spot: lanes.filter(l => l.kind === 'spot').map(l => l.id).sort().slice(0, MAX_PROFILE_INSTRUMENTS), perp: lanes.filter(l => l.kind === 'perp').map(l => l.id).sort().slice(0, MAX_PROFILE_INSTRUMENTS) };
+    // Held by last use: the one asked now goes last, so the oldest other goes first when more than three are held.
+    let held = this.#sizeBars.get(tf);
+    if (held) this.#sizeBars.delete(tf);
+    else held = { spot: new FootprintData(true), perp: new FootprintData(true) };
+    this.#sizeBars.set(tf, held);
+    for (const key of this.#sizeBars.keys()) { if (this.#sizeBars.size <= 3) break; if (key !== tf) this.#sizeBars.delete(key); }
+    // The figures are over the ranking window ending now, read from its minutes. Minutes drawn up to now are those: one question serves both,
+    // asked from the ranking window's start where it is earlier. Otherwise the window drawn is asked alone and the ranking window apart (review
+    // 2026-11-25: the window and the ranking window asked as one, a map panned back days asked every minute from there to now).
+    const rankMs = RANK_MS[s.cvd.rank], rankFrom = now - rankMs, joint = tf === '1m' && model.t1 >= now - 60_000;
+    const view = { t0: joint ? Math.min(model.t0, rankFrom) : model.t0, t1: joint ? Math.max(model.t1, now) : model.t1, p0: 0, p1: 1 };
+    const ask = (bars: { spot: FootprintData; perp: FootprintData }, at: string, window: { t0: number; t1: number; p0: number; p1: number }): void => {
+      for (const kind of ['spot', 'perp'] as const) {
+        const data = bars[kind], list = ids[kind];
+        if (!list.length) data.clear();
+        else data.ensure(list.join(','), at, window, 0, this.#sizeLoad, () => { this.#sizeKey = ''; this.invalidate(); }, [], this.hub.sourceNow());
+      }
+    };
+    ask(held, tf, view);
+    const counted = joint ? held : this.#rankBars;
+    if (!joint) ask(this.#rankBars, '1m', { t0: rankFrom, t1: now, p0: 0, p1: 1 });
+    // Whether a timeframe's bars are those of these markets and cover the window drawn (to the newest moment it shows).
+    const ready = (at: string, bars: { spot: FootprintData; perp: FootprintData }): boolean => (['spot', 'perp'] as const).every(kind => {
+      const list = ids[kind], data = bars[kind], span = data.answered;
+      return !list.length || (data.holds(list, at) && span !== null && span.from <= model.t0 && span.to >= Math.min(model.t1, now));
+    });
+    // Until they do, the window is drawn from the latest used of the others that does.
+    let shown = held, shownTf = tf;
+    if (!ready(tf, held)) for (const [at, bars] of [...this.#sizeBars].reverse()) if (at !== tf && ready(at, bars)) { shown = bars; shownTf = at; break; }
+    const tfMs = SIZE_TFS.find(x => x.tf === shownTf)?.ms ?? 60_000;
+    // In coins each bar is valued at the price strip's price at its middle (`#priceAtTime`'s sources, the track looked up once): the prices it
+    // reads (the flow and the candles loaded) are part of what the rows are, as the units are.
+    const coins = inCoins(), track = coins && this.#priceId ? this.hub.flow.track(this.#priceId) : undefined;
+    const priceAt = (time: number): number => { const v = track ? track.priceAt(Math.floor(time / 1000)) : NaN; return v === v ? v : this.#price.at(time); };
+    const key = [shown.spot.version, shown.perp.version, counted.spot.version, counted.perp.version, shownTf, joint, ids.spot.length, ids.perp.length, model.t0, model.t1, model.columns, Math.floor(now / 1000), rankMs, replaying(), counted.spot.answered?.from, counted.perp.answered?.from,
+      coins ? `coins|${this.hub.flow.version}|${this.#price.length}|${this.#price.lastTime}|${this.#priceId ?? ''}` : 'usd'].join('|');
+    if (key !== this.#sizeKey || !this.#sizeModel) {
+      // A kind's bars, once answered (and, for the figures, answered back to the ranking window's start: an older source slices a day of many
+      // markets newest first, and figures over part of it would read short); until then null, and the figures are read from the bars drawn
+      // (review 2026-11-26: switched to minutes, the figures read $0 until the first answer).
+      const side = (bars: { spot: FootprintData; perp: FootprintData }, at: string, kind: 'spot' | 'perp', from = Infinity) => {
+        const data = bars[kind], span = data.answered;
+        return ids[kind].length && data.holds(ids[kind], at) && span !== null && span.from <= from ? { bars: data.bars, answered: span } : null;
+      };
+      this.#sizeModel = buildSizeModel({ spot: side(shown, shownTf, 'spot'), perp: side(shown, shownTf, 'perp'), tfMs, t0: model.t0, t1: model.t1, columns: model.columns, now, rankMs, replay: replaying(),
+        figures: { spot: side(counted, '1m', 'spot', rankFrom), perp: side(counted, '1m', 'perp', rankFrom), tfMs: 60_000 }, ...(coins ? { coins: { priceAt } } : {}) });
+      this.#sizeKey = key; this.#sizeShownTf = shownTf;
+    }
+    return this.#sizeModel;
+  }
+  /** What the Sizes view says in place of its rows: while its first bars are read, or when the source holds none for the window. */
+  #sizeEmpty(sizes: SizeModel): string | null {
+    if (sizes.rows.some(r => r.lanes.length)) return null;
+    const held = this.#sizeBars.get(this.#sizeTf ?? '');
+    const unanswered = !!held && held.spot.answered === null && held.perp.answered === null;
+    // A source that fails is asked again every few seconds: said so, rather than reading for ever (review 2026-11-25).
+    if (unanswered && held.spot.tally.answers + held.perp.tally.answers === 0 && held.spot.tally.failures + held.perp.tally.failures > 0) return t('The order sizes could not be read: asked again in a few seconds.');
+    if (held && (held.spot.busy || held.perp.busy || unanswered)) return t('Reading the order sizes…');
+    return t('No order sizes recorded for this window.');
+  }
+
   // ---- drawing --------------------------------------------------------------------------------------------------------------------
 
   #render(): void {
@@ -690,11 +796,13 @@ export class CvdPane {
     const plotW = Math.max(20, this.#w - this.#gutter - (phone ? PRICE_AXIS_W : PAD)), columns = Math.max(24, Math.min(900, Math.floor(plotW)));
     // The lines' ends flash only in a window that ends now (within a column): not in a replay, nor on a map moved back into the past.
     this.#atLive = !replaying() && t1 >= Date.now() - Math.max(2_000, (t1 - t0) / columns);
-    // The lines and their figures are drawn in the page's units (units.ts): another units is another model, and the dot rows say it again.
-    const unitsNow = units();
-    const key = [this.hub.flow.version, columns, Math.floor(t0 / Math.max(1000, spanMs / columns)), Math.floor(now / 1000), span, cfg.rank, cfg.top, cfg.heights, cfg.auto, cfg.refreshMin, cfg.pinned.join(','), cfg.quietFlag, cfg.rebase, s.scope, s.disabledVenues.join(','), ids.length, this.#price.length, priceId ?? '', unitsNow].join('|');
+    // In the Sizes view the top row starts at zero at the left edge whatever the setting, as the size rows under it do, so the six add up to it
+    // there (review 2026-11-25). The lines and their figures are drawn in the page's units (units.ts): another units is another model, and the
+    // dot rows say it again.
+    const lineCfg = this.#view() === 'sizes' && !cfg.rebase ? { ...cfg, rebase: true } : cfg, unitsNow = units();
+    const key = [this.hub.flow.version, columns, Math.floor(t0 / Math.max(1000, spanMs / columns)), Math.floor(now / 1000), span, cfg.rank, cfg.top, cfg.heights, cfg.auto, cfg.refreshMin, cfg.pinned.join(','), cfg.quietFlag, lineCfg.rebase, s.scope, s.disabledVenues.join(','), ids.length, this.#price.length, priceId ?? '', unitsNow].join('|');
     if (key !== this.#modelKey || !this.#model) {
-      this.#model = buildModel({ flow: this.hub.flow, ids, kindOf: id => kindOf(s.markets, id), t0, t1, columns, now, settings: cfg, ranker: this.#ranker, coins: inCoins() });
+      this.#model = buildModel({ flow: this.hub.flow, ids, kindOf: id => kindOf(s.markets, id), t0, t1, columns, now, settings: lineCfg, ranker: this.#ranker, coins: inCoins() });
       this.#priceId = priceId; this.#priceCols = this.#priceColumns(this.#model);
       this.#strip.setCounted(this.#model.counted); this.#strip.wake();
       this.#modelKey = key;
@@ -703,12 +811,16 @@ export class CvdPane {
     this.#floor = inCoins() ? unitFloor(this.#unitPrice()) : 1;
     const model = this.#model;
     this.#drawn = { t0: this.view.t0, t1: this.view.t1 };
-    this.#empty = emptyScopeMessage(s) ?? (!model.rows.length ? (ids.length ? t('Waiting for trades…') : t('No venues are enabled.')) : null);
-    this.#updateNotice(model, s);
+    // The Sizes view (never on a phone, whose Flow tab is the exchanges'): the same top row and price strip, a row per size under them.
+    const sizes = this.#view() === 'sizes' ? this.#sizeRows(s, model, now) : null;
+    // The Sizes view says what its own rows lack: the exchanges' rows can be empty while the size rows are drawn (a replay from before the
+    // seconds the page holds ranks no exchange, and the size bars come from the server's minutes).
+    this.#empty = emptyScopeMessage(s) ?? (!ids.length ? t('No venues are enabled.') : sizes ? this.#sizeEmpty(sizes) : !model.rows.length ? t('Waiting for trades…') : null);
+    if (!sizes) this.#updateNotice(model, s);
     // A phone has no strip for the price: the aggregate row is the chart, as tall as the pane makes it, with the price over the lines.
-    const shares = model.rows.map(r => r.share);
+    const shares = sizes ? sizes.rows.map(() => 1) : model.rows.map(r => r.share);
     const layout = phone ? rowHeights(cfg.heights, this.#h, shares, { minRow: PHONE_MIN_ROW, price: 0, agg: heroHeight(this.#h, layoutMode() === 'phone-landscape') })
-      : rowHeights(cfg.heights, this.#h, shares, { minRow: MIN_ROW, minAgg: MIN_AGG, price: PRICE_H });
+      : rowHeights(sizes ? 'equal' : cfg.heights, this.#h, shares, { minRow: MIN_ROW, minAgg: MIN_AGG, price: PRICE_H });
     this.#layout = layout;
     this.#scroll = Math.max(0, Math.min(maxScroll(layout, this.#h), this.#scroll));
     // A pin whose moment has left the window (it moves left as time passes) is let go.
@@ -723,7 +835,13 @@ export class CvdPane {
     const top = layout.agg + layout.price;
     ctx.save(); ctx.beginPath(); ctx.rect(0, top, this.#w, this.#h - top); ctx.clip();
     let y = top - this.#scroll;
-    model.rows.forEach((row, i) => {
+    // A size's lines start at zero at the left edge whatever the setting (its bars are read for the window only), so they are scaled as such.
+    if (sizes) sizes.rows.forEach((row, i) => {
+      const h = layout.rows[i]!;
+      if (y + h > top && y < this.#h) this.#paintRow(ctx, p, colors, plot, y, h, row.lanes, sizeRowLabel(row, h), false, true);
+      y += h;
+    });
+    else model.rows.forEach((row, i) => {
       const h = layout.rows[i]!;
       if (y + h > top && y < this.#h) this.#paintRow(ctx, p, colors, plot, y, h, row.lanes, rowLabel(row, window, h, cfg.quietFlag), cfg.bursts, cfg.rebase);
       y += h;
@@ -732,7 +850,7 @@ export class CvdPane {
     ctx.fillStyle = p.panel; ctx.fillRect(0, 0, this.#w, top);
     if (phone) this.#paintHero(ctx, p, colors, plot, layout.agg, model, cfg);
     else {
-      this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), false, cfg.rebase);
+      this.#paintRow(ctx, p, colors, plot, 0, layout.agg, [model.spot, model.perp].filter((l): l is LaneLine => l !== null), aggregateLabel(model, layout.agg, this.#filterNote(s)), false, lineCfg.rebase);
       this.#paintPrice(ctx, p, plot, layout.agg, layout.price, model);
     }
     // On a phone the chart marks where the flow begins and the readout says since when; the note over the lines is for the desktop column.
@@ -1140,6 +1258,11 @@ export class CvdPane {
     let lines: InfoLine[];
     if (hit.kind === 'agg') lines = aggregateHover(model, col, time, window);
     else if (hit.kind === 'price') { const v = this.#priceAtTime(time); lines = [{ text: t('Price'), bold: true }, { text: clock(time, true), color: 'muted' }, { label: t('Price here'), text: Number.isFinite(v) ? fmtPrice(v) : '–', rule: true }]; }
+    else if (this.#view() === 'sizes') {
+      const row = this.#sizeModel?.rows[hit.index];
+      if (!row) return;
+      lines = sizeRowHover(row, col, time, window, this.#sizeModel!.tfMs);
+    }
     else lines = rowHover(model.rows[hit.index]!, col, time, window);
     paintInfoBox(ctx, lines, hover.x, hover.y, { x0: 0, y0: 0, x1: this.#w, y1: this.#h }, p, { placement: hover.touch ? 'up' : 'down' });
   }

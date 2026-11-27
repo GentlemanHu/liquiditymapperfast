@@ -70,7 +70,7 @@ import { linesToAsk } from '../sizes.ts';
 import { MAX_COUNT, chartKinds, linesCount, linesSource, profileAnchorOf, resolveZone, type LineKind, type TradedSettings } from '../traded/settings.ts';
 import { ANCHOR_BAR_MS, PROFILE_ANCHOR_REACH_MS, PROFILE_FINE_REACH_MS, anchorAt, anchorSnapshot, anchorTag, answerFits, snapshotDue, type AnchorSnapshot, type ProfileAnchorStart } from '../traded/anchor.ts';
 import { liveUpdate, scriptStart, type ScriptBarsState } from '../script/bars.ts';
-import { dayStartOf } from './bar-stats.ts';
+import { dayStartOf, enabledStats, readsRows, coinRunOf } from './bar-stats.ts';
 import { preRollMs } from '../size-history/model.ts';
 import { WARM_IDLE, WARM_LOOK_MS, warmAfter, warmLiquidationSpan, warmNext, type WarmState } from '../size-history/warm.ts';
 import { liquidationCover, type LiquidationDays } from '../liq-days.ts';
@@ -780,6 +780,12 @@ export class HeatPane {
   #footprint = new FootprintData();
   /** The Flow history's bars: their statistics and minutes alone, without rows (FootprintData `sumsOnly`), loaded apart from the footprint's. */
   #sizes = new FootprintData(true);
+  /**
+   * The Bar stats' bars without rows (2026-11-25): their dollars, statistics, minutes and the table's size lines, over the table's window, for
+   * every statistic that reads no price row (`StatDef.reads`). A week of thirteen markets is one answer of a tenth of a second where the rows
+   * took some twenty (24 answers and 11 s for three days of 15m candles on the local recording, Research_Findings.md).
+   */
+  #statSums = new FootprintData(true);
   /** The footprint's imbalance marks, worked out once a load (or when the options change). */
   #footprintMarks = new FootprintMarks();
   /** The stacked-imbalance zones and naked points of control running on from closed candles. */
@@ -890,6 +896,18 @@ export class HeatPane {
   get footprintData(): FootprintData { return this.#footprint; }
   /** The Flow history's bars, without rows (`#sizes`). */
   get sizesData(): FootprintData { return this.#sizes; }
+  /** The Bar stats' bars without rows (`#statSums`). */
+  get statSums(): FootprintData { return this.#statSums; }
+  /**
+   * Whether the Bar stats table reads the footprint's bars with rows: a statistic shown reads rows or their markets, or reads the bars'
+   * dollars from a source whose bars without rows carry none, or is a running sum in coins from each day's start (`readsRows`). Otherwise it
+   * reads `#statSums` alone and no row is loaded for it.
+   */
+  statsReadRows(state: AppState): boolean {
+    if (!state.show.stats) return false;
+    const totals = this.#statSums.totals, coinRun = coinRunOf(inCoins(), state.barStatOptions);
+    return enabledStats(state.barStats).some(def => readsRows(def, totals, coinRun));
+  }
 
   /**
    * The window currently mapped onto the colour ramp: the percentile baseline shifted by the contrast slider, in the page's units (app/units.ts),
@@ -1414,18 +1432,34 @@ export class HeatPane {
   readonly #footprintLoad: FootprintLoad = (inst, tf, from, to, rows, lines, budget, venues, sums) => this.hub.footprint(inst, tf, from, to, rows, lines, budget, venues, sums);
 
   /**
-   * What the footprint's bars are asked for while the footprint or the Bar stats shows: the markets, the rows the footprint would draw at this
-   * zoom whether it shows or not (so the table's rows, point of control and imbalances, are the footprint's own when both are on), the Bar
-   * stats' retail and whale sizes as size lines (those between box edges, so their rows are exact at any size from the floor), and the window:
-   * the view, from the start of the day its left edge falls in for the table's running sums from each day's start.
+   * What the footprint's bars are asked for while the footprint shows or a Bar stats statistic reads rows (`statsReadRows`): the markets, the
+   * rows the footprint would draw at this zoom whether it shows or not (so the table's rows, point of control and imbalances, are the
+   * footprint's own when both are on), and the window: the view, from the start of the day its left edge falls in for a running sum read from
+   * rows (from each day's start). No size lines but for running sums read from rows in coins (cvd retail and whales priced by the rows): the
+   * table reads them from its bars without rows (`#statSumsAsk`).
    */
   #footprintAsk(state: AppState): { markets: string[]; window: Bounds; rowStep: number; cuts: number[] } {
     const v = this.view, ph = this.plotH, fine = this.#footprint.fine;
     const fineRowPx = fine > 0 ? Math.abs(v.yOf(0, ph) - v.yOf(fine, ph)) : 0;
     const rowStep = fine > 0 ? fine * 2 ** this.#lod.level(fineRowPx) : 0;
-    const cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
-    const from = state.show.stats && state.barStatOptions.cvdFrom === 'day' ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
+    // From the start of the day only for a running sum read from rows (cvd from an older source, or any in coins): the row statistics read the
+    // view alone.
+    const coinRun = coinRunOf(inCoins(), state.barStatOptions);
+    const dayRows = state.show.stats && state.barStatOptions.cvdFrom === 'day' && enabledStats(state.barStats).some(def => def.running && readsRows(def, this.#statSums.totals, coinRun));
+    const from = dayRows ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
+    const cuts = dayRows && coinRun ? linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd) : [];
     return { markets: this.footprintMarkets(state), window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, rowStep, cuts };
+  }
+
+  /**
+   * What the Bar stats' bars without rows (`#statSums`) are asked for: the footprint's markets, the table's window (the view, from the start of
+   * the day its left edge falls in for running sums from each day's start) and its retail and whale sizes as size lines (those between box
+   * edges, so the line statistics are exact at any size from the floor). No row size.
+   */
+  #statSumsAsk(state: AppState): { markets: string[]; window: Bounds; cuts: number[] } {
+    const v = this.view, cuts = linesToAsk([state.barStatOptions.retailUsd, state.barStatOptions.whaleUsd], scaledUsd);
+    const from = state.barStatOptions.cvdFrom === 'day' ? Math.min(v.t0, dayStartOf(v.t0, resolveZone('page', state.timeZone))) : v.t0;
+    return { markets: this.footprintMarkets(state), window: from < v.t0 ? { t0: from, t1: v.t1, p0: v.p0, p1: v.p1 } : v, cuts };
   }
 
   /**
@@ -1471,8 +1505,9 @@ export class HeatPane {
 
   /**
    * Advance the footprint level of detail for this frame (also drives the heatmap dimming), and load the bars: those with rows the footprint
-   * and the Bar stats table read, while either shows (`#footprintAsk`), and apart from them the Flow history's, without rows (`#sizesAsk`),
-   * while it shows, or warmed while it does not.
+   * reads while it shows, and the Bar stats table while a statistic it shows reads rows (`#footprintAsk`, `statsReadRows`); apart from them,
+   * without rows, the Bar stats' own (`#statSumsAsk`) while it shows and the Flow history's (`#sizesAsk`) while it shows, or warmed while it
+   * does not.
    */
   #stepFootprint(state: AppState): void {
     const v = this.view, pw = this.plotW, ph = this.plotH, now = performance.now(), drawn = state.show.footprint;
@@ -1484,8 +1519,13 @@ export class HeatPane {
         if (!markets.length) this.#sizes.clear();
         else this.#sizes.ensure(markets.join(','), state.timeframe, window, 0, this.#footprintLoad, () => this.invalidate(), [], this.hub.sourceNow());
       }
+      if (state.show.stats) {
+        const { markets, window, cuts } = this.#statSumsAsk(state);
+        if (!markets.length) this.#statSums.clear();
+        else this.#statSums.ensure(markets.join(','), state.timeframe, window, 0, this.#footprintLoad, () => this.invalidate(), cuts, this.hub.sourceNow());
+      }
     }
-    if (!(drawn || state.show.stats) || !(v.t1 > v.t0)) {
+    if (!(drawn || this.statsReadRows(state)) || !(v.t1 > v.t0)) {
       // The footprint's fade-out still runs its frames, and a trap scan under way stops (review 2026-11-22: with the Flow history on, this return
       // used to come after them).
       this.#lodFrame = this.#lod.step(now, { enabled: false, hasData: false, widthCss: 0, rowHeightCss: 0, factor: 0 });

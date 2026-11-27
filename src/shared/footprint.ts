@@ -980,20 +980,22 @@ export class FootprintRecorder {
    * The bars of several instruments added together (the aggregated footprint), on one grid: rows of `rowStep` rounded to a multiple of the
    * coarsest of their recorded steps (`fine`), each instrument's rows put in the row of their low price. A bar's `minutes` are the minutes
    * any of them recorded; its `stats` and `over` are given only when every instrument-minute in it had them (as `sizesOf` counts).
-   * `sumsOnly`: bars without rows (`rows` empty, `buyUsd` and `sellUsd` 0), for a reader of the statistics, minutes and size-line sums alone
-   * (the Flow history): those are held in memory for the whole retention, so no row is read back from the store or added up by the hour.
+   * `sumsOnly`: bars without rows (`rows` empty), for a reader of the statistics, minutes, size-line sums and the bars' bought and sold
+   * dollars alone (the Flow history, the Bar stats' rows that read no price row): those are held in memory for the whole retention (each
+   * minute's `MinuteSum`), so no row is read back from the store or added up by the hour. Such an answer says `totals` (its `buyUsd` and
+   * `sellUsd` are the bars' own; a source from before 2026-11-25 sent 0 there, and the page then reads them from rows).
    */
-  queryMany(ids: readonly string[], from: number, to: number, tfMs: number, rowStep: number, cuts: readonly number[] = [], budget = Infinity, byVenue = false, sumsOnly = false): { step: number; fine: number; bars: FootprintBar[]; from: number; venues?: string[] } {
+  queryMany(ids: readonly string[], from: number, to: number, tfMs: number, rowStep: number, cuts: readonly number[] = [], budget = Infinity, byVenue = false, sumsOnly = false): { step: number; fine: number; bars: FootprintBar[]; from: number; venues?: string[]; totals?: true } {
     // A market named twice counts once.
     const known = [...new Set(ids)].filter(id => this.#steps.has(id));
     const fine = known.reduce((most, id) => Math.max(most, this.#steps.get(id)!), 0);
-    if (!fine) return { step: 0, fine: 0, bars: [], from };
+    if (!fine) return { step: 0, fine: 0, bars: [], from, ...(sumsOnly ? { totals: true as const } : {}) };
     from = this.#reach(known, from, to, tfMs, budget, sumsOnly);
     const step = sumsOnly ? fine : fine * Math.max(1, Math.round(rowStep / fine));
     // With `byVenue` (several markets), each row also keeps every market's part: [buy, sell] per market of `known`, in one array.
     const split = byVenue && !sumsOnly && known.length > 1, width = 2 * known.length;
     const bars = new Map<number, Map<number, [number, number, Float64Array | null]>>();
-    const barStats = new Map<number, { stats: TradeStats; withStats: number; counted: number; minutes: Set<number>; over: number[]; known: boolean }>();
+    const barStats = new Map<number, { stats: TradeStats; withStats: number; counted: number; minutes: Set<number>; over: number[]; known: boolean; buy: number; sell: number }>();
     for (const [k, id] of known.entries()) {
       const own = this.#steps.get(id)!, stats = this.#stats.get(id);
       // A row's key on the common grid: whole when the instrument's step divides it (the usual case, one recorded step per coin).
@@ -1003,7 +1005,7 @@ export class FootprintRecorder {
       const take = (t: number): Map<number, [number, number, Float64Array | null]> => {
         const key = Math.floor(t / tfMs) * tfMs;
         let rows = bars.get(key); if (!rows) { rows = new Map(); bars.set(key, rows); }
-        let acc = barStats.get(key); if (!acc) { acc = { stats: emptyStats(), withStats: 0, counted: 0, minutes: new Set(), over: new Array<number>(2 * cuts.length).fill(0), known: true }; barStats.set(key, acc); }
+        let acc = barStats.get(key); if (!acc) { acc = { stats: emptyStats(), withStats: 0, counted: 0, minutes: new Set(), over: new Array<number>(2 * cuts.length).fill(0), known: true, buy: 0, sell: 0 }; barStats.set(key, acc); }
         acc.counted++; acc.minutes.add(t);
         const minuteStats = stats?.get(t);
         if (minuteStats) {
@@ -1023,8 +1025,15 @@ export class FootprintRecorder {
       if (sumsOnly) {
         // Up to the newest minute held, as the rows are read: a trade a venue stamped ahead of this clock (a page's engine on a PC clock that
         // runs slow) counts here as it does in the footprint (review 2026-11-22: clamped at now + 2 min, the newest candle lost its last minutes).
+        // Each minute's bought and sold dollars (its `MinuteSum`, the sum of its rows) make the bar's, as its rows would.
         const sums = this.#sums.get(id), lo = Math.max(from, this.#cutoff), hi = sums ? Math.min(to, heldEnd([sums])) : lo;
-        if (sums) for (let t = Math.ceil(lo / MINUTE) * MINUTE; t < hi; t += MINUTE) if (sums.has(t)) take(t);
+        if (sums) for (let t = Math.ceil(lo / MINUTE) * MINUTE; t < hi; t += MINUTE) {
+          const sum = sums.get(t);
+          if (!sum) continue;
+          take(t);
+          const acc = barStats.get(Math.floor(t / tfMs) * tfMs)!;
+          acc.buy += sum.buy; acc.sell += sum.sell;
+        }
         continue;
       }
       // Bars of whole hours read each ended hour inside the window added together (`#hourRows`), and the minutes of the rest.
@@ -1053,13 +1062,15 @@ export class FootprintRecorder {
       order = known.map((_, k) => k).filter(k => totals[k]! > 0).sort((a, b) => totals[b]! - totals[a]! || a - b);
       place = new Array<number>(known.length).fill(-1); order.forEach((k, i) => { place[k] = i; });
     }
-    return { step, fine, from, ...(split ? { venues: order.map(k => known[k]!) } : {}), bars: [...bars].sort((a, b) => a[0] - b[0]).map(([t, rows]) => {
+    return { step, fine, from, ...(split ? { venues: order.map(k => known[k]!) } : {}), ...(sumsOnly ? { totals: true as const } : {}), bars: [...bars].sort((a, b) => a[0] - b[0]).map(([t, rows]) => {
       const sorted = [...rows].sort((a, b) => a[0] - b[0]);
       const list = sorted.map(([row, [buy, sell]]): FootprintRow => [row * step, buy, sell]);
       const acc = barStats.get(t), complete = acc !== undefined && acc.withStats === acc.counted;
       // Each row's markets with volume there: [place, buy, sell, place, buy, sell, ...], in the answer's order.
       const venueRows = split ? sorted.map(([, [, , parts]]) => { const flat: number[] = []; for (const k of order) { const b = parts![2 * k]!, s = parts![2 * k + 1]!; if (b > 0 || s > 0) flat.push(place[k]!, b, s); } return flat; }) : null;
-      return { t, rows: list, buyUsd: list.reduce((s, r) => s + r[1], 0), sellUsd: list.reduce((s, r) => s + r[2], 0), minutes: acc?.minutes.size ?? 0, ...(acc && complete ? { stats: acc.stats } : {}), ...(acc && complete && cuts.length && acc.known ? { over: acc.over } : {}), ...(venueRows ? { venueRows } : {}) };
+      // Without rows the bar's dollars are its minutes' sums (the same additions as its rows', in another order).
+      const buyUsd = sumsOnly ? acc?.buy ?? 0 : list.reduce((s, r) => s + r[1], 0), sellUsd = sumsOnly ? acc?.sell ?? 0 : list.reduce((s, r) => s + r[2], 0);
+      return { t, rows: list, buyUsd, sellUsd, minutes: acc?.minutes.size ?? 0, ...(acc && complete ? { stats: acc.stats } : {}), ...(acc && complete && cuts.length && acc.known ? { over: acc.over } : {}), ...(venueRows ? { venueRows } : {}) };
     }) };
   }
 }

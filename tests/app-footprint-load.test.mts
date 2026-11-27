@@ -427,6 +427,37 @@ test('bars without rows (the Flow history\x27s): no step asked first, sums asked
   assert.deepEqual([asked.at(-1)!.from, asked.at(-1)!.to, asked.at(-1)!.sums], [0, 1, false], 'the step question, alone');
 });
 
+test('bars without rows say whether they carry their dollars: an answer that says so, or one of merged rows; never an older source zeros', async () => {
+  const view = { t0: 10 * H, t1: 12 * H, p0: 0, p1: 1 };
+  /** A source answering the view's bars one way: with `totals`, without (a sums answer from before 2026-11-25), or as one merged row each (before `sums`). */
+  const answering = (kind: 'totals' | 'zeros' | 'merged') => async (_i: string, _tf: string, from: number, to: number): Promise<FootprintResponse> => {
+    const bars = [];
+    for (let t = Math.floor(from / H) * H; t < to; t += H) bars.push({ t, rows: kind === 'merged' ? [[0, 7, 3]] as [number, number, number][] : [], buyUsd: kind === 'zeros' ? 0 : 7, sellUsd: kind === 'zeros' ? 0 : 3, minutes: 60 });
+    return { step: 5, fine: 5, bars, from, ...(kind === 'totals' ? { totals: true } : {}) };
+  };
+  for (const [kind, want] of [['totals', true], ['zeros', false], ['merged', true]] as const) {
+    const data = new FootprintData(true);
+    assert.equal(data.totals, null, 'not known before an answer');
+    data.ensure('a,b', '1h', view, 0, answering(kind), () => {}, [], 12 * H); await turn();
+    assert.equal(data.totals, want, kind);
+    // Bars without rows keep none: a merged row at price 0 would be priced in coins as if it traded there (review 2026-11-27); the dollars stay.
+    assert.ok([...data.bars.values()].every(b => b.rows.length === 0 && b.buyUsd === (kind === 'zeros' ? 0 : 7) && b.sellUsd === (kind === 'zeros' ? 0 : 3)), kind);
+  }
+  // A later answer without them takes them from all the bars held, until the whole view is asked again (another market or timeframe).
+  const data = new FootprintData(true);
+  data.ensure('a', '1h', view, 0, answering('totals'), () => {}, [], 12 * H); await turn();
+  data.ensure('a', '1h', { ...view, t0: 6 * H }, 0, answering('zeros'), () => {}, [], 12 * H); await turn();
+  assert.equal(data.totals, false, 'one older answer among them');
+  data.ensure('b', '1h', view, 0, answering('totals'), () => {}, [], 12 * H);
+  assert.equal(data.totals, null, 'another market: not known again');
+  await turn();
+  assert.equal(data.totals, true);
+  data.clear();
+  assert.equal(data.totals, null, 'cleared');
+  // Bars with rows always carry them.
+  assert.equal(new FootprintData().totals, true);
+});
+
 test('a peek at the level leaves the hysteresis of the footprint as it is; the level itself moves it', () => {
   const fresh = new FootprintLod();
   assert.equal(fresh.peek(7), 1, 'rows of 7 px grouped by two');

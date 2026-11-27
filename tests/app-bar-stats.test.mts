@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
+import { BAR_STATS, DAY_MS, DEFAULT_STAT_OPTIONS, PRESETS, agreement, liquidationBuckets, dayStartOf, deviation, diagonalImbalances, pinnedLines, pinsAfterClick, MAX_PINS, readsRows, coinRunOf, PRICE_CARRY_MS, tableBands, tableHeight, enabledStats, rowScale, stackedRuns, stackedZones, statDef, strength, type StatInput, type StatOptions, csvHead, statTitle, barPrice } from '../src/app/panes/bar-stats.ts';
 import type { Bar } from '../src/app/panes/footprint.ts';
 import { readStatOptions } from '../src/app/stat-options.ts';
 import type { Liquidation } from '../src/shared/liquidations.ts';
@@ -318,6 +318,33 @@ test('a click pins a candle alone, a Shift+click adds it to the pinned ones or t
   assert.deepEqual(before, [1, 2], 'the pins given are not changed');
 });
 
+test('each statistic says what of a bar it reads: without rows (and their markets) every other one computes the same, and without dollars every one not reading them', () => {
+  // Bars with rows, markets, dollars, statistics and size-line sums, three candles with candles and open interest under some.
+  const parts: Bar['parts'] = [[['a:x', 20, 5], ['b:x', 10, 5]], [['a:x', 5, 20]]];
+  const full: Bar[] = bars.map((b, i) => ({ ...b, minutes: 1 + i, over: [1_000 * (i + 1), 500], ...(i === 0 ? { parts } : {}) }));
+  // The middle candle sells into two rows in a row against little bought one row up: a stack.
+  full[1] = { ...full[1]!, rows: [[100, 1, 30], [105, 1, 30], [110, 1, 30]], buyUsd: 3, sellUsd: 90 };
+  const base: StatInput = { bars: full, times: full.map(b => b.t), tfMs: MIN, now: 3 * MIN, step: 5, candles, oi, options: { ...DEFAULT_STAT_OPTIONS, imbRatio: 1.5, imbMinUsd: 0, stackedN: 2 }, cuts: [DEFAULT_STAT_OPTIONS.whaleUsd], perps: true,
+    liquidations: { buy: new Map([[0, 5], [MIN, 0], [2 * MIN, 1]]), sell: new Map([[0, 2], [MIN, 0], [2 * MIN, 0]]), cut: false } };
+  // As a source's bars without rows give them: no rows, no markets.
+  const noRows: StatInput = { ...base, bars: full.map(b => { const { parts: _p, ...rest } = b; return { ...rest, rows: [] }; }) };
+  // Dollars a source cannot give: what reads them must say so.
+  const noDollars: StatInput = { ...base, bars: full.map(b => ({ ...b, buyUsd: 0, sellUsd: 0 })) };
+  for (const def of BAR_STATS) {
+    const want = def.compute(base);
+    if (def.reads !== 'rows' && def.reads !== 'parts') assert.deepEqual(def.compute(noRows), want, `${def.id} reads no rows nor their markets`);
+    if (def.reads === undefined) assert.deepEqual(def.compute(noDollars), want, `${def.id} reads no dollars`);
+  }
+  // And those tagged do read what they say (each changes without it).
+  for (const def of BAR_STATS.filter(d => d.reads === 'rows' || d.reads === 'parts')) assert.notDeepEqual(def.compute(noRows), def.compute(base), `${def.id} reads rows`);
+  for (const def of BAR_STATS.filter(d => d.reads === 'totals')) assert.notDeepEqual(def.compute(noDollars), def.compute(base), `${def.id} reads dollars`);
+  // Read from rows: rows and markets always; dollars only from a source that sends none without rows (false), not before it is known (null).
+  assert.deepEqual((['rows', 'parts', 'totals', undefined] as const).map(reads => [readsRows({ reads }, true), readsRows({ reads }, false), readsRows({ reads }, null)]),
+    [[true, true, true], [true, true, true], [false, true, false], [false, false, false]]);
+  // The default preset reads no rows from a current source.
+  assert.ok(enabledStats(PRESETS.default).every(def => !readsRows(def, true)));
+});
+
 test('coins (issue 9): each size is its parts at their own prices, the candle\'s own natively; shares stay; titles and CSV heads say the coin', async () => {
   const close = (a: number | null | undefined, b: number, what: string) => assert.ok(a !== null && a !== undefined && Math.abs(a - b) < 1e-12 * Math.max(1, Math.abs(b)), `${what}: ${a} vs ${b}`);
   // Bar 0's rows at their middles (step 5): 102.5 and 107.5.
@@ -367,4 +394,47 @@ test('coins (issue 9): each size is its parts at their own prices, the candle\'s
     assert.equal(vol.format(0.25), '0.25'); assert.equal(statDef('delta')!.format(-0.0125), '-0.0125');
     assert.equal(statTitle(statDef('trades')!), statDef('trades')!.title, 'a count says no unit');
   } finally { setUnits('usd'); }
+});
+
+test('coins on bars without rows (review 2026-11-27): each at its candle\x27s typical price, a candle missing from the chart\x27s market at the close before it; a running sum from the view starts at the first bar it can price, and is not known from a later one it cannot; with CVD from each day\x27s start the running sums read rows', () => {
+  // Bars without rows, as the table's bars without rows are: minute 0 older than the chart's candles (it holds its newest 500), candles at
+  // minutes 10 and 12 (typical prices 100 and 200, closes 100 and 200), minute 11 traded with no candle of the chart's market (it sends no
+  // empty candles), minute 13 quiet, and minute 200 traded more than two hours after the last candle. Every order is under the retail size.
+  const box0 = (usd: number) => [usd, 0, 0, 0, 0, 0, 0, 0];
+  const plain = (t: number, buy: number, sell: number): Bar => ({ t, rows: [], buyUsd: buy, sellUsd: sell, minutes: 1, stats: tradeStats(buy > 0 ? 1 : 0, sell > 0 ? 1 : 0, box0(buy), box0(sell)) });
+  const noRows = [plain(0, 300, 100), plain(10 * MIN, 1_000, 400), plain(11 * MIN, 500, 100), plain(12 * MIN, 200, 900), plain(13 * MIN, 0, 0), plain(200 * MIN, 50, 10)];
+  const cs = new Map<number, CandleRow>([[10 * MIN, [10 * MIN, 100, 110, 90, 100, 5, 1]], [12 * MIN, [12 * MIN, 200, 210, 190, 200, 5, 1]]]);
+  const usdInput: StatInput = { bars: noRows, times: noRows.map(b => b.t), tfMs: MIN, now: 201 * MIN, step: 0, candles: cs, oi: new Map(), options: { ...DEFAULT_STAT_OPTIONS } };
+  const coinInput: StatInput = { ...usdInput, coins: true };
+  const run = (id: string, input: StatInput) => statDef(id)!.compute(input);
+  assert.deepEqual(run('vol', coinInput), [null, 14, 6, 5.5, 0, null], 'older than the candles and past two hours: no figure; minute 11 at minute 10\x27s close; quiet: 0');
+  assert.deepEqual(run('delta', coinInput), [null, 6, 4, -3.5, 0, null]);
+  // From the view the sum starts at the first bar it can price, and is not known from a later bar it cannot (never a sum leaving it out).
+  assert.deepEqual(run('cvd', coinInput), [null, 6, 10, 6.5, 6.5, null]);
+  assert.deepEqual(run('cvdRetail', coinInput), [null, 6, 10, 6.5, 6.5, null], 'cvd retail the same: all of it is retail');
+  // With restarts (each day's start) a bar it cannot price leaves the sum not known until the next start, the first bars too.
+  assert.deepEqual(run('cvd', { ...coinInput, restart: [0, 0, 0, 1, 1, 1] }), [null, null, null, -3.5, -3.5, null]);
+  // In dollars nothing needs a price: as it always was.
+  assert.deepEqual(run('cvd', usdInput), [200, 800, 1_200, 500, 500, 540]);
+  assert.deepEqual(run('cvdRetail', usdInput), [200, 800, 1_200, 500, 500, 540]);
+  assert.deepEqual(run('vol', usdInput), [400, 1_400, 600, 1_100, 0, 60]);
+  assert.equal(PRICE_CARRY_MS, 2 * 3_600_000);
+  // Bars older than the candles, one with no whale order (0 whatever the price) and one with a $6M whale buy, then a priced whale bar: the
+  // whale cvd from the view starts at the priced bar; counted as 0, the first would have started it and the second left it unknown.
+  const whale = (t: number, buy: number): Bar => ({ t, rows: [], buyUsd: buy + 100, sellUsd: 100, minutes: 1, stats: tradeStats(2, 1, [100, 0, 0, 0, 0, 0, 0, buy], [100, 0, 0, 0, 0, 0, 0, 0]) });
+  const whales = [whale(0, 0), whale(MIN, 6_000_000), whale(10 * MIN, 5_000_000)];
+  assert.deepEqual(run('cvdWhales', { ...coinInput, bars: whales, times: whales.map(b => b.t) }), [null, null, 50_000], 'the $5M at the candle\'s 100');
+  assert.deepEqual(run('deltaWhales', { ...coinInput, bars: whales, times: whales.map(b => b.t) }), [0, null, 50_000], 'a cell of 0 stays 0: nothing to price');
+  // The carry counts from the end of the candle before: on a 4h chart the slot after a candle takes its close.
+  const H4 = 4 * 3_600_000, four = new Map<number, CandleRow>([[0, [0, 100, 110, 90, 105, 5, 1]]]);
+  assert.equal(barPrice({ step: 0, candles: four, tfMs: H4 }, plain(H4, 10, 0)), 105, 'the next 4h slot: its close');
+  assert.ok(Number.isNaN(barPrice({ step: 0, candles: four, tfMs: H4 }, plain(H4 + 2 * 3_600_000 + MIN, 10, 0))), 'more than two hours after its end: none');
+  // So in coins with CVD from each day's start, whose bars reach back past the candles, the running sums read rows (each part at its row's
+  // price, as before the bars without rows); the others, and every one in dollars or from the view, read the bars without rows.
+  assert.equal(coinRunOf(true, { cvdFrom: 'day' }), true);
+  assert.equal(coinRunOf(true, { cvdFrom: 'view' }), false);
+  assert.equal(coinRunOf(false, { cvdFrom: 'day' }), false);
+  for (const def of BAR_STATS) assert.equal(readsRows(def, true, true), def.reads === 'rows' || def.reads === 'parts' || def.running === true, def.id);
+  assert.deepEqual(BAR_STATS.filter(def => def.running).map(def => def.id), ['cvd', 'cvdRetail', 'cvdWhales']);
+  assert.ok(enabledStats(PRESETS.default).every(def => !readsRows(def, true, false)), 'the default preset in coins from the view reads no rows');
 });

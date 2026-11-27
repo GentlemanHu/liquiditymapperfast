@@ -3778,5 +3778,29 @@
  "Notify: on, sending from this tab": "Notifica: attiva, invio da questa scheda",
  "Notify is on with nowhere to send: set up a pop-up or a phone channel in its panel": "Notifica è attiva ma senza destinazione: imposta un popup o un canale per il telefono nel suo pannello",
  "Notify is on; another tab of this coin sends, and this one takes over when it closes": "Notifica è attiva; un'altra scheda di questa moneta invia, e questa subentra quando l'altra si chiude",
- "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Notifica, una volta configurato, invia i tuoi avvisi dal tuo browser al bot di Telegram, all'argomento ntfy o al webhook di Discord che hai scelto, mai attraverso questo sito."
+ "Notify, once you set it up, sends your alerts from your browser to the Telegram bot, ntfy topic or Discord webhook you chose, never through this site.": "Notifica, una volta configurato, invia i tuoi avvisi dal tuo browser al bot di Telegram, all'argomento ntfy o al webhook di Discord che hai scelto, mai attraverso questo sito.",
+ "Sizes": "Dimensioni",
+ "Sizes: taker flow by market order size. A row for each of the Flow history's six sizes, from under $25K to $5M and over, each with its spot and perpetual cumulative volume delta; the top row adds them all.": "Dimensioni: flusso dei taker per dimensione dell'ordine a mercato. Una riga per ciascuna delle sei dimensioni dello Storico del flusso, da meno di $25K a $5M e oltre, ognuna con il delta di volume cumulato di spot e perpetuo; la riga in alto le somma tutte.",
+ "How the column draws the order sizes, and its dot rows.": "Come la colonna disegna le dimensioni degli ordini, e le sue righe di punti.",
+ "A row for each size of market order, the Flow history's six: the running delta of its spot and its perpetual orders from the left edge, from the order statistics kept every minute (so a line moves a minute at a time). Added together, the six rows make the top row.": "Una riga per ogni dimensione di ordine a mercato, le sei dello Storico del flusso: il delta cumulato dei suoi ordini spot e dei suoi ordini perpetui dal bordo sinistro, dalle statistiche degli ordini tenute ogni minuto (quindi una linea avanza di minuto in minuto). Sommate, le sei righe danno la riga in alto.",
+ "Net and share over": "Netto e quota su",
+ "The window each row's figures (each kind's net, the share of the six sizes' volume) are taken over.": "La finestra su cui sono prese le cifre di ogni riga (il netto di ogni tipo, la quota del volume delle sei dimensioni).",
+ "Reading the order sizes…": "Lettura delle dimensioni degli ordini…",
+ "No order sizes recorded for this window.": "Nessuna dimensione d'ordine registrata per questa finestra.",
+ "Orders {band}": "Ordini {band}",
+ "Read from bars of {n} minutes: order sizes are kept a minute at a time.": {
+  "one": "Letto da barre di {n} minuto: le dimensioni degli ordini sono tenute minuto per minuto.",
+  "many": "Letto da barre di {n} minuti: le dimensioni degli ordini sono tenute minuto per minuto.",
+  "other": "Letto da barre di {n} minuti: le dimensioni degli ordini sono tenute minuto per minuto."
+ },
+ "{n} bars here hold no order sizes: the lines break there.": {
+  "one": "{n} barra qui non ha dimensioni degli ordini: lì le linee si interrompono.",
+  "many": "{n} barre qui non hanno dimensioni degli ordini: lì le linee si interrompono.",
+  "other": "{n} barre qui non hanno dimensioni degli ordini: lì le linee si interrompono."
+ },
+ "The flow column's third view: market orders by size, a row for each of the Flow history's six sizes, each with its spot and its perpetual cumulative volume delta. The top row adds them all.": "La terza vista della colonna del flusso: gli ordini a mercato per dimensione, una riga per ciascuna delle sei dimensioni dello Storico del flusso, ognuna con il delta di volume cumulato di spot e perpetuo. La riga in alto le somma tutte.",
+ "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "Di chi è il denaro che muove il prezzo? Ogni riga è una dimensione di ordine a mercato, da meno di $25K a $5M e oltre (dimensioni minori per le monete più piccole): le sue linee sono ciò che gli ordini di quella dimensione hanno comprato meno ciò che hanno venduto, spot e perpetuo ciascuno nel suo colore, da zero al bordo sinistro. Sommate, le sei righe danno la riga in alto.",
+ "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "Ogni linea ha la propria scala, quindi confronta le forme, non le altezze. Accanto a ogni riga: il netto di ogni tipo sulla finestra scelta nell'ingranaggio, e la quota della dimensione nel volume di tutte e sei. Passa il mouse su una riga per vedere i suoi numeri.",
+ "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "Le dimensioni sono tenute solo come statistiche degli ordini di ogni minuto, quindi queste linee avanzano di minuto in minuto (su un intervallo lungo, di cinque minuti o più), mentre quelle della vista Flusso avanzano ogni secondo. Un tratto registrato prima che le dimensioni degli ordini fossero tenute non ne ha: lì le linee si interrompono. I mercati sono quelli della riga in alto, e anche qui conta il filtro Spot / Perp.",
+ "The order sizes could not be read: asked again in a few seconds.": "Non è stato possibile leggere le dimensioni degli ordini: nuova richiesta tra pochi secondi."
 }

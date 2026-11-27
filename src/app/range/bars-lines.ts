@@ -16,8 +16,13 @@ export interface BarsPaneHeld {
   /** What it was worked out for (markets, timeframe, the statistics and the options their arithmetic uses): another is not summed up as this one. */
   key: string;
   tfMs: number; tf: string;
-  /** The table's input, with its slots' starts, the candle length and the clock it was worked out at. */
+  /** The table's input, with its slots' starts, the candle length and the clock it was worked out at: its bars are those without rows, which say each candle's minutes recorded. */
   input: StatInput;
+  /**
+   * Each statistic's own input, in `defs`' order, where it is not `input`: the footprint's bars with rows for a statistic that reads rows (the
+   * Bar stats' `readsRows`). Absent: every statistic reads `input`.
+   */
+  inputs?: readonly StatInput[];
   times: readonly number[];
   defs: readonly StatDef[];
   values: readonly (readonly (number | null)[])[];
@@ -134,7 +139,7 @@ export function barsStretch(held: BarsPaneHeld, sel: Pick<RangeSelection, 't0' |
   }
   // No candle of the selection inside the table's span: nothing held of it. Inside the span, a candle without a slot or a bar is a gap.
   if (!spanned) return null;
-  const figures = held.defs.map((def, k) => figure(def, held.values[k] ?? [], at, expected, held, { recorded, minutes, unknown }));
+  const figures = held.defs.map((def, k) => figure(def, held.values[k] ?? [], at, expected, held, { recorded, minutes, unknown }, held.inputs?.[k] ?? input));
   return { t0: first, t1: first + expected * tf, at, expected, spanned, withBars, recorded, minutes, unknown, figures, step: input.step };
 }
 
@@ -155,9 +160,9 @@ function supportOf(def: StatDef, input: StatInput, at: readonly number[], values
  * its newest level), the recording over every candle of the grid, a point of control's move (per candle only), the marks counted by kind
  * (not the commonest alone), the size skew in words.
  */
-function figure(def: StatDef, values: readonly (number | null)[], at: readonly number[], n: number, held: BarsPaneHeld, cover: { recorded: number; minutes: number; unknown: number }): BarsFigure {
-  const input = held.input, known = supportOf(def, input, at, values);
-  const base = { id: def.id, label: labelOf(def), title: tipOf(def), known, approx: approxIn(def.id, at, held) };
+function figure(def: StatDef, values: readonly (number | null)[], at: readonly number[], n: number, held: BarsPaneHeld, cover: { recorded: number; minutes: number; unknown: number }, input: StatInput = held.input): BarsFigure {
+  const known = supportOf(def, input, at, values);
+  const base = { id: def.id, label: labelOf(def), title: tipOf(def), known, approx: approxIn(def.id, at, input) };
   const bars = at.flatMap(i => { const bar = input.bars[i]; return bar ? [bar] : []; });
   // The pane's figures are in coins where its input says so (the page's units when it drew): written with the coin, never a dollar sign.
   const coin = input.coins ? held.coin || unitName() : null;
@@ -219,8 +224,8 @@ function figure(def: StatDef, values: readonly (number | null)[], at: readonly n
 }
 
 /** Whether a statistic is ≈ over the selection itself: a size line taken at a box edge in one of its bars, or a cut day of liquidations among its candles. */
-function approxIn(id: string, at: readonly number[], held: BarsPaneHeld): boolean {
-  const input = held.input, line = LINE_STATS[id];
+function approxIn(id: string, at: readonly number[], input: StatInput): boolean {
+  const line = LINE_STATS[id];
   if (line) return at.some(i => { const bar: Bar | null | undefined = input.bars[i]; return !!bar && lineOf(bar, input, line)?.exact === false; });
   if (id === 'liq' || id === 'liqNet') { const cut = input.liquidations?.cutStarts; return !!cut && at.some(i => cut.has(slotTime(input, i))); }
   return false;

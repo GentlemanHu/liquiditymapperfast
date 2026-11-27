@@ -12,6 +12,7 @@ const onlyRows = (lines: TnsLine[]): TnsRow[] => lines.filter((l): l is TnsRow =
 
 test('the view is the Tape unless a save holds the flow; a save that named Time & sales or All trades opens on the Tape', () => {
   assert.equal(readFlowView('trades'), 'trades');
+  assert.equal(readFlowView('sizes'), 'sizes', 'the flow lines by order size (2026-11-25)');
   assert.equal(readFlowView('tns'), 'trades');
   assert.equal(readFlowView('all'), 'trades');
   assert.equal(readFlowView('tape'), 'trades');
