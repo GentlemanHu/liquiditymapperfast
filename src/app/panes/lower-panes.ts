@@ -38,6 +38,7 @@ import { addTune, settingsIcon } from '../pane-tune.ts';
 import { PaneTable, headed, ratioCell, ratioFigure, sideRatio, tableInk, tableLines, tableRowCap, type TableCell, type TablePlace, type TableRoom } from './pane-table.ts';
 import { isPhone } from '../device.ts';
 import { BandLayer, LitPainter, bandUnder, depthLook, type LitBand } from './depth-look.ts';
+import { depthZoneOn, ringOf, sameZone, type DepthZone } from '../depth-zone.ts';
 import { lensWeights, logBend, logShare, logValue, moneyAt, warpColumns, type LensSpec } from './depth-lens.ts';
 import { DepthHistory, RANK_FINE_MS, cannotRank, rankAt, rankKind, rankValue, type BandRank, type RankSide } from '../depth-history.ts';
 import { niceTicks } from '../cvd/hero.ts';
@@ -57,7 +58,7 @@ import { OiLongHistory, oiLongChain, oiLongPeriod, oiLongSeamOf, type OiLongAnch
 import { binanceOiArchive } from '../../shared/oi-archive.ts';
 import { drawnStart, groupChanges, groupCandles, groupParts, groupUsd, groupVenues, groupWho, takerSidedShare, type OiGrouped } from './oi-group.ts';
 import { stripTimeframe } from '../measures/volume-strip.ts';
-import { DRAG_MIN_PX, selects } from '../range/selection.ts';
+import { DRAG_MIN_PX, selects, type RangePane } from '../range/selection.ts';
 import type { RangeTool } from '../range/tool.ts';
 import type { FlowBook } from '../flow-book.ts';
 import { buildOiMarketsPanel, marketPicker } from '../market-picker.ts';
@@ -112,6 +113,8 @@ export abstract class TimePane {
   }
   /** Let go of a finger's pin and of the pointer: the pane's card goes at its next drawing (a pane left drawn under a maximized map, review r3). */
   dismiss(): void { if (this.#pinned) this.#unpin(); this.pointer = null; this.invalidate(); }
+  /** Its name for the hover and the Range tool. */
+  protected get paneSource(): RangePane { return this.#source; }
   get #left(): number { return leftGutter(this.store.state); }
   protected palette = PALETTES.light!;
   #frame = 0;
@@ -401,6 +404,8 @@ type LiqSeries = {
   key: string; series: { t0: number; t1: number; w: number; radii: readonly number[]; answer: DepthAnswer }; rowAt: Int32Array; rows: LiqRow[];
   /** The history bucket each band reads (-1: none), and the bands asked beyond its reach (or, from the rollups, not one of their bands). */
   idx: number[]; omitted: number[];
+  /** The buckets' outer edges (percentages of the mark): a band's figure reaches `edges[idx[j]]`, where the map shades it (depth-zone.ts). */
+  edges: readonly number[];
   /** The stretch of the view whose history is Plus and closed to this visitor (`LiqHistory.closedBefore`), from where the recording begins, or null. */
   closed: { from: number; to: number } | null;
   /** Where what is closed to this visitor ends (`LiqHistory.closedBefore`, not cut to the view, so a view wholly closed draws and reads nothing), or -Infinity. */
@@ -513,6 +518,8 @@ export class DepthPane extends TimePane {
   /** The band under the pointer, lit with its neighbours (depth-look.ts), and the one lit last (kept while the pointer stays near its edges). */
   readonly #litPainter = new LitPainter();
   #lit: LitBand | null = null;
+  /** The lit band as the map shades it (depth-zone.ts), worked out by this drawing (null: none lit) and shared once it is done (`#shareZone`). */
+  #zone: DepthZone | null = null;
   /** Each band's history at a fixed step (depth-history.ts), read once the order book's table or card wants a rank, for where a reading stands in it. */
   readonly #bandHistory = new DepthHistory((ids, from, to, step) => this.hub.source.columns(ids, from, to, step, true), () => this.invalidate(), () => this.hub.sourceNow());
   get bandHistory(): DepthHistory { return this.#bandHistory; }
@@ -710,13 +717,24 @@ export class DepthPane extends TimePane {
     this.#lines = null;
     this.#table.clear();
     this.#lockAt = null;
+    this.#zone = null;
     this.#paint();
+    this.#shareZone(this.#zone);
     this.#placeLens();
     this.#placeLock();
     const at = this.pointer;
     if (this.#lines && at) this.#card.show(this.#lines, at.x, at.y); else this.#card.hide();
   }
-  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); this.#lockAt = null; this.#placeLens(); this.#placeLock(); }
+  protected override undrawn(): void { this.#lines = null; this.#table.clear(); this.#card.hide(); this.#lockAt = null; this.#zone = null; this.#shareZone(null); this.#placeLens(); this.#placeLock(); }
+  /**
+   * Share the band lit here with the map (`depthHover`), which shades where its money lies, or let go of it where this pane shared it: another
+   * Depth pane's is never let go of from here (each pane draws at its own times). The page is told only when the zone changed.
+   */
+  #shareZone(zone: DepthZone | null): void {
+    const cur = this.store.state.depthHover;
+    if (zone === null ? cur === null || cur.pane !== this.paneSource : cur !== null && sameZone(cur, zone)) return;
+    this.store.set({ depthHover: zone });
+  }
   protected override ownsPoint(x: number): boolean { return this.#table.owns(x, this.pointer); }
   protected override ownsPress(x: number): boolean { return this.#table.takesPress(x, this.pointer); }
   protected override claimTap(p: Pt): boolean { return this.#table.tap(p); }
@@ -772,7 +790,7 @@ export class DepthPane extends TimePane {
       return { bid, ask, bidCoin, askCoin, rowAt };
     };
     const main = build(s.rows);
-    this.#liq = { key, series: { t0, t1, w, radii, answer: { k, bid: main.bid, ask: main.ask, bidCoin: main.bidCoin, askCoin: main.askCoin } }, rowAt: main.rowAt, rows: s.rows, idx, omitted, closed,
+    this.#liq = { key, series: { t0, t1, w, radii, answer: { k, bid: main.bid, ask: main.ask, bidCoin: main.bidCoin, askCoin: main.askCoin } }, rowAt: main.rowAt, rows: s.rows, idx, omitted, edges, closed,
       view, holdMs: s.holdMs, wide: s.wide, absent: s.ordersAbsent, takes: s.takes ? build(s.takes) : null, takeRows: s.takes, closedTo: closedTo ?? -Infinity };
     return this.#liq;
   }
@@ -1062,6 +1080,23 @@ export class DepthPane extends TimePane {
       rows = s.radii.map((r, j) => ({ r, bid: live ? liveFigure('bid', j) : readX >= 0 ? bid[at(readX, j)]! : NaN, ask: live ? liveFigure('ask', j) : readX >= 0 ? ask[at(readX, j)]! : NaN }));
       if (live) { readTime = liveNow!.at; if (pointed) this.cursorT = newestT; }
       foot = Number.isFinite(readTime) ? (pointed && !live ? clock(readTime, true) : `${t('newest')} ${clock(readTime)}`) : '';
+    }
+    // The lit band, shaded on the map where its money lies (depth-zone.ts): its ring from the band inside it to its own edge, measured from the
+    // price its figure was. The order book's on each column's own centre (the books now where the table reads them); the levels' from the read
+    // snapshot's mark out to the bucket edges their figures reach, with the newest snapshot's across the stripe (not in a replay, which has none).
+    if (lit && depthZoneOn()) {
+      const inkOf = (side: 'up' | 'down'): 'bid' | 'ask' => bidAskKey(side === 'up' ? sides.above : sides.below);
+      const ink = inkOf(lit.side), across = inkOf(lit.side === 'up' ? 'down' : 'up'), m0 = colT(under), m1 = colT(under + 1);
+      const ring = ringOf(s.radii, lit.j, liqHeld ? { edges: liqHeld.edges, idx: liqHeld.idx } : undefined);
+      if (ring && liqHeld) {
+        const row = readRow ?? liqHeld.rows[liqHeld.rowAt[under] ?? -1] ?? null, newest = liqRead(null).row;
+        if (row) this.#zone = { pane: this.paneSource, source: 'liq', side: lit.side, ...ring, ink, across, moment: { t0: m0, t1: m1, centre: row.mark }, ribbon: null,
+          now: newest && !replaying() ? { centre: newest.mark, strong: newest === row } : null };
+      } else if (ring) {
+        const mids = s.answer.mid ?? null, centre = live && liveNow ? liveNow.mid : mids?.[under] ?? NaN;
+        if (centre > 0) this.#zone = { pane: this.paneSource, source: 'book', side: lit.side, ...ring, ink, across, moment: { t0: m0, t1: m1, centre },
+          ribbon: mids ? { t0: s.t0, t1: s.t1, w: s.w, mid: mids, cut: cutW } : null, now: null };
+      }
     }
     // The card of the moment read, whose lines the rows do not say are the table's too: the watched band's balance and rank, the take profits.
     let card: InfoLine[] | null = null, brief: InfoLine[] = [];

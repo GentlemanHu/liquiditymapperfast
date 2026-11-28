@@ -5,7 +5,7 @@ import type { View } from '../view.ts';
 import { helpButton } from '../help.ts';
 import { setTip } from '../tip.ts';
 import { t } from '../i18n.ts';
-import { clock } from '../format.ts';
+import { clock, fixedFormat, usd } from '../format.ts';
 import { HoverCard } from '../hovercard.ts';
 import type { InfoLine } from '../infobox.ts';
 import { VENUE_LINE, venueLabel } from '../venues.ts';
@@ -15,11 +15,15 @@ import { TimePane, setHtml } from './lower-panes.ts';
 import { PaneTable, tableInk, tableLines, type TableCell, type TableRoom } from './pane-table.ts';
 import type { Palette } from '../theme.ts';
 import { addTune } from '../pane-tune.ts';
-import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsDrawnIn, lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
+import { HOLD_PERIODS, LS_BUDGET_MS, LS_ROUND_MS, LS_SOON_MS, lsDrawnIn, placeEnds, lsFollowDelay, lsLanded, lsMessage, lsPeriods, lsReach, lsWindow, populationText, stepEnd, type LsHeld } from './ls-window.ts';
 import { pageNow, replaying } from '../replay/clock.ts';
 import { IdbLsShown } from '../browser/ls-store.ts';
 import { LS_CHOSEN_VENUES, LS_METRICS, LS_VENUES, lsPopulationOf, type LsMetric, type LsPoint, type LsPopulation, type LsSeries } from '../../shared/long-short.ts';
 import { lsHeldKey, type LsPaneHeld } from '../range/ls-lines.ts';
+import { HlSides, hlAt, hlColor, hlLines, hlName, hlTag, type HlLine } from '../hl-sides.ts';
+import { HL_SPLITS, HL_UNITS, type HlSplit, type HlUnit } from '../hl-split.ts';
+import { FREE_PASS, plusFree } from '../plus/config.ts';
+import { plus } from '../plus/pass.ts';
 
 const HOUR = 3_600_000;
 
@@ -37,6 +41,48 @@ export function lsIds(state: AppState, hub: Hub): string[] {
 }
 
 export { populationText, stepEnd };
+
+/**
+ * Whether Hyperliquid's lines apply (hl-sides.ts): its BTC perpetual is one of the OI pane's markets, as an exchange's line needs its market
+ * there. The levels service counts BTC alone.
+ */
+export function hlApplies(state: AppState, hub: Hub): boolean {
+  const ids = oiMarketIds(state, hub.flow) ?? [state.oiInstrument || state.seriesInstrument || state.marketId];
+  return ids.some(id => {
+    const m = state.markets.find(market => market.instrumentId === id);
+    return m?.venue === 'hyperliquid' && m.marketType === 'perpetual' && (m.base ?? '').toUpperCase() === 'BTC';
+  });
+}
+
+const HL = 'hyperliquid:BTC';
+/** A Hyperliquid line's row name: the venue and the group, or a band alone (the Split names the family). */
+const hlRowName = (key: string): string => key === 'all' || key === 'pos' || key === 'neg' ? `${venueLabel(HL)} ${hlName(key)}` : hlName(key);
+
+/** The popup's lines of Hyperliquid's lines at `time`: each one's share and counts behind it, and what they count. */
+export function hlCardLines(lines: readonly HlLine[], time: number, unit: HlUnit): InfoLine[] {
+  if (!lines.length) return [];
+  const count = (n: number): string => unit === 'usd' ? `$${usd(n)}` : fixedFormat(0).format(n);
+  const out: InfoLine[] = lines.map(line => {
+    const at = hlAt(line, time), label = hlRowName(line.key);
+    if (!at) return { label, text: t('no reading'), color: 'muted', mark: HL, table: false };
+    const [wl, ws, ul, us] = at.cell, long = at.point.long;
+    const counts = unit === 'usd' ? t('{long} long, {short} short', { long: count(ul), short: count(us) }) : t('{long} long, {short} short', { long: count(wl), short: count(ws) });
+    return { label, text: `${shareText(long)} · ${counts}`, color: long > 0.5 ? 'buy' : long < 0.5 ? 'sell' : 'text', mark: HL, table: false };
+  });
+  out.push({ text: t('Hyperliquid: every wallet\'s BTC position in HyperTracker\'s snapshots, about every 29 minutes, the positions some 35 minutes old; the groups by all-time PnL or size are HyperTracker\'s, as each snapshot gives them.'), color: 'muted', wrap: true, rule: true, table: false });
+  if (unit === 'usd') out.push({ text: t('In dollars every long has a short: all wallets together are always half long, so the profitable and the losing traders sit on opposite sides of 50 %.'), color: 'muted', wrap: true, table: false });
+  return out;
+}
+
+/** The table's rows of Hyperliquid's lines at `time`, as a venue's: the long share, the short share and their ratio. */
+export function hlTableRows(lines: readonly HlLine[], time: number, p: Pick<Palette, 'bid' | 'ask' | 'text' | 'muted'>): TableCell[][] {
+  return lines.map(line => {
+    const at = hlAt(line, time), name = { text: hlRowName(line.key) };
+    if (!at) return [name, { text: '–' }, { text: '–' }, { text: '–' }];
+    const q = at.point.long;
+    return [name, { text: `${(q * 100).toFixed(1)}%`, color: tableInk(p.bid, p) }, { text: `${((1 - q) * 100).toFixed(1)}%`, color: tableInk(p.ask, p) }, { text: q < 1 ? (q / (1 - q)).toFixed(2) : '∞' }];
+  });
+}
 
 /** The lowest and highest share over the steps drawn in [t0, t1] (a reading counts while it holds, as the lines are drawn); null when no step is in view. */
 export function lsRange(series: readonly Pick<LsSeries, 'points' | 'periodMs'>[], t0: number, t1: number): { lo: number; hi: number } | null {
@@ -132,6 +178,10 @@ export class LsPane extends TimePane {
   #shown: IdbLsShown | null | undefined;
   #sync: (() => void)[] = [];
   readonly #tableBox = document.createElement('input');
+  /** Hyperliquid's long and short sides by HyperTracker's groups (hl-sides.ts): Plus files, read with the page's pass (none needed while Plus is free). */
+  readonly #hl = new HlSides(undefined, now => plusFree() ? FREE_PASS : plus().pass(now));
+  readonly #hlSplit = document.createElement('select');
+  readonly #hlUnit = document.createElement('select');
   /** Each venue's exact figures at one moment, on the pane (pane-table.ts). */
   readonly #table = new PaneTable({ canvas: this.canvas, left: () => leftGutter(this.store.state), rangeGesture: () => this.rangeGesture, invalidate: () => this.invalidate(), defer: fn => this.deferOverlay(fn) });
 
@@ -150,13 +200,42 @@ export class LsPane extends TimePane {
     const table = document.createElement('label'); table.className = 'ctl'; setTip(table, t('Each venue\'s longs, shorts and their ratio in a table on the pane, at the pointer\'s time or the newest.'));
     this.#tableBox.type = 'checkbox'; this.#tableBox.checked = store.state.lsTable; this.#tableBox.onchange = () => store.set({ lsTable: this.#tableBox.checked });
     table.append(this.#tableBox, t('Table'));
-    wrap.append(control); group.append(wrap, table);
-    addTune(this.head, [table], t('Long/Short'), { fold: true });
+    // Hyperliquid's lines: how they are split, and what each side counts (hl-sides.ts).
+    const split = document.createElement('label'); split.className = 'ctl'; split.append(venueLabel(HL));
+    setTip(split, t('How Hyperliquid\'s line is split, by HyperTracker\'s groups of wallets: everyone with the profitable and the losing traders, its eight bands of all-time PnL, or its eight size bands.'));
+    for (const [value, text] of [['groups', [t('Everyone'), t('+PnL'), t('−PnL')].join(' · ')], ['pnl', t('By PnL')], ['size', t('By size')], ['off', t('Off')]] as const) this.#hlSplit.append(new Option(text, value));
+    this.#hlSplit.value = store.state.lsHl;
+    this.#hlSplit.onchange = () => this.store.set({ lsHl: this.#hlSplit.value as HlSplit });
+    split.append(this.#hlSplit);
+    const unit = document.createElement('label'); unit.className = 'ctl'; unit.append(t('Count'));
+    setTip(unit, t('Count Hyperliquid\'s wallets on each side, or the dollars they hold. In dollars all wallets together are always half long, so that line is left out.'));
+    for (const [value, text] of [['wallets', t('Wallets')], ['usd', t('Dollars')]] as const) this.#hlUnit.append(new Option(text, value));
+    this.#hlUnit.value = store.state.lsHlUnit;
+    this.#hlUnit.onchange = () => this.store.set({ lsHlUnit: this.#hlUnit.value as HlUnit });
+    unit.append(this.#hlUnit);
+    wrap.append(control); group.append(wrap, split, unit, table);
+    addTune(this.head, [split, unit, table], t('Long/Short'), { fold: true });
     this.#sync.push(() => { if (control.value !== this.store.state.lsMetric) control.value = this.store.state.lsMetric; });
   }
 
   /** Reflect the table's switch and draw again (nothing is read for it). */
   tableChanged(): void { this.#tableBox.checked = this.store.state.lsTable; this.invalidate(); }
+
+  /** Reflect Hyperliquid's split and count and draw again (the same files hold every split). */
+  hlChanged(): void {
+    const { lsHl, lsHlUnit } = this.store.state;
+    if ((HL_SPLITS as readonly string[]).includes(lsHl) && this.#hlSplit.value !== lsHl) this.#hlSplit.value = lsHl;
+    if ((HL_UNITS as readonly string[]).includes(lsHlUnit) && this.#hlUnit.value !== lsHlUnit) this.#hlUnit.value = lsHlUnit;
+    this.invalidate();
+  }
+
+  /** Hyperliquid's lines of the view: its files asked for (the pane drawn again when one lands), the split and count chosen; in a replay only the snapshots fetched by the moment shown. */
+  #hlLines(state: AppState, now: number): HlLine[] {
+    const v = this.view;
+    this.#hl.ensure(v.t0, v.t1, Date.now(), () => this.invalidate());
+    const { rows, periodMs } = this.#hl.rows(v.t0, v.t1), cut = replaying() ? now : Infinity;
+    return hlLines(rows.filter(r => r.fetchedAt <= cut), state.lsHl, state.lsHlUnit, periodMs).filter(line => line.points.length > 0);
+  }
 
   /** Reflect the settings in the header and read again (a round under way is for what was shown: dropped). */
   settingsChanged(): void { for (const sync of this.#sync) sync(); this.#generation++; this.#round?.abort(); this.#round = null; this.#warming?.abort(); this.#stopFollowing(); this.#held = null; this.#loading = false; this.invalidate(); }
@@ -341,19 +420,23 @@ export class LsPane extends TimePane {
   #paint(): void {
     const { ctx, palette: p, view: v } = this, pw = this.plotW, ph = this.h, state = this.store.state, now = pageNow();
     const tf = TIMEFRAMES[state.timeframe] ?? HOUR, readout = this.head.querySelector('.readout');
-    const ids = lsIds(state, this.hub);
-    if (!ids.length) {
+    // Hyperliquid's lines unless switched off (the exchanges' lines then keep the scale to themselves).
+    const ids = lsIds(state, this.hub), hlOn = state.lsHl !== 'off' && hlApplies(state, this.hub);
+    if (!ids.length && !hlOn) {
       ctx.fillStyle = p.muted; ctx.textAlign = 'left';
       ctx.fillText(t('None of the open-interest markets is on an exchange that publishes a long/short ratio (Binance, Bybit, OKX, Bitget, Gate).'), 12, ph / 2);
       setHtml(readout, ''); this.#rangeHeld = null; this.#rangeOf = null; return;
     }
-    this.#load(state, ids, tf);
+    if (ids.length) this.#load(state, ids, tf);
     // Replay: only what had been published by the moment shown.
     const series = this.#series.filter(s => ids.includes(s.id)).map(s => replaying() ? { ...s, points: s.points.filter(q => q.t + s.periodMs <= now) } : s);
-    this.#keep(state, ids, series, tf, now);
+    // The Range summary reads the exchanges' lines (range/ls-lines.ts); Hyperliquid's are not in it.
+    if (ids.length) this.#keep(state, ids, series, tf, now); else { this.#rangeHeld = null; this.#rangeOf = null; }
     const shown = series.filter(s => s.points.length);
+    // Hyperliquid's lines, on the same scale as the exchanges' (one unit: the share long).
+    const hl = hlOn ? this.#hlLines(state, now) : [];
     // No step in view (readings held for another time draw nothing here): the pane says why.
-    const range = lsRange(shown, v.t0, v.t1), blank = !range;
+    const range = lsRange([...shown, ...hl], v.t0, v.t1), blank = !range;
     const lo = range?.lo ?? 0.45, hi = range?.hi ?? 0.55;
     const pad = Math.max((hi - lo) * 0.1, 0.005), min = lo - pad, max = hi + pad, top = 8, bottom = ph - 8;
     const y = (share: number): number => top + (1 - (share - min) / (max - min)) * (bottom - top);
@@ -362,7 +445,7 @@ export class LsPane extends TimePane {
     if (min < 0.5 && max > 0.5) {
       ctx.strokeStyle = p.muted; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(0, Math.round(y(0.5)) + 0.5); ctx.lineTo(pw, Math.round(y(0.5)) + 0.5); ctx.stroke(); ctx.setLineDash([]);
     }
-    const ends: { id: string; x: number; y: number }[] = [];
+    const ends: { id: string; x: number; y: number; tag?: string }[] = [];
     for (const s of shown) {
       // Steps: a reading holds until the next, and a gap longer than its hold breaks the line.
       ctx.strokeStyle = VENUE_LINE[s.id.split(':')[0]!] ?? p.text; ctx.lineWidth = 1.5; ctx.beginPath();
@@ -377,10 +460,29 @@ export class LsPane extends TimePane {
       ctx.stroke(); ctx.lineWidth = 1;
       if (last) ends.push({ id: s.id, ...last });
     }
-    // Each line's venue mark where it ends, kept apart from the others.
-    ends.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < ends.length; i++) if (ends[i]!.y - ends[i - 1]!.y < 14 && Math.abs(ends[i]!.x - ends[i - 1]!.x) < 14) ends[i]!.y = ends[i - 1]!.y + 14;
-    for (const e of ends) drawVenueMark(ctx, e.id, Math.min(pw - 8, e.x + 8), Math.max(top + 6, Math.min(bottom - 6, e.y)), 12);
+    // Hyperliquid's lines in its blue ramp (hl-sides.ts), each tagged where it ends.
+    for (const line of hl) {
+      ctx.strokeStyle = hlColor(line, p.dark); ctx.lineWidth = 1.5; ctx.beginPath();
+      let last: { x: number; y: number } | null = null, prevEnd = -Infinity;
+      for (let i = 0; i < line.points.length; i++) {
+        const q = line.points[i]!, end = stepEnd(line, i);
+        if (end < v.t0 || q.t > v.t1) { prevEnd = end; continue; }
+        const x0 = v.xOf(q.t, pw), x1 = v.xOf(end, pw), yq = y(q.long);
+        if (last && prevEnd === q.t) ctx.lineTo(x0, yq); else ctx.moveTo(x0, yq);
+        ctx.lineTo(x1, yq); last = { x: x1, y: yq }; prevEnd = end;
+      }
+      ctx.stroke(); ctx.lineWidth = 1;
+      if (last) ends.push({ id: HL, tag: hlTag(line.key), ...last });
+    }
+    // Each line's venue mark (or Hyperliquid's tag) where it ends, kept apart from the others and inside the pane.
+    for (const e of placeEnds(ends, top + 6, bottom - 6)) {
+      const ey = e.y;
+      if (!e.tag) { drawVenueMark(ctx, e.id, Math.min(pw - 8, e.x + 8), ey, 12); continue; }
+      const baseline = ctx.textBaseline, w = ctx.measureText(e.tag).width;
+      ctx.fillStyle = p.text; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(e.tag, Math.max(2, Math.min(pw - w - 2, e.x + 4)), ey);
+      ctx.textBaseline = baseline;
+    }
     ctx.restore();
     ctx.fillStyle = p.muted; ctx.textAlign = 'left';
     const pct = (share: number): string => `${(share * 100).toFixed(1)}%`;
@@ -388,19 +490,19 @@ export class LsPane extends TimePane {
     if (min < 0.5 && max > 0.5 && Math.abs(y(0.5) - y(hi)) > 14 && Math.abs(y(0.5) - y(lo)) > 14) ctx.fillText('50%', this.w - AXIS_W + 6, y(0.5));
     if (blank) {
       ctx.textAlign = 'left';
-      const message = lsMessage(series, this.#loading);
+      const message = lsMessage(series, this.#loading || (hlOn && this.#hl.reading));
       ctx.fillText(message === 'reading' ? t('Reading the long/short ratios…') : message === 'failed' ? t('The long/short ratios could not be read just now; trying again in a minute.') : t('No long/short readings for this time.'), 12, ph / 2);
     }
     // Readout and popup: the moment under the pointer, else now; past the newest reading (or over the price axis), the newest, and the cursor there.
-    const newest = Math.max(-Infinity, ...shown.map(s => s.points[s.points.length - 1]!.t));
+    const newest = Math.max(-Infinity, ...shown.map(s => s.points[s.points.length - 1]!.t), ...hl.map(line => line.points[line.points.length - 1]!.t));
     let time = state.hover ? state.hover.t : Math.min(now, v.t1);
-    if (time > newest && Number.isFinite(newest) && shown.every(s => !lsAt(s.points, time, s.periodMs))) { time = newest; if (state.hover && this.pointer) this.cursorT = newest; }
+    if (time > newest && Number.isFinite(newest) && shown.every(s => !lsAt(s.points, time, s.periodMs)) && hl.every(line => !hlAt(line, time))) { time = newest; if (state.hover && this.pointer) this.cursorT = newest; }
     const hover = state.hover;
     // The readings in the table's rows, and under them the card's lines (why a venue has none, who each line counts): a table that holds all of it takes
     // the card's place, as on every pane with one; beside one that cannot, the card stays.
-    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, card = lsCardLines(series, time, state.timeframe);
+    const room: TableRoom = { w: this.w, h: ph, plotW: pw, axisW: AXIS_W, pointing: this.pointer !== null, rest: !hover }, card = [...lsCardLines(series, time, state.timeframe), ...hlCardLines(hl, time, state.lsHlUnit)];
     // One series: a row that repeats the header; no table, and the popup stays.
-    const placed = state.lsTable && !blank && series.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: `${hover ? clock(time, true) : `${t('newest')} ${clock(time)}`} · ${state.timeframe}`, rows: lsTableRows(series, time, p), lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.lsMetric}` }) : null;
+    const placed = state.lsTable && !blank && series.length + hl.length > 1 ? this.#table.draw(ctx, p, room, { heads: ['', t('Longs'), t('Shorts'), 'L/S'], minCols: 3, focus: -1, foot: `${hover ? clock(time, true) : `${t('newest')} ${clock(time)}`} · ${state.timeframe}`, rows: [...lsTableRows(series, time, p), ...hlTableRows(hl, time, p)], lines: tableLines(card), restKey: `${state.marketId}\u0001${state.timeframe}\u0001${state.lsMetric}\u0001${state.lsHl}\u0001${state.lsHlUnit}` }) : null;
     if (hover && this.pointer && !placed?.complete) this.#lines = card;
     const parts = series.map(s => {
       const q = lsAt(s.points, time, s.periodMs), name = venueLabel(s.id);
@@ -408,6 +510,10 @@ export class LsPane extends TimePane {
       if (s.status === 'stale' && q) return `${name} <b class="muted">${pct(q.long)}</b>`;
       return q ? `${name} <b class="${q.long > 0.5 ? 'bid' : q.long < 0.5 ? 'ask' : ''}">${pct(q.long)}</b>` : `<span class="muted">${name} –</span>`;
     });
-    setHtml(readout, `${t('long')} ${parts.join(' ')}`);
+    const hlParts = hl.map(line => {
+      const at = hlAt(line, time), tag = hlTag(line.key);
+      return at ? `${tag} <b class="${at.point.long > 0.5 ? 'bid' : at.point.long < 0.5 ? 'ask' : ''}">${pct(at.point.long)}</b>` : `<span class="muted">${tag} –</span>`;
+    });
+    setHtml(readout, `${t('long')} ${[...parts, ...(hl.length ? [`${venueLabel(HL)} ${hlParts.join(' ')}`] : [])].join(' ')}`);
   }
 }

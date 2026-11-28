@@ -66,8 +66,11 @@ export function freshBooks(ids: readonly string[], stamps: ReadonlyMap<string, n
 
 /** A live column's length: the worker makes one per minute. */
 const MINUTE_MS = 60_000;
-/** The books as they stand now, per band (`depthNow`): bids and asks in USD and in coins, how many books were counted, and when (the page's clock). */
-export interface DepthNow { bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: number; at: number }
+/**
+ * The books as they stand now, per band (`depthNow`): bids and asks in USD and in coins, how many books were counted, when (the page's clock),
+ * and the price the bands were centred on (`mid`), where the map shades the band under the pointer while the table reads these (depth-zone.ts).
+ */
+export interface DepthNow { bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; present: number; at: number; mid: number }
 
 /**
  * The bands of the books as they stand now (the Depth table's newest, the same at any zoom): `stores` each holding its live column (one
@@ -78,7 +81,7 @@ export interface DepthNow { bid: Float32Array; ask: Float32Array; bidCoin: Float
 export function depthNow(stores: readonly DepthStore[], minute: number, radii: readonly number[], at: number): DepthNow | null {
   if (!stores.length || !radii.length || !Number.isFinite(minute)) return null;
   const bands = depthBands(stores, MINUTE_MS, minute, minute + MINUTE_MS, 1, radii);
-  return bands.centred[0] ? { bid: bands.bid, ask: bands.ask, bidCoin: bands.bidCoin, askCoin: bands.askCoin, present: bands.present[0]!, at } : null;
+  return bands.centred[0] ? { bid: bands.bid, ask: bands.ask, bidCoin: bands.bidCoin, askCoin: bands.askCoin, present: bands.present[0]!, at, mid: bands.mid[0]! } : null;
 }
 
 /**

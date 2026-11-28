@@ -3552,5 +3552,19 @@
  "Whose money moves the price? Each row is one size of market order, from under $25K to $5M and over (smaller sizes for smaller coins): its lines are what orders of that size bought less what they sold, spot and perpetual each in its own colour, from zero at the left edge. Added together, the six rows make the top row.": "誰のお金が価格を動かしているのか？各行は成行注文の1つのサイズで、$25K未満から$5M以上まで（小さいコインではサイズも小さくなります）：線はそのサイズの注文の買いから売りを引いたもので、現物と無期限はそれぞれ専用の色、左端のゼロから始まります。6行を足すと一番上の行になります。",
  "Every line has its own scale, so compare shapes, not heights. Beside each row: each kind's net over the window set in the gear, and the size's share of the volume of all six. Hover a row for its numbers.": "線ごとに独自のスケールがあるので、高さではなく形を比べてください。各行の横には、歯車で設定した期間の種類ごとのネットと、6サイズの出来高に占めるそのサイズの割合。行にカーソルを合わせると数値が見られます。",
  "The sizes are kept only as each minute's order statistics, so these lines move a minute at a time (over a long span, five minutes or more) where the Flow view's move every second. A stretch recorded before order sizes were kept has none: the lines break there. The markets are those of the top row, and the Spot / Perp filter counts here too.": "サイズは毎分の注文統計としてしか記録されないため、これらの線は1分ごとに動きます（長い期間では5分以上ごと）。フロー表示の線は毎秒動きます。注文サイズの記録が始まる前に記録された区間にはサイズがなく、線はそこで途切れます。市場は一番上の行と同じで、現物／無期限のフィルターもここで有効です。",
- "The order sizes could not be read: asked again in a few seconds.": "注文サイズを読み込めませんでした：数秒後にもう一度問い合わせます。"
+ "The order sizes could not be read: asked again in a few seconds.": "注文サイズを読み込めませんでした：数秒後にもう一度問い合わせます。",
+ "−PnL": "−PnL",
+ "{v} and more": "{v} 以上",
+ "{v} and less": "{v} 以下",
+ "{lo} to {hi}": "{lo}〜{hi}",
+ "{long} long, {short} short": "ロング {long}、ショート {short}",
+ "Hyperliquid: every wallet's BTC position in HyperTracker's snapshots, about every 29 minutes, the positions some 35 minutes old; the groups by all-time PnL or size are HyperTracker's, as each snapshot gives them.": "Hyperliquid：HyperTracker のスナップショット（約 29 分ごと、ポジションは約 35 分前のもの）に含まれる各ウォレットの BTC ポジションです。全期間の損益や規模によるグループは HyperTracker のもので、各スナップショットが示すとおりです。",
+ "In dollars every long has a short: all wallets together are always half long, so the profitable and the losing traders sit on opposite sides of 50 %.": "ドル建てでは、すべてのロングに対応するショートがあります。全ウォレットを合わせると常に半分がロングなので、利益を出しているトレーダーと損失を出しているトレーダーは 50 % を挟んで反対側に位置します。",
+ "How Hyperliquid's line is split, by HyperTracker's groups of wallets: everyone with the profitable and the losing traders, its eight bands of all-time PnL, or its eight size bands.": "Hyperliquid のラインの分け方（HyperTracker のウォレットのグループ別）：全員と利益・損失のトレーダー、全期間損益の 8 区分、または規模の 8 区分。",
+ "By PnL": "PnL 別",
+ "By size": "規模別",
+ "Count Hyperliquid's wallets on each side, or the dollars they hold. In dollars all wallets together are always half long, so that line is left out.": "Hyperliquid の各サイドのウォレット数、または保有するドル額を数えます。ドル建てでは全ウォレット合計が常に半分ロングになるため、そのラインは表示しません。",
+ "Wallets": "ウォレット",
+ "Dollars": "ドル",
+ "Hyperliquid publishes no ratio of its own. Its lines are counted from HyperTracker's snapshots of every wallet's BTC position, about every 29 minutes and some 35 minutes old: the share of wallets that is long for everyone, for the profitable traders (all-time PnL above zero, +PnL) and for the losing ones (−PnL), or, with the Hyperliquid choice in the header, for each of HyperTracker's eight bands of all-time PnL or of size, each wallet in the band its snapshot gives it. Count switches to the dollars each side holds; everyone is then always half long, since every long has a short, and that line is left out. They show while Hyperliquid's BTC perpetual is one of the open-interest markets, from mid-June 2026 on. They have not been tested as a signal.": "Hyperliquid は独自の比率を公表していません。そのラインは、HyperTracker のスナップショット（約 29 分ごと、約 35 分前のもの）に含まれる各ウォレットの BTC ポジションから数えたもので、全員、利益を出しているトレーダー（全期間損益がプラス、+PnL）、損失を出しているトレーダー（−PnL）それぞれのロングのウォレットの割合を示します。ヘッダーの Hyperliquid の選択で、HyperTracker の全期間損益または規模の 8 区分ごとにも分けられ、各ウォレットはそのスナップショットが示す区分に入ります。「集計対象」を切り替えると各サイドが保有するドル額になります。その場合、すべてのロングに対応するショートがあるため全員の合計は常に半分ロングとなり、そのラインは表示しません。Hyperliquid の BTC パーペチュアルが建玉の対象マーケットに含まれている間、2026 年 6 月中旬以降について表示されます。シグナルとしての検証はしていません。"
 }

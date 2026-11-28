@@ -4,7 +4,8 @@ import type { Fetcher } from './history.ts';
  * Long/short ratios as the exchanges publish them: the share of a population that is net long, per period. They count accounts (or, for
  * Binance's top traders, their positions) as each exchange classifies them, never coins: every contract has a long and a short holder, so in
  * coins the two sides are always equal. Nothing here is derived from trades or open interest, and a missing reading is never filled in with
- * 50 %. Hyperliquid publishes none.
+ * 50 %. Hyperliquid publishes none: its lines in the pane (2026-11-27) are counted from HyperTracker's snapshots of every wallet's position by
+ * the levels service and read apart from these series (`app/hl-sides.ts`), never through this cache.
  *
  * Measured 2026-10-13 (BTC):
  * - Binance `futures/data/{globalLongShortAccountRatio | topLongShortAccountRatio | topLongShortPositionRatio}`: `longAccount`,

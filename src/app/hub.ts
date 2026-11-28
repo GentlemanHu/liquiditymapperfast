@@ -199,7 +199,7 @@ export function defaultMarket(markets: readonly { instrumentId?: string; venue?:
 }
 
 /** The Depth pane's answer: `k` nested bands per pixel column, `bid[x * k + j]` the bid USD within band j (each band holds the inner ones), and the same in coins. */
-export interface DepthAnswer { k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; /** Per pixel column, how many of the markets asked for had a book column there, and whether a price centre was found; the book columns' own length (ms). Absent for liquidation levels. */ present?: Uint16Array; centred?: Uint8Array; stepMs?: number; /** The books as they stand now, per band (`depthNow`): what the table reads at the live edge, whatever the zoom; null where no live book gave a price. */ newest?: DepthNow | null }
+export interface DepthAnswer { k: number; bid: Float32Array; ask: Float32Array; bidCoin: Float32Array; askCoin: Float32Array; /** Per pixel column, how many of the markets asked for had a book column there, and whether a price centre was found; the book columns' own length (ms). Absent for liquidation levels. */ present?: Uint16Array; centred?: Uint8Array; /** Per pixel column, the price its bands were centred on (0 or NaN: none); the map shades the band under the pointer there (depth-zone.ts). Absent for liquidation levels. */ mid?: Float64Array; stepMs?: number; /** The books as they stand now, per band (`depthNow`): what the table reads at the live edge, whatever the zoom; null where no live book gave a price. */ newest?: DepthNow | null }
 
 export class Hub {
   readonly priceHistory: ChartPriceHistory;
@@ -645,7 +645,7 @@ export class Hub {
         else if (message.type === 'error') console.error('raster worker:', message.message);
         else if (message.type === 'lt') { this.#ltWaiters.get(message.id)?.({ times: message.times, bid: message.bid, ask: message.ask, estimated: message.estimated, stepMs: message.stepMs, ...(message.parts ? { parts: message.parts } : {}), ...(message.approx ? { approx: message.approx } : {}) }); this.#ltWaiters.delete(message.id); }
         else if (message.type === 'cell') { this.#cellWaiters.get(message.id)?.(message.items); this.#cellWaiters.delete(message.id); }
-        else if (message.type === 'depth') { this.#depthWaiters.get(message.id)?.({ k: message.k, bid: message.bid, ask: message.ask, bidCoin: message.bidCoin, askCoin: message.askCoin, present: message.present, centred: message.centred, stepMs: message.stepMs, newest: message.newest }); this.#depthWaiters.delete(message.id); }
+        else if (message.type === 'depth') { this.#depthWaiters.get(message.id)?.({ k: message.k, bid: message.bid, ask: message.ask, bidCoin: message.bidCoin, askCoin: message.askCoin, present: message.present, centred: message.centred, mid: message.mid, stepMs: message.stepMs, newest: message.newest }); this.#depthWaiters.delete(message.id); }
         else {
           const bounds = this.#inflight.get(message.id);
           this.#inflight.delete(message.id);

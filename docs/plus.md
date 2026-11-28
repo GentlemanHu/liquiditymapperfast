@@ -14,6 +14,7 @@ store or buy can be (a copy of the code cannot remove a lock the server keeps).
 | The levels of HyperTracker's +PnL traders, live and in the history: their liquidations (`/v1/plus/btc/liquidations-groups.json`, `liquidation-history-groups/<day>.json`), their stops and take profits (`triggers-groups.json`, `trigger-history-groups/<day>.json`, `trigger-history-groups-4h.json`) | Plus |
 | Stop and take-profit levels, live and in the history (`/v1/plus/btc/triggers.json`, `trigger-history/<day>.json`) | Plus |
 | The four-hour rollups a Depth view wider than 120 days reads (`/v1/plus/btc/*-4h.json`) | Plus |
+| Hyperliquid's lines in the Long/Short pane (2026-11-27): each HyperTracker snapshot's wallets and dollars long and short, for everyone and by HyperTracker's PnL and size bands (`/v1/plus/btc/long-short-history/<day>.json`, `long-short-history-4h.json`) | Plus (free while Plus is; without a pass the pane draws the exchanges' lines alone and offers nothing) |
 
 Every path under `/v1/plus/` is paid, whatever the day.
 

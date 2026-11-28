@@ -778,11 +778,14 @@ async function main(): Promise<void> {
     if (['show', 'timeframe', 'oiFine', 'range', 'replay'].some(k => changed.has(k as never))) funding.invalidate();
     // The order book's row under the pointer: the map and the flow column's price strip draw its price.
     if (changed.has('bookHover')) { heat.invalidateHover(); cvd.syncBookHover(); }
+    // The Depth band under the pointer in a Depth pane: the map shades where its money lies (depth-zone.ts).
+    if (changed.has('depthHover')) heat.invalidateHover();
     if (changed.has('delta') || changed.has('deltaTable')) delta.settingsChanged();
     if ((changed.has('oi') || changed.has('oiParts')) && topShown(state)) heat.invalidate();
     if (changed.has('marketId')) candle.marketChanged();
     if (['levels', 'mark', 'disabledVenues', 'scope', 'markets', 'footprint', 'customMarkets', 'replay', 'bookGone', 'show'].some(k => changed.has(k as never))) candle.invalidate();
     if (changed.has('lsMetric')) ls.settingsChanged();
+    if (changed.has('lsHl') || changed.has('lsHlUnit')) ls.hlChanged();
     // The panes follow the room the bar leaves or takes by themselves (each watches its own size).
     if (changed.has('barCollapsed')) toolbar.setCollapsed(state.barCollapsed);
     if (['show', 'timeframe', 'marketId', 'disabledVenues', 'scope', 'markets', 'oiMarkets', 'customMarkets', 'oiInstrument', 'oiParts', 'seriesInstrument', 'range'].some(k => changed.has(k as never))) ls.invalidate();

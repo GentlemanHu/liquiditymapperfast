@@ -63,6 +63,7 @@ import { liqLevelsUrl } from '../liq-url.ts';
 import { curveOf, groupName, heldBack, kindName, levelsDescription, liveAsk, liveSplit, liveView, narrowView, pairKey, plusOn, viewKey, viewParts, type LiqPair, type LiqView } from '../liq-view.ts';
 import { columnNotes, liqWhy, narrowNote, ordersAbsent, pairDescription, splitName, splitNotes, staleOfAll, staleWords, subNames } from '../liq-words.ts';
 import { levelsOrderSide } from '../order-side.ts';
+import { edgeLabel, momentSlab, ribbonRuns, ringPrices, type RibbonColumn, type ZoneSide } from '../depth-zone.ts';
 import { mirrorSplits, readingTexts, setBoxLines, stripeBoxLines } from '../liq-box.ts';
 import { layNote, paintStripe, stripeNote, stripeStands, type LaneCaption, type StripeHeld, type StripePainted } from '../liq-stripe.ts';
 import { toggleLevels } from '../levels-control.ts';
@@ -1727,6 +1728,7 @@ export class HeatPane {
     }
     this.#paintRange(ctx, state, pw, ph);
     if (!this.#columnBoxes.length) this.#paintRangeLabel(ctx, state, pw, ph);   // with a column box, after it (below)
+    this.#paintDepthZone(ctx, state, pw, ph);
     this.#paintBookRow(ctx, state, pw, ph);
     this.#paintLiqReadout(ctx, state, ph);
     this.#paintCrosshair(ctx, state, pw, ph);
@@ -4931,6 +4933,101 @@ export class HeatPane {
     ctx.fillText(fmtPrice(b.lo, b.step), axisX + (inView ? 6 : 10), ty);
     // Beyond the view, a small arrowhead at the tag's left says which way.
     if (!inView) { const up = y < 0; ctx.beginPath(); ctx.moveTo(axisX + 3, ty + (up ? 2 : -2)); ctx.lineTo(axisX + 8, ty + (up ? 2 : -2)); ctx.lineTo(axisX + 5.5, ty + (up ? -3 : 3)); ctx.closePath(); ctx.fill(); }
+  }
+
+  /**
+   * The Depth band under the pointer in a Depth pane (`depthHover`, depth-zone.ts; Karl, 2026-11-27: "if you hover over the depth chart, it
+   * highlights that area on the main chart"): the ring pointed at in the colour the pane draws its side in, the band whole from the price
+   * faintly, the same ring across the price at half (as the pane lights it). The order book's over the map's past on each column's own centre,
+   * so the heat inside it is the money the band counts there; the levels' across the stripe right of the live edge from their newest snapshot,
+   * its edges dashed while the pane reads an older one. The moment read brighter. The band is named, and its edge's price given on the axis
+   * (clamped with an arrowhead when out of view, as the book's row has), on the stripe's zone where it is drawn, else on the moment's.
+   */
+  #paintDepthZone(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
+    const z = state.depthHover; if (!z) return;
+    const v = this.view, p = this.#palette, ink = p[z.ink], acrossInk = p[z.across], axisX = this.#w - AXIS_W, other: ZoneSide = z.side === 'up' ? 'down' : 'up';
+    const yOf = (price: number): number => v.yOf(price, ph), xOf = (t: number): number => v.xOf(t, pw);
+    // Where an edge `at` (a fraction of the price) of `side` stands at `centre`.
+    const edgeY = (centre: number, side: ZoneSide, at: number): number => yOf(side === 'up' ? centre * (1 + at) : centre * Math.max(0, 1 - at));
+    // The layers of a ring, in drawing order: the band whole from the price (only where a band lies inside it), the ring, the ring across the price.
+    const layers: { side: ZoneSide; inner: number; colour: string; alpha: number }[] = [
+      ...(z.inner > 0 ? [{ side: z.side, inner: 0, colour: ink, alpha: 0.05 }] : []),
+      { side: z.side, inner: z.inner, colour: ink, alpha: 0.15 },
+      { side: other, inner: z.inner, colour: acrossInk, alpha: 0.075 },
+    ];
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, axisX, ph); ctx.clip();
+    // A box of every layer over [x0, x1] at `centre`, `k` times as strong, the ring's outer edge (and the one across) drawn `dash`ed or solid.
+    const boxes = (x0: number, x1: number, centre: number, k: number, dash: number[]): void => {
+      for (const l of layers) {
+        const r = ringPrices(centre, l.side, l.inner, z.outer); if (!r) continue;
+        const y0 = yOf(r.hi), y1 = yOf(r.lo);
+        ctx.globalAlpha = Math.min(1, l.alpha * k); ctx.fillStyle = l.colour; ctx.fillRect(x0, y0, x1 - x0, Math.max(1, y1 - y0));
+      }
+      ctx.setLineDash(dash); ctx.lineWidth = 1;
+      for (const [side, colour, alpha] of [[z.side, ink, 0.8], [other, acrossInk, 0.4]] as const) {
+        const y = Math.round(edgeY(centre, side, z.outer)) + 0.5;
+        ctx.globalAlpha = Math.min(1, alpha * Math.max(0.6, k)); ctx.strokeStyle = colour; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    };
+    // The order book: a ribbon column by column over the past, each on the price its bands were centred on.
+    if (z.ribbon) {
+      const runs = ribbonRuns(z.ribbon, xOf, 0, pw);
+      const shape = (run: readonly RibbonColumn[], side: ZoneSide, inner: number): void => {
+        ctx.beginPath();
+        run.forEach((c, i) => { const y = edgeY(c.centre, side, z.outer); if (i === 0) ctx.moveTo(c.x0, y); else ctx.lineTo(c.x0, y); ctx.lineTo(c.x1, y); });
+        for (let i = run.length - 1; i >= 0; i--) { const c = run[i]!, y = edgeY(c.centre, side, inner); ctx.lineTo(c.x1, y); ctx.lineTo(c.x0, y); }
+        ctx.closePath();
+      };
+      const edge = (run: readonly RibbonColumn[], side: ZoneSide): void => {
+        ctx.beginPath();
+        run.forEach((c, i) => { const y = Math.round(edgeY(c.centre, side, z.outer)) + 0.5; if (i === 0) ctx.moveTo(c.x0, y); else ctx.lineTo(c.x0, y); ctx.lineTo(c.x1, y); });
+      };
+      for (const run of runs) {
+        for (const l of layers) { shape(run, l.side, l.inner); ctx.globalAlpha = l.alpha; ctx.fillStyle = l.colour; ctx.fill(); }
+        ctx.lineWidth = 1; ctx.lineJoin = 'round';
+        edge(run, z.side); ctx.globalAlpha = 0.7; ctx.strokeStyle = ink; ctx.stroke();
+        edge(run, other); ctx.globalAlpha = 0.35; ctx.strokeStyle = acrossInk; ctx.stroke();
+      }
+    }
+    // The liquidation levels: across the stripe and the columns right of the live edge, from their newest snapshot, as strong while an older
+    // snapshot is read (the zone asked for, most hovers read an older one), its edges dashed then.
+    const stripeX0 = z.now && !replaying() ? Math.max(0, Math.round(xOf(pageNow()))) : axisX;
+    if (z.now && stripeX0 < axisX) boxes(stripeX0, axisX, z.now.centre, 1, z.now.strong ? [] : [4, 3]);
+    // The moment read, brighter: a slab at its column, at least a few pixels wide.
+    const slab = momentSlab(xOf(z.moment.t0), xOf(z.moment.t1), 5, 0, pw);
+    if (slab) {
+      boxes(slab.x0, slab.x1, z.moment.centre, 2.6, []);
+      const r = ringPrices(z.moment.centre, z.side, z.inner, z.outer);
+      if (r) { const y0 = yOf(r.hi), y1 = yOf(r.lo); ctx.globalAlpha = 0.95; ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.strokeRect(Math.round(slab.x0) + 0.5, Math.round(y0) + 0.5, Math.max(1, Math.round(slab.x1 - slab.x0) - 1), Math.max(1, Math.round(y1 - y0) - 1)); }
+    }
+    ctx.restore();
+    // The zone the band is named on and whose edge the axis gives: the stripe's where it is drawn (beside the axis), else the moment's slab.
+    const named = z.now && stripeX0 < axisX ? { centre: z.now.centre, x0: stripeX0, x1: stripeX0 } : slab ? { centre: z.moment.centre, x0: slab.x0, x1: slab.x1 } : null;
+    const centre = named?.centre ?? z.moment.centre;
+    // The band named beside it, at its outer edge, on a plate that reads over the heat and the candles.
+    const edgePrice = z.side === 'up' ? centre * (1 + z.outer) : centre * Math.max(0, 1 - z.outer), ey = yOf(edgePrice), inView = ey >= 0 && ey <= ph;
+    if (named && inView) {
+      ctx.save();
+      ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+      const label = edgeLabel(z.side, z.outer), w = Math.ceil(ctx.measureText(label).width) + 10, h = 16;
+      const lx = named.x1 + 6 + w <= axisX ? named.x1 + 6 : Math.max(0, named.x0 - 6 - w), ly = Math.max(0, Math.min(ph - h, Math.round(ey - h / 2)));
+      ctx.globalAlpha = HEAD_ALPHA; ctx.fillStyle = p.panel; ctx.beginPath(); ctx.roundRect(lx, ly, w, h, 4); ctx.fill();
+      ctx.globalAlpha = 1; ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.roundRect(lx + 0.5, ly + 0.5, w - 1, h - 1, 4); ctx.stroke();
+      ctx.fillStyle = p.text; ctx.fillText(label, lx + 5, ly + h / 2 + 0.5);
+      ctx.restore();
+    }
+    // The edge's price on the axis, in the side's colour; above or below the view, at that edge with an arrowhead.
+    if (edgePrice > 0) {
+      const ty = Math.min(ph - 9, Math.max(9, ey)), on = textOn(ink, 1, p);
+      ctx.save();
+      ctx.fillStyle = ink; ctx.fillRect(axisX + 1, ty - 9, AXIS_W - 1, 18);
+      ctx.fillStyle = on; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillText(fmtPrice(edgePrice), axisX + (inView ? 6 : 10), ty);
+      if (!inView) { const up = ey < 0; ctx.beginPath(); ctx.moveTo(axisX + 3, ty + (up ? 2 : -2)); ctx.lineTo(axisX + 8, ty + (up ? 2 : -2)); ctx.lineTo(axisX + 5.5, ty + (up ? -3 : 3)); ctx.closePath(); ctx.fill(); }
+      ctx.restore();
+    }
   }
 
   #paintCrosshair(ctx: CanvasRenderingContext2D, state: AppState, pw: number, ph: number): void {
